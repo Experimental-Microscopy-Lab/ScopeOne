@@ -746,12 +746,7 @@ QString RecordingWidget::buildTimestampBaseName() const
 
 QString RecordingWidget::normalizedBaseName() const
 {
-    QString name = m_fileNameLineEdit->text().trimmed();
-    if (name.isEmpty()) {
-        return QString();
-    }
-    QFileInfo fi(name);
-    return fi.completeBaseName();
+    return QFileInfo(m_fileNameLineEdit->text().trimmed()).fileName();
 }
 
 QStringList RecordingWidget::selectedCameraIds() const
