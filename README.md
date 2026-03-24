@@ -30,9 +30,7 @@ ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend i
 - zlib 1.3.1
 - mmCoreAndDevices
 
-Extract the bundled third-party dependencies into `ScopeOneCore/external` under this repository.
-
-Expected third-party dependencies path layout:
+Extract the bundled third-party dependencies into `ScopeOneCore/external` under this repository. Expected third-party dependencies path layout:
 
 ```text
 ScopeOne/
