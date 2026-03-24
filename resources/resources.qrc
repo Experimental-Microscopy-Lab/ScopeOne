@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Scopeone_Icon.svg</file>
+        <file>Scopeone_Logo.svg</file>
+    </qresource>
+</RCC>
