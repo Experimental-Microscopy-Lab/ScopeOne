@@ -10,7 +10,7 @@ The software implements a multi-process architecture that enables true simultane
 
 ### For Users
 
-Download the latest release package from the [Releases](https://github.com/yourusername/ScopeOne/releases) page and extract it. Run `ScopeOne.exe` to start the application.
+Download the latest release package from the [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases) page and extract it. Run `ScopeOne.exe` to start the application.
 
 **System Requirements:**
 - Windows 10/11 (64-bit)
