@@ -2,6 +2,9 @@
 #include "internal/MultiProcessCameraManager.h"
 #include <QDebug>
 #include <QCoreApplication>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <algorithm>
 #include <vector>
 
@@ -13,6 +16,7 @@ struct CameraLoadInfo {
     QString label;
     QString adapter;
     QString device;
+    QStringList preInitProperties;
     double exposureMs{10.0};
 };
 
@@ -22,6 +26,78 @@ void configureAdapterSearchPaths(CMMCore& core)
     std::vector<std::string> searchPaths;
     searchPaths.push_back(appDir.toStdString());
     core.setDeviceAdapterSearchPaths(searchPaths);
+}
+
+QString encodePreInitProperty(const QString& name, const QString& value)
+{
+    QJsonObject property;
+    property.insert(QStringLiteral("name"), name);
+    property.insert(QStringLiteral("value"), value);
+    return QString::fromUtf8(QJsonDocument(property).toJson(QJsonDocument::Compact));
+}
+
+QStringList loadCameraPreInitPropertiesFromConfig(const QString& configPath, const QString& cameraLabel)
+{
+    QStringList properties;
+    if (configPath.trimmed().isEmpty() || cameraLabel.trimmed().isEmpty())
+    {
+        return properties;
+    }
+
+    QFile configFile(configPath);
+    if (!configFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        qWarning().noquote() << QString("Failed to open config for pre-init scan: %1").arg(configPath);
+        return properties;
+    }
+
+    bool inPreInitSection = false;
+    while (!configFile.atEnd())
+    {
+        const QString rawLine = QString::fromUtf8(configFile.readLine());
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith('#'))
+        {
+            continue;
+        }
+
+        const QStringList parts = line.split(',', Qt::KeepEmptyParts);
+        if (parts.size() < 4)
+        {
+            continue;
+        }
+
+        const QString command = parts[0].trimmed();
+        const QString deviceLabel = parts[1].trimmed();
+        const QString propertyName = parts[2].trimmed();
+        const QString propertyValue = parts.mid(3).join(QStringLiteral(","));
+
+        if (command == QStringLiteral("Property")
+            && deviceLabel == QStringLiteral("Core")
+            && propertyName == QStringLiteral("Initialize"))
+        {
+            if (propertyValue.trimmed() == QStringLiteral("0"))
+            {
+                inPreInitSection = true;
+                continue;
+            }
+            if (propertyValue.trimmed() == QStringLiteral("1"))
+            {
+                break;
+            }
+        }
+
+        if (!inPreInitSection
+            || command != QStringLiteral("Property")
+            || deviceLabel != cameraLabel)
+        {
+            continue;
+        }
+
+        properties.append(encodePreInitProperty(propertyName, propertyValue));
+    }
+
+    return properties;
 }
 
 } // namespace
@@ -65,7 +141,9 @@ QStringList loadedDeviceLabels(CMMCore& core, QString* errorMessage)
     }
 }
 
-std::vector<CameraLoadInfo> loadedCameraInfos(CMMCore& core, const QStringList& loadedDevices)
+std::vector<CameraLoadInfo> loadedCameraInfos(CMMCore& core,
+                                              const QStringList& loadedDevices,
+                                              const QString& configPath)
 {
     // Read camera metadata before backend startup
     std::vector<CameraLoadInfo> cameras;
@@ -92,6 +170,7 @@ std::vector<CameraLoadInfo> loadedCameraInfos(CMMCore& core, const QStringList& 
                     info.exposureMs = exposure;
                 }
             } catch (const CMMError&) {}
+            info.preInitProperties = loadCameraPreInitPropertiesFromConfig(configPath, deviceName);
 
             cameras.push_back(std::move(info));
         } catch (const CMMError&) {}
@@ -172,7 +251,8 @@ bool MMCoreManager::loadConfigurationAndStartCameras(const QString& configPath,
     if (!listError.isEmpty()) {
         qWarning().noquote() << QString("Failed to query loaded devices: %1").arg(listError);
     }
-    const std::vector<CameraLoadInfo> cameraInfos = loadedCameraInfos(*m_mmcore, loadedDevices);
+    const std::vector<CameraLoadInfo> cameraInfos =
+        loadedCameraInfos(*m_mmcore, loadedDevices, configPath);
     const bool useSingleCamera = (cameraInfos.size() == 1);
 
     int successCount = 0;
@@ -245,7 +325,11 @@ bool MMCoreManager::loadConfigurationAndStartCameras(const QString& configPath,
                 mpcm->startSingleCamera(ci.label, ci.exposureMs);
             }
         } else if (!existingCameraIds.contains(ci.label)) {
-            if (mpcm->startAgentFor(ci.label, ci.adapter, ci.device, ci.exposureMs)) {
+            if (mpcm->startAgentFor(ci.label,
+                                    ci.adapter,
+                                    ci.device,
+                                    ci.preInitProperties,
+                                    ci.exposureMs)) {
                 agentsStarted.append(ci.label);
             }
         }

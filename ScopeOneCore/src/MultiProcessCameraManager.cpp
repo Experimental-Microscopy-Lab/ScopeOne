@@ -32,6 +32,8 @@ namespace scopeone::core::internal
 
     namespace
     {
+        constexpr int kAgentControlReadyTimeoutMs = 15000;
+
         struct PropertySnapshot
         {
             QString value;
@@ -1996,8 +1998,11 @@ namespace scopeone::core::internal
         }
     }
 
-    bool MultiProcessCameraManager::startAgentFor(const QString& cameraId, const QString& adapter,
-                                                  const QString& device, double exposureMs)
+    bool MultiProcessCameraManager::startAgentFor(const QString& cameraId,
+                                                  const QString& adapter,
+                                                  const QString& device,
+                                                  const QStringList& preInitProperties,
+                                                  double exposureMs)
     {
         if (cameraId.trimmed().isEmpty() || adapter.trimmed().isEmpty() || device.trimmed().isEmpty())
         {
@@ -2046,6 +2051,13 @@ namespace scopeone::core::internal
         if (exposureMs > 0.0)
         {
             args << "--exposure" << QString::number(exposureMs, 'f', 6);
+        }
+        for (const QString& encodedProperty : preInitProperties)
+        {
+            if (!encodedProperty.isEmpty())
+            {
+                args << "--preinit" << encodedProperty;
+            }
         }
         slot->process->setProgram(agentPath);
         slot->process->setArguments(args);
@@ -2126,9 +2138,12 @@ namespace scopeone::core::internal
         {
             slot->control->start();
         }
-        if (!waitForControlReady(*slot, 4000))
+        if (!waitForControlReady(*slot, kAgentControlReadyTimeoutMs))
         {
-            qWarning().noquote() << QString("Agent control session did not become ready for %1").arg(cameraId);
+            qWarning().noquote()
+                << QString("Agent control session did not become ready for %1 within %2 ms")
+                   .arg(cameraId)
+                   .arg(kAgentControlReadyTimeoutMs);
             stopAgentFor(cameraId);
             return false;
         }
