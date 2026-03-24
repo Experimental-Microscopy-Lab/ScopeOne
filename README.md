@@ -2,9 +2,8 @@
 
 ## Overview
 
-ScopeOne is a high-performance microscopy control software built with C++ and Qt6, leveraging Micro-Manager Core ([MMCore](https://github.com/micro-manager/mmCoreAndDevices)) for hardware abstraction. It addresses specific needs in multi-camera imaging while maintaining compatibility with the extensive Micro-Manager device ecosystem. It originated as our lab software and tranition to an open-source project.
-
-The software implements a multi-process architecture that enables true simultaneous preview and acquisition from multiple cameras. Each camera runs in its own MMCore instance, real-time image processing is built into the core with a modular pipeline supporting background calibration, temporal filtering, FFT analysis, and other operations. 
+ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a multi-process architecture where each camera runs in its own [MMCore](https://github.com/micro-manager/mmCoreAndDevices) instance, enabling simultaneous preview and acquisition across multiple cameras.
+It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 ## Quick Start
 
@@ -18,22 +17,35 @@ Download the latest release package from the [Releases](https://github.com/Exper
 
 **Device Adapter Setup:**
 
-ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing Micro-Manager 2.0 to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLL files from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the folder containing `ScopeOne.exe`.
+ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/) to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLL files from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the folder containing `ScopeOne.exe`.
 
 ### For Developers
 
 **Prerequisites:**
-- CMake 3.16+
-- Visual Studio 2022 (MSVC v143 toolset)
-- Qt 6.9.1 (msvc2022_64)
-- OpenCV 4.10.0
+- [CMake 4.1.0](https://cmake.org/download/)
+- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
+- [Qt 6.9.1](https://www.qt.io/development/download-qt-installer-oss) (msvc2022_64)
+- OpenCV 4.12.0
 - libtiff 4.7.1,
 - zlib 1.3.1
 - mmCoreAndDevices
 
-**Quick Setup:**
+Extract the bundled third-party dependencies into `ScopeOneCore/external` under this repository.
 
-Setting up a C++ development environment can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes all third-party libraries (OpenCV, MMCore, libtiff, zlib, pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases).
+Expected third-party dependencies path layout:
+
+```text
+ScopeOne/
+  ScopeOneCore/
+    external/
+      mmCoreAndDevices/
+      opencv-4.12.0/
+      pybind11-3.0.1/
+      tiff-4.7.1/
+      zlib-1.3.1/
+```
+
+Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes third-party libraries (OpenCV, MMCore, libtiff, zlib and pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases).
 
 **Build Steps:**
 
@@ -54,13 +66,6 @@ cmake --build build --config Release --parallel
 ```powershell
 .\build\Release\ScopeOne.exe
 ```
-
-4. Create distribution package:
-```powershell
-cmake --build build --config Release --target package
-```
-
-
 
 ## Tested Devices
 - Yokogawa CSU X1

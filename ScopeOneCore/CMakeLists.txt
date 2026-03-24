@@ -6,6 +6,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+option(SCOPEONE_BUILD_PYTHON_BINDINGS OFF)
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
@@ -19,7 +21,9 @@ set(MMCORE_INCLUDE_DIR "${MMCORE_DIR}/MMCore")
 set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
 set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
 
-set(OPENCV_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/build/x64/vc16/bin")
+set(OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0")
+set(OpenCV_DIR "${OPENCV_DIR}/build")
+set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
 set(ZLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib-1.3.1")
 set(ZLIB_BIN_DIR "${ZLIB_DIR}/build/Release")
 set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}")
@@ -167,34 +171,36 @@ target_link_directories(ScopeOne_Agent PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Agent>)
 
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-add_subdirectory("${PYBIND11_DIR}" "${CMAKE_BINARY_DIR}/_deps/pybind11" EXCLUDE_FROM_ALL)
+if (SCOPEONE_BUILD_PYTHON_BINDINGS)
+    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+    add_subdirectory("${PYBIND11_DIR}" "${CMAKE_BINARY_DIR}/_deps/pybind11" EXCLUDE_FROM_ALL)
 
-pybind11_add_module(scopeone_core MODULE
-        python/ScopeOneCoreBindings.cpp
-)
-target_link_libraries(scopeone_core PRIVATE scopeone::ScopeOneCore)
-set_target_properties(scopeone_core PROPERTIES
-        OUTPUT_NAME "_core"
-        LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
-        RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
-)
-add_custom_command(TARGET scopeone_core POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:ScopeOneCore>
-        $<TARGET_FILE_DIR:scopeone_core>
-)
-scopeone_add_runtime_copy_commands(scopeone_core $<TARGET_FILE_DIR:scopeone_core>)
+    pybind11_add_module(pyscopeonecore MODULE
+            python/ScopeOneCoreBindings.cpp
+    )
+    target_link_libraries(pyscopeonecore PRIVATE scopeone::ScopeOneCore)
+    set_target_properties(pyscopeonecore PROPERTIES
+            OUTPUT_NAME "pyscopeonecore"
+            LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
+            RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
+    )
+    add_custom_command(TARGET pyscopeonecore POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:ScopeOneCore>
+            $<TARGET_FILE_DIR:pyscopeonecore>
+    )
+    scopeone_add_runtime_copy_commands(pyscopeonecore $<TARGET_FILE_DIR:pyscopeonecore>)
 
-install(TARGETS scopeone_core
-        LIBRARY DESTINATION "python/scopeone/src/scopeone"
-        RUNTIME DESTINATION "python/scopeone/src/scopeone"
-)
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/"
-        DESTINATION "python/scopeone"
-        FILES_MATCHING
-        PATTERN "*.py"
-)
+    install(TARGETS pyscopeonecore
+            LIBRARY DESTINATION "python/scopeone/src/scopeone"
+            RUNTIME DESTINATION "python/scopeone/src/scopeone"
+    )
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/"
+            DESTINATION "python/scopeone"
+            FILES_MATCHING
+            PATTERN "*.py"
+    )
+endif ()
 
 if (MSVC)
     target_compile_options(ScopeOneCore PRIVATE
@@ -217,12 +223,14 @@ if (MSVC)
             $<$<CONFIG:Release>:/LTCG>
     )
 
-    target_compile_options(scopeone_core PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-    )
-    target_compile_definitions(scopeone_core PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
-    )
+    if (TARGET pyscopeonecore)
+        target_compile_options(pyscopeonecore PRIVATE
+                $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
+        )
+        target_compile_definitions(pyscopeonecore PRIVATE
+                $<$<CONFIG:Release>:NDEBUG>
+        )
+    endif ()
 endif ()
 
 configure_package_config_file(

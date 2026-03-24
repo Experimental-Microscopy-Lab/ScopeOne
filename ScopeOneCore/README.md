@@ -14,6 +14,12 @@ Configure:
 cmake -S . -B build
 ```
 
+Python bindings are disabled by default. Enable them only if needed:
+
+```powershell
+cmake -S . -B build -DSCOPEONE_BUILD_PYTHON_BINDINGS=ON
+```
+
 Build:
 
 ```powershell
@@ -36,7 +42,10 @@ Outputs:
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_Agent.exe`
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
-- `python/scopeone/src/scopeone/_core*.pyd`
+
+When `SCOPEONE_BUILD_PYTHON_BINDINGS=ON`:
+
+- `python/scopeone/src/scopeone/pyscopeonecore*.pyd`
 
 
 ## Public API
