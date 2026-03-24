@@ -22,9 +22,9 @@ ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend i
 ### For Developers
 
 **Prerequisites:**
-- [CMake 4.1.0](https://cmake.org/download/)
+- [CMake](https://cmake.org/download/) 4.1.0
 - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
-- [Qt 6.9.1](https://www.qt.io/development/download-qt-installer-oss) (msvc2022_64)
+- [Qt](https://www.qt.io/development/download-qt-installer-oss) 6.9.1 (msvc2022_64)
 - OpenCV 4.12.0
 - libtiff 4.7.1,
 - zlib 1.3.1
@@ -45,7 +45,7 @@ ScopeOne/
       zlib-1.3.1/
 ```
 
-Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes third-party libraries (OpenCV, MMCore, libtiff, zlib and pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases).
+<!-- Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes third-party libraries (OpenCV, MMCore, libtiff, zlib and pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases). -->
 
 **Build Steps:**
 
