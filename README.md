@@ -2,7 +2,7 @@
 
 ## Overview
 
-ScopeOne is a high-performance microscopy control software built with C++ and Qt6, leveraging Micro-Manager Core (MMCore) for hardware abstraction. It addresses specific needs in multi-camera imaging while maintaining compatibility with the extensive Micro-Manager device ecosystem. It originated as our lab software and tranition to an open-source project.
+ScopeOne is a high-performance microscopy control software built with C++ and Qt6, leveraging Micro-Manager Core ([MMCore](https://github.com/micro-manager/mmCoreAndDevices)) for hardware abstraction. It addresses specific needs in multi-camera imaging while maintaining compatibility with the extensive Micro-Manager device ecosystem. It originated as our lab software and tranition to an open-source project.
 
 The software implements a multi-process architecture that enables true simultaneous preview and acquisition from multiple cameras. Each camera runs in its own MMCore instance, real-time image processing is built into the core with a modular pipeline supporting background calibration, temporal filtering, FFT analysis, and other operations. 
 
@@ -33,7 +33,7 @@ ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend i
 
 **Quick Setup:**
 
-Setting up a C++ development environment can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes all third-party libraries (OpenCV, MMCore, libtiff, zlib, pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/yourusername/ScopeOne/releases).
+Setting up a C++ development environment can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes all third-party libraries (OpenCV, MMCore, libtiff, zlib, pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases).
 
 **Build Steps:**
 
