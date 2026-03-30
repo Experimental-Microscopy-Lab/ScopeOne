@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.4 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.331 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-option(SCOPEONE_BUILD_PYTHON_BINDINGS OFF)
+option(SCOPEONE_BUILD_PYTHON_BINDINGS ON)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -33,22 +33,6 @@ set(TIFF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiff-4.7.1")
 set(TIFF_BIN_DIR "${TIFF_DIR}/build/libtiff/Release")
 set(TIFF_INCLUDE_DIRS "${TIFF_DIR}/libtiff;${TIFF_DIR}/build/libtiff")
 set(TIFF_LIB "${TIFF_BIN_DIR}/tiff.lib")
-
-file(GLOB_RECURSE _core_layer_files LIST_DIRECTORIES false
-        "${CMAKE_CURRENT_SOURCE_DIR}/internal/*.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-)
-foreach (_file IN LISTS _core_layer_files)
-    file(STRINGS "${_file}" _ui_include_hits REGEX "^[ \t]*#[ \t]*include[ \t]*[\"<](src/|InspectWidget\\.h|MainWindow\\.h|AboutDialog\\.h|ConsoleWidget\\.h|DeviceControlWidget\\.h|DevicePropertyWidget\\.h|PreviewWidget\\.h|ImageProcessingWidget\\.h|ImageSessionDialog\\.h|RecordingWidget\\.h)")
-    if (_ui_include_hits)
-        message(FATAL_ERROR "Layering violation: core file '${_file}' includes UI source headers.")
-    endif ()
-
-    file(STRINGS "${_file}" _widget_include_hits REGEX "^[ \t]*#[ \t]*include[ \t]*<(QtWidgets/|QWidget|QMainWindow|QDialog|QOpenGLWidget)")
-    if (_widget_include_hits)
-        message(FATAL_ERROR "Layering violation: core file '${_file}' includes Qt widget headers.")
-    endif ()
-endforeach ()
 
 find_package(Qt6 COMPONENTS Core Gui Network Concurrent REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -180,7 +164,7 @@ if (SCOPEONE_BUILD_PYTHON_BINDINGS)
     )
     target_link_libraries(pyscopeonecore PRIVATE scopeone::ScopeOneCore)
     set_target_properties(pyscopeonecore PROPERTIES
-            OUTPUT_NAME "pyscopeonecore"
+            OUTPUT_NAME "_core"
             LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
             RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
     )

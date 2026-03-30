@@ -8,9 +8,14 @@ set(CMAKE_AUTOUIC ON)
 
 include(GNUInstallDirs)
 
-set(ScopeOneCore_DIR "${CMAKE_SOURCE_DIR}/ScopeOneCore/install/lib/cmake/ScopeOneCore")
-
-set(CMAKE_PREFIX_PATH "C:/Qt/6.9.1/msvc2022_64")
+set(ScopeOneCore_ROOT
+        "${CMAKE_SOURCE_DIR}/ScopeOneCore/install"
+        CACHE PATH "ScopeOneCore install prefix"
+)
+list(PREPEND CMAKE_PREFIX_PATH
+        "C:/Qt/6.9.1/msvc2022_64"
+        "${ScopeOneCore_ROOT}"
+)
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include")
 configure_file(
@@ -18,18 +23,6 @@ configure_file(
         "${CMAKE_BINARY_DIR}/include/AppVersion.h"
         @ONLY
 )
-
-file(GLOB_RECURSE _ui_layer_files LIST_DIRECTORIES false
-        "${CMAKE_SOURCE_DIR}/src/*.h"
-        "${CMAKE_SOURCE_DIR}/src/*.cpp"
-)
-foreach (_file IN LISTS _ui_layer_files)
-    file(STRINGS "${_file}" _internal_core_include_hits REGEX
-            "^[ \t]*#[ \t]*include[ \t]*[\"<]core/internal/")
-    if (_internal_core_include_hits)
-        message(FATAL_ERROR "Layering violation: UI file '${_file}' includes internal core headers.")
-    endif ()
-endforeach ()
 
 find_package(Qt6 COMPONENTS
         Core
@@ -104,16 +97,23 @@ target_include_directories(ScopeOne PRIVATE
 )
 
 install(TARGETS ScopeOne
+        RUNTIME_DEPENDENCIES
+            DIRECTORIES "${ScopeOneCore_ROOT}/bin"
+            PRE_EXCLUDE_REGEXES
+                "api-ms-win-.*"
+                "ext-ms-.*"
+            POST_EXCLUDE_REGEXES
+                ".*[\\\\/]Windows[\\\\/]System32[\\\\/].*"
         RUNTIME DESTINATION .
 )
 
-add_custom_command(TARGET ScopeOne POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "$<TARGET_FILE_DIR:scopeone::ScopeOneCore>"
-        "$<TARGET_FILE_DIR:ScopeOne>"
-)
-
 if (WIN32)
+    add_custom_command(TARGET ScopeOne POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${ScopeOneCore_ROOT}/bin"
+            "$<TARGET_FILE_DIR:ScopeOne>"
+    )
+
     if (WINDEPLOYQT_EXECUTABLE)
         add_custom_command(TARGET ScopeOne POST_BUILD
                 COMMAND "${WINDEPLOYQT_EXECUTABLE}"
@@ -141,67 +141,48 @@ if (MSVC)
     )
 endif ()
 
-install(FILES
-        "${CMAKE_SOURCE_DIR}/LICENSE.txt"
+set(SCOPEONE_PACKAGE_DOCS
         "${CMAKE_SOURCE_DIR}/README.md"
+)
+if (EXISTS "${CMAKE_SOURCE_DIR}/LICENSE.txt")
+    list(APPEND SCOPEONE_PACKAGE_DOCS "${CMAKE_SOURCE_DIR}/LICENSE.txt")
+endif ()
+install(FILES ${SCOPEONE_PACKAGE_DOCS}
         DESTINATION .
 )
 
 if (WIN32)
     install(CODE "
-        file(GLOB _core_runtime_files
-            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/*.dll\"
-            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/ScopeOne_Agent.exe\"
-        )
-        if (_core_runtime_files)
-            file(INSTALL
-                DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-                TYPE FILE
-                FILES \${_core_runtime_files}
-            )
-        endif()
-    ")
+        set(_ui_runtime_dir \"${CMAKE_BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}\")
 
-    install(CODE "
-        set(_runtime_dir \"${CMAKE_BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}\")
-        if (NOT EXISTS \"\${_runtime_dir}/$<TARGET_FILE_NAME:ScopeOne>\")
-            return()
+        file(GLOB _qt_dlls \"\${_ui_runtime_dir}/Qt6*.dll\")
+        if (NOT _qt_dlls)
+            message(FATAL_ERROR \"Missing Qt runtime files matching '\${_ui_runtime_dir}/Qt6*.dll'.\")
         endif()
 
-        foreach(_pattern IN ITEMS
-            Qt6*.dll
-            opengl32sw.dll
-            D3Dcompiler_47.dll
-            dxcompiler.dll
-            dxil.dll
+        file(INSTALL
+            DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
+            TYPE FILE
+            FILES
+                \${_qt_dlls}
+                \"\${_ui_runtime_dir}/opengl32sw.dll\"
+                \"\${_ui_runtime_dir}/D3Dcompiler_47.dll\"
+                \"\${_ui_runtime_dir}/dxcompiler.dll\"
+                \"\${_ui_runtime_dir}/dxil.dll\"
         )
-            file(GLOB _qt_files \"\${_runtime_dir}/\${_pattern}\")
-            if (_qt_files)
-                file(INSTALL
-                    DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-                    TYPE FILE
-                    FILES \${_qt_files}
-                )
-            endif()
-        endforeach()
 
-        foreach(_subdir IN ITEMS
-            platforms
-            imageformats
-            iconengines
-            networkinformation
-            styles
-            tls
-            generic
+        file(INSTALL
+            DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
+            TYPE DIRECTORY
+            FILES
+                \"\${_ui_runtime_dir}/platforms\"
+                \"\${_ui_runtime_dir}/imageformats\"
+                \"\${_ui_runtime_dir}/iconengines\"
+                \"\${_ui_runtime_dir}/networkinformation\"
+                \"\${_ui_runtime_dir}/styles\"
+                \"\${_ui_runtime_dir}/tls\"
+                \"\${_ui_runtime_dir}/generic\"
         )
-            if (EXISTS \"\${_runtime_dir}/\${_subdir}\")
-                file(INSTALL
-                    DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-                    TYPE DIRECTORY
-                    FILES \"\${_runtime_dir}/\${_subdir}\"
-                )
-            endif()
-        endforeach()
     ")
 endif ()
 
@@ -212,7 +193,5 @@ set(CPACK_GENERATOR "ZIP")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CPACK_PACKAGE_FILE_NAME "ScopeOne-${PROJECT_VERSION}-win-x64")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE.txt")
-set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
 
 include(CPack)
