@@ -279,6 +279,7 @@ namespace
     {
         scopeone::core::internal::RecordingManager::Settings managerSettings;
         managerSettings.format = settings.format;
+        managerSettings.streamToDisk = settings.streamToDisk;
         managerSettings.enableCompression = settings.enableCompression;
         managerSettings.compressionLevel = settings.compressionLevel;
         managerSettings.framesPerBurst = settings.framesPerBurst;

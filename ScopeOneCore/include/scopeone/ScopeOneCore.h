@@ -69,6 +69,7 @@ namespace scopeone::core
         struct RecordingSettings
         {
             RecordingFormat format{RecordingFormat::Tiff};
+            bool streamToDisk{true};
             bool enableCompression{false};
             int compressionLevel{6};
             int framesPerBurst{1};
@@ -122,6 +123,7 @@ namespace scopeone::core
         {
             QStringList cameraIds;
             RecordingFormat format{RecordingFormat::Tiff};
+            bool streamToDisk{true};
             bool captureAll{true};
             bool enableCompression{false};
             int compressionLevel{6};
@@ -331,6 +333,11 @@ namespace scopeone::core
             {
                 const auto it = m_frames.constFind(cameraId);
                 return it == m_frames.constEnd() ? nullptr : &it.value();
+            }
+
+            const QHash<QString, RecordingFileManifest>& outputFiles() const
+            {
+                return m_manifest.output.files;
             }
 
             std::vector<RecordingFrame>& ensureFramesForCamera(const QString& cameraId)

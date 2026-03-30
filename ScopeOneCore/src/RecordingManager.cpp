@@ -421,16 +421,17 @@ bool RecordingManager::buildCapturePlan(const Settings& settings,
         errorMessage = QStringLiteral("No cameras available for recording");
         return false;
     }
-    if (settings.saveDir.trimmed().isEmpty()) {
+    if (settings.streamToDisk && settings.saveDir.trimmed().isEmpty()) {
         errorMessage = QStringLiteral("Save directory is empty");
         return false;
     }
-    if (settings.baseName.trimmed().isEmpty()) {
+    if (settings.streamToDisk && settings.baseName.trimmed().isEmpty()) {
         errorMessage = QStringLiteral("Base name is empty");
         return false;
     }
 
     plan.format = settings.format;
+    plan.streamToDisk = settings.streamToDisk;
     plan.enableCompression = settings.enableCompression;
     plan.compressionLevel = settings.compressionLevel;
     plan.framesPerBurst = settings.framesPerBurst;
@@ -448,8 +449,7 @@ bool RecordingManager::buildCapturePlan(const Settings& settings,
     plan.sessionMetadataJson = settings.sessionMetadataJson;
 
     const bool hasSpatial = !plan.positions.empty() || !plan.zPositions.empty();
-    const bool multiCamera = plan.activeCameraIds.size() > 1;
-    plan.useMda = (m_mmcore != nullptr) && (hasSpatial || multiCamera);
+    plan.useMda = (m_mmcore != nullptr) && hasSpatial;
     plan.streamMda = (m_mmcore != nullptr) && (plan.activeCameraIds.size() == 1) && !plan.useMda;
     if (!plan.useMda && !plan.streamMda && !m_mpcm && !m_latestFrameFetcher) {
         errorMessage = QStringLiteral("Frame source is not available for recording");
@@ -468,6 +468,7 @@ void RecordingManager::resetCaptureState(const CapturePlan& plan)
     m_captureState.targetBursts = plan.targetBursts;
     m_captureState.burstMode = plan.burstMode;
     m_captureState.burstIntervalMs = plan.burstIntervalMs;
+    m_captureState.streamToDisk = plan.streamToDisk;
     m_captureState.lastFrameIndex.clear();
     m_captureState.framesCapturedThisBurst.clear();
     m_captureState.framesCapturedTotal.clear();
@@ -495,6 +496,7 @@ void RecordingManager::resetSessionState(const CapturePlan& plan)
     scopeone::core::ScopeOneCore::RecordingCapturePlanData manifestPlan;
     manifestPlan.cameraIds = plan.activeCameraIds;
     manifestPlan.format = plan.format;
+    manifestPlan.streamToDisk = plan.streamToDisk;
     manifestPlan.captureAll = plan.captureAll;
     manifestPlan.enableCompression = plan.enableCompression;
     manifestPlan.compressionLevel = plan.compressionLevel;
@@ -511,13 +513,16 @@ void RecordingManager::resetSessionState(const CapturePlan& plan)
     manifestPlan.metadataFileName = plan.metadataFileName;
     manifestPlan.sessionMetadataJson = plan.sessionMetadataJson;
     m_sessionState.activeSession->setCapturePlan(manifestPlan);
-    m_sessionState.activeSession->prepareForSave(true, recordedMaxBytes());
+    m_sessionState.activeSession->prepareForSave(plan.streamToDisk, recordedMaxBytes());
     m_sessionState.activeSession->clearFrames();
 }
 
 void RecordingManager::finalizeActiveSession()
 {
     if (!m_sessionState.activeSession) {
+        return;
+    }
+    if (!m_captureState.streamToDisk) {
         return;
     }
     const QString result = m_writerState.writerError.isEmpty()
@@ -805,11 +810,13 @@ bool RecordingManager::start(const Settings& settings, const QStringList& active
     }
     resetSessionState(plan);
 
-    if (!startStreamingOutputs(plan)) {
-        qWarning().noquote() << (m_writerState.writerError.isEmpty() ? QStringLiteral("Failed to start streaming outputs")
-                                                         : m_writerState.writerError);
-        m_sessionState.activeSession.reset();
-        return false;
+    if (plan.streamToDisk) {
+        if (!startStreamingOutputs(plan)) {
+            qWarning().noquote() << (m_writerState.writerError.isEmpty() ? QStringLiteral("Failed to start streaming outputs")
+                                                             : m_writerState.writerError);
+            m_sessionState.activeSession.reset();
+            return false;
+        }
     }
 
     m_captureState.elapsedTimer.start();
@@ -845,8 +852,10 @@ void RecordingManager::stop()
         m_mpcm->setPollingPaused(false);
     }
 
-    setWriterStatus(RecordingWriterPhase::Stopping);
-    stopStreamingOutputs();
+    if (m_captureState.streamToDisk) {
+        setWriterStatus(RecordingWriterPhase::Stopping);
+        stopStreamingOutputs();
+    }
 
     m_captureState.isRecording = false;
     m_captureState.phase = kRecordingPhaseStopped;
@@ -857,10 +866,12 @@ void RecordingManager::stop()
 
     auto session = m_sessionState.activeSession;
     finalizeActiveSession();
-    if (m_writerState.writerError.isEmpty()) {
-        setWriterStatus(RecordingWriterPhase::Completed);
-    } else {
-        setWriterStatus(RecordingWriterPhase::Failed, m_writerState.writerError);
+    if (m_captureState.streamToDisk) {
+        if (m_writerState.writerError.isEmpty()) {
+            setWriterStatus(RecordingWriterPhase::Completed);
+        } else {
+            setWriterStatus(RecordingWriterPhase::Failed, m_writerState.writerError);
+        }
     }
     m_sessionState.activeSession.reset();
     m_mdaState.usingMda = false;
@@ -1040,7 +1051,7 @@ void RecordingManager::ingestFrame(const FramePacket& packet)
         return;
     }
 
-    if (!m_writerState.writerError.isEmpty()) {
+    if (m_captureState.streamToDisk && !m_writerState.writerError.isEmpty()) {
         stop();
         return;
     }
@@ -1056,8 +1067,12 @@ void RecordingManager::ingestFrame(const FramePacket& packet)
         return;
     }
 
-    if (!enqueueFrame(frame, packet.cameraId)) {
-        return;
+    if (m_captureState.streamToDisk) {
+        if (!enqueueFrame(frame, packet.cameraId)) {
+            return;
+        }
+    } else if (m_sessionState.activeSession) {
+        m_sessionState.activeSession->appendFrame(packet.cameraId, frame);
     }
     m_captureState.lastFrameIndex[packet.cameraId] = packet.header.frameIndex;
 
@@ -1277,7 +1292,7 @@ QString RecordingManager::saveSessionToDisk(const std::shared_ptr<RecordingSessi
     if (!session) {
         return QStringLiteral("Error: Missing recording session");
     }
-    if (session->isSaved()) {
+    if (session->isSaved() && !session->hasAnyFrames()) {
         return session->saveMessage().isEmpty()
             ? QStringLiteral("Success: Recording was already saved during acquisition")
             : session->saveMessage();

@@ -36,6 +36,7 @@ public:
     struct Settings {
 
         RecordingFormat format{RecordingFormat::Tiff};
+        bool streamToDisk{true};
         bool enableCompression{false};
         int compressionLevel{6};
         int framesPerBurst{1};
@@ -104,6 +105,7 @@ private:
     struct CapturePlan {
         QStringList activeCameraIds;
         RecordingFormat format{RecordingFormat::Tiff};
+        bool streamToDisk{true};
         bool enableCompression{false};
         int compressionLevel{6};
         int framesPerBurst{1};
@@ -180,6 +182,7 @@ private:
         qint64 lastBurstEndMs{0};
         int phase{kRecordingPhaseIdle};
         RecordingFormat format{RecordingFormat::Tiff};
+        bool streamToDisk{true};
         bool enableCompression{false};
         int compressionLevel{6};
     };
