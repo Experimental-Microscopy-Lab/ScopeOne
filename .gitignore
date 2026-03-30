@@ -1,14 +1,11 @@
-/*
-!/src/
-!/ScopeOneCore/
-!/CMakeLists.txt
-!/README.md
-!/resources/
+*
+!src/
+!ScopeOneCore/
+!resources/
 
-!/.gitignore
+!CMakeLists.txt
+!README.md
 
-ScopeOneCore/external/
-ScopeOneCore/build/
-ScopeOneCore/install/
-ScopeOneCore/cmake/
-ScopeOneCore/python/
+!.gitignore
+
+

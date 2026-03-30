@@ -1,0 +1,12 @@
+# Build artifacts
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+
+# Test outputs
+examples/output/
+*.tif
+*.tiff
