@@ -1,5 +1,4 @@
 # ScopeOne
-## Overview
 
 <p align="center">
   <img src="resources/Scopeone_Logo.svg" alt="ScopeOne logo" width="220">
