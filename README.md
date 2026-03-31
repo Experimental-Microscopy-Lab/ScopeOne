@@ -1,6 +1,10 @@
 # ScopeOne
-
 ## Overview
+
+<p align="center">
+  <img src="resources/Scopeone_Logo.svg" alt="ScopeOne logo" width="220">
+</p>
+
 
 ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a multi-process architecture where each camera runs in its own [MMCore](https://github.com/micro-manager/mmCoreAndDevices) instance, enabling simultaneous preview and acquisition across multiple cameras.
 It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
@@ -17,7 +21,11 @@ Download the latest release package from the [Releases](https://github.com/Exper
 
 **Device Adapter Setup:**
 
-ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/) to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLL files from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the folder containing `ScopeOne.exe`.
+ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/) to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLLs(`mmgr_dal_xxx.dll`) from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the root folder containing `ScopeOne.exe`.
+
+**Dual-camera Setup:**
+
+There is an example dual-camera .cfg file in the config folder, just change the camera labels in Devices section to match your camera models.
 
 ### For Developers
 
