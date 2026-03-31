@@ -68,14 +68,13 @@ namespace scopeone::ui
             "- Qt 6\n"
             "- zlib\n"
             "- libtiff\n"
-            "- OpenCV 4.x\n"
+            "- OpenCV 4\n"
             "- Micro-Manager Core\n"
             "- C++20";
         const QString coreInfo =
-            QString("Core: ScopeOneCore %1").arg(scopeone::core::ScopeOneCore::getVersion());
+            QString("ScopeOneCore %1").arg(scopeone::core::ScopeOneCore::getVersion());
         const QString license =
-            "Copyright (C) 2025-2026 ScopeOne Project\n"
-            "Licensed under the MIT License";
+            "Copyright (C) 2025-2026 ScopeOne Project";
         m_contentLabel->setText(QString("%1 %2\n%3\n\n%4\n\n%5\n\n%6")
             .arg(appName,
                  version,
