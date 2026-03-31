@@ -97,23 +97,16 @@ target_include_directories(ScopeOne PRIVATE
 )
 
 install(TARGETS ScopeOne
-        RUNTIME_DEPENDENCIES
-            DIRECTORIES "${ScopeOneCore_ROOT}/bin"
-            PRE_EXCLUDE_REGEXES
-                "api-ms-win-.*"
-                "ext-ms-.*"
-            POST_EXCLUDE_REGEXES
-                ".*[\\\\/]Windows[\\\\/]System32[\\\\/].*"
         RUNTIME DESTINATION .
 )
 
-if (WIN32)
-    add_custom_command(TARGET ScopeOne POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${ScopeOneCore_ROOT}/bin"
-            "$<TARGET_FILE_DIR:ScopeOne>"
-    )
+add_custom_command(TARGET ScopeOne POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "$<TARGET_FILE_DIR:scopeone::ScopeOneCore>"
+        "$<TARGET_FILE_DIR:ScopeOne>"
+)
 
+if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)
         add_custom_command(TARGET ScopeOne POST_BUILD
                 COMMAND "${WINDEPLOYQT_EXECUTABLE}"
@@ -141,48 +134,63 @@ if (MSVC)
     )
 endif ()
 
-set(SCOPEONE_PACKAGE_DOCS
-        "${CMAKE_SOURCE_DIR}/README.md"
-)
-if (EXISTS "${CMAKE_SOURCE_DIR}/LICENSE.txt")
-    list(APPEND SCOPEONE_PACKAGE_DOCS "${CMAKE_SOURCE_DIR}/LICENSE.txt")
-endif ()
-install(FILES ${SCOPEONE_PACKAGE_DOCS}
-        DESTINATION .
-)
+
 
 if (WIN32)
     install(CODE "
-        set(_ui_runtime_dir \"${CMAKE_BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}\")
+        file(GLOB _core_runtime_files
+            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/*.dll\"
+            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/ScopeOne_Agent.exe\"
+        )
+        if (_core_runtime_files)
+            file(INSTALL
+                DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
+                TYPE FILE
+                FILES \${_core_runtime_files}
+            )
+        endif()
+    ")
 
-        file(GLOB _qt_dlls \"\${_ui_runtime_dir}/Qt6*.dll\")
-        if (NOT _qt_dlls)
-            message(FATAL_ERROR \"Missing Qt runtime files matching '\${_ui_runtime_dir}/Qt6*.dll'.\")
+    install(CODE "
+        set(_runtime_dir \"${CMAKE_BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}\")
+        if (NOT EXISTS \"\${_runtime_dir}/$<TARGET_FILE_NAME:ScopeOne>\")
+            return()
         endif()
 
-        file(INSTALL
-            DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-            TYPE FILE
-            FILES
-                \${_qt_dlls}
-                \"\${_ui_runtime_dir}/opengl32sw.dll\"
-                \"\${_ui_runtime_dir}/D3Dcompiler_47.dll\"
-                \"\${_ui_runtime_dir}/dxcompiler.dll\"
-                \"\${_ui_runtime_dir}/dxil.dll\"
+        foreach(_pattern IN ITEMS
+            Qt6*.dll
+            opengl32sw.dll
+            D3Dcompiler_47.dll
+            dxcompiler.dll
+            dxil.dll
         )
+            file(GLOB _qt_files \"\${_runtime_dir}/\${_pattern}\")
+            if (_qt_files)
+                file(INSTALL
+                    DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
+                    TYPE FILE
+                    FILES \${_qt_files}
+                )
+            endif()
+        endforeach()
 
-        file(INSTALL
-            DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-            TYPE DIRECTORY
-            FILES
-                \"\${_ui_runtime_dir}/platforms\"
-                \"\${_ui_runtime_dir}/imageformats\"
-                \"\${_ui_runtime_dir}/iconengines\"
-                \"\${_ui_runtime_dir}/networkinformation\"
-                \"\${_ui_runtime_dir}/styles\"
-                \"\${_ui_runtime_dir}/tls\"
-                \"\${_ui_runtime_dir}/generic\"
+        foreach(_subdir IN ITEMS
+            platforms
+            imageformats
+            iconengines
+            networkinformation
+            styles
+            tls
+            generic
         )
+            if (EXISTS \"\${_runtime_dir}/\${_subdir}\")
+                file(INSTALL
+                    DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
+                    TYPE DIRECTORY
+                    FILES \"\${_runtime_dir}/\${_subdir}\"
+                )
+            endif()
+        endforeach()
     ")
 endif ()
 
