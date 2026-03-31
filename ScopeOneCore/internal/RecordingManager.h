@@ -137,11 +137,11 @@ private:
         Source source{Source::PreviewStream};
     };
     struct WriteTask {
-        QString cameraId;
         RecordingFrame frame;
     };
 
     struct CameraOutput {
+        QString cameraId;
         QString rawPath;
         QString frameInfoPath;
         QString metadataFileName;
@@ -150,6 +150,11 @@ private:
         int width{0};
         int height{0};
         int bits{0};
+        std::deque<WriteTask> writeQueue;
+        mutable std::mutex queueMutex;
+        std::condition_variable writeCondition;
+        std::thread writerThread;
+        bool stopRequested{false};
     };
     struct SessionState {
         std::shared_ptr<RecordingSessionData> activeSession;
@@ -158,11 +163,7 @@ private:
         size_t recordedMaxBytes{16ull * 1024 * 1024 * 1024};
         size_t pendingWriteBytes{0};
         QHash<QString, std::shared_ptr<CameraOutput>> cameraOutputs;
-        std::deque<WriteTask> writeQueue;
         mutable std::mutex writeMutex;
-        std::condition_variable writeCondition;
-        std::thread writerThread;
-        bool writerStopRequested{false};
         QString writerError;
         RecordingWriterStatus status;
     };
@@ -215,8 +216,9 @@ private:
     void emitProgress();
     bool startStreamingOutputs(const CapturePlan& plan);
     void stopStreamingOutputs();
-    void writerLoop();
-    bool writeTask(const WriteTask& task, QString& errorMessage);
+    void requestWriterStop();
+    void writerLoop(const std::shared_ptr<CameraOutput>& output);
+    bool writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage);
     void writeFrameInfoHeader(CameraOutput& output);
     QByteArray buildFrameInfoLine(const QString& cameraId, const RecordingFrame& frame) const;
     QString formatName(RecordingFormat format) const;

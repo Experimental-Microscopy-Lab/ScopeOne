@@ -382,9 +382,9 @@ void RecordingManager::emitWriterStatus()
         status = m_writerState.status;
         status.setPendingWriteBytes(static_cast<qint64>(m_writerState.pendingWriteBytes));
         status.setMaxPendingWriteBytes(static_cast<qint64>(m_writerState.recordedMaxBytes));
-    }
-    if (m_sessionState.activeSession) {
-        m_sessionState.activeSession->setWriterStatusSnapshot(status);
+        if (m_sessionState.activeSession) {
+            m_sessionState.activeSession->setWriterStatusSnapshot(status);
+        }
     }
     emit writerStatusChanged(status);
 }
@@ -564,6 +564,7 @@ bool RecordingManager::startStreamingOutputs(const CapturePlan& plan)
 
     for (const QString& cameraId : m_captureState.activeCameraIds) {
         auto output = std::make_shared<CameraOutput>();
+        output->cameraId = cameraId;
         output->rawPath = buildSessionFilePath(plan.saveDir,
                                                plan.baseName,
                                                cameraId,
@@ -598,31 +599,60 @@ bool RecordingManager::startStreamingOutputs(const CapturePlan& plan)
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
         m_writerState.pendingWriteBytes = 0;
-        m_writerState.writeQueue.clear();
-        m_writerState.writerStopRequested = false;
     }
     emitBufferUsageChanged(0);
-    m_writerState.writerThread = std::thread([this]() { writerLoop(); });
+    for (auto it = m_writerState.cameraOutputs.begin(); it != m_writerState.cameraOutputs.end(); ++it) {
+        const auto& output = it.value();
+        if (!output) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(output->queueMutex);
+            output->writeQueue.clear();
+            output->stopRequested = false;
+        }
+        output->writerThread = std::thread([this, output]() {
+            writerLoop(output);
+        });
+    }
     setWriterStatus(RecordingWriterPhase::Writing);
     return true;
 }
 
-void RecordingManager::stopStreamingOutputs()
+void RecordingManager::requestWriterStop()
 {
+    QList<std::shared_ptr<CameraOutput>> outputs;
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-        m_writerState.writerStopRequested = true;
+        outputs = m_writerState.cameraOutputs.values();
     }
-    m_writerState.writeCondition.notify_all();
-
-    if (m_writerState.writerThread.joinable()) {
-        m_writerState.writerThread.join();
-    }
-
-    for (auto it = m_writerState.cameraOutputs.begin(); it != m_writerState.cameraOutputs.end(); ++it) {
-        auto output = it.value();
+    for (const auto& output : outputs) {
         if (!output) {
             continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(output->queueMutex);
+            output->stopRequested = true;
+        }
+        output->writeCondition.notify_all();
+    }
+}
+
+void RecordingManager::stopStreamingOutputs()
+{
+    QList<std::shared_ptr<CameraOutput>> outputs;
+    {
+        std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
+        outputs = m_writerState.cameraOutputs.values();
+    }
+    requestWriterStop();
+
+    for (const auto& output : outputs) {
+        if (!output) {
+            continue;
+        }
+        if (output->writerThread.joinable()) {
+            output->writerThread.join();
         }
         if (output->backend) {
             auto* backend = reinterpret_cast<SaveBackend*>(output->backend);
@@ -633,41 +663,44 @@ void RecordingManager::stopStreamingOutputs()
             output->frameInfoFile.flush();
             output->frameInfoFile.close();
         }
+        {
+            std::lock_guard<std::mutex> lock(output->queueMutex);
+            output->writeQueue.clear();
+            output->stopRequested = false;
+        }
     }
-    m_writerState.cameraOutputs.clear();
-
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-        m_writerState.writeQueue.clear();
+        m_writerState.cameraOutputs.clear();
         m_writerState.pendingWriteBytes = 0;
-        m_writerState.writerStopRequested = false;
     }
     emitBufferUsageChanged(0);
     emitWriterStatus();
 }
 
-void RecordingManager::writerLoop()
+void RecordingManager::writerLoop(const std::shared_ptr<CameraOutput>& output)
 {
-    // Drain queued frames on the writer thread
+    // Drain queued frames for one camera on its dedicated writer thread
+    const QString cameraId = output ? output->cameraId : QString{};
     while (true) {
         WriteTask task;
         {
-            std::unique_lock<std::mutex> lock(m_writerState.writeMutex);
-            m_writerState.writeCondition.wait(lock, [this]() {
-                return m_writerState.writerStopRequested || !m_writerState.writeQueue.empty();
+            std::unique_lock<std::mutex> lock(output->queueMutex);
+            output->writeCondition.wait(lock, [&output]() {
+                return output->stopRequested || !output->writeQueue.empty();
             });
-            if (m_writerState.writeQueue.empty()) {
-                if (m_writerState.writerStopRequested) {
+            if (output->writeQueue.empty()) {
+                if (output->stopRequested) {
                     break;
                 }
                 continue;
             }
-            task = std::move(m_writerState.writeQueue.front());
-            m_writerState.writeQueue.pop_front();
+            task = std::move(output->writeQueue.front());
+            output->writeQueue.pop_front();
         }
 
         QString errorMessage;
-        if (!writeTask(task, errorMessage)) {
+        if (!writeTask(*output, task, errorMessage)) {
             {
                 std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
                 if (m_writerState.writerError.isEmpty()) {
@@ -675,9 +708,9 @@ void RecordingManager::writerLoop()
                         ? QStringLiteral("Unknown recording writer error")
                         : errorMessage;
                 }
-                m_writerState.writerStopRequested = true;
                 m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
             }
+            requestWriterStop();
             emitWriterStatus();
             QMetaObject::invokeMethod(this, [this]() {
                 if (m_captureState.isRecording) {
@@ -693,69 +726,62 @@ void RecordingManager::writerLoop()
             m_writerState.pendingWriteBytes -= static_cast<size_t>(task.frame.rawData.size());
             m_writerState.status.addWrittenFrames(1);
             pendingWriteBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
+            if (m_sessionState.activeSession) {
+                const qint64 framesWritten =
+                    m_sessionState.activeSession->ensureFileManifest(cameraId).framesWritten + 1;
+                m_sessionState.activeSession->setOutputFramesWritten(cameraId, framesWritten);
+            }
         }
         emitBufferUsageChanged(pendingWriteBytes);
-        if (m_sessionState.activeSession) {
-            const qint64 framesWritten =
-                m_sessionState.activeSession->ensureFileManifest(task.cameraId).framesWritten + 1;
-            m_sessionState.activeSession->setOutputFramesWritten(task.cameraId, framesWritten);
-        }
         emitWriterStatus();
     }
 }
 
-bool RecordingManager::writeTask(const WriteTask& task, QString& errorMessage)
+bool RecordingManager::writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage)
 {
-    const auto it = m_writerState.cameraOutputs.constFind(task.cameraId);
-    if (it == m_writerState.cameraOutputs.constEnd() || !it.value()) {
-        errorMessage = QStringLiteral("Missing output for %1").arg(task.cameraId);
-        return false;
-    }
-
-    const auto output = it.value();
-    auto* backend = reinterpret_cast<SaveBackend*>(output->backend);
+    auto* backend = reinterpret_cast<SaveBackend*>(output.backend);
     if (!backend) {
         SaveBackend::TiffOptions tiffOpts;
         tiffOpts.useDeflate = m_captureState.enableCompression;
         tiffOpts.zipQuality = m_captureState.compressionLevel;
 
         auto newBackend = std::make_unique<SaveBackend>();
-        if (!newBackend->startStackRaw(output->rawPath,
+        if (!newBackend->startStackRaw(output.rawPath,
                                        m_captureState.format,
                                        task.frame.width,
                                        task.frame.height,
                                        task.frame.bits,
                                        tiffOpts)) {
             errorMessage = QStringLiteral("Failed to open raw output for %1: %2")
-                .arg(task.cameraId)
+                .arg(output.cameraId)
                 .arg(newBackend->lastError());
             return false;
         }
-        output->backend = newBackend.release();
-        output->width = task.frame.width;
-        output->height = task.frame.height;
-        output->bits = task.frame.bits;
-        backend = reinterpret_cast<SaveBackend*>(output->backend);
-    } else if (task.frame.width != output->width
-               || task.frame.height != output->height
-               || task.frame.bits != output->bits) {
-        errorMessage = QStringLiteral("Frame format changed during recording for %1").arg(task.cameraId);
+        output.backend = newBackend.release();
+        output.width = task.frame.width;
+        output.height = task.frame.height;
+        output.bits = task.frame.bits;
+        backend = reinterpret_cast<SaveBackend*>(output.backend);
+    } else if (task.frame.width != output.width
+               || task.frame.height != output.height
+               || task.frame.bits != output.bits) {
+        errorMessage = QStringLiteral("Frame format changed during recording for %1").arg(output.cameraId);
         return false;
     }
 
     if (!backend->appendRaw(reinterpret_cast<const uchar*>(task.frame.rawData.constData()),
                             task.frame.rawData.size(),
-                            buildImageDescriptionJson(output->metadataFileName))) {
+                            buildImageDescriptionJson(output.metadataFileName))) {
         errorMessage = QStringLiteral("Failed writing raw frame for %1: %2")
-            .arg(task.cameraId)
+            .arg(output.cameraId)
             .arg(backend->lastError());
         return false;
     }
 
-    if (output->frameInfoFile.isOpen()) {
-        const QByteArray infoLine = buildFrameInfoLine(task.cameraId, task.frame);
-        if (output->frameInfoFile.write(infoLine) != infoLine.size()) {
-            errorMessage = QStringLiteral("Failed writing frame info for %1").arg(task.cameraId);
+    if (output.frameInfoFile.isOpen()) {
+        const QByteArray infoLine = buildFrameInfoLine(output.cameraId, task.frame);
+        if (output.frameInfoFile.write(infoLine) != infoLine.size()) {
+            errorMessage = QStringLiteral("Failed writing frame info for %1").arg(output.cameraId);
             return false;
         }
     }
@@ -987,24 +1013,53 @@ bool RecordingManager::enqueueFrame(const RecordingFrame& frame, const QString& 
     // Stop capture if the writer queue grows too large
     const size_t frameBytes = static_cast<size_t>(frame.rawData.size());
     qint64 pendingWriteBytes = 0;
+    std::shared_ptr<CameraOutput> output;
+    bool emitStatus = false;
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-        if (m_writerState.pendingWriteBytes + frameBytes > m_writerState.recordedMaxBytes) {
+        const auto it = m_writerState.cameraOutputs.constFind(cameraId);
+        if (it == m_writerState.cameraOutputs.constEnd() || !it.value()) {
+            if (m_writerState.writerError.isEmpty()) {
+                m_writerState.writerError = QStringLiteral("Missing output for %1").arg(cameraId);
+            }
+            m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
+            emitStatus = true;
+        } else if (m_writerState.pendingWriteBytes + frameBytes > m_writerState.recordedMaxBytes) {
             if (m_writerState.writerError.isEmpty()) {
                 m_writerState.writerError = QStringLiteral("Recording write queue exceeded limit");
             }
             m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
-            qWarning().noquote() << "Recording write queue full, stopping capture";
+            emitStatus = true;
+        } else {
+            output = it.value();
+            m_writerState.pendingWriteBytes += frameBytes;
+            pendingWriteBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
+        }
+    }
+    if (!output) {
+        if (emitStatus) {
+            qWarning().noquote() << "Recording write queue full or output missing, stopping capture";
             QMetaObject::invokeMethod(this, [this]() { stop(); }, Qt::QueuedConnection);
             emitWriterStatus();
+        }
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(output->queueMutex);
+        if (output->stopRequested) {
+            qint64 revertedPendingBytes = 0;
+            {
+                std::lock_guard<std::mutex> stateLock(m_writerState.writeMutex);
+                m_writerState.pendingWriteBytes -= frameBytes;
+                revertedPendingBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
+            }
+            emitBufferUsageChanged(revertedPendingBytes);
             return false;
         }
-        m_writerState.writeQueue.push_back(WriteTask{cameraId, frame});
-        m_writerState.pendingWriteBytes += frameBytes;
-        pendingWriteBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
+        output->writeQueue.push_back(WriteTask{frame});
     }
     emitBufferUsageChanged(pendingWriteBytes);
-    m_writerState.writeCondition.notify_one();
+    output->writeCondition.notify_one();
     emitWriterStatus();
     return true;
 }
