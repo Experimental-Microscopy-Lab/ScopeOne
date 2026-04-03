@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/Scopeone_Logo.svg" alt="ScopeOne logo" width="220">
+  <img src="resources/Scopeone_Logo.svg" alt="ScopeOne logo" width="400">
 </p>
 
 
