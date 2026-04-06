@@ -5,12 +5,14 @@
 #include <QStringList>
 #include <QWidget>
 
-namespace scopeone::core { class ScopeOneCore; }
+namespace scopeone::core
+{
+    class ScopeOneCore;
+}
 
 class QAction;
 class QCheckBox;
 class QComboBox;
-class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
@@ -19,153 +21,153 @@ class QPushButton;
 class QSpinBox;
 class QToolButton;
 
-namespace scopeone::ui {
-
-class PreviewWidget;
-
-class DeviceControlWidget : public QWidget
+namespace scopeone::ui
 {
-    Q_OBJECT
+    class PreviewWidget;
 
-public:
-    explicit DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
-    ~DeviceControlWidget() override = default;
+    class DeviceControlWidget : public QWidget
+    {
+        Q_OBJECT
 
-    void setControlTargets(const QStringList& cameraIds);
+    public:
+        explicit DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
+        ~DeviceControlWidget() override = default;
 
-    bool acceptsCameraStream(const QString& cameraId) const;
+        void setControlTargets(const QStringList& cameraIds);
 
-    void setPreviewWidget(PreviewWidget* previewWidget);
+        bool acceptsCameraStream(const QString& cameraId) const;
 
-    void setControlTargetEnabled(bool enabled);
+        void setPreviewWidget(PreviewWidget* previewWidget);
 
-    void refreshStageDevices();
+        void setControlTargetEnabled(bool enabled);
 
-    void onCameraInitialized(bool initialized);
+        void refreshStageDevices();
 
-    void setPreviewRunning(bool running);
+        void onCameraInitialized(bool initialized);
 
-signals:
-    void startPreviewRequested();
+        void setPreviewRunning(bool running);
 
-    void stopPreviewRequested();
+        signals :
 
-    void exposureValueChanged(double exposureMs);
-    void controlTargetChanged(const QString& target);
+        void startPreviewRequested();
 
-    void requestDrawROI(const QString& cameraId);
-    void requestClearROI(const QString& cameraId);
+        void stopPreviewRequested();
 
-private:
-    void onExposureChanged();
-    void onPreviewToggleClicked();
+        void exposureValueChanged(double exposureMs);
+        void controlTargetChanged(const QString& target);
 
-    void onControlTargetSelectionChanged(const QString& target);
+        void requestDrawROI(const QString& cameraId);
+        void requestClearROI(const QString& cameraId);
 
-    void onDrawROIClicked();
+    private:
+        void onExposureChanged();
+        void onPreviewToggleClicked();
 
-    void onClearROIClicked();
+        void onControlTargetSelectionChanged(const QString& target);
 
-    QWidget* createPreviewControlsGroup();
-    void updatePreviewZoomControls();
-    void rebuildPreviewStreamMenu(const QStringList& cameraIds);
-    void populatePreviewStreamMenuHeader();
-    void updatePreviewSelectionFromActions();
-    void applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview);
-    void setPreviewStreamActionStates(const QString& selectedPrefix, bool checkedWhenPrefixEmpty);
-    void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
-    void syncPreviewStreamLayoutCombo(int index);
-    void onPreviewInfoTextChanged(const QString& text);
+        void onDrawROIClicked();
 
-    void onPreviewZoomSpinBoxChanged(int value);
-    void onPreviewFitToWindowToggled(bool enabled);
-    void onPreviewStreamLayoutComboChanged(int index);
-    void onPreviewOverlayAlphaChanged(int value);
-    void onPreviewStreamActionToggled(bool checked);
-    void onSelectAllPreviewStreams();
-    void onClearPreviewSelection();
-    void onSelectAllPreviewRaw();
-    void onSelectAllPreviewProcessed();
-    void onAlignCameraChanged(const QString& cameraId);
-    void onAlignXChanged(int x);
-    void onAlignYChanged(int y);
-    void onAlignZoomChanged(int percent);
-    void onAlignFlipXChanged(bool enabled);
-    void onAlignFlipYChanged(bool enabled);
-    void onAlignResetClicked();
+        void onClearROIClicked();
 
-    void setupUI();
+        QWidget* createPreviewControlsGroup();
+        void updatePreviewZoomControls();
+        void rebuildPreviewStreamMenu(const QStringList& cameraIds);
+        void populatePreviewStreamMenuHeader();
+        void updatePreviewSelectionFromActions();
+        void applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview);
+        void setPreviewStreamActionStates(const QString& selectedPrefix, bool checkedWhenPrefixEmpty);
+        void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
+        void syncPreviewStreamLayoutCombo(int index);
+        void onPreviewInfoTextChanged(const QString& text);
 
-    QWidget* createControlGroup();
+        void onPreviewZoomSpinBoxChanged(int value);
+        void onPreviewFitToWindowToggled(bool enabled);
+        void onPreviewStreamLayoutComboChanged(int index);
+        void onPreviewOverlayAlphaChanged(int value);
+        void onPreviewStreamActionToggled(bool checked);
+        void onSelectAllPreviewStreams();
+        void onClearPreviewSelection();
+        void onSelectAllPreviewRaw();
+        void onSelectAllPreviewProcessed();
+        void onAlignCameraChanged(const QString& cameraId);
+        void onAlignXChanged(int x);
+        void onAlignYChanged(int y);
+        void onAlignZoomChanged(int percent);
+        void onAlignFlipXChanged(bool enabled);
+        void onAlignFlipYChanged(bool enabled);
+        void onAlignResetClicked();
 
-    void updateControlsState();
+        void setupUI();
 
-    void updateCameraParametersFromHardware();
-    bool isAllTarget(const QString& target) const;
-    scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-    QGroupBox* m_previewControlsGroup{nullptr};
-    QLabel* m_zoomLabel{nullptr};
-    QSpinBox* m_zoomSpinBox{nullptr};
-    QCheckBox* m_fitToWindowCheckBox{nullptr};
-    QComboBox* m_streamLayoutCombo{nullptr};
-    QSpinBox* m_overlayAlphaSpinBox{nullptr};
-    QToolButton* m_streamPickerButton{nullptr};
-    QMenu* m_streamMenu{nullptr};
-    QMap<QString, QAction*> m_streamActions;
-    QLabel* m_alignLabel{nullptr};
-    QComboBox* m_alignCameraCombo{nullptr};
-    QLabel* m_alignXLabel{nullptr};
-    QSpinBox* m_alignXSpinBox{nullptr};
-    QLabel* m_alignYLabel{nullptr};
-    QSpinBox* m_alignYSpinBox{nullptr};
-    QLabel* m_alignZoomLabel{nullptr};
-    QSpinBox* m_alignZoomSpinBox{nullptr};
-    QCheckBox* m_alignFlipXCheckBox{nullptr};
-    QCheckBox* m_alignFlipYCheckBox{nullptr};
-    QPushButton* m_alignResetButton{nullptr};
-    QLabel* m_imageInfoLabel{nullptr};
-    PreviewWidget* m_previewWidget{nullptr};
+        QWidget* createControlGroup();
 
-    QLineEdit* m_exposureLineEdit{nullptr};
+        void updateControlsState();
 
-    QPushButton* m_previewToggleButton{nullptr};
-    QComboBox* m_cameraSelectCombo{nullptr};
-    QPushButton* m_drawROIButton{nullptr};
-    QPushButton* m_clearROIButton{nullptr};
+        void updateCameraParametersFromHardware();
+        bool isAllTarget(const QString& target) const;
+        scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        QGroupBox* m_previewControlsGroup{nullptr};
+        QLabel* m_zoomLabel{nullptr};
+        QSpinBox* m_zoomSpinBox{nullptr};
+        QCheckBox* m_fitToWindowCheckBox{nullptr};
+        QComboBox* m_streamLayoutCombo{nullptr};
+        QSpinBox* m_overlayAlphaSpinBox{nullptr};
+        QToolButton* m_streamPickerButton{nullptr};
+        QMenu* m_streamMenu{nullptr};
+        QMap<QString, QAction*> m_streamActions;
+        QLabel* m_alignLabel{nullptr};
+        QComboBox* m_alignCameraCombo{nullptr};
+        QLabel* m_alignXLabel{nullptr};
+        QSpinBox* m_alignXSpinBox{nullptr};
+        QLabel* m_alignYLabel{nullptr};
+        QSpinBox* m_alignYSpinBox{nullptr};
+        QLabel* m_alignZoomLabel{nullptr};
+        QSpinBox* m_alignZoomSpinBox{nullptr};
+        QCheckBox* m_alignFlipXCheckBox{nullptr};
+        QCheckBox* m_alignFlipYCheckBox{nullptr};
+        QPushButton* m_alignResetButton{nullptr};
+        QLabel* m_imageInfoLabel{nullptr};
+        PreviewWidget* m_previewWidget{nullptr};
 
-    QWidget* createStageGroup();
-    void updateStageControlsEnabled();
-    void updateStagePositions();
-    QString selectedXYStageLabel() const;
-    QString selectedZStageLabel() const;
-    void moveXYStage(double dx, double dy);
-    void moveZStage(double dz);
+        QLineEdit* m_exposureLineEdit{nullptr};
 
-    QComboBox* m_xyStageCombo{nullptr};
-    QComboBox* m_zStageCombo{nullptr};
-    QDoubleSpinBox* m_xyStepSpinBox{nullptr};
-    QDoubleSpinBox* m_xyBigStepSpinBox{nullptr};
-    QDoubleSpinBox* m_zStepSpinBox{nullptr};
-    QDoubleSpinBox* m_zBigStepSpinBox{nullptr};
-    QLabel* m_xPosLabel{nullptr};
-    QLabel* m_yPosLabel{nullptr};
-    QLabel* m_zPosLabel{nullptr};
-    QPushButton* m_xyUpButton{nullptr};
-    QPushButton* m_xyDownButton{nullptr};
-    QPushButton* m_xyLeftButton{nullptr};
-    QPushButton* m_xyRightButton{nullptr};
-    QPushButton* m_xyBigUpButton{nullptr};
-    QPushButton* m_xyBigDownButton{nullptr};
-    QPushButton* m_xyBigLeftButton{nullptr};
-    QPushButton* m_xyBigRightButton{nullptr};
-    QPushButton* m_zUpButton{nullptr};
-    QPushButton* m_zDownButton{nullptr};
-    QPushButton* m_zBigUpButton{nullptr};
-    QPushButton* m_zBigDownButton{nullptr};
+        QPushButton* m_previewToggleButton{nullptr};
+        QComboBox* m_cameraSelectCombo{nullptr};
+        QPushButton* m_drawROIButton{nullptr};
+        QPushButton* m_clearROIButton{nullptr};
 
-    bool m_cameraInitialized;
-    bool m_previewRunning;
-    QString m_currentTarget;
-};
+        QWidget* createStageGroup();
+        void updateStageControlsEnabled();
+        void updateStagePositions();
+        QString selectedXYStageLabel() const;
+        QString selectedZStageLabel() const;
+        void moveXYStage(double dx, double dy);
+        void moveZStage(double dz);
 
+        QComboBox* m_xyStageCombo{nullptr};
+        QComboBox* m_zStageCombo{nullptr};
+        QLineEdit* m_xyStepLineEdit{nullptr};
+        QLineEdit* m_xyBigStepLineEdit{nullptr};
+        QLineEdit* m_zStepLineEdit{nullptr};
+        QLineEdit* m_zBigStepLineEdit{nullptr};
+        QLabel* m_xPosLabel{nullptr};
+        QLabel* m_yPosLabel{nullptr};
+        QLabel* m_zPosLabel{nullptr};
+        QPushButton* m_xyUpButton{nullptr};
+        QPushButton* m_xyDownButton{nullptr};
+        QPushButton* m_xyLeftButton{nullptr};
+        QPushButton* m_xyRightButton{nullptr};
+        QPushButton* m_xyBigUpButton{nullptr};
+        QPushButton* m_xyBigDownButton{nullptr};
+        QPushButton* m_xyBigLeftButton{nullptr};
+        QPushButton* m_xyBigRightButton{nullptr};
+        QPushButton* m_zUpButton{nullptr};
+        QPushButton* m_zDownButton{nullptr};
+        QPushButton* m_zBigUpButton{nullptr};
+        QPushButton* m_zBigDownButton{nullptr};
+
+        bool m_cameraInitialized;
+        bool m_previewRunning;
+        QString m_currentTarget;
+    };
 }

@@ -5,10 +5,13 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleValidator>
 #include <QDoubleSpinBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIntValidator>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollBar>
@@ -290,12 +293,26 @@ namespace scopeone::ui
                 {
                     QLineEdit* lineEdit = new QLineEdit();
                     lineEdit->setText(value);
+                    if (isInteger)
+                    {
+                        auto* validator = new QIntValidator(lineEdit);
+                        validator->setLocale(QLocale::c());
+                        lineEdit->setValidator(validator);
+                    }
+                    else
+                    {
+                        auto* validator = new QDoubleValidator(lineEdit);
+                        validator->setLocale(QLocale::c());
+                        validator->setNotation(QDoubleValidator::StandardNotation);
+                        validator->setDecimals(16);
+                        lineEdit->setValidator(validator);
+                    }
 
                     connect(lineEdit, &QLineEdit::editingFinished, this,
                             [this, lineEdit, deviceLabel, propertyName]()
                             {
                                 QString error;
-                                const QString newValue = lineEdit->text();
+                                const QString newValue = lineEdit->text().trimmed();
                                 if (!m_scopeonecore->setPropertyValue(deviceLabel, propertyName, newValue, &error))
                                 {
                                     emit errorOccurred(QString("Failed to set property %1.%2: %3")
