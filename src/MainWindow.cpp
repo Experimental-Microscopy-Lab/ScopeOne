@@ -113,15 +113,11 @@ namespace scopeone::ui
                     {
                         return;
                     }
-                    m_previewWidget->setChannelRaw(frame);
-                    if (m_scopeonecore->isRealTimeProcessingEnabled())
-                    {
-                        m_scopeonecore->processFrameAsync(frame);
-                    }
+                    m_previewWidget->setRawFrame(frame);
                 }, Qt::QueuedConnection);
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
-                m_previewWidget, &PreviewWidget::setProcessedChannelFrame);
+                m_previewWidget, &PreviewWidget::setProcessedFrame);
     }
 
     void MainWindow::setupDeviceControlSignalWiring()
@@ -208,7 +204,7 @@ namespace scopeone::ui
         if (m_previewWidget && m_inspectWidget)
         {
             connect(m_inspectWidget, &InspectWidget::displayRangeChanged,
-                    m_previewWidget, &PreviewWidget::setChannelDisplayLevels);
+                    m_previewWidget, &PreviewWidget::setStreamDisplayLevels);
         }
 
         connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
@@ -239,37 +235,37 @@ namespace scopeone::ui
         connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStarted,
                 this, [this]()
                 {
-                    QStringList selectedChannels = m_previewWidget->selectedChannels();
-                    const QStringList availableChannels = m_previewWidget->availableChannels();
+                    QStringList selectedStreams = m_previewWidget->selectedStreams();
+                    const QStringList availableCameraIds = m_previewWidget->availableCameraIds();
 
-                    for (const QString& channel : std::as_const(selectedChannels))
+                    for (const QString& streamKey : std::as_const(selectedStreams))
                     {
-                        if (!channel.startsWith(QStringLiteral("raw:")))
+                        if (!streamKey.startsWith(QStringLiteral("raw:")))
                         {
                             continue;
                         }
-                        const QString cameraId = channel.mid(4);
-                        if (cameraId.isEmpty() || !availableChannels.contains(cameraId))
+                        const QString cameraId = streamKey.mid(4);
+                        if (cameraId.isEmpty() || !availableCameraIds.contains(cameraId))
                         {
                             continue;
                         }
-                        const QString processedChannel = QStringLiteral("proc:%1").arg(cameraId);
-                        if (!selectedChannels.contains(processedChannel))
+                        const QString processedStream = QStringLiteral("proc:%1").arg(cameraId);
+                        if (!selectedStreams.contains(processedStream))
                         {
-                            selectedChannels.append(processedChannel);
+                            selectedStreams.append(processedStream);
                         }
                     }
 
-                    if (selectedChannels.isEmpty())
+                    if (selectedStreams.isEmpty())
                     {
-                        for (const QString& cameraId : availableChannels)
+                        for (const QString& cameraId : availableCameraIds)
                         {
-                            selectedChannels.append(QStringLiteral("proc:%1").arg(cameraId));
+                            selectedStreams.append(QStringLiteral("proc:%1").arg(cameraId));
                         }
                     }
 
-                    m_previewWidget->setSelectedChannels(selectedChannels);
-                    m_previewWidget->setChannelMode(PreviewWidget::ChannelMode::SideBySide);
+                    m_previewWidget->setSelectedStreams(selectedStreams);
+        m_previewWidget->setStreamLayoutMode(PreviewWidget::StreamLayoutMode::SideBySide);
                 });
     }
 
@@ -461,7 +457,7 @@ namespace scopeone::ui
         }
         m_currentControlTarget = normalizedTarget;
 
-        if (!m_previewWidget || !m_deviceControlWidget)
+        if (!m_previewWidget)
         {
             return;
         }
@@ -469,16 +465,16 @@ namespace scopeone::ui
         const QStringList cameraIds = m_scopeonecore->cameraIds();
         if (normalizedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            QStringList selectedChannels;
+            QStringList selectedStreams;
             for (const QString& id : cameraIds)
             {
-                selectedChannels << (QStringLiteral("raw:") + id);
+                selectedStreams << (QStringLiteral("raw:") + id);
             }
-            m_deviceControlWidget->setPreviewSelectedChannels(selectedChannels);
+            m_previewWidget->setSelectedStreams(selectedStreams);
             return;
         }
 
-        m_deviceControlWidget->setPreviewSelectedChannels({QStringLiteral("raw:") + normalizedTarget});
+        m_previewWidget->setSelectedStreams({QStringLiteral("raw:") + normalizedTarget});
 
         // Keep only one live preview
         for (const QString& id : cameraIds)
@@ -488,25 +484,9 @@ namespace scopeone::ui
                 continue;
             }
             m_scopeonecore->stopPreview(id);
-            m_previewWidget->clearChannel(id);
+            m_previewWidget->clearCameraFrames(id);
         }
 
-        clearPreviewCompositionChannels();
-    }
-
-    void MainWindow::clearPreviewCompositionChannels()
-    {
-        if (!m_previewWidget)
-        {
-            return;
-        }
-
-        m_previewWidget->clearChannel(QStringLiteral("left"));
-        m_previewWidget->clearChannel(QStringLiteral("right"));
-        m_previewWidget->clearChannel(QStringLiteral("base"));
-        m_previewWidget->clearChannel(QStringLiteral("top"));
-        m_previewWidget->clearChannel(QStringLiteral("composed"));
-        m_previewWidget->clearChannel(QStringLiteral("single"));
     }
 
     void MainWindow::updateDockWidgetMenu()
@@ -551,12 +531,12 @@ namespace scopeone::ui
 
         if (m_previewWidget)
         {
-            m_previewWidget->setAvailableChannels(cameraIds);
+            m_previewWidget->setAvailableCameraIds(cameraIds);
         }
 
-        if (m_deviceControlWidget && !cameraIds.isEmpty())
+        if (m_previewWidget && !cameraIds.isEmpty())
         {
-            m_deviceControlWidget->setPreviewSelectedChannels({QStringLiteral("raw:") + cameraIds.first()});
+            m_previewWidget->setSelectedStreams({QStringLiteral("raw:") + cameraIds.first()});
         }
 
         if (m_recordingWidget)
@@ -571,9 +551,9 @@ namespace scopeone::ui
         {
             for (const QString& id : cameraIds)
             {
-                m_previewWidget->clearChannel(id);
+                m_previewWidget->clearCameraFrames(id);
             }
-            m_previewWidget->setAvailableChannels({});
+            m_previewWidget->setAvailableCameraIds({});
             m_previewWidget->clearLine();
         }
         if (m_deviceControlWidget)

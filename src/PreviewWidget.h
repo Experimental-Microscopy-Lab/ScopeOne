@@ -27,35 +27,35 @@ class PreviewWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
     Q_OBJECT
 public:
-    enum class ChannelMode { SideBySide, Overlay };
+    enum class StreamLayoutMode { SideBySide, Overlay };
 
     explicit PreviewWidget(QWidget* parent = nullptr);
     ~PreviewWidget() override;
 
-    void setProcessedChannelFrame(const QString& channelId, const scopeone::core::ImageFrame& frame);
-    void setChannelRaw(const scopeone::core::ImageFrame& frame);
-    void setChannelMode(ChannelMode mode);
+    void setProcessedFrame(const QString& cameraId, const scopeone::core::ImageFrame& frame);
+    void setRawFrame(const scopeone::core::ImageFrame& frame);
+    void setStreamLayoutMode(StreamLayoutMode mode);
     void setOverlayAlphaPercent(int percent);
     int overlayAlphaPercent() const;
-    ChannelMode channelMode() const;
-    void setAvailableChannels(const QStringList& channelIds);
-    void setSelectedChannels(const QStringList& channelIds);
-    QStringList availableChannels() const;
-    QStringList selectedChannels() const;
+    StreamLayoutMode streamLayoutMode() const;
+    void setAvailableCameraIds(const QStringList& cameraIds);
+    void setSelectedStreams(const QStringList& streamKeys);
+    QStringList availableCameraIds() const;
+    QStringList selectedStreams() const;
     QString cameraInfoText() const;
-    void clearChannel(const QString& cameraId);
-    void setZoomLevel(int zoomPercent);
-    int getZoomLevel() const;
+    void clearCameraFrames(const QString& cameraId);
+    void setZoomPercent(int percent);
+    int zoomPercent() const;
     void setFitToWindow(bool enabled);
     bool isFitToWindow() const;
-    void setChannelDisplayLevels(const QString& cameraId,
-                                 bool processed,
-                                 int minLevel,
-                                 int maxLevel,
-                                 int maxPossible);
-    void setChannelOffset(const QString& cameraId, int offsetX, int offsetY);
-    void setChannelFlip(const QString& cameraId, bool flipX, bool flipY);
-    void setChannelZoomPercent(const QString& cameraId, int percent);
+    void setStreamDisplayLevels(const QString& cameraId,
+                                bool processed,
+                                int minLevel,
+                                int maxLevel,
+                                int maxPossible);
+    void setCameraOffset(const QString& cameraId, int offsetX, int offsetY);
+    void setCameraFlip(const QString& cameraId, bool flipX, bool flipY);
+    void setCameraZoomPercent(const QString& cameraId, int percent);
 
     void startROIDrawing(const QString& cameraId);
     void startLineDrawing(const QString& cameraId = QString());
@@ -75,9 +75,9 @@ public:
                        int& outValue) const;
 
 signals:
-    void availableChannelsChanged(const QStringList& channelIds);
-    void selectedChannelsChanged(const QStringList& channelIds);
-    void channelModeChanged(ChannelMode mode);
+    void availableCameraIdsChanged(const QStringList& cameraIds);
+    void selectedStreamsChanged(const QStringList& streamKeys);
+    void streamLayoutModeChanged(StreamLayoutMode mode);
     void cameraInfoTextChanged(const QString& text);
     void zoomLevelChanged(int zoomPercent);
     void fitToWindowChanged(bool enabled);
@@ -109,7 +109,7 @@ private:
         int height{0};
         double fps{0.0};
     };
-    struct ChannelTex {
+    struct CameraFrameState {
         scopeone::core::ImageFrame processedFrame;
         scopeone::core::ImageFrame rawFrame;
         int rawLevelMin{0};
@@ -125,30 +125,30 @@ private:
         int zoomPercent{100};
     };
 
-    struct ChannelInfo {
-        QString id;
-        const ChannelTex* ch{nullptr};
-        bool hasImage{false};
-        bool hasRaw{false};
+    struct CameraRenderInfo {
+        QString cameraId;
+        const CameraFrameState* frameState{nullptr};
+        bool hasProcessedFrame{false};
+        bool hasRawFrame{false};
     };
 
     struct StreamItem {
-        const ChannelInfo* info{nullptr};
+        const CameraRenderInfo* info{nullptr};
         bool processed{false};
     };
 
     struct RenderItem {
-        const ChannelInfo* info{nullptr};
+        const CameraRenderInfo* info{nullptr};
         bool processed{false};
         QRect area;
         float alpha{1.0f};
     };
 
 private:
-    QStringList m_availableChannels;
-    QSet<QString> m_selectedChannels;
+    QStringList m_availableCameraIds;
+    QSet<QString> m_selectedStreams;
     int m_overlayAlphaPercent{50};
-    ChannelMode m_channelMode{ChannelMode::SideBySide};
+    StreamLayoutMode m_streamLayoutMode{StreamLayoutMode::SideBySide};
     QMap<QString, CameraInfo> m_cameraInfos;
     QString m_cameraInfoText{QStringLiteral("No image loaded")};
     QElapsedTimer m_fpsTimer;
@@ -156,7 +156,7 @@ private:
     double m_lastFps{0.0};
 
     mutable QMutex m_mutex;
-    QMap<QString, ChannelTex> m_channels;
+    QMap<QString, CameraFrameState> m_cameraFrames;
     int m_zoomPercent{100};
     bool m_fitToWindow{true};
     QPoint m_viewOffset;
@@ -193,18 +193,21 @@ private:
     void updateImageDisplay();
     void updateFpsOnFrame();
     void updateCameraInfoDisplay();
-    void setZoomPercent(int percent);
+    bool registerAvailableCamera(const QString& cameraId);
     void setPlaceholderText(const QString& text);
-    bool hasRawDisplay(const ChannelTex& ch) const;
-    QSize rawDisplaySize(const ChannelTex& ch) const;
-    QMap<QString, ChannelTex> snapshotChannels() const;
-    std::vector<ChannelInfo> buildChannelInfos(const QMap<QString, ChannelTex>& channels) const;
-    bool resolveDisplayGeometry(const ChannelTex& ch,
+    bool hasRawFrame(const CameraFrameState& frameState) const;
+    QSize rawFrameSize(const CameraFrameState& frameState) const;
+    QMap<QString, CameraFrameState> snapshotCameraFrames() const;
+    std::vector<CameraRenderInfo> buildCameraRenderInfos(const QMap<QString, CameraFrameState>& cameraFrames) const;
+    void buildRenderSnapshot(QMap<QString, CameraFrameState>& cameraFrames,
+                             std::vector<CameraRenderInfo>& cameraRenderInfos,
+                             std::vector<RenderItem>& renderItems) const;
+    bool resolveDisplayGeometry(const CameraFrameState& frameState,
                                 bool processed,
                                 const QRect& area,
                                 QRect& displayRect,
                                 QSize& imageSize) const;
-    bool mapWidgetPositionToImage(const ChannelTex& ch,
+    bool mapWidgetPositionToImage(const CameraFrameState& frameState,
                                   bool processed,
                                   const QRect& area,
                                   const QPoint& widgetPos,
@@ -212,7 +215,7 @@ private:
     void paintPlaceholder(const QString& text);
     void drawRenderItem(const RenderItem& item);
     void ensureGlPipeline();
-    void drawRawInRect(const QString& cameraId, const ChannelTex& ch, const QRect& r, float alpha);
+    void drawRawInRect(const QString& cameraId, const CameraFrameState& frameState, const QRect& r, float alpha);
     void drawFrameInRect(const QString& textureKey,
                          const scopeone::core::ImageFrame& frame,
                          const QRect& r,
@@ -222,12 +225,12 @@ private:
                          int levelMin,
                          int levelMax,
                          int levelDomainMax);
-    QRect targetRectForRaw(const ChannelTex& ch, const QRect& avail) const;
-    QRect targetRectForFrame(const scopeone::core::ImageFrame& frame, const ChannelTex& ch, const QRect& avail) const;
+    QRect targetRectForRaw(const CameraFrameState& frameState, const QRect& avail) const;
+    QRect targetRectForFrame(const scopeone::core::ImageFrame& frame, const CameraFrameState& frameState, const QRect& avail) const;
     void setUvTransform(bool flipX, bool flipY);
     void applyViewportForRect(const QRect& logicalRect);
     std::vector<QRect> computeLayout(int count) const;
-    std::vector<RenderItem> buildRenderItems(const std::vector<ChannelInfo>& allChannels) const;
+    std::vector<RenderItem> buildRenderItems(const std::vector<CameraRenderInfo>& cameraRenderInfos) const;
     bool locateRenderTarget(const QPoint& widgetPos,
                             QString& cameraId,
                             bool& processed,

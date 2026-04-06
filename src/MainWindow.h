@@ -51,7 +51,6 @@ private:
 
     void closeLoadConfigProgress();
     void updateControlTarget(const QString& target);
-    void clearPreviewCompositionChannels();
     void updateDockWidgetMenu();
     void applyLoadedCameraState(const QStringList& cameraIds);
     void applyUnloadedCameraState(const QStringList& cameraIds);

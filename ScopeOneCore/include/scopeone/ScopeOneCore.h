@@ -541,7 +541,6 @@ namespace scopeone::core
         bool resetProcessingModuleState(int index);
 
 
-        void setRecordingAvailableCameras(const QStringList& cameraIds);
         void setRecordingMaxPendingWriteBytes(qint64 bytes);
         qint64 recordingMaxPendingWriteBytes() const;
         bool startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds);
@@ -602,6 +601,8 @@ namespace scopeone::core
         bool getLatestRawTransport(const QString& cameraId,
                                    SharedFrameHeader& header,
                                    QByteArray& data) const;
+        void handleIncomingRawFrame(const ImageFrame& frame,
+                                    const SharedFrameHeader& header);
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);
@@ -621,6 +622,8 @@ namespace scopeone::core
         std::unique_ptr<Managers> m_managers;
         QStringList m_cameraIds;
         ActiveLineProfile m_activeLineProfile;
+        QHash<QString, SharedFrameHeader> m_latestRawHeaders;
+        QHash<QString, ImageFrame> m_latestRawFrames;
         QHash<QString, ImageFrame> m_latestProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;
         QHash<QString, HistogramStats> m_latestHistogramStats;

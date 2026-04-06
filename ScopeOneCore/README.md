@@ -92,7 +92,6 @@ When `SCOPEONE_BUILD_PYTHON_BINDINGS=ON`:
 - `removeProcessingModule(...)`
 - `setProcessingModuleParameters(...)`
 - `resetProcessingModuleState(...)`
-- `setRecordingAvailableCameras(...)`
 - `setRecordingMaxPendingWriteBytes(...)`
 - `recordingMaxPendingWriteBytes()`
 - `startRecording(...)`

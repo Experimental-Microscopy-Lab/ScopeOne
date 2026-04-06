@@ -27,15 +27,15 @@ namespace scopeone::ui {
 
 namespace {
 
-int channelModeComboIndex(PreviewWidget::ChannelMode mode)
+int streamLayoutComboIndex(PreviewWidget::StreamLayoutMode mode)
 {
-    return mode == PreviewWidget::ChannelMode::Overlay ? 1 : 0;
+    return mode == PreviewWidget::StreamLayoutMode::Overlay ? 1 : 0;
 }
 
-PreviewWidget::ChannelMode channelModeFromComboIndex(int index)
+PreviewWidget::StreamLayoutMode streamLayoutModeFromComboIndex(int index)
 {
-    return index == 1 ? PreviewWidget::ChannelMode::Overlay
-                      : PreviewWidget::ChannelMode::SideBySide;
+    return index == 1 ? PreviewWidget::StreamLayoutMode::Overlay
+                      : PreviewWidget::StreamLayoutMode::SideBySide;
 }
 
 } // namespace
@@ -102,13 +102,15 @@ void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
         return;
     }
 
-    connect(m_previewWidget, &PreviewWidget::availableChannelsChanged,
-            this, &DeviceControlWidget::onPreviewAvailableChannelsChanged);
-    connect(m_previewWidget, &PreviewWidget::selectedChannelsChanged,
-            this, &DeviceControlWidget::onPreviewSelectedChannelsChanged);
-    connect(m_previewWidget, &PreviewWidget::channelModeChanged,
-            this, [this](PreviewWidget::ChannelMode mode) {
-                syncPreviewChannelModeCombo(channelModeComboIndex(mode));
+    connect(m_previewWidget, &PreviewWidget::availableCameraIdsChanged,
+            this, &DeviceControlWidget::onPreviewAvailableCameraIdsChanged);
+    connect(m_previewWidget, &PreviewWidget::selectedStreamsChanged,
+            this, [this](const QStringList& streamKeys) {
+                applyPreviewSelection(streamKeys, false);
+            });
+    connect(m_previewWidget, &PreviewWidget::streamLayoutModeChanged,
+            this, [this](PreviewWidget::StreamLayoutMode mode) {
+                syncPreviewStreamLayoutCombo(streamLayoutComboIndex(mode));
             });
     connect(m_previewWidget, &PreviewWidget::cameraInfoTextChanged,
             this, &DeviceControlWidget::onPreviewInfoTextChanged);
@@ -128,14 +130,14 @@ void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
                 updatePreviewZoomControls();
             });
 
-    onPreviewAvailableChannelsChanged(m_previewWidget->availableChannels());
-    onPreviewSelectedChannelsChanged(m_previewWidget->selectedChannels());
-    syncPreviewChannelModeCombo(channelModeComboIndex(m_previewWidget->channelMode()));
+    onPreviewAvailableCameraIdsChanged(m_previewWidget->availableCameraIds());
+    applyPreviewSelection(m_previewWidget->selectedStreams(), false);
+    syncPreviewStreamLayoutCombo(streamLayoutComboIndex(m_previewWidget->streamLayoutMode()));
     onPreviewInfoTextChanged(m_previewWidget->cameraInfoText());
 
     if (m_zoomSpinBox) {
         QSignalBlocker blocker(m_zoomSpinBox);
-        m_zoomSpinBox->setValue(m_previewWidget->getZoomLevel());
+        m_zoomSpinBox->setValue(m_previewWidget->zoomPercent());
     }
     if (m_fitToWindowCheckBox) {
         QSignalBlocker blocker(m_fitToWindowCheckBox);
@@ -146,11 +148,6 @@ void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
         m_overlayAlphaSpinBox->setValue(m_previewWidget->overlayAlphaPercent());
     }
     updatePreviewZoomControls();
-}
-
-void DeviceControlWidget::setPreviewSelectedChannels(const QStringList& channelIds)
-{
-    applyPreviewSelection(channelIds, true);
 }
 
 QWidget* DeviceControlWidget::createPreviewControlsGroup()
@@ -171,9 +168,9 @@ QWidget* DeviceControlWidget::createPreviewControlsGroup()
     m_fitToWindowCheckBox = new QCheckBox("Fit to Window", this);
     m_fitToWindowCheckBox->setChecked(true);
 
-    m_channelModeCombo = new QComboBox(this);
-    m_channelModeCombo->addItem("Side-by-side");
-    m_channelModeCombo->addItem("Overlay");
+    m_streamLayoutCombo = new QComboBox(this);
+    m_streamLayoutCombo->addItem("Side-by-side");
+    m_streamLayoutCombo->addItem("Overlay");
 
     m_overlayAlphaSpinBox = new QSpinBox(this);
     m_overlayAlphaSpinBox->setRange(0, 100);
@@ -181,12 +178,12 @@ QWidget* DeviceControlWidget::createPreviewControlsGroup()
     m_overlayAlphaSpinBox->setSuffix("%");
     m_overlayAlphaSpinBox->setMinimumWidth(60);
 
-    m_channelPickerButton = new QToolButton(this);
-    m_channelPickerButton->setText("Select");
-    m_channelPickerButton->setPopupMode(QToolButton::InstantPopup);
-    m_channelMenu = new QMenu(this);
-    populatePreviewChannelMenuHeader();
-    m_channelPickerButton->setMenu(m_channelMenu);
+    m_streamPickerButton = new QToolButton(this);
+    m_streamPickerButton->setText("Select");
+    m_streamPickerButton->setPopupMode(QToolButton::InstantPopup);
+    m_streamMenu = new QMenu(this);
+    populatePreviewStreamMenuHeader();
+    m_streamPickerButton->setMenu(m_streamMenu);
 
     m_alignLabel = new QLabel("Align:", this);
     m_alignCameraCombo = new QComboBox(this);
@@ -228,20 +225,20 @@ QWidget* DeviceControlWidget::createPreviewControlsGroup()
     m_alignYLabel->setMinimumWidth(20);
     m_alignZoomLabel->setMinimumWidth(60);
 
-    QLabel* channelsLabel = new QLabel("Channels:", this);
+    QLabel* streamsLabel = new QLabel("Streams:", this);
     QLabel* alphaLabel = new QLabel("Alpha:", this);
-    channelsLabel->setMinimumWidth(60);
+    streamsLabel->setMinimumWidth(60);
     alphaLabel->setMinimumWidth(60);
 
     controlLayout->addWidget(m_zoomLabel, 0, 0);
     controlLayout->addWidget(m_zoomSpinBox, 0, 1);
     controlLayout->addWidget(m_fitToWindowCheckBox, 0, 2, 1, 2);
 
-    controlLayout->addWidget(channelsLabel, 1, 0);
-    controlLayout->addWidget(m_channelModeCombo, 1, 1);
+    controlLayout->addWidget(streamsLabel, 1, 0);
+    controlLayout->addWidget(m_streamLayoutCombo, 1, 1);
     controlLayout->addWidget(alphaLabel, 1, 2);
     controlLayout->addWidget(m_overlayAlphaSpinBox, 1, 3);
-    controlLayout->addWidget(m_channelPickerButton, 1, 4);
+    controlLayout->addWidget(m_streamPickerButton, 1, 4);
 
     controlLayout->addWidget(m_alignLabel, 2, 0);
     controlLayout->addWidget(m_alignCameraCombo, 2, 1);
@@ -266,8 +263,8 @@ QWidget* DeviceControlWidget::createPreviewControlsGroup()
             this, &DeviceControlWidget::onPreviewZoomSpinBoxChanged);
     connect(m_fitToWindowCheckBox, &QCheckBox::toggled,
             this, &DeviceControlWidget::onPreviewFitToWindowToggled);
-    connect(m_channelModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &DeviceControlWidget::onPreviewChannelModeComboChanged);
+    connect(m_streamLayoutCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &DeviceControlWidget::onPreviewStreamLayoutComboChanged);
     connect(m_overlayAlphaSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &DeviceControlWidget::onPreviewOverlayAlphaChanged);
 
@@ -298,83 +295,83 @@ void DeviceControlWidget::updatePreviewZoomControls()
     m_zoomSpinBox->setEnabled(!m_fitToWindowCheckBox->isChecked());
 }
 
-void DeviceControlWidget::rebuildPreviewChannelMenu(const QStringList& channelIds)
+void DeviceControlWidget::rebuildPreviewStreamMenu(const QStringList& cameraIds)
 {
-    if (!m_channelMenu) {
+    if (!m_streamMenu) {
         return;
     }
 
-    m_channelMenu->clear();
-    m_channelActions.clear();
-    populatePreviewChannelMenuHeader();
+    m_streamMenu->clear();
+    m_streamActions.clear();
+    populatePreviewStreamMenuHeader();
 
-    for (const QString& id : channelIds) {
+    for (const QString& id : cameraIds) {
         QString keyRaw = QString("raw:%1").arg(id);
-        QAction* actRaw = new QAction(QString("%1 (Raw)").arg(id), m_channelMenu);
+        QAction* actRaw = new QAction(QString("%1 (Raw)").arg(id), m_streamMenu);
         actRaw->setCheckable(true);
         actRaw->setData(keyRaw);
-        connect(actRaw, &QAction::toggled, this, &DeviceControlWidget::onPreviewChannelActionToggled);
-        m_channelMenu->addAction(actRaw);
-        m_channelActions.insert(keyRaw, actRaw);
+        connect(actRaw, &QAction::toggled, this, &DeviceControlWidget::onPreviewStreamActionToggled);
+        m_streamMenu->addAction(actRaw);
+        m_streamActions.insert(keyRaw, actRaw);
 
         QString keyProc = QString("proc:%1").arg(id);
-        QAction* actProc = new QAction(QString("%1 (Processed)").arg(id), m_channelMenu);
+        QAction* actProc = new QAction(QString("%1 (Processed)").arg(id), m_streamMenu);
         actProc->setCheckable(true);
         actProc->setData(keyProc);
-        connect(actProc, &QAction::toggled, this, &DeviceControlWidget::onPreviewChannelActionToggled);
-        m_channelMenu->addAction(actProc);
-        m_channelActions.insert(keyProc, actProc);
+        connect(actProc, &QAction::toggled, this, &DeviceControlWidget::onPreviewStreamActionToggled);
+        m_streamMenu->addAction(actProc);
+        m_streamActions.insert(keyProc, actProc);
     }
 }
 
 void DeviceControlWidget::updatePreviewSelectionFromActions()
 {
-    QStringList selectedChannelIds;
-    for (auto it = m_channelActions.begin(); it != m_channelActions.end(); ++it) {
+    QStringList selectedStreamKeys;
+    for (auto it = m_streamActions.begin(); it != m_streamActions.end(); ++it) {
         if (it.value()->isChecked()) {
-            selectedChannelIds.append(it.key());
+            selectedStreamKeys.append(it.key());
         }
     }
 
     if (m_previewWidget) {
-        m_previewWidget->setSelectedChannels(selectedChannelIds);
+        m_previewWidget->setSelectedStreams(selectedStreamKeys);
     }
 }
 
-void DeviceControlWidget::populatePreviewChannelMenuHeader()
+void DeviceControlWidget::populatePreviewStreamMenuHeader()
 {
-    if (!m_channelMenu) {
+    if (!m_streamMenu) {
         return;
     }
 
-    QAction* selAllAct = m_channelMenu->addAction("Select All");
-    connect(selAllAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewChannels);
-    QAction* selAllRawAct = m_channelMenu->addAction("Select All Raw");
+    QAction* selAllAct = m_streamMenu->addAction("Select All");
+    connect(selAllAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewStreams);
+    QAction* selAllRawAct = m_streamMenu->addAction("Select All Raw");
     connect(selAllRawAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewRaw);
-    QAction* selAllProcAct = m_channelMenu->addAction("Select All Processed");
+    QAction* selAllProcAct = m_streamMenu->addAction("Select All Processed");
     connect(selAllProcAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewProcessed);
-    QAction* clrSelAct = m_channelMenu->addAction("Clear Selection");
+    QAction* clrSelAct = m_streamMenu->addAction("Clear Selection");
     connect(clrSelAct, &QAction::triggered, this, &DeviceControlWidget::onClearPreviewSelection);
-    m_channelMenu->addSeparator();
+    m_streamMenu->addSeparator();
 }
 
-void DeviceControlWidget::applyPreviewSelection(const QStringList& channelIds, bool notifyPreview)
+void DeviceControlWidget::applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview)
 {
-    const QSet<QString> selectedChannelIds(channelIds.begin(), channelIds.end());
-    for (auto it = m_channelActions.begin(); it != m_channelActions.end(); ++it) {
+    const QSet<QString> selectedStreamKeys(streamKeys.begin(), streamKeys.end());
+    for (auto it = m_streamActions.begin(); it != m_streamActions.end(); ++it) {
         QSignalBlocker blocker(it.value());
-        it.value()->setChecked(selectedChannelIds.contains(it.key()));
+        it.value()->setChecked(selectedStreamKeys.contains(it.key()));
     }
 
     if (notifyPreview && m_previewWidget) {
-        m_previewWidget->setSelectedChannels(channelIds);
+        m_previewWidget->setSelectedStreams(streamKeys);
     }
 }
 
-void DeviceControlWidget::setPreviewChannelActionStates(const QString& selectedPrefix,
-                                                        bool checkedWhenPrefixEmpty)
+void DeviceControlWidget::setPreviewStreamActionStates(const QString& selectedPrefix,
+                                                       bool checkedWhenPrefixEmpty)
 {
-    for (auto it = m_channelActions.begin(); it != m_channelActions.end(); ++it) {
+    for (auto it = m_streamActions.begin(); it != m_streamActions.end(); ++it) {
         const bool checked = selectedPrefix.isEmpty()
             ? checkedWhenPrefixEmpty
             : it.key().startsWith(selectedPrefix);
@@ -384,38 +381,33 @@ void DeviceControlWidget::setPreviewChannelActionStates(const QString& selectedP
     updatePreviewSelectionFromActions();
 }
 
-void DeviceControlWidget::onPreviewAvailableChannelsChanged(const QStringList& channelIds)
+void DeviceControlWidget::onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds)
 {
-    rebuildPreviewChannelMenu(channelIds);
+    rebuildPreviewStreamMenu(cameraIds);
 
     if (m_alignCameraCombo) {
         QString currentSelection = m_alignCameraCombo->currentText();
         QSignalBlocker blocker(m_alignCameraCombo);
         m_alignCameraCombo->clear();
-        m_alignCameraCombo->addItems(channelIds);
+        m_alignCameraCombo->addItems(cameraIds);
 
         int idx = m_alignCameraCombo->findText(currentSelection);
         if (idx >= 0) {
             m_alignCameraCombo->setCurrentIndex(idx);
-        } else if (!channelIds.isEmpty()) {
+        } else if (!cameraIds.isEmpty()) {
             m_alignCameraCombo->setCurrentIndex(0);
-            onAlignCameraChanged(channelIds.first());
+            onAlignCameraChanged(cameraIds.first());
         }
     }
 }
 
-void DeviceControlWidget::onPreviewSelectedChannelsChanged(const QStringList& channelIds)
+void DeviceControlWidget::syncPreviewStreamLayoutCombo(int index)
 {
-    applyPreviewSelection(channelIds, false);
-}
-
-void DeviceControlWidget::syncPreviewChannelModeCombo(int index)
-{
-    if (!m_channelModeCombo) {
+    if (!m_streamLayoutCombo) {
         return;
     }
-    QSignalBlocker blocker(m_channelModeCombo);
-    m_channelModeCombo->setCurrentIndex(index);
+    QSignalBlocker blocker(m_streamLayoutCombo);
+    m_streamLayoutCombo->setCurrentIndex(index);
 }
 
 void DeviceControlWidget::onPreviewInfoTextChanged(const QString& text)
@@ -428,7 +420,7 @@ void DeviceControlWidget::onPreviewInfoTextChanged(const QString& text)
 void DeviceControlWidget::onPreviewZoomSpinBoxChanged(int value)
 {
     if (m_previewWidget) {
-        m_previewWidget->setZoomLevel(value);
+        m_previewWidget->setZoomPercent(value);
     }
 }
 
@@ -440,10 +432,10 @@ void DeviceControlWidget::onPreviewFitToWindowToggled(bool enabled)
     updatePreviewZoomControls();
 }
 
-void DeviceControlWidget::onPreviewChannelModeComboChanged(int index)
+void DeviceControlWidget::onPreviewStreamLayoutComboChanged(int index)
 {
     if (m_previewWidget) {
-        m_previewWidget->setChannelMode(channelModeFromComboIndex(index));
+        m_previewWidget->setStreamLayoutMode(streamLayoutModeFromComboIndex(index));
     }
 }
 
@@ -454,29 +446,29 @@ void DeviceControlWidget::onPreviewOverlayAlphaChanged(int value)
     }
 }
 
-void DeviceControlWidget::onPreviewChannelActionToggled(bool)
+void DeviceControlWidget::onPreviewStreamActionToggled(bool)
 {
     updatePreviewSelectionFromActions();
 }
 
-void DeviceControlWidget::onSelectAllPreviewChannels()
+void DeviceControlWidget::onSelectAllPreviewStreams()
 {
-    setPreviewChannelActionStates(QString(), true);
+    setPreviewStreamActionStates(QString(), true);
 }
 
 void DeviceControlWidget::onClearPreviewSelection()
 {
-    setPreviewChannelActionStates(QString(), false);
+    setPreviewStreamActionStates(QString(), false);
 }
 
 void DeviceControlWidget::onSelectAllPreviewRaw()
 {
-    setPreviewChannelActionStates(QStringLiteral("raw:"), false);
+    setPreviewStreamActionStates(QStringLiteral("raw:"), false);
 }
 
 void DeviceControlWidget::onSelectAllPreviewProcessed()
 {
-    setPreviewChannelActionStates(QStringLiteral("proc:"), false);
+    setPreviewStreamActionStates(QStringLiteral("proc:"), false);
 }
 
 void DeviceControlWidget::onAlignCameraChanged(const QString& cameraId)
@@ -505,9 +497,9 @@ void DeviceControlWidget::onAlignCameraChanged(const QString& cameraId)
     }
 
     if (m_previewWidget) {
-        m_previewWidget->setChannelOffset(cameraId, 0, 0);
-        m_previewWidget->setChannelFlip(cameraId, false, false);
-        m_previewWidget->setChannelZoomPercent(cameraId, 100);
+        m_previewWidget->setCameraOffset(cameraId, 0, 0);
+        m_previewWidget->setCameraFlip(cameraId, false, false);
+        m_previewWidget->setCameraZoomPercent(cameraId, 100);
     }
 }
 
@@ -521,7 +513,7 @@ void DeviceControlWidget::onAlignXChanged(int x)
         return;
     }
     const int y = m_alignYSpinBox->value();
-    m_previewWidget->setChannelOffset(cameraId, x, y);
+    m_previewWidget->setCameraOffset(cameraId, x, y);
 }
 
 void DeviceControlWidget::onAlignYChanged(int y)
@@ -534,7 +526,7 @@ void DeviceControlWidget::onAlignYChanged(int y)
         return;
     }
     const int x = m_alignXSpinBox->value();
-    m_previewWidget->setChannelOffset(cameraId, x, y);
+    m_previewWidget->setCameraOffset(cameraId, x, y);
 }
 
 void DeviceControlWidget::onAlignZoomChanged(int percent)
@@ -546,7 +538,7 @@ void DeviceControlWidget::onAlignZoomChanged(int percent)
     if (cameraId.isEmpty()) {
         return;
     }
-    m_previewWidget->setChannelZoomPercent(cameraId, percent);
+    m_previewWidget->setCameraZoomPercent(cameraId, percent);
 }
 
 void DeviceControlWidget::onAlignFlipXChanged(bool enabled)
@@ -558,7 +550,7 @@ void DeviceControlWidget::onAlignFlipXChanged(bool enabled)
     if (cameraId.isEmpty()) {
         return;
     }
-    m_previewWidget->setChannelFlip(cameraId, enabled, m_alignFlipYCheckBox->isChecked());
+    m_previewWidget->setCameraFlip(cameraId, enabled, m_alignFlipYCheckBox->isChecked());
 }
 
 void DeviceControlWidget::onAlignFlipYChanged(bool enabled)
@@ -570,7 +562,7 @@ void DeviceControlWidget::onAlignFlipYChanged(bool enabled)
     if (cameraId.isEmpty()) {
         return;
     }
-    m_previewWidget->setChannelFlip(cameraId, m_alignFlipXCheckBox->isChecked(), enabled);
+    m_previewWidget->setCameraFlip(cameraId, m_alignFlipXCheckBox->isChecked(), enabled);
 }
 
 void DeviceControlWidget::onAlignResetClicked()
@@ -598,9 +590,9 @@ void DeviceControlWidget::onAlignResetClicked()
     }
 
     if (!cameraId.isEmpty() && m_previewWidget) {
-        m_previewWidget->setChannelOffset(cameraId, 0, 0);
-        m_previewWidget->setChannelFlip(cameraId, false, false);
-        m_previewWidget->setChannelZoomPercent(cameraId, 100);
+        m_previewWidget->setCameraOffset(cameraId, 0, 0);
+        m_previewWidget->setCameraFlip(cameraId, false, false);
+        m_previewWidget->setCameraZoomPercent(cameraId, 100);
     }
 }
 

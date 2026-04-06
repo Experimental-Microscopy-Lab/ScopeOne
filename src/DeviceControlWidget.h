@@ -36,7 +36,6 @@ public:
     bool acceptsCameraStream(const QString& cameraId) const;
 
     void setPreviewWidget(PreviewWidget* previewWidget);
-    void setPreviewSelectedChannels(const QStringList& channelIds);
 
     void setControlTargetEnabled(bool enabled);
 
@@ -69,22 +68,21 @@ private:
 
     QWidget* createPreviewControlsGroup();
     void updatePreviewZoomControls();
-    void rebuildPreviewChannelMenu(const QStringList& channelIds);
-    void populatePreviewChannelMenuHeader();
+    void rebuildPreviewStreamMenu(const QStringList& cameraIds);
+    void populatePreviewStreamMenuHeader();
     void updatePreviewSelectionFromActions();
-    void applyPreviewSelection(const QStringList& channelIds, bool notifyPreview);
-    void setPreviewChannelActionStates(const QString& selectedPrefix, bool checkedWhenPrefixEmpty);
-    void onPreviewAvailableChannelsChanged(const QStringList& channelIds);
-    void onPreviewSelectedChannelsChanged(const QStringList& channelIds);
-    void syncPreviewChannelModeCombo(int index);
+    void applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview);
+    void setPreviewStreamActionStates(const QString& selectedPrefix, bool checkedWhenPrefixEmpty);
+    void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
+    void syncPreviewStreamLayoutCombo(int index);
     void onPreviewInfoTextChanged(const QString& text);
 
     void onPreviewZoomSpinBoxChanged(int value);
     void onPreviewFitToWindowToggled(bool enabled);
-    void onPreviewChannelModeComboChanged(int index);
+    void onPreviewStreamLayoutComboChanged(int index);
     void onPreviewOverlayAlphaChanged(int value);
-    void onPreviewChannelActionToggled(bool checked);
-    void onSelectAllPreviewChannels();
+    void onPreviewStreamActionToggled(bool checked);
+    void onSelectAllPreviewStreams();
     void onClearPreviewSelection();
     void onSelectAllPreviewRaw();
     void onSelectAllPreviewProcessed();
@@ -109,11 +107,11 @@ private:
     QLabel* m_zoomLabel{nullptr};
     QSpinBox* m_zoomSpinBox{nullptr};
     QCheckBox* m_fitToWindowCheckBox{nullptr};
-    QComboBox* m_channelModeCombo{nullptr};
+    QComboBox* m_streamLayoutCombo{nullptr};
     QSpinBox* m_overlayAlphaSpinBox{nullptr};
-    QToolButton* m_channelPickerButton{nullptr};
-    QMenu* m_channelMenu{nullptr};
-    QMap<QString, QAction*> m_channelActions;
+    QToolButton* m_streamPickerButton{nullptr};
+    QMenu* m_streamMenu{nullptr};
+    QMap<QString, QAction*> m_streamActions;
     QLabel* m_alignLabel{nullptr};
     QComboBox* m_alignCameraCombo{nullptr};
     QLabel* m_alignXLabel{nullptr};

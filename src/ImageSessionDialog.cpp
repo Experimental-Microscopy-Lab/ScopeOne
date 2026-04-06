@@ -155,7 +155,7 @@ void ImageSessionDialog::setupUI()
     auto* contentRow = new QHBoxLayout();
     m_previewWidget = new PreviewWidget(this);
     m_previewWidget->setFitToWindow(true);
-    m_previewWidget->setZoomLevel(100);
+    m_previewWidget->setZoomPercent(100);
     contentRow->addWidget(m_previewWidget, 1);
 
     m_inspectWidget = new InspectWidget(nullptr, this);
@@ -206,7 +206,7 @@ void ImageSessionDialog::setupUI()
                     m_fitToWindowCheck->setChecked(false);
                 }
                 if (m_previewWidget) {
-                    m_previewWidget->setZoomLevel(value);
+                    m_previewWidget->setZoomPercent(value);
                 }
             });
     connect(m_previewWidget, &PreviewWidget::fitToWindowChanged, this,
@@ -229,11 +229,11 @@ void ImageSessionDialog::setupUI()
                 if (!m_previewWidget || cameraId.isEmpty()) {
                     return;
                 }
-                m_previewWidget->setChannelDisplayLevels(cameraId,
-                                                         processed,
-                                                         minLevel,
-                                                         maxLevel,
-                                                         maxDisplayValue);
+                m_previewWidget->setStreamDisplayLevels(cameraId,
+                                                        processed,
+                                                        minLevel,
+                                                        maxLevel,
+                                                        maxDisplayValue);
             });
     connect(m_saveButton, &QPushButton::clicked, this,
             [this]() {
@@ -322,7 +322,7 @@ void ImageSessionDialog::updateDisplayedFrame()
     const int frameCount = currentFrameCount();
     if (cameraId.isEmpty() || frameCount <= 0) {
         if (!m_lastPreviewCameraId.isEmpty()) {
-            m_previewWidget->clearChannel(m_lastPreviewCameraId);
+            m_previewWidget->clearCameraFrames(m_lastPreviewCameraId);
             m_lastPreviewCameraId.clear();
         }
         m_frameInfoLabel->setText(QStringLiteral("No image"));
@@ -351,7 +351,7 @@ void ImageSessionDialog::updateDisplayedFrame()
     }
 
     if (!m_lastPreviewCameraId.isEmpty()) {
-        m_previewWidget->clearChannel(m_lastPreviewCameraId);
+        m_previewWidget->clearCameraFrames(m_lastPreviewCameraId);
         m_lastPreviewCameraId.clear();
     }
     m_frameInfoLabel->setText(QStringLiteral("No image"));
@@ -413,12 +413,12 @@ void ImageSessionDialog::showPreviewFrame(const ImageFrame& frame)
     }
 
     if (!m_lastPreviewCameraId.isEmpty() && m_lastPreviewCameraId != frame.cameraId) {
-        m_previewWidget->clearChannel(m_lastPreviewCameraId);
+        m_previewWidget->clearCameraFrames(m_lastPreviewCameraId);
     }
 
-    m_previewWidget->setAvailableChannels({frame.cameraId});
-    m_previewWidget->setSelectedChannels({QStringLiteral("raw:%1").arg(frame.cameraId)});
-    m_previewWidget->setChannelRaw(frame);
+    m_previewWidget->setAvailableCameraIds({frame.cameraId});
+    m_previewWidget->setSelectedStreams({QStringLiteral("raw:%1").arg(frame.cameraId)});
+    m_previewWidget->setRawFrame(frame);
     m_lastPreviewCameraId = frame.cameraId;
     ScopeOneCore::HistogramStats stats;
     if (!ScopeOneCore::computeHistogramStats(frame, stats) || !stats.hasData()) {

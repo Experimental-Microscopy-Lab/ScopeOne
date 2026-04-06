@@ -576,7 +576,6 @@ void RecordingWidget::setupUI()
 void RecordingWidget::setAvailableCameras(const QStringList& cameraIds)
 {
     m_availableCameraIds = cameraIds;
-    m_scopeonecore->setRecordingAvailableCameras(cameraIds);
 
     QString current = m_detectorCombo->currentText();
     m_detectorCombo->blockSignals(true);

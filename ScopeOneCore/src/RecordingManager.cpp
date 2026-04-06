@@ -19,6 +19,7 @@
 namespace scopeone::core::internal {
 
 using scopeone::core::RecordingFormat;
+using scopeone::core::ImageFrame;
 using scopeone::core::SharedFrameHeader;
 using scopeone::core::SharedPixelFormat;
 using scopeone::core::kRecordingPhaseIdle;
@@ -928,12 +929,7 @@ void RecordingManager::primeLastFrameIndices()
     for (const QString& cameraId : m_captureState.activeCameraIds) {
         SharedFrameHeader header{};
         QByteArray rawData;
-        bool ok = false;
-        if (m_latestFrameFetcher) {
-            ok = m_latestFrameFetcher(cameraId, header, rawData);
-        } else if (m_mpcm) {
-            ok = m_mpcm->getLatestRaw(cameraId, header, rawData);
-        }
+        const bool ok = m_latestFrameFetcher && m_latestFrameFetcher(cameraId, header, rawData);
         if (ok) {
             m_captureState.lastFrameIndex[cameraId] = header.frameIndex;
         } else {
@@ -1170,6 +1166,10 @@ void RecordingManager::handleMdaFrame(const MDAOutput& frame)
             header.timestampNs = static_cast<quint64>(frame.timestampMs) * 1000000ull;
 
             ingestFrame(FramePacket{cameraId, header, camFrame.raw, FramePacket::Source::Mda});
+            const ImageFrame rawFrame = ImageFrame::fromSharedFrame(cameraId, header, camFrame.raw);
+            if (rawFrame.isValid()) {
+                emit mdaRawFrameReady(rawFrame, header);
+            }
         }
         return;
     }
@@ -1192,6 +1192,10 @@ void RecordingManager::handleMdaFrame(const MDAOutput& frame)
     header.timestampNs = static_cast<quint64>(frame.timestampMs) * 1000000ull;
 
     ingestFrame(FramePacket{m_mdaState.cameraId, header, frame.raw, FramePacket::Source::Mda});
+    const ImageFrame rawFrame = ImageFrame::fromSharedFrame(m_mdaState.cameraId, header, frame.raw);
+    if (rawFrame.isValid()) {
+        emit mdaRawFrameReady(rawFrame, header);
+    }
 }
 
 bool RecordingManager::startMdaCapture()

@@ -437,6 +437,7 @@ namespace scopeone::core
             "scopeone::core::ScopeOneCore::RecordingWriterStatus");
         qRegisterMetaType<scopeone::core::ScopeOneCore::HistogramStats>(
             "scopeone::core::ScopeOneCore::HistogramStats");
+        qRegisterMetaType<scopeone::core::SharedFrameHeader>("scopeone::core::SharedFrameHeader");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
         m_managers->mmcoreManager = new MMCoreManager(this);
         m_managers->mpcm = new MultiProcessCameraManager(this);
@@ -455,14 +456,7 @@ namespace scopeone::core
                              const SharedFrameHeader& header,
                              const QByteArray& rawData)
                 {
-                    const ImageFrame frame = ImageFrame::fromSharedFrame(cameraId, header, rawData);
-                    if (!frame.isValid())
-                    {
-                        return;
-                    }
-                    emit newRawFrameReady(frame);
-                    scheduleHistogramStats(cameraId, false, frame);
-                    updateLineProfile(cameraId, false, frame);
+                    handleIncomingRawFrame(ImageFrame::fromSharedFrame(cameraId, header, rawData), header);
                 });
         connect(m_managers->mpcm, &MultiProcessCameraManager::previewStateChanged,
                 this, &ScopeOneCore::previewStateChanged);
@@ -472,6 +466,8 @@ namespace scopeone::core
         connect(m_managers->mpcm, &MultiProcessCameraManager::newRawFrameReady,
                 m_managers->recordingManager, &RecordingManager::onNewRawFrameReady,
                 Qt::QueuedConnection);
+        connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
+                this, &ScopeOneCore::handleIncomingRawFrame, Qt::QueuedConnection);
 
         connect(m_managers->recordingManager, &RecordingManager::progressChanged,
                 this, &ScopeOneCore::recordingProgressChanged);
@@ -548,7 +544,6 @@ namespace scopeone::core
             *result = facadeResult;
         }
         m_cameraIds = facadeResult.cameraIds;
-        setRecordingAvailableCameras(m_cameraIds);
         return true;
     }
 
@@ -578,11 +573,12 @@ namespace scopeone::core
             }
         }
         m_cameraIds.clear();
+        m_latestRawHeaders.clear();
+        m_latestRawFrames.clear();
         m_latestProcessedFrames.clear();
         m_histogramJobStates.clear();
         m_latestHistogramStats.clear();
         clearLineProfile();
-        setRecordingAvailableCameras(QStringList{});
     }
 
     void ScopeOneCore::startPreview(const QString& cameraIdOrAll)
@@ -709,23 +705,74 @@ namespace scopeone::core
                                              SharedFrameHeader& header,
                                              QByteArray& data) const
     {
-        if (!m_managers || !m_managers->mpcm || cameraId.trimmed().isEmpty())
+        const QString trimmedCameraId = cameraId.trimmed();
+        if (trimmedCameraId.isEmpty())
         {
             return false;
         }
-        return m_managers->mpcm->getLatestRaw(cameraId, header, data);
+
+        const auto cachedFrame = m_latestRawFrames.constFind(trimmedCameraId);
+        const auto cachedHeader = m_latestRawHeaders.constFind(trimmedCameraId);
+        if (cachedFrame != m_latestRawFrames.constEnd()
+            && cachedHeader != m_latestRawHeaders.constEnd()
+            && cachedFrame.value().isValid())
+        {
+            header = cachedHeader.value();
+            data = cachedFrame.value().bytes;
+            return true;
+        }
+
+        if (!m_managers || !m_managers->mpcm)
+        {
+            return false;
+        }
+        return m_managers->mpcm->getLatestRaw(trimmedCameraId, header, data);
+    }
+
+    void ScopeOneCore::handleIncomingRawFrame(const ImageFrame& frame,
+                                              const SharedFrameHeader& header)
+    {
+        const QString cameraId = frame.cameraId.trimmed();
+        if (!frame.isValid() || cameraId.isEmpty())
+        {
+            return;
+        }
+        if (!m_cameraIds.contains(cameraId))
+        {
+            return;
+        }
+
+        ImageFrame normalizedFrame(frame);
+        normalizedFrame.cameraId = cameraId;
+        m_latestRawHeaders.insert(cameraId, header);
+        m_latestRawFrames.insert(cameraId, normalizedFrame);
+        emit newRawFrameReady(normalizedFrame);
+        scheduleHistogramStats(cameraId, false, normalizedFrame);
+        updateLineProfile(cameraId, false, normalizedFrame);
+
+        if (isRealTimeProcessingEnabled())
+        {
+            processFrameAsync(normalizedFrame);
+        }
     }
 
     bool ScopeOneCore::getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const
     {
-        SharedFrameHeader header{};
-        QByteArray data;
-        if (!getLatestRawTransport(cameraId, header, data))
+        const QString trimmedCameraId = cameraId.trimmed();
+        if (trimmedCameraId.isEmpty())
         {
             frame = ImageFrame{};
             return false;
         }
-        frame = ImageFrame::fromSharedFrame(cameraId, header, data);
+
+        SharedFrameHeader header{};
+        QByteArray data;
+        if (!getLatestRawTransport(trimmedCameraId, header, data))
+        {
+            frame = ImageFrame{};
+            return false;
+        }
+        frame = ImageFrame::fromSharedFrame(trimmedCameraId, header, data);
         return frame.isValid();
     }
 
@@ -1518,14 +1565,6 @@ namespace scopeone::core
             return true;
         }
         return false;
-    }
-
-    void ScopeOneCore::setRecordingAvailableCameras(const QStringList& cameraIds)
-    {
-        if (m_managers && m_managers->recordingManager)
-        {
-            m_managers->recordingManager->setAvailableCameras(cameraIds);
-        }
     }
 
     void ScopeOneCore::setRecordingMaxPendingWriteBytes(qint64 bytes)

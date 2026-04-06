@@ -13,19 +13,19 @@ using scopeone::core::ImagePixelFormat;
 
 namespace {
 
-QString channelSelectionKey(const QString& cameraId, bool processed)
+QString streamSelectionKey(const QString& cameraId, bool processed)
 {
     return processed
         ? QStringLiteral("proc:%1").arg(cameraId)
         : QStringLiteral("raw:%1").arg(cameraId);
 }
 
-QSet<QString> validSelectionKeys(const QStringList& cameraIds)
+QSet<QString> validStreamSelectionKeys(const QStringList& cameraIds)
 {
     QSet<QString> keys;
     for (const QString& cameraId : cameraIds) {
-        keys.insert(channelSelectionKey(cameraId, false));
-        keys.insert(channelSelectionKey(cameraId, true));
+        keys.insert(streamSelectionKey(cameraId, false));
+        keys.insert(streamSelectionKey(cameraId, true));
     }
     return keys;
 }
@@ -79,27 +79,25 @@ PreviewWidget::~PreviewWidget()
     cleanupTextureCache();
 }
 
-void PreviewWidget::setProcessedChannelFrame(const QString& channelId, const ImageFrame& frame)
+void PreviewWidget::setProcessedFrame(const QString& cameraId, const ImageFrame& frame)
 {
     QMutexLocker lock(&m_mutex);
-    ChannelTex& ch = m_channels[channelId];
-    ch.processedFrame = frame;
+    CameraFrameState& frameState = m_cameraFrames[cameraId];
+    frameState.processedFrame = frame;
     lock.unlock();
 
-    if (frame.isValid() && !m_availableChannels.contains(channelId)) {
-        m_availableChannels.append(channelId);
-        setAvailableChannels(m_availableChannels);
+    if (frame.isValid() && registerAvailableCamera(cameraId)) {
         return;
     }
     updateImageDisplay();
 }
 
-void PreviewWidget::setChannelRaw(const ImageFrame& frame)
+void PreviewWidget::setRawFrame(const ImageFrame& frame)
 {
     {
         QMutexLocker lock(&m_mutex);
-        ChannelTex& ch = m_channels[frame.cameraId];
-        ch.rawFrame = frame;
+        CameraFrameState& frameState = m_cameraFrames[frame.cameraId];
+        frameState.rawFrame = frame;
     }
     if (frame.isValid()) {
         updateFpsOnFrame();
@@ -111,22 +109,20 @@ void PreviewWidget::setChannelRaw(const ImageFrame& frame)
         info.fps = m_lastFps;
         updateCameraInfoDisplay();
     }
-    if (!m_availableChannels.contains(frame.cameraId)) {
-        m_availableChannels.append(frame.cameraId);
-        setAvailableChannels(m_availableChannels);
+    if (registerAvailableCamera(frame.cameraId)) {
         return;
     }
     update();
 }
 
-void PreviewWidget::setChannelMode(ChannelMode mode)
+void PreviewWidget::setStreamLayoutMode(StreamLayoutMode mode)
 {
-    if (m_channelMode == mode) {
+    if (m_streamLayoutMode == mode) {
         return;
     }
-    m_channelMode = mode;
+    m_streamLayoutMode = mode;
     updateImageDisplay();
-    emit channelModeChanged(m_channelMode);
+    emit streamLayoutModeChanged(m_streamLayoutMode);
 }
 
 void PreviewWidget::setOverlayAlphaPercent(int percent)
@@ -144,70 +140,65 @@ int PreviewWidget::overlayAlphaPercent() const
     return m_overlayAlphaPercent;
 }
 
-PreviewWidget::ChannelMode PreviewWidget::channelMode() const
+PreviewWidget::StreamLayoutMode PreviewWidget::streamLayoutMode() const
 {
-    return m_channelMode;
+    return m_streamLayoutMode;
 }
 
-void PreviewWidget::setAvailableChannels(const QStringList& channelIds)
+void PreviewWidget::setAvailableCameraIds(const QStringList& cameraIds)
 {
-    const QStringList previousSelection = selectedChannels();
-    m_availableChannels = channelIds;
-    emit availableChannelsChanged(m_availableChannels);
+    const QStringList previousSelection = selectedStreams();
+    m_availableCameraIds = cameraIds;
+    emit availableCameraIdsChanged(m_availableCameraIds);
 
-    const QSet<QString> validKeys = validSelectionKeys(m_availableChannels);
+    const QSet<QString> validKeys = validStreamSelectionKeys(m_availableCameraIds);
     QSet<QString> nextSelection;
-    for (const QString& channelId : previousSelection) {
-        if (validKeys.contains(channelId)) {
-            nextSelection.insert(channelId);
+    for (const QString& streamKey : previousSelection) {
+        if (validKeys.contains(streamKey)) {
+            nextSelection.insert(streamKey);
         }
     }
-    if (nextSelection.isEmpty()) {
-        for (const QString& id : m_availableChannels) {
-            nextSelection.insert(channelSelectionKey(id, false));
-        }
-    }
-    m_selectedChannels = std::move(nextSelection);
-    emit selectedChannelsChanged(selectedChannels());
+    m_selectedStreams = std::move(nextSelection);
+    emit selectedStreamsChanged(selectedStreams());
     updateImageDisplay();
 }
 
-void PreviewWidget::setSelectedChannels(const QStringList& channelIds)
+void PreviewWidget::setSelectedStreams(const QStringList& streamKeys)
 {
-    const QSet<QString> validKeys = validSelectionKeys(m_availableChannels);
+    const QSet<QString> validKeys = validStreamSelectionKeys(m_availableCameraIds);
     QSet<QString> nextSelection;
-    for (const QString& channelId : channelIds) {
-        if (validKeys.contains(channelId)) {
-            nextSelection.insert(channelId);
+    for (const QString& streamKey : streamKeys) {
+        if (validKeys.contains(streamKey)) {
+            nextSelection.insert(streamKey);
         }
     }
-    m_selectedChannels = std::move(nextSelection);
-    emit selectedChannelsChanged(selectedChannels());
+    m_selectedStreams = std::move(nextSelection);
+    emit selectedStreamsChanged(selectedStreams());
     updateImageDisplay();
 }
 
-QStringList PreviewWidget::availableChannels() const
+QStringList PreviewWidget::availableCameraIds() const
 {
-    return m_availableChannels;
+    return m_availableCameraIds;
 }
 
-QStringList PreviewWidget::selectedChannels() const
+QStringList PreviewWidget::selectedStreams() const
 {
     QStringList orderedSelection;
-    orderedSelection.reserve(m_selectedChannels.size());
-    for (const QString& cameraId : m_availableChannels) {
-        const QString rawKey = channelSelectionKey(cameraId, false);
-        if (m_selectedChannels.contains(rawKey)) {
+    orderedSelection.reserve(m_selectedStreams.size());
+    for (const QString& cameraId : m_availableCameraIds) {
+        const QString rawKey = streamSelectionKey(cameraId, false);
+        if (m_selectedStreams.contains(rawKey)) {
             orderedSelection.append(rawKey);
         }
-        const QString procKey = channelSelectionKey(cameraId, true);
-        if (m_selectedChannels.contains(procKey)) {
+        const QString procKey = streamSelectionKey(cameraId, true);
+        if (m_selectedStreams.contains(procKey)) {
             orderedSelection.append(procKey);
         }
     }
-    for (const QString& channelId : m_selectedChannels) {
-        if (!orderedSelection.contains(channelId)) {
-            orderedSelection.append(channelId);
+    for (const QString& streamKey : m_selectedStreams) {
+        if (!orderedSelection.contains(streamKey)) {
+            orderedSelection.append(streamKey);
         }
     }
     return orderedSelection;
@@ -218,21 +209,21 @@ QString PreviewWidget::cameraInfoText() const
     return m_cameraInfoText;
 }
 
-void PreviewWidget::clearChannel(const QString& cameraId)
+void PreviewWidget::clearCameraFrames(const QString& cameraId)
 {
     m_cameraInfos.remove(cameraId);
     updateCameraInfoDisplay();
 
     QMutexLocker lock(&m_mutex);
-    if (m_channels.contains(cameraId)) {
-        m_channels.remove(cameraId);
+    if (m_cameraFrames.contains(cameraId)) {
+        m_cameraFrames.remove(cameraId);
         update();
     }
     lock.unlock();
 
     makeCurrent();
-    QString rawKey = QString("raw:%1").arg(cameraId);
-    QString procKey = QString("proc:%1").arg(cameraId);
+    const QString rawKey = streamSelectionKey(cameraId, false);
+    const QString procKey = streamSelectionKey(cameraId, true);
     if (m_textureCache.contains(rawKey)) {
         glDeleteTextures(1, &m_textureCache[rawKey].texId);
         m_textureCache.remove(rawKey);
@@ -242,6 +233,17 @@ void PreviewWidget::clearChannel(const QString& cameraId)
         m_textureCache.remove(procKey);
     }
     doneCurrent();
+}
+
+bool PreviewWidget::registerAvailableCamera(const QString& cameraId)
+{
+    if (cameraId.isEmpty() || m_availableCameraIds.contains(cameraId)) {
+        return false;
+    }
+
+    m_availableCameraIds.append(cameraId);
+    setAvailableCameraIds(m_availableCameraIds);
+    return true;
 }
 
 void PreviewWidget::setZoomPercent(int percent)
@@ -255,12 +257,7 @@ void PreviewWidget::setZoomPercent(int percent)
     update();
 }
 
-void PreviewWidget::setZoomLevel(int zoomPercent)
-{
-    setZoomPercent(zoomPercent);
-}
-
-int PreviewWidget::getZoomLevel() const
+int PreviewWidget::zoomPercent() const
 {
     return m_zoomPercent;
 }
@@ -289,50 +286,50 @@ void PreviewWidget::setPlaceholderText(const QString& text)
     update();
 }
 
-void PreviewWidget::setChannelOffset(const QString& cameraId, int offsetX, int offsetY)
+void PreviewWidget::setCameraOffset(const QString& cameraId, int offsetX, int offsetY)
 {
     QMutexLocker lock(&m_mutex);
-    ChannelTex& ch = m_channels[cameraId];
-    ch.offsetX = offsetX;
-    ch.offsetY = offsetY;
+    CameraFrameState& frameState = m_cameraFrames[cameraId];
+    frameState.offsetX = offsetX;
+    frameState.offsetY = offsetY;
     update();
 }
 
-void PreviewWidget::setChannelFlip(const QString& cameraId, bool flipX, bool flipY)
+void PreviewWidget::setCameraFlip(const QString& cameraId, bool flipX, bool flipY)
 {
     QMutexLocker lock(&m_mutex);
-    ChannelTex& ch = m_channels[cameraId];
-    ch.flipX = flipX;
-    ch.flipY = flipY;
+    CameraFrameState& frameState = m_cameraFrames[cameraId];
+    frameState.flipX = flipX;
+    frameState.flipY = flipY;
     update();
 }
 
-void PreviewWidget::setChannelZoomPercent(const QString& cameraId, int percent)
+void PreviewWidget::setCameraZoomPercent(const QString& cameraId, int percent)
 {
     QMutexLocker lock(&m_mutex);
-    ChannelTex& ch = m_channels[cameraId];
-    ch.zoomPercent = qBound(10, percent, 500);
+    CameraFrameState& frameState = m_cameraFrames[cameraId];
+    frameState.zoomPercent = qBound(10, percent, 500);
     update();
 }
 
 void PreviewWidget::updateImageDisplay()
 {
     // Refresh placeholder text from current stream state
-    bool hasDisplayableChannel = false;
+    bool hasDisplayableFrame = false;
     {
         QMutexLocker lock(&m_mutex);
-        for (auto it = m_channels.constBegin(); it != m_channels.constEnd(); ++it) {
-            const ChannelTex& ch = it.value();
-            if (hasRawDisplay(ch) || ch.processedFrame.isValid()) {
-                hasDisplayableChannel = true;
+        for (auto it = m_cameraFrames.constBegin(); it != m_cameraFrames.constEnd(); ++it) {
+            const CameraFrameState& frameState = it.value();
+            if (hasRawFrame(frameState) || frameState.processedFrame.isValid()) {
+                hasDisplayableFrame = true;
                 break;
             }
         }
     }
 
-    if (hasDisplayableChannel) {
-        m_placeholderText = m_selectedChannels.isEmpty()
-            ? QStringLiteral("No channel selected")
+    if (hasDisplayableFrame) {
+        m_placeholderText = m_selectedStreams.isEmpty()
+            ? QStringLiteral("No stream selected")
             : QStringLiteral("No image loaded\nClick 'Start Preview' to view the camera feed");
         update();
         return;
@@ -359,56 +356,65 @@ void PreviewWidget::updateFpsOnFrame()
     }
 }
 
-bool PreviewWidget::hasRawDisplay(const ChannelTex& ch) const
+bool PreviewWidget::hasRawFrame(const CameraFrameState& frameState) const
 {
-    return ch.rawFrame.isValid();
+    return frameState.rawFrame.isValid();
 }
 
-QSize PreviewWidget::rawDisplaySize(const ChannelTex& ch) const
+QSize PreviewWidget::rawFrameSize(const CameraFrameState& frameState) const
 {
-    return ch.rawFrame.size();
+    return frameState.rawFrame.size();
 }
 
-QMap<QString, PreviewWidget::ChannelTex> PreviewWidget::snapshotChannels() const
+QMap<QString, PreviewWidget::CameraFrameState> PreviewWidget::snapshotCameraFrames() const
 {
     QMutexLocker lock(&m_mutex);
-    return m_channels;
+    return m_cameraFrames;
 }
 
-std::vector<PreviewWidget::ChannelInfo> PreviewWidget::buildChannelInfos(
-    const QMap<QString, ChannelTex>& channels) const
+std::vector<PreviewWidget::CameraRenderInfo> PreviewWidget::buildCameraRenderInfos(
+    const QMap<QString, CameraFrameState>& cameraFrames) const
 {
-    std::vector<ChannelInfo> allChannels;
-    for (auto it = channels.constBegin(); it != channels.constEnd(); ++it) {
-        const QString& id = it.key();
-        const ChannelTex& ch = it.value();
-        const bool hasImg = ch.processedFrame.isValid();
-        const bool hasRaw = hasRawDisplay(ch);
-        if (hasImg || hasRaw) {
-            allChannels.push_back({id, &ch, hasImg, hasRaw});
+    std::vector<CameraRenderInfo> cameraRenderInfos;
+    for (auto it = cameraFrames.constBegin(); it != cameraFrames.constEnd(); ++it) {
+        const QString& cameraId = it.key();
+        const CameraFrameState& frameState = it.value();
+        const bool hasProcessedFrame = frameState.processedFrame.isValid();
+        const bool hasRawFrameNow = hasRawFrame(frameState);
+        if (hasProcessedFrame || hasRawFrameNow) {
+            cameraRenderInfos.push_back({cameraId, &frameState, hasProcessedFrame, hasRawFrameNow});
         }
     }
-    return allChannels;
+    return cameraRenderInfos;
 }
 
-bool PreviewWidget::resolveDisplayGeometry(const ChannelTex& ch,
-                                             bool processed,
-                                             const QRect& area,
-                                             QRect& displayRect,
-                                             QSize& imageSize) const
+void PreviewWidget::buildRenderSnapshot(QMap<QString, CameraFrameState>& cameraFrames,
+                                        std::vector<CameraRenderInfo>& cameraRenderInfos,
+                                        std::vector<RenderItem>& renderItems) const
+{
+    cameraFrames = snapshotCameraFrames();
+    cameraRenderInfos = buildCameraRenderInfos(cameraFrames);
+    renderItems = buildRenderItems(cameraRenderInfos);
+}
+
+bool PreviewWidget::resolveDisplayGeometry(const CameraFrameState& frameState,
+                                          bool processed,
+                                          const QRect& area,
+                                          QRect& displayRect,
+                                          QSize& imageSize) const
 {
     if (processed) {
-        if (!ch.processedFrame.isValid()) {
+        if (!frameState.processedFrame.isValid()) {
             return false;
         }
-        displayRect = targetRectForFrame(ch.processedFrame, ch, area);
-        imageSize = ch.processedFrame.size();
+        displayRect = targetRectForFrame(frameState.processedFrame, frameState, area);
+        imageSize = frameState.processedFrame.size();
     } else {
-        if (!hasRawDisplay(ch)) {
+        if (!hasRawFrame(frameState)) {
             return false;
         }
-        displayRect = targetRectForRaw(ch, area);
-        imageSize = rawDisplaySize(ch);
+        displayRect = targetRectForRaw(frameState, area);
+        imageSize = rawFrameSize(frameState);
     }
 
     return imageSize.width() > 0
@@ -417,15 +423,15 @@ bool PreviewWidget::resolveDisplayGeometry(const ChannelTex& ch,
         && displayRect.height() > 0;
 }
 
-bool PreviewWidget::mapWidgetPositionToImage(const ChannelTex& ch,
-                                               bool processed,
-                                               const QRect& area,
-                                               const QPoint& widgetPos,
-                                               QPoint& imagePos) const
+bool PreviewWidget::mapWidgetPositionToImage(const CameraFrameState& frameState,
+                                             bool processed,
+                                             const QRect& area,
+                                             const QPoint& widgetPos,
+                                             QPoint& imagePos) const
 {
     QRect displayRect;
     QSize imageSize;
-    if (!resolveDisplayGeometry(ch, processed, area, displayRect, imageSize)
+    if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize)
         || !displayRect.contains(widgetPos)) {
         return false;
     }
@@ -438,10 +444,10 @@ bool PreviewWidget::mapWidgetPositionToImage(const ChannelTex& ch,
     int y = static_cast<int>((widgetPos.y() - displayRect.y()) * scaleY);
     x = qBound(0, x, imgW - 1);
     y = qBound(0, y, imgH - 1);
-    if (ch.flipX) {
+    if (frameState.flipX) {
         x = (imgW - 1) - x;
     }
-    if (ch.flipY) {
+    if (frameState.flipY) {
         y = (imgH - 1) - y;
     }
     imagePos = QPoint(x, y);
@@ -462,32 +468,32 @@ void PreviewWidget::paintPlaceholder(const QString& text)
 
 void PreviewWidget::drawRenderItem(const RenderItem& item)
 {
-    if (!item.info || !item.info->ch) {
+    if (!item.info || !item.info->frameState) {
         return;
     }
 
-    const ChannelTex& ch = *item.info->ch;
+    const CameraFrameState& frameState = *item.info->frameState;
     QRect displayRect;
     QSize imageSize;
-    if (!resolveDisplayGeometry(ch, item.processed, item.area, displayRect, imageSize)) {
+    if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize)) {
         return;
     }
 
     if (item.processed) {
-        drawFrameInRect(QStringLiteral("proc:%1").arg(item.info->id),
-                         ch.processedFrame,
-                         displayRect,
-                         item.alpha,
-                         ch.flipX,
-                         ch.flipY,
-                         ch.processedLevelMin,
-                         ch.processedLevelMax,
-                         ch.processedLevelDomainMax);
+        drawFrameInRect(QStringLiteral("proc:%1").arg(item.info->cameraId),
+                        frameState.processedFrame,
+                        displayRect,
+                        item.alpha,
+                        frameState.flipX,
+                        frameState.flipY,
+                        frameState.processedLevelMin,
+                        frameState.processedLevelMax,
+                        frameState.processedLevelDomainMax);
         return;
     }
 
-    if (ch.rawFrame.isValid()) {
-        drawRawInRect(item.info->id, ch, displayRect, item.alpha);
+    if (frameState.rawFrame.isValid()) {
+        drawRawInRect(item.info->cameraId, frameState, displayRect, item.alpha);
         return;
     }
 }
@@ -515,33 +521,34 @@ void PreviewWidget::updateCameraInfoDisplay()
 }
 
 bool PreviewWidget::widgetToImageCoords(const QPoint& widgetPos,
-                                          QString& outCameraId,
-                                          QPoint& outImagePos,
-                                          bool& outProcessed) const
+                                        QString& outCameraId,
+                                        QPoint& outImagePos,
+                                        bool& outProcessed) const
 {
     // Resolve one widget point against the active render items
-    const QMap<QString, ChannelTex> channelsCopy = snapshotChannels();
-    const std::vector<ChannelInfo> allChannels = buildChannelInfos(channelsCopy);
-    if (allChannels.empty()) {
+    QMap<QString, CameraFrameState> cameraFrames;
+    std::vector<CameraRenderInfo> cameraRenderInfos;
+    std::vector<RenderItem> renderItems;
+    buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
+    if (cameraRenderInfos.empty()) {
         return false;
     }
 
-    const auto items = buildRenderItems(allChannels);
-    for (const auto& item : items) {
-        if (!item.info || !item.info->ch) {
+    for (const auto& item : renderItems) {
+        if (!item.info || !item.info->frameState) {
             continue;
         }
         if (!item.area.contains(widgetPos)) {
             continue;
         }
 
-        const ChannelTex& ch = *item.info->ch;
+        const CameraFrameState& frameState = *item.info->frameState;
         QPoint imagePos;
-        if (!mapWidgetPositionToImage(ch, item.processed, item.area, widgetPos, imagePos)) {
+        if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos)) {
             continue;
         }
 
-        outCameraId = item.info->id;
+        outCameraId = item.info->cameraId;
         outImagePos = imagePos;
         outProcessed = item.processed;
         return true;
@@ -551,32 +558,33 @@ bool PreviewWidget::widgetToImageCoords(const QPoint& widgetPos,
 }
 
 bool PreviewWidget::locateRenderTarget(const QPoint& widgetPos,
-                                         QString& cameraId,
-                                         bool& processed,
-                                         QRect& itemArea,
-                                         QPointF& relativePos) const
+                                       QString& cameraId,
+                                       bool& processed,
+                                       QRect& itemArea,
+                                       QPointF& relativePos) const
 {
-    const QMap<QString, ChannelTex> channelsCopy = snapshotChannels();
-    const std::vector<ChannelInfo> allChannels = buildChannelInfos(channelsCopy);
-    if (allChannels.empty()) {
+    QMap<QString, CameraFrameState> cameraFrames;
+    std::vector<CameraRenderInfo> cameraRenderInfos;
+    std::vector<RenderItem> renderItems;
+    buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
+    if (cameraRenderInfos.empty()) {
         return false;
     }
 
-    const auto items = buildRenderItems(allChannels);
-    for (const auto& item : items) {
-        if (!item.info || !item.info->ch || !item.area.contains(widgetPos)) {
+    for (const auto& item : renderItems) {
+        if (!item.info || !item.info->frameState || !item.area.contains(widgetPos)) {
             continue;
         }
 
-        const ChannelTex& ch = *item.info->ch;
+        const CameraFrameState& frameState = *item.info->frameState;
         QRect rect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(ch, item.processed, item.area, rect, imageSize)
+        if (!resolveDisplayGeometry(frameState, item.processed, item.area, rect, imageSize)
             || !rect.contains(widgetPos)) {
             continue;
         }
 
-        cameraId = item.info->id;
+        cameraId = item.info->cameraId;
         processed = item.processed;
         itemArea = item.area;
         relativePos = QPointF(
@@ -589,32 +597,33 @@ bool PreviewWidget::locateRenderTarget(const QPoint& widgetPos,
 }
 
 bool PreviewWidget::widgetToImageCoordsForCamera(const QString& cameraId,
-                                                   const QPoint& widgetPos,
-                                                   QPoint& outImagePos,
-                                                   bool& outProcessed) const
+                                                 const QPoint& widgetPos,
+                                                 QPoint& outImagePos,
+                                                 bool& outProcessed) const
 {
     if (cameraId.isEmpty()) {
         return false;
     }
 
-    const QMap<QString, ChannelTex> channelsCopy = snapshotChannels();
-    const std::vector<ChannelInfo> allChannels = buildChannelInfos(channelsCopy);
-    if (allChannels.empty()) {
+    QMap<QString, CameraFrameState> cameraFrames;
+    std::vector<CameraRenderInfo> cameraRenderInfos;
+    std::vector<RenderItem> renderItems;
+    buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
+    if (cameraRenderInfos.empty()) {
         return false;
     }
 
-    const auto items = buildRenderItems(allChannels);
-    for (const auto& item : items) {
-        if (!item.info || !item.info->ch || item.info->id != cameraId) {
+    for (const auto& item : renderItems) {
+        if (!item.info || !item.info->frameState || item.info->cameraId != cameraId) {
             continue;
         }
         if (!item.area.contains(widgetPos)) {
             continue;
         }
 
-        const ChannelTex& ch = *item.info->ch;
+        const CameraFrameState& frameState = *item.info->frameState;
         QPoint imagePos;
-        if (!mapWidgetPositionToImage(ch, item.processed, item.area, widgetPos, imagePos)) {
+        if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos)) {
             continue;
         }
 
@@ -632,19 +641,19 @@ bool PreviewWidget::getPixelValue(const QString& cameraId,
                                   int& outValue) const
 {
     QMutexLocker lock(&m_mutex);
-    auto it = m_channels.find(cameraId);
-    if (it == m_channels.end()) {
+    auto it = m_cameraFrames.find(cameraId);
+    if (it == m_cameraFrames.end()) {
         return false;
     }
 
-    const ChannelTex& ch = it.value();
+    const CameraFrameState& frameState = it.value();
 
     if (processed) {
-        return sampleFrameValue(ch.processedFrame, imagePos, outValue);
+        return sampleFrameValue(frameState.processedFrame, imagePos, outValue);
     }
 
-    if (ch.rawFrame.isValid()) {
-        return sampleFrameValue(ch.rawFrame, imagePos, outValue);
+    if (frameState.rawFrame.isValid()) {
+        return sampleFrameValue(frameState.rawFrame, imagePos, outValue);
     }
 
     return false;
@@ -699,31 +708,31 @@ std::vector<QRect> PreviewWidget::computeLayout(int count) const
     return areas;
 }
 
-std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std::vector<ChannelInfo>& allChannels) const
+std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std::vector<CameraRenderInfo>& cameraRenderInfos) const
 {
     // Build the streams that will be drawn this frame
     std::vector<RenderItem> items;
-    if (allChannels.empty()) {
+    if (cameraRenderInfos.empty()) {
         return items;
     }
 
     const QRect full(0, 0, width(), height());
 
-    auto addItem = [&](const ChannelInfo* info, bool processed, const QRect& area, float alpha) {
-        if (!info || !info->ch) {
+    auto addItem = [&](const CameraRenderInfo* info, bool processed, const QRect& area, float alpha) {
+        if (!info || !info->frameState) {
             return;
         }
-        if (processed && !info->hasImage) {
+        if (processed && !info->hasProcessedFrame) {
             return;
         }
-        if (!processed && !info->hasRaw) {
+        if (!processed && !info->hasRawFrame) {
             return;
         }
         items.push_back({info, processed, area, alpha});
     };
 
     auto isSelected = [&](const QString& cameraId, bool processed) {
-        return m_selectedChannels.contains(channelSelectionKey(cameraId, processed));
+        return m_selectedStreams.contains(streamSelectionKey(cameraId, processed));
     };
 
     auto buildSelectedStreams = [&](size_t maxCount) {
@@ -731,16 +740,16 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
         out.reserve(maxCount);
 
         // Raw streams get priority in the list
-        for (const auto& info : allChannels) {
-            if (info.hasRaw && isSelected(info.id, false)) {
+        for (const auto& info : cameraRenderInfos) {
+            if (info.hasRawFrame && isSelected(info.cameraId, false)) {
                 out.push_back({&info, false});
             }
             if (out.size() >= maxCount) {
                 break;
             }
         }
-        for (const auto& info : allChannels) {
-            if (info.hasImage && isSelected(info.id, true)) {
+        for (const auto& info : cameraRenderInfos) {
+            if (info.hasProcessedFrame && isSelected(info.cameraId, true)) {
                 out.push_back({&info, true});
             }
             if (out.size() >= maxCount) {
@@ -750,11 +759,11 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
         return out;
     };
 
-    if (allChannels.size() > 1) {
-        if (m_channelMode == ChannelMode::SideBySide) {
-            QMap<QString, const ChannelInfo*> channelById;
-            for (const auto& info : allChannels) {
-                channelById.insert(info.id, &info);
+    if (cameraRenderInfos.size() > 1) {
+        if (m_streamLayoutMode == StreamLayoutMode::SideBySide) {
+            QMap<QString, const CameraRenderInfo*> renderInfoByCameraId;
+            for (const auto& info : cameraRenderInfos) {
+                renderInfoByCameraId.insert(info.cameraId, &info);
             }
 
             std::vector<StreamItem> streamItems;
@@ -762,22 +771,22 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
             QSet<QString> addedKeys;
 
             auto tryAdd = [&](const QString& cameraId, bool processed) {
-                const QString key = channelSelectionKey(cameraId, processed);
-                if (!m_selectedChannels.contains(key) || addedKeys.contains(key)) {
+                const QString key = streamSelectionKey(cameraId, processed);
+                if (!m_selectedStreams.contains(key) || addedKeys.contains(key)) {
                     return;
                 }
 
                 // Skip ids that have no data now
-                const auto it = channelById.constFind(cameraId);
-                if (it == channelById.constEnd() || it.value() == nullptr) {
+                const auto it = renderInfoByCameraId.constFind(cameraId);
+                if (it == renderInfoByCameraId.constEnd() || it.value() == nullptr) {
                     return;
                 }
 
-                const ChannelInfo* info = it.value();
-                if (processed && !info->hasImage) {
+                const CameraRenderInfo* info = it.value();
+                if (processed && !info->hasProcessedFrame) {
                     return;
                 }
-                if (!processed && !info->hasRaw) {
+                if (!processed && !info->hasRawFrame) {
                     return;
                 }
 
@@ -785,22 +794,22 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
                 addedKeys.insert(key);
             };
 
-            for (const QString& cameraId : m_availableChannels) {
+            for (const QString& cameraId : m_availableCameraIds) {
                 tryAdd(cameraId, false);
             }
             // Show raw streams before processed ones
-            for (const QString& cameraId : m_availableChannels) {
+            for (const QString& cameraId : m_availableCameraIds) {
                 tryAdd(cameraId, true);
             }
 
-            for (const auto& info : allChannels) {
-                if (!m_availableChannels.contains(info.id)) {
-                    tryAdd(info.id, false);
+            for (const auto& info : cameraRenderInfos) {
+                if (!m_availableCameraIds.contains(info.cameraId)) {
+                    tryAdd(info.cameraId, false);
                 }
             }
-            for (const auto& info : allChannels) {
-                if (!m_availableChannels.contains(info.id)) {
-                    tryAdd(info.id, true);
+            for (const auto& info : cameraRenderInfos) {
+                if (!m_availableCameraIds.contains(info.cameraId)) {
+                    tryAdd(info.cameraId, true);
                 }
             }
 
@@ -827,14 +836,14 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
         return items;
     }
 
-    const ChannelInfo& info = allChannels.front();
-    if (info.hasRaw && info.hasImage) {
-        if (m_channelMode == ChannelMode::SideBySide) {
+    const CameraRenderInfo& info = cameraRenderInfos.front();
+    if (info.hasRawFrame && info.hasProcessedFrame) {
+        if (m_streamLayoutMode == StreamLayoutMode::SideBySide) {
             std::vector<StreamItem> streamItems;
-            if (isSelected(info.id, false)) {
+            if (isSelected(info.cameraId, false)) {
                 streamItems.push_back({&info, false});
             }
-            if (isSelected(info.id, true)) {
+            if (isSelected(info.cameraId, true)) {
                 streamItems.push_back({&info, true});
             }
 
@@ -844,17 +853,17 @@ std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(const std
                 addItem(streamItems[i].info, streamItems[i].processed, areas[i], 1.0f);
             }
         } else {
-            if (isSelected(info.id, false)) {
+            if (isSelected(info.cameraId, false)) {
                 addItem(&info, false, full, 1.0f);
             }
-            if (isSelected(info.id, true)) {
+            if (isSelected(info.cameraId, true)) {
                 addItem(&info, true, full,
                         qBound(0.0f, static_cast<float>(m_overlayAlphaPercent) / 100.0f, 1.0f));
             }
         }
-    } else if (info.hasRaw && isSelected(info.id, false)) {
+    } else if (info.hasRawFrame && isSelected(info.cameraId, false)) {
         addItem(&info, false, full, 1.0f);
-    } else if (info.hasImage && isSelected(info.id, true)) {
+    } else if (info.hasProcessedFrame && isSelected(info.cameraId, true)) {
         addItem(&info, true, full, 1.0f);
     }
     return items;
@@ -870,20 +879,19 @@ void PreviewWidget::paintGL()
     applyViewportForRect(rect());
     glClear(GL_COLOR_BUFFER_BIT);
 
-    const QMap<QString, ChannelTex> channelsCopy = snapshotChannels();
-
     bool canGpu = m_glInited && m_prog.isLinked();
+    QMap<QString, CameraFrameState> cameraFrames;
+    std::vector<CameraRenderInfo> cameraRenderInfos;
+    std::vector<RenderItem> renderItems;
+    buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
 
-    const std::vector<ChannelInfo> allChannels = buildChannelInfos(channelsCopy);
-
-    if (allChannels.empty()) {
+    if (cameraRenderInfos.empty()) {
         paintPlaceholder(m_placeholderText);
         return;
     }
 
     if (canGpu) {
         // Draw everything with GL when the pipeline is ready
-        const auto renderItems = buildRenderItems(allChannels);
         if (renderItems.empty()) {
             paintPlaceholder(m_placeholderText);
             return;
@@ -926,17 +934,17 @@ void PreviewWidget::paintGL()
     return;
 }
 
-void PreviewWidget::setChannelDisplayLevels(const QString& cameraId,
-                                            bool processed,
-                                            int minLevel,
-                                            int maxLevel,
-                                            int maxPossible)
+void PreviewWidget::setStreamDisplayLevels(const QString& cameraId,
+                                           bool processed,
+                                           int minLevel,
+                                           int maxLevel,
+                                           int maxPossible)
 {
     QMutexLocker lock(&m_mutex);
-    ChannelTex& ch = m_channels[cameraId];
-    int& levelDomainMax = processed ? ch.processedLevelDomainMax : ch.rawLevelDomainMax;
-    int& levelMinRef = processed ? ch.processedLevelMin : ch.rawLevelMin;
-    int& levelMaxRef = processed ? ch.processedLevelMax : ch.rawLevelMax;
+    CameraFrameState& frameState = m_cameraFrames[cameraId];
+    int& levelDomainMax = processed ? frameState.processedLevelDomainMax : frameState.rawLevelDomainMax;
+    int& levelMinRef = processed ? frameState.processedLevelMin : frameState.rawLevelMin;
+    int& levelMaxRef = processed ? frameState.processedLevelMax : frameState.rawLevelMax;
     levelDomainMax = qMax(1, maxPossible);
     levelMinRef = qBound(0, minLevel, levelDomainMax);
     levelMaxRef = qBound(levelMinRef + 1, maxLevel, levelDomainMax);
@@ -1028,9 +1036,9 @@ void PreviewWidget::setUvTransform(bool flipX, bool flipY)
     if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
 }
 
-QRect PreviewWidget::targetRectForRaw(const ChannelTex& ch, const QRect& avail) const
+QRect PreviewWidget::targetRectForRaw(const CameraFrameState& frameState, const QRect& avail) const
 {
-    const QSize rawSize = rawDisplaySize(ch);
+    const QSize rawSize = rawFrameSize(frameState);
     const int w = rawSize.width();
     const int h = rawSize.height();
     if (w <= 0 || h <= 0 || avail.width() <= 0 || avail.height() <= 0) return avail;
@@ -1038,14 +1046,14 @@ QRect PreviewWidget::targetRectForRaw(const ChannelTex& ch, const QRect& avail) 
     QSize s(w, h);
     if (m_fitToWindow) {
         s.scale(avail.size(), Qt::KeepAspectRatio);
-        s = s * (ch.zoomPercent / 100.0);
+        s = s * (frameState.zoomPercent / 100.0);
     } else {
-        const double z = (m_zoomPercent / 100.0) * (ch.zoomPercent / 100.0);
+        const double z = (m_zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
         s = s * z;
     }
 
-    int x = avail.x() + (avail.width() - s.width())/2 + ch.offsetX;
-    int y = avail.y() + (avail.height() - s.height())/2 + ch.offsetY;
+    int x = avail.x() + (avail.width() - s.width())/2 + frameState.offsetX;
+    int y = avail.y() + (avail.height() - s.height())/2 + frameState.offsetY;
     if (!m_fitToWindow) {
         x += m_viewOffset.x();
         y += m_viewOffset.y();
@@ -1053,15 +1061,15 @@ QRect PreviewWidget::targetRectForRaw(const ChannelTex& ch, const QRect& avail) 
     return QRect(QPoint(x,y), s);
 }
 
-void PreviewWidget::drawRawInRect(const QString& cameraId, const ChannelTex& ch, const QRect& r, float alpha)
+void PreviewWidget::drawRawInRect(const QString& cameraId, const CameraFrameState& frameState, const QRect& r, float alpha)
 {
     ensureGlPipeline();
     GLenum internal = 0, fmt = 0, type = 0;
-    if (ch.rawFrame.pixelFormat == ImagePixelFormat::Mono16) {
+    if (frameState.rawFrame.pixelFormat == ImagePixelFormat::Mono16) {
         internal = GL_R16;
         fmt = GL_RED;
         type = GL_UNSIGNED_SHORT;
-    } else if (ch.rawFrame.pixelFormat == ImagePixelFormat::Mono8) {
+    } else if (frameState.rawFrame.pixelFormat == ImagePixelFormat::Mono8) {
         internal = GL_R8;
         fmt = GL_RED;
         type = GL_UNSIGNED_BYTE;
@@ -1069,8 +1077,8 @@ void PreviewWidget::drawRawInRect(const QString& cameraId, const ChannelTex& ch,
         return;
     }
 
-    const int w = ch.rawFrame.width;
-    const int h = ch.rawFrame.height;
+    const int w = frameState.rawFrame.width;
+    const int h = frameState.rawFrame.height;
 
     const QString cacheKey = QString("raw:%1").arg(cameraId);
     GLuint texId = getOrCreateTexture(cacheKey, w, h, internal);
@@ -1079,12 +1087,12 @@ void PreviewWidget::drawRawInRect(const QString& cameraId, const ChannelTex& ch,
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     const int bpp = (type == GL_UNSIGNED_SHORT) ? 2 : 1;
-    const int stride = ch.rawFrame.stride;
+    const int stride = frameState.rawFrame.stride;
     if (stride > 0 && stride != w * bpp) {
         const int rowLen = stride / bpp;
         glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLen);
     }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, type, ch.rawFrame.bytes.constData());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, type, frameState.rawFrame.bytes.constData());
     if (stride > 0 && stride != w * bpp) {
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }
@@ -1094,18 +1102,18 @@ void PreviewWidget::drawRawInRect(const QString& cameraId, const ChannelTex& ch,
     glBindTexture(GL_TEXTURE_2D, texId);
     m_prog.setUniformValue(m_uTex, 0);
 
-    const int levelDomain = qMax(1, ch.rawLevelDomainMax);
-    const float minNorm = static_cast<float>(ch.rawLevelMin) / static_cast<float>(levelDomain);
-    const float maxNorm = static_cast<float>(ch.rawLevelMax) / static_cast<float>(levelDomain);
+    const int levelDomain = qMax(1, frameState.rawLevelDomainMax);
+    const float minNorm = static_cast<float>(frameState.rawLevelMin) / static_cast<float>(levelDomain);
+    const float maxNorm = static_cast<float>(frameState.rawLevelMax) / static_cast<float>(levelDomain);
     m_prog.setUniformValue(m_uMinNorm, minNorm);
     m_prog.setUniformValue(m_uMaxNorm, maxNorm);
-    const int bitDepth = qBound(8, ch.rawFrame.bitsPerSample, 16);
+    const int bitDepth = qBound(8, frameState.rawFrame.bitsPerSample, 16);
     const float bitMax = static_cast<float>((1u << bitDepth) - 1u);
     const float sampleMax = (internal == GL_R8) ? 255.0f : 65535.0f;
     const float texNormScale = sampleMax / bitMax;
     m_prog.setUniformValue(m_uTexNormScale, texNormScale);
     m_prog.setUniformValue(m_uAlpha, alpha);
-    setUvTransform(ch.flipX, ch.flipY);
+    setUvTransform(frameState.flipX, frameState.flipY);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1193,21 +1201,21 @@ void PreviewWidget::drawFrameInRect(const QString& textureKey,
 }
 
 
-QRect PreviewWidget::targetRectForFrame(const ImageFrame& frame, const ChannelTex& ch, const QRect& avail) const
+QRect PreviewWidget::targetRectForFrame(const ImageFrame& frame, const CameraFrameState& frameState, const QRect& avail) const
 {
     if (!frame.isValid() || avail.width() <= 0 || avail.height() <= 0) return avail;
 
     QSize s = frame.size();
     if (m_fitToWindow) {
         s.scale(avail.size(), Qt::KeepAspectRatio);
-        s = s * (ch.zoomPercent / 100.0);
+        s = s * (frameState.zoomPercent / 100.0);
     } else {
-        const double z = (m_zoomPercent / 100.0) * (ch.zoomPercent / 100.0);
+        const double z = (m_zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
         s = s * z;
     }
 
-    int x = avail.x() + (avail.width() - s.width()) / 2 + ch.offsetX;
-    int y = avail.y() + (avail.height() - s.height()) / 2 + ch.offsetY;
+    int x = avail.x() + (avail.width() - s.width()) / 2 + frameState.offsetX;
+    int y = avail.y() + (avail.height() - s.height()) / 2 + frameState.offsetY;
     if (!m_fitToWindow) {
         x += m_viewOffset.x();
         y += m_viewOffset.y();
@@ -1485,21 +1493,21 @@ void PreviewWidget::wheelEvent(QWheelEvent* event)
     setZoomPercent(m_zoomPercent + steps * 10);
 
     if (hasAnchor && !cameraId.isEmpty()) {
-        ChannelTex ch;
-        bool hasChannel = false;
+        CameraFrameState frameState;
+        bool hasFrameState = false;
         {
             QMutexLocker lock(&m_mutex);
-            const auto it = m_channels.constFind(cameraId);
-            if (it != m_channels.constEnd()) {
-                ch = it.value();
-                hasChannel = true;
+            const auto it = m_cameraFrames.constFind(cameraId);
+            if (it != m_cameraFrames.constEnd()) {
+                frameState = it.value();
+                hasFrameState = true;
             }
         }
 
-        if (hasChannel) {
+        if (hasFrameState) {
             QRect newRect;
             QSize imageSize;
-            if (!resolveDisplayGeometry(ch, processed, itemArea, newRect, imageSize)) {
+            if (!resolveDisplayGeometry(frameState, processed, itemArea, newRect, imageSize)) {
                 event->accept();
                 return;
             }

@@ -59,7 +59,6 @@ public:
 
     void setMultiProcessCameraManager(MultiProcessCameraManager* mpcm) { m_mpcm = mpcm; }
     void setMMCore(const std::shared_ptr<CMMCore>& core) { m_mmcore = core; }
-    void setAvailableCameras(const QStringList& cameraIds) { m_availableCameraIds = cameraIds; }
     void setLatestFrameFetcher(std::function<bool(const QString&, SharedFrameHeader&, QByteArray&)> fetcher)
     {
         m_latestFrameFetcher = std::move(fetcher);
@@ -79,6 +78,8 @@ public:
     static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
 
 signals:
+    void mdaRawFrameReady(const scopeone::core::ImageFrame& frame,
+                         const SharedFrameHeader& header);
     void progressChanged(int phase,
                          qint64 frameCurrent,
                          qint64 frameTarget,
@@ -242,7 +243,6 @@ private:
     std::shared_ptr<CMMCore> m_mmcore;
     std::function<bool(const QString&, SharedFrameHeader&, QByteArray&)> m_latestFrameFetcher;
 
-    QStringList m_availableCameraIds;
     SessionState m_sessionState;
     WriterState m_writerState;
     CaptureState m_captureState;
