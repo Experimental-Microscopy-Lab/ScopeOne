@@ -12,7 +12,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install")
-set(CMAKE_PREFIX_PATH "C:/Qt/6.9.1/msvc2022_64")
+set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
 
 set(PYBIND11_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/pybind11-3.0.1")
 

@@ -13,7 +13,7 @@ set(ScopeOneCore_ROOT
         CACHE PATH "ScopeOneCore install prefix"
 )
 list(PREPEND CMAKE_PREFIX_PATH
-        "C:/Qt/6.9.1/msvc2022_64"
+        "C:/Qt/6.11.0/msvc2022_64"
         "${ScopeOneCore_ROOT}"
 )
 
