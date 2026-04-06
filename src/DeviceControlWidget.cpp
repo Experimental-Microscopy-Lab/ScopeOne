@@ -737,12 +737,12 @@ namespace scopeone::ui
         xyPad->setVerticalSpacing(2);
         m_xyUpButton = new QPushButton(QStringLiteral("↑"));
         m_xyDownButton = new QPushButton(QStringLiteral("↓"));
-        m_xyLeftButton = new QPushButton(QStringLiteral("←"));
-        m_xyRightButton = new QPushButton(QStringLiteral("→"));
-        m_xyBigUpButton = new QPushButton(QStringLiteral("⇑"));
-        m_xyBigDownButton = new QPushButton(QStringLiteral("⇓"));
-        m_xyBigLeftButton = new QPushButton(QStringLiteral("⇐"));
-        m_xyBigRightButton = new QPushButton(QStringLiteral("⇒"));
+        m_xyLeftButton = new QPushButton(QStringLiteral("<"));
+        m_xyRightButton = new QPushButton(QStringLiteral(">"));
+        m_xyBigUpButton = new QPushButton(QStringLiteral("↑↑"));
+        m_xyBigDownButton = new QPushButton(QStringLiteral("↓↓"));
+        m_xyBigLeftButton = new QPushButton(QStringLiteral("<<"));
+        m_xyBigRightButton = new QPushButton(QStringLiteral(">>"));
         auto setArrowSize = [](QPushButton* button)
         {
             if (button)
@@ -759,11 +759,14 @@ namespace scopeone::ui
         setArrowSize(m_xyBigLeftButton);
         setArrowSize(m_xyBigRightButton);
         QWidget* xyCenterWidget = new QWidget();
+        xyCenterWidget->setFixedWidth(60);
         QVBoxLayout* xyCenterLayout = new QVBoxLayout(xyCenterWidget);
         xyCenterLayout->setContentsMargins(0, 0, 0, 0);
         xyCenterLayout->setSpacing(2);
         m_xPosLabel = new QLabel("X: N/A");
         m_yPosLabel = new QLabel("Y: N/A");
+        m_xPosLabel->setFixedWidth(60);
+        m_yPosLabel->setFixedWidth(60);
         m_xPosLabel->setAlignment(Qt::AlignCenter);
         m_yPosLabel->setAlignment(Qt::AlignCenter);
         xyCenterLayout->addWidget(m_xPosLabel);
@@ -777,6 +780,11 @@ namespace scopeone::ui
         xyPad->addWidget(m_xyBigRightButton, 2, 4);
         xyPad->addWidget(m_xyDownButton, 3, 2);
         xyPad->addWidget(m_xyBigDownButton, 4, 2);
+        xyPad->setAlignment(m_xyBigUpButton, Qt::AlignHCenter);
+        xyPad->setAlignment(m_xyUpButton, Qt::AlignHCenter);
+        xyPad->setAlignment(xyCenterWidget, Qt::AlignHCenter);
+        xyPad->setAlignment(m_xyDownButton, Qt::AlignHCenter);
+        xyPad->setAlignment(m_xyBigDownButton, Qt::AlignHCenter);
 
         xyControlLayout->addStretch();
         xyControlLayout->addLayout(xyPad);
@@ -819,8 +827,8 @@ namespace scopeone::ui
         QVBoxLayout* zButtonsLayout = new QVBoxLayout();
         m_zUpButton = new QPushButton(QStringLiteral("↑"));
         m_zDownButton = new QPushButton(QStringLiteral("↓"));
-        m_zBigUpButton = new QPushButton(QStringLiteral("⇑"));
-        m_zBigDownButton = new QPushButton(QStringLiteral("⇓"));
+        m_zBigUpButton = new QPushButton(QStringLiteral("↑↑"));
+        m_zBigDownButton = new QPushButton(QStringLiteral("↓↓"));
         setArrowSize(m_zUpButton);
         setArrowSize(m_zDownButton);
         setArrowSize(m_zBigUpButton);
@@ -828,10 +836,16 @@ namespace scopeone::ui
         zButtonsLayout->addWidget(m_zBigUpButton);
         zButtonsLayout->addWidget(m_zUpButton);
         m_zPosLabel = new QLabel("Z: N/A");
+        m_zPosLabel->setFixedWidth(60);
         m_zPosLabel->setAlignment(Qt::AlignCenter);
         zButtonsLayout->addWidget(m_zPosLabel);
         zButtonsLayout->addWidget(m_zDownButton);
         zButtonsLayout->addWidget(m_zBigDownButton);
+        zButtonsLayout->setAlignment(m_zBigUpButton, Qt::AlignHCenter);
+        zButtonsLayout->setAlignment(m_zUpButton, Qt::AlignHCenter);
+        zButtonsLayout->setAlignment(m_zPosLabel, Qt::AlignHCenter);
+        zButtonsLayout->setAlignment(m_zDownButton, Qt::AlignHCenter);
+        zButtonsLayout->setAlignment(m_zBigDownButton, Qt::AlignHCenter);
         zControlLayout->addStretch();
         zControlLayout->addLayout(zButtonsLayout);
         zControlLayout->addStretch();
@@ -1031,8 +1045,8 @@ namespace scopeone::ui
             double y = 0.0;
             if (m_scopeonecore->readXYPosition(xyLabel, x, y))
             {
-                m_xPosLabel->setText(QString("X: %1").arg(QString::number(x, 'g', 17)));
-                m_yPosLabel->setText(QString("Y: %1").arg(QString::number(y, 'g', 17)));
+                m_xPosLabel->setText(QString("X: %1").arg(QString::number(x, 'f', 4)));
+                m_yPosLabel->setText(QString("Y: %1").arg(QString::number(y, 'f', 4)));
             }
             else
             {
@@ -1051,7 +1065,7 @@ namespace scopeone::ui
             double z = 0.0;
             if (m_scopeonecore->readZPosition(zLabel, z))
             {
-                m_zPosLabel->setText(QString("Z: %1").arg(QString::number(z, 'g', 17)));
+                m_zPosLabel->setText(QString("Z: %1").arg(QString::number(z, 'f', 4)));
             }
             else
             {
