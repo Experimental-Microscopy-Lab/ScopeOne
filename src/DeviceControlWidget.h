@@ -85,17 +85,7 @@ namespace scopeone::ui
         void onPreviewStreamLayoutComboChanged(int index);
         void onPreviewOverlayAlphaChanged(int value);
         void onPreviewStreamActionToggled(bool checked);
-        void onSelectAllPreviewStreams();
-        void onClearPreviewSelection();
-        void onSelectAllPreviewRaw();
-        void onSelectAllPreviewProcessed();
-        void onAlignCameraChanged(const QString& cameraId);
-        void onAlignXChanged(int x);
-        void onAlignYChanged(int y);
-        void onAlignZoomChanged(int percent);
-        void onAlignFlipXChanged(bool enabled);
-        void onAlignFlipYChanged(bool enabled);
-        void onAlignResetClicked();
+        void resetAlignState(const QString& cameraId);
 
         void setupUI();
 

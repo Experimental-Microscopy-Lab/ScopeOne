@@ -283,19 +283,91 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewOverlayAlphaChanged);
 
         connect(m_alignCameraCombo, &QComboBox::currentTextChanged,
-                this, &DeviceControlWidget::onAlignCameraChanged);
+                this, [this](const QString& cameraId)
+                {
+                    if (!cameraId.isEmpty())
+                    {
+                        resetAlignState(cameraId);
+                    }
+                });
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, &DeviceControlWidget::onAlignXChanged);
+                this, [this](int x)
+                {
+                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignYSpinBox)
+                    {
+                        return;
+                    }
+                    const QString cameraId = m_alignCameraCombo->currentText();
+                    if (cameraId.isEmpty())
+                    {
+                        return;
+                    }
+                    m_previewWidget->setCameraOffset(cameraId, x, m_alignYSpinBox->value());
+                });
         connect(m_alignYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, &DeviceControlWidget::onAlignYChanged);
+                this, [this](int y)
+                {
+                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignXSpinBox)
+                    {
+                        return;
+                    }
+                    const QString cameraId = m_alignCameraCombo->currentText();
+                    if (cameraId.isEmpty())
+                    {
+                        return;
+                    }
+                    m_previewWidget->setCameraOffset(cameraId, m_alignXSpinBox->value(), y);
+                });
         connect(m_alignZoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, &DeviceControlWidget::onAlignZoomChanged);
+                this, [this](int percent)
+                {
+                    if (!m_previewWidget || !m_alignCameraCombo)
+                    {
+                        return;
+                    }
+                    const QString cameraId = m_alignCameraCombo->currentText();
+                    if (cameraId.isEmpty())
+                    {
+                        return;
+                    }
+                    m_previewWidget->setCameraZoomPercent(cameraId, percent);
+                });
         connect(m_alignFlipXCheckBox, &QCheckBox::toggled,
-                this, &DeviceControlWidget::onAlignFlipXChanged);
+                this, [this](bool enabled)
+                {
+                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipYCheckBox)
+                    {
+                        return;
+                    }
+                    const QString cameraId = m_alignCameraCombo->currentText();
+                    if (cameraId.isEmpty())
+                    {
+                        return;
+                    }
+                    m_previewWidget->setCameraFlip(cameraId, enabled, m_alignFlipYCheckBox->isChecked());
+                });
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
-                this, &DeviceControlWidget::onAlignFlipYChanged);
+                this, [this](bool enabled)
+                {
+                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipXCheckBox)
+                    {
+                        return;
+                    }
+                    const QString cameraId = m_alignCameraCombo->currentText();
+                    if (cameraId.isEmpty())
+                    {
+                        return;
+                    }
+                    m_previewWidget->setCameraFlip(cameraId, m_alignFlipXCheckBox->isChecked(), enabled);
+                });
         connect(m_alignResetButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onAlignResetClicked);
+                this, [this]()
+                {
+                    if (m_alignCameraCombo)
+                    {
+                        resetAlignState(m_alignCameraCombo->currentText());
+                    }
+                });
 
         updatePreviewZoomControls();
         return m_previewControlsGroup;
@@ -366,13 +438,25 @@ namespace scopeone::ui
         }
 
         QAction* selAllAct = m_streamMenu->addAction("Select All");
-        connect(selAllAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewStreams);
+        connect(selAllAct, &QAction::triggered, this, [this]()
+        {
+            setPreviewStreamActionStates(QString(), true);
+        });
         QAction* selAllRawAct = m_streamMenu->addAction("Select All Raw");
-        connect(selAllRawAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewRaw);
+        connect(selAllRawAct, &QAction::triggered, this, [this]()
+        {
+            setPreviewStreamActionStates(QStringLiteral("raw:"), false);
+        });
         QAction* selAllProcAct = m_streamMenu->addAction("Select All Processed");
-        connect(selAllProcAct, &QAction::triggered, this, &DeviceControlWidget::onSelectAllPreviewProcessed);
+        connect(selAllProcAct, &QAction::triggered, this, [this]()
+        {
+            setPreviewStreamActionStates(QStringLiteral("proc:"), false);
+        });
         QAction* clrSelAct = m_streamMenu->addAction("Clear Selection");
-        connect(clrSelAct, &QAction::triggered, this, &DeviceControlWidget::onClearPreviewSelection);
+        connect(clrSelAct, &QAction::triggered, this, [this]()
+        {
+            setPreviewStreamActionStates(QString(), false);
+        });
         m_streamMenu->addSeparator();
     }
 
@@ -424,7 +508,7 @@ namespace scopeone::ui
             else if (!cameraIds.isEmpty())
             {
                 m_alignCameraCombo->setCurrentIndex(0);
-                onAlignCameraChanged(cameraIds.first());
+                resetAlignState(cameraIds.first());
             }
         }
     }
@@ -485,143 +569,8 @@ namespace scopeone::ui
         updatePreviewSelectionFromActions();
     }
 
-    void DeviceControlWidget::onSelectAllPreviewStreams()
+    void DeviceControlWidget::resetAlignState(const QString& cameraId)
     {
-        setPreviewStreamActionStates(QString(), true);
-    }
-
-    void DeviceControlWidget::onClearPreviewSelection()
-    {
-        setPreviewStreamActionStates(QString(), false);
-    }
-
-    void DeviceControlWidget::onSelectAllPreviewRaw()
-    {
-        setPreviewStreamActionStates(QStringLiteral("raw:"), false);
-    }
-
-    void DeviceControlWidget::onSelectAllPreviewProcessed()
-    {
-        setPreviewStreamActionStates(QStringLiteral("proc:"), false);
-    }
-
-    void DeviceControlWidget::onAlignCameraChanged(const QString& cameraId)
-    {
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-
-        if (m_alignXSpinBox && m_alignYSpinBox)
-        {
-            QSignalBlocker bx(*m_alignXSpinBox);
-            QSignalBlocker by(*m_alignYSpinBox);
-            m_alignXSpinBox->setValue(0);
-            m_alignYSpinBox->setValue(0);
-        }
-
-        if (m_alignZoomSpinBox)
-        {
-            QSignalBlocker bz(*m_alignZoomSpinBox);
-            m_alignZoomSpinBox->setValue(100);
-        }
-
-        if (m_alignFlipXCheckBox && m_alignFlipYCheckBox)
-        {
-            QSignalBlocker bfx(*m_alignFlipXCheckBox);
-            QSignalBlocker bfy(*m_alignFlipYCheckBox);
-            m_alignFlipXCheckBox->setChecked(false);
-            m_alignFlipYCheckBox->setChecked(false);
-        }
-
-        if (m_previewWidget)
-        {
-            m_previewWidget->setCameraOffset(cameraId, 0, 0);
-            m_previewWidget->setCameraFlip(cameraId, false, false);
-            m_previewWidget->setCameraZoomPercent(cameraId, 100);
-        }
-    }
-
-    void DeviceControlWidget::onAlignXChanged(int x)
-    {
-        if (!m_previewWidget || !m_alignCameraCombo || !m_alignYSpinBox)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        const int y = m_alignYSpinBox->value();
-        m_previewWidget->setCameraOffset(cameraId, x, y);
-    }
-
-    void DeviceControlWidget::onAlignYChanged(int y)
-    {
-        if (!m_previewWidget || !m_alignCameraCombo || !m_alignXSpinBox)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        const int x = m_alignXSpinBox->value();
-        m_previewWidget->setCameraOffset(cameraId, x, y);
-    }
-
-    void DeviceControlWidget::onAlignZoomChanged(int percent)
-    {
-        if (!m_previewWidget || !m_alignCameraCombo)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        m_previewWidget->setCameraZoomPercent(cameraId, percent);
-    }
-
-    void DeviceControlWidget::onAlignFlipXChanged(bool enabled)
-    {
-        if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipYCheckBox)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        m_previewWidget->setCameraFlip(cameraId, enabled, m_alignFlipYCheckBox->isChecked());
-    }
-
-    void DeviceControlWidget::onAlignFlipYChanged(bool enabled)
-    {
-        if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipXCheckBox)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        m_previewWidget->setCameraFlip(cameraId, m_alignFlipXCheckBox->isChecked(), enabled);
-    }
-
-    void DeviceControlWidget::onAlignResetClicked()
-    {
-        if (!m_alignCameraCombo)
-        {
-            return;
-        }
-        const QString cameraId = m_alignCameraCombo->currentText();
-
         if (m_alignXSpinBox && m_alignYSpinBox)
         {
             QSignalBlocker bx(*m_alignXSpinBox);

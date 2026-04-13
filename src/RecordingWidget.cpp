@@ -616,7 +616,7 @@ void RecordingWidget::onDetectorChanged(const QString&)
 void RecordingWidget::onToAlbumClicked()
 {
     if (appendSelectedFramesToAlbum()) {
-        updateUiState();
+        updateAlbumState();
     }
 }
 
@@ -624,11 +624,6 @@ void RecordingWidget::onAlbumClicked()
 {
     if (!m_albumSession || albumFrameCount() <= 0) {
         qWarning().noquote() << "Album is empty";
-        return;
-    }
-
-    if (!m_albumSession || albumFrameCount() <= 0) {
-        qWarning().noquote() << "Album preview session is invalid";
         return;
     }
 
@@ -653,7 +648,7 @@ void RecordingWidget::onAlbumClicked()
 void RecordingWidget::onClearAlbumClicked()
 {
     m_albumSession.reset();
-    updateUiState();
+    updateAlbumState();
 }
 
 void RecordingWidget::updateUiState()
@@ -669,8 +664,6 @@ void RecordingWidget::updateUiState()
     m_fileNameLineEdit->setEnabled(editingEnabled);
     m_autoNameButton->setEnabled(editingEnabled);
     m_toAlbumButton->setEnabled(hasSelectedCameras);
-    m_albumButton->setEnabled(albumFrameCount() > 0);
-    m_clearAlbumButton->setEnabled(albumFrameCount() > 0);
     m_formatCombo->setEnabled(editingEnabled);
     const bool binaryFormat =
         m_formatCombo->currentData().toInt() == static_cast<int>(scopeone::core::RecordingFormat::Binary);
@@ -702,7 +695,7 @@ void RecordingWidget::updateUiState()
     m_mdaOrderUpButton->setEnabled(mdaEnabled && orderRow > 0);
     m_mdaOrderDownButton->setEnabled(mdaEnabled && orderRow >= 0 && orderRow < orderCount - 1);
 
-    const bool hasCameras = !selectedCameraIds().isEmpty() || mdaCapable;
+    const bool hasCameras = hasSelectedCameras || mdaCapable;
     const bool hasDir = !m_saveDirLineEdit->text().trimmed().isEmpty();
     const bool hasName = !normalizedBaseName().isEmpty();
     const bool canStart = !m_isRecording && hasCameras && hasDir && hasName;
@@ -844,14 +837,16 @@ bool RecordingWidget::startRecording()
 
 void RecordingWidget::updateAlbumState()
 {
+    const int frameCount = albumFrameCount();
+    const bool hasAlbumFrames = frameCount > 0;
     if (m_albumCountLabel) {
-        m_albumCountLabel->setText(formatAlbumCountText(albumFrameCount()));
+        m_albumCountLabel->setText(formatAlbumCountText(frameCount));
     }
     if (m_albumButton) {
-        m_albumButton->setEnabled(albumFrameCount() > 0);
+        m_albumButton->setEnabled(hasAlbumFrames);
     }
     if (m_clearAlbumButton) {
-        m_clearAlbumButton->setEnabled(albumFrameCount() > 0);
+        m_clearAlbumButton->setEnabled(hasAlbumFrames);
     }
 }
 

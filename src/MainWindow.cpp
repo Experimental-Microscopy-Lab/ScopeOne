@@ -28,6 +28,25 @@
 
 namespace scopeone::ui
 {
+    namespace
+    {
+        QString rawStreamKey(const QString& cameraId)
+        {
+            return QStringLiteral("raw:%1").arg(cameraId);
+        }
+
+        QStringList rawStreamKeys(const QStringList& cameraIds)
+        {
+            QStringList streamKeys;
+            streamKeys.reserve(cameraIds.size());
+            for (const QString& cameraId : cameraIds)
+            {
+                streamKeys.append(rawStreamKey(cameraId));
+            }
+            return streamKeys;
+        }
+    }
+
     MainWindow::MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QMainWindow(parent)
           , m_scopeonecore(core)
@@ -424,16 +443,11 @@ namespace scopeone::ui
         const QStringList cameraIds = m_scopeonecore->cameraIds();
         if (normalizedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            QStringList selectedStreams;
-            for (const QString& id : cameraIds)
-            {
-                selectedStreams << (QStringLiteral("raw:") + id);
-            }
-            m_previewWidget->setSelectedStreams(selectedStreams);
+            m_previewWidget->setSelectedStreams(rawStreamKeys(cameraIds));
             return;
         }
 
-        m_previewWidget->setSelectedStreams({QStringLiteral("raw:") + normalizedTarget});
+        m_previewWidget->setSelectedStreams({rawStreamKey(normalizedTarget)});
 
         // Keep only one live preview
         for (const QString& id : cameraIds)
@@ -495,7 +509,7 @@ namespace scopeone::ui
 
         if (m_previewWidget && !cameraIds.isEmpty())
         {
-            m_previewWidget->setSelectedStreams({QStringLiteral("raw:") + cameraIds.first()});
+            m_previewWidget->setSelectedStreams({rawStreamKey(cameraIds.first())});
         }
 
         if (m_recordingWidget)
