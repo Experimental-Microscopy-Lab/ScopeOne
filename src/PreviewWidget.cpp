@@ -9,7 +9,6 @@
 namespace scopeone::ui {
 
 using scopeone::core::ImageFrame;
-using scopeone::core::ImagePixelFormat;
 
 namespace {
 
@@ -280,12 +279,6 @@ bool PreviewWidget::isFitToWindow() const
     return m_fitToWindow;
 }
 
-void PreviewWidget::setPlaceholderText(const QString& text)
-{
-    m_placeholderText = text;
-    update();
-}
-
 void PreviewWidget::setCameraOffset(const QString& cameraId, int offsetX, int offsetY)
 {
     QMutexLocker lock(&m_mutex);
@@ -407,14 +400,14 @@ bool PreviewWidget::resolveDisplayGeometry(const CameraFrameState& frameState,
         if (!frameState.processedFrame.isValid()) {
             return false;
         }
-        displayRect = targetRectForFrame(frameState.processedFrame, frameState, area);
         imageSize = frameState.processedFrame.size();
+        displayRect = targetRectForImageSize(imageSize, frameState, area);
     } else {
         if (!hasRawFrame(frameState)) {
             return false;
         }
-        displayRect = targetRectForRaw(frameState, area);
         imageSize = rawFrameSize(frameState);
+        displayRect = targetRectForImageSize(imageSize, frameState, area);
     }
 
     return imageSize.width() > 0
@@ -1036,95 +1029,17 @@ void PreviewWidget::setUvTransform(bool flipX, bool flipY)
     if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
 }
 
-QRect PreviewWidget::targetRectForRaw(const CameraFrameState& frameState, const QRect& avail) const
-{
-    const QSize rawSize = rawFrameSize(frameState);
-    const int w = rawSize.width();
-    const int h = rawSize.height();
-    if (w <= 0 || h <= 0 || avail.width() <= 0 || avail.height() <= 0) return avail;
-
-    QSize s(w, h);
-    if (m_fitToWindow) {
-        s.scale(avail.size(), Qt::KeepAspectRatio);
-        s = s * (frameState.zoomPercent / 100.0);
-    } else {
-        const double z = (m_zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
-        s = s * z;
-    }
-
-    int x = avail.x() + (avail.width() - s.width())/2 + frameState.offsetX;
-    int y = avail.y() + (avail.height() - s.height())/2 + frameState.offsetY;
-    if (!m_fitToWindow) {
-        x += m_viewOffset.x();
-        y += m_viewOffset.y();
-    }
-    return QRect(QPoint(x,y), s);
-}
-
 void PreviewWidget::drawRawInRect(const QString& cameraId, const CameraFrameState& frameState, const QRect& r, float alpha)
 {
-    ensureGlPipeline();
-    GLenum internal = 0, fmt = 0, type = 0;
-    if (frameState.rawFrame.pixelFormat == ImagePixelFormat::Mono16) {
-        internal = GL_R16;
-        fmt = GL_RED;
-        type = GL_UNSIGNED_SHORT;
-    } else if (frameState.rawFrame.pixelFormat == ImagePixelFormat::Mono8) {
-        internal = GL_R8;
-        fmt = GL_RED;
-        type = GL_UNSIGNED_BYTE;
-    } else {
-        return;
-    }
-
-    const int w = frameState.rawFrame.width;
-    const int h = frameState.rawFrame.height;
-
-    const QString cacheKey = QString("raw:%1").arg(cameraId);
-    GLuint texId = getOrCreateTexture(cacheKey, w, h, internal);
-
-    glBindTexture(GL_TEXTURE_2D, texId);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    const int bpp = (type == GL_UNSIGNED_SHORT) ? 2 : 1;
-    const int stride = frameState.rawFrame.stride;
-    if (stride > 0 && stride != w * bpp) {
-        const int rowLen = stride / bpp;
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLen);
-    }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, type, frameState.rawFrame.bytes.constData());
-    if (stride > 0 && stride != w * bpp) {
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    }
-
-    m_prog.bind();
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texId);
-    m_prog.setUniformValue(m_uTex, 0);
-
-    const int levelDomain = qMax(1, frameState.rawLevelDomainMax);
-    const float minNorm = static_cast<float>(frameState.rawLevelMin) / static_cast<float>(levelDomain);
-    const float maxNorm = static_cast<float>(frameState.rawLevelMax) / static_cast<float>(levelDomain);
-    m_prog.setUniformValue(m_uMinNorm, minNorm);
-    m_prog.setUniformValue(m_uMaxNorm, maxNorm);
-    const int bitDepth = qBound(8, frameState.rawFrame.bitsPerSample, 16);
-    const float bitMax = static_cast<float>((1u << bitDepth) - 1u);
-    const float sampleMax = (internal == GL_R8) ? 255.0f : 65535.0f;
-    const float texNormScale = sampleMax / bitMax;
-    m_prog.setUniformValue(m_uTexNormScale, texNormScale);
-    m_prog.setUniformValue(m_uAlpha, alpha);
-    setUvTransform(frameState.flipX, frameState.flipY);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    applyViewportForRect(r);
-
-    m_vao.bind();
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    m_vao.release();
-    glDisable(GL_BLEND);
-    m_prog.release();
+    drawFrameInRect(QStringLiteral("raw:%1").arg(cameraId),
+                    frameState.rawFrame,
+                    r,
+                    alpha,
+                    frameState.flipX,
+                    frameState.flipY,
+                    frameState.rawLevelMin,
+                    frameState.rawLevelMax,
+                    frameState.rawLevelDomainMax);
 }
 void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                     const ImageFrame& frame,
@@ -1201,11 +1116,13 @@ void PreviewWidget::drawFrameInRect(const QString& textureKey,
 }
 
 
-QRect PreviewWidget::targetRectForFrame(const ImageFrame& frame, const CameraFrameState& frameState, const QRect& avail) const
+QRect PreviewWidget::targetRectForImageSize(const QSize& imageSize,
+                                           const CameraFrameState& frameState,
+                                           const QRect& avail) const
 {
-    if (!frame.isValid() || avail.width() <= 0 || avail.height() <= 0) return avail;
+    if (imageSize.width() <= 0 || imageSize.height() <= 0 || avail.width() <= 0 || avail.height() <= 0) return avail;
 
-    QSize s = frame.size();
+    QSize s = imageSize;
     if (m_fitToWindow) {
         s.scale(avail.size(), Qt::KeepAspectRatio);
         s = s * (frameState.zoomPercent / 100.0);
@@ -1304,7 +1221,6 @@ void PreviewWidget::cancelROIDrawing()
     m_roiDragging = false;
     m_roiTargetCameraId.clear();
     unsetCursor();
-    emit roiCancelled();
     update();
 }
 
@@ -1330,7 +1246,6 @@ void PreviewWidget::cancelLineDrawing()
     m_lineDragging = false;
     m_lineTargetCameraId.clear();
     unsetCursor();
-    emit lineDrawingCancelled();
     update();
 }
 

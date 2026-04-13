@@ -461,7 +461,10 @@ namespace scopeone::ui
                     updateConfigWidget();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingError,
-                this, &ImageProcessingWidget::onProcessingError);
+                this, [](const QString& error)
+                {
+                    qWarning().noquote() << QString("Processing error: %1").arg(error);
+                });
 
         setupUI();
         updateModuleList();
@@ -631,11 +634,6 @@ namespace scopeone::ui
         {
             m_configStack->parentWidget()->setEnabled(!running);
         }
-    }
-
-    void ImageProcessingWidget::onProcessingError(const QString& error)
-    {
-        qWarning().noquote() << QString("Processing error: %1").arg(error);
     }
 
     void ImageProcessingWidget::onAddModuleClicked()

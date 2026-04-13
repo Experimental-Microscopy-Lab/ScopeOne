@@ -19,14 +19,12 @@ public:
     ~DevicePropertyWidget() override = default;
 
     void refresh(bool fromCache = false);
-    void updateProperty(const QString& device, const QString& property, const QString& value);
 
 signals:
     void propertyChanged(const QString& device, const QString& property, const QString& value);
     void errorOccurred(const QString& message);
 
 private:
-    void onItemChanged(QTreeWidgetItem* item, int column);
     void onRefreshClicked();
     void onShowReadOnlyToggled(bool show);
     void onShowPreInitToggled(bool show);
@@ -40,9 +38,6 @@ private:
         QTreeWidgetItem* deviceItem,
         const QString& deviceLabel,
         const scopeone::core::ScopeOneCore::DevicePropertyInfo& propertyInfo);
-
-    QTreeWidgetItem* findDeviceItem(const QString& deviceLabel);
-    QTreeWidgetItem* findPropertyItem(QTreeWidgetItem* deviceItem, const QString& propertyName);
 
     scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
 

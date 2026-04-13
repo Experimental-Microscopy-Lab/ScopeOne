@@ -230,31 +230,6 @@ RecordingWidget::RecordingWidget(scopeone::core::ScopeOneCore* core, QWidget* pa
     connect(m_mdaOrderList, &QListWidget::currentRowChanged, this, [this]() { updateUiState(); });
     connect(m_mdaOrderUpButton, &QPushButton::clicked, this, [this]() { moveOrderItem(-1); });
     connect(m_mdaOrderDownButton, &QPushButton::clicked, this, [this]() { moveOrderItem(1); });
-
-    bindCoreSignals();
-
-    if (m_saveDirLineEdit->text().trimmed().isEmpty()) {
-        m_saveDirLineEdit->setText(getLastSaveDirectory());
-    }
-    if (m_fileNameLineEdit->text().trimmed().isEmpty()) {
-        m_fileNameLineEdit->setText(buildTimestampBaseName());
-    }
-
-    updateUiState();
-    qInfo().noquote() << "Initialized";
-}
-
-RecordingWidget::~RecordingWidget()
-{
-    stopRecording();
-}
-
-void RecordingWidget::bindCoreSignals()
-{
-    if (m_coreSignalsBound) {
-        return;
-    }
-
     connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingProgressChanged, this,
             [this](int phase,
                    qint64 frameCurrent,
@@ -337,7 +312,21 @@ void RecordingWidget::bindCoreSignals()
                 }
                 updateAlbumState();
             });
-    m_coreSignalsBound = true;
+
+    if (m_saveDirLineEdit->text().trimmed().isEmpty()) {
+        m_saveDirLineEdit->setText(getLastSaveDirectory());
+    }
+    if (m_fileNameLineEdit->text().trimmed().isEmpty()) {
+        m_fileNameLineEdit->setText(buildTimestampBaseName());
+    }
+
+    updateUiState();
+    qInfo().noquote() << "Initialized";
+}
+
+RecordingWidget::~RecordingWidget()
+{
+    stopRecording();
 }
 
 void RecordingWidget::setupUI()
@@ -638,13 +627,12 @@ void RecordingWidget::onAlbumClicked()
         return;
     }
 
-    auto previewSession = buildAlbumPreviewSession();
-    if (!previewSession) {
+    if (!m_albumSession || albumFrameCount() <= 0) {
         qWarning().noquote() << "Album preview session is invalid";
         return;
     }
 
-    ImageSessionDialog dialog(previewSession, this);
+    ImageSessionDialog dialog(m_albumSession, this);
     dialog.setSaveEnabled(true);
     dialog.setSaveButtonText(QStringLiteral("Save Album"));
     if (dialog.exec() != QDialog::Accepted || !dialog.saveRequested()) {
@@ -935,23 +923,13 @@ QString RecordingWidget::albumBaseName() const
     return base + QStringLiteral("_album");
 }
 
-std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWidget::buildAlbumPreviewSession() const
+std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWidget::buildAlbumSaveSession() const
 {
     if (!m_albumSession || albumFrameCount() <= 0) {
         return {};
     }
 
-    return m_albumSession;
-}
-
-std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWidget::buildAlbumSaveSession() const
-{
-    auto session = buildAlbumPreviewSession();
-    if (!session) {
-        return {};
-    }
-
-    session = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>(*session);
+    auto session = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>(*m_albumSession);
 
     auto capturePlan = session->capturePlan();
     capturePlan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());

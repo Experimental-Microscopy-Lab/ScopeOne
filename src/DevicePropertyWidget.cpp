@@ -2,7 +2,6 @@
 
 #include "scopeone/ScopeOneCore.h"
 
-#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleValidator>
@@ -12,7 +11,6 @@
 #include <QIntValidator>
 #include <QLineEdit>
 #include <QLocale>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSpinBox>
@@ -122,8 +120,6 @@ namespace scopeone::ui
                     "  min-height: %1px; max-height: %1px; }")
                 .arg(rowHeight));
         }
-
-        connect(m_propertyTree, &QTreeWidget::itemChanged, this, &DevicePropertyWidget::onItemChanged);
 
         mainLayout->addLayout(controlLayout);
         mainLayout->addWidget(m_propertyTree);
@@ -342,41 +338,6 @@ namespace scopeone::ui
         }
     }
 
-    void DevicePropertyWidget::onItemChanged(QTreeWidgetItem* item, int column)
-    {
-        // Push user edits back to the device
-        if (m_updating || column != ValueColumn)
-        {
-            return;
-        }
-
-        if (!item->parent())
-        {
-            return;
-        }
-
-        const QString device = item->data(NameColumn, Qt::UserRole).toString();
-        const QString property = item->data(NameColumn, Qt::UserRole + 1).toString();
-        const QString newValue = item->text(ValueColumn);
-
-        if (device.isEmpty() || property.isEmpty())
-        {
-            return;
-        }
-
-        QString error;
-        if (!m_scopeonecore->setPropertyValue(device, property, newValue, &error))
-        {
-            emit errorOccurred(QString("Error setting property: %1").arg(error));
-            const QString oldValue = m_scopeonecore->getPropertyValue(device, property, false);
-            m_updating = true;
-            item->setText(ValueColumn, oldValue);
-            m_updating = false;
-            return;
-        }
-        emit propertyChanged(device, property, newValue);
-    }
-
     void DevicePropertyWidget::onRefreshClicked()
     {
         refresh(false);
@@ -415,46 +376,4 @@ namespace scopeone::ui
         }
     }
 
-    void DevicePropertyWidget::updateProperty(const QString& device, const QString& property, const QString& value)
-    {
-        QTreeWidgetItem* deviceItem = findDeviceItem(device);
-        if (!deviceItem) return;
-
-        QTreeWidgetItem* propertyItem = findPropertyItem(deviceItem, property);
-        if (!propertyItem) return;
-
-        m_updating = true;
-        propertyItem->setText(ValueColumn, value);
-        m_updating = false;
-    }
-
-    QTreeWidgetItem* DevicePropertyWidget::findDeviceItem(const QString& deviceLabel)
-    {
-        if (!m_propertyTree)
-        {
-            return nullptr;
-        }
-        for (int i = 0; i < m_propertyTree->topLevelItemCount(); ++i)
-        {
-            QTreeWidgetItem* item = m_propertyTree->topLevelItem(i);
-            if (item->text(NameColumn) == deviceLabel)
-            {
-                return item;
-            }
-        }
-        return nullptr;
-    }
-
-    QTreeWidgetItem* DevicePropertyWidget::findPropertyItem(QTreeWidgetItem* deviceItem, const QString& propertyName)
-    {
-        for (int i = 0; i < deviceItem->childCount(); ++i)
-        {
-            QTreeWidgetItem* item = deviceItem->child(i);
-            if (item->text(NameColumn) == propertyName)
-            {
-                return item;
-            }
-        }
-        return nullptr;
-    }
 } // namespace scopeone::ui

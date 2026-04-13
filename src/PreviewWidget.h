@@ -83,14 +83,12 @@ signals:
     void fitToWindowChanged(bool enabled);
     void mousePositionChanged(const QPoint& widgetPos);
     void roiDrawn(const QString& cameraId, int x, int y, int width, int height);
-    void roiCancelled();
     void lineDrawn(const QString& cameraId,
                    int startX,
                    int startY,
                    int endX,
                    int endY,
                    bool processed);
-    void lineDrawingCancelled();
 
 protected:
     void initializeGL() override;
@@ -194,7 +192,6 @@ private:
     void updateFpsOnFrame();
     void updateCameraInfoDisplay();
     bool registerAvailableCamera(const QString& cameraId);
-    void setPlaceholderText(const QString& text);
     bool hasRawFrame(const CameraFrameState& frameState) const;
     QSize rawFrameSize(const CameraFrameState& frameState) const;
     QMap<QString, CameraFrameState> snapshotCameraFrames() const;
@@ -225,8 +222,9 @@ private:
                          int levelMin,
                          int levelMax,
                          int levelDomainMax);
-    QRect targetRectForRaw(const CameraFrameState& frameState, const QRect& avail) const;
-    QRect targetRectForFrame(const scopeone::core::ImageFrame& frame, const CameraFrameState& frameState, const QRect& avail) const;
+    QRect targetRectForImageSize(const QSize& imageSize,
+                                 const CameraFrameState& frameState,
+                                 const QRect& avail) const;
     void setUvTransform(bool flipX, bool flipY);
     void applyViewportForRect(const QRect& logicalRect);
     std::vector<QRect> computeLayout(int count) const;

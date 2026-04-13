@@ -29,8 +29,6 @@ public:
     void setAvailableCameras(const QStringList& cameraIds);
 
 private:
-
-    void bindCoreSignals();
     void onBrowseClicked();
     void onAutoNameClicked();
     void onStartStopClicked();
@@ -48,7 +46,6 @@ private:
     bool appendSelectedFramesToAlbum();
     int albumFrameCount() const;
     QString albumBaseName() const;
-    std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> buildAlbumPreviewSession() const;
     std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> buildAlbumSaveSession() const;
 
     QString getLastSaveDirectory() const;
@@ -110,7 +107,6 @@ private:
 
 
     scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-    bool m_coreSignalsBound{false};
     QStringList m_availableCameraIds;
     std::vector<int> m_orderPreference;
     bool m_isRecording{false};

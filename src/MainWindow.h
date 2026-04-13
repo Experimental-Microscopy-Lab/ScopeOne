@@ -33,13 +33,6 @@ public:
 private:
     void setupUI();
     void setupSignalWiring();
-    void setupPreviewViewWiring();
-    void setupCoreSignalWiring();
-    void setupPreviewSignalWiring();
-    void setupDeviceControlSignalWiring();
-    void setupImageProcessingSignalWiring();
-    void setupMenuSignalWiring();
-    void setupPropertyBrowserSignalWiring();
 
     void setupMenuBar();
     void setupDeviceControl();

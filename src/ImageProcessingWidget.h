@@ -28,7 +28,6 @@ private:
     void onModuleSelectionChanged();
     void onStartProcessing();
     void onStopProcessing();
-    void onProcessingError(const QString& error);
 
     void setupUI();
     void setupRunControls();

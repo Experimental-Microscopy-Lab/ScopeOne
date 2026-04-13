@@ -46,7 +46,6 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_showTimestamps(true)
           , m_autoScroll(true)
-          , m_messageCount(0)
     {
         setupUI();
         connect(m_clearButton, &QPushButton::clicked, this, &ConsoleWidget::onClearClicked);
@@ -133,8 +132,7 @@ namespace scopeone::ui
 
         m_messages.append(msg);
 
-        m_messageCount++;
-        m_messageCountLabel->setText(QString("Messages: %1").arg(m_messageCount));
+        m_messageCountLabel->setText(QString("Messages: %1").arg(m_messages.size()));
 
         if (m_messageFilter.isEmpty() || m_messageFilter.contains(msg.type))
         {
@@ -151,7 +149,6 @@ namespace scopeone::ui
     void ConsoleWidget::clearMessages()
     {
         m_messages.clear();
-        m_messageCount = 0;
         m_consoleTextEdit->clear();
         m_messageCountLabel->setText("Messages: 0");
     }

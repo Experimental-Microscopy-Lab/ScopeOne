@@ -66,8 +66,6 @@ private:
     bool m_showTimestamps;
     bool m_autoScroll;
     QStringList m_messageFilter;
-    int m_messageCount;
-
     QList<ConsoleMessage> m_messages;
 };
 
