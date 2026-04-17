@@ -2,8 +2,6 @@
 #include "internal/MultiProcessCameraManager.h"
 #include <QDebug>
 #include <QCoreApplication>
-#include <QFile>
-#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <algorithm>
@@ -23,7 +21,7 @@ namespace scopeone::core::internal
             double exposureMs{10.0};
         };
 
-        struct DevicePropertyConfig
+        struct DevicePropertyState
         {
             QStringList preInitProperties;
             QStringList properties;
@@ -45,78 +43,81 @@ namespace scopeone::core::internal
             return QString::fromUtf8(QJsonDocument(property).toJson(QJsonDocument::Compact));
         }
 
-        QHash<QString, DevicePropertyConfig> loadDevicePropertiesFromConfig(const QString& configPath)
+        DevicePropertyState captureDevicePropertyState(CMMCore& core, const QString& deviceLabel)
         {
-            QHash<QString, DevicePropertyConfig> deviceProperties;
-            if (configPath.trimmed().isEmpty())
+            DevicePropertyState state;
+            const QString trimmedLabel = deviceLabel.trimmed();
+            if (trimmedLabel.isEmpty())
             {
-                return deviceProperties;
+                return state;
             }
 
-            QFile configFile(configPath);
-            if (!configFile.open(QIODevice::ReadOnly | QIODevice::Text))
+            const std::string label = trimmedLabel.toStdString();
+            try
             {
-                qWarning().noquote() << QString("Failed to open config for property scan: %1").arg(configPath);
-                return deviceProperties;
-            }
-
-            bool inPreInitSection = false;
-            while (!configFile.atEnd())
-            {
-                const QString rawLine = QString::fromUtf8(configFile.readLine());
-                const QString line = rawLine.trimmed();
-                if (line.isEmpty() || line.startsWith('#'))
+                const auto names = core.getDevicePropertyNames(label.c_str());
+                for (const auto& rawName : names)
                 {
-                    continue;
-                }
-
-                const QStringList parts = line.split(',', Qt::KeepEmptyParts);
-                if (parts.size() < 4)
-                {
-                    continue;
-                }
-
-                const QString command = parts[0].trimmed();
-                const QString deviceLabel = parts[1].trimmed();
-                const QString propertyName = parts[2].trimmed();
-                const QString propertyValue = parts.mid(3).join(QStringLiteral(","));
-
-                if (command == QStringLiteral("Property")
-                    && deviceLabel == QStringLiteral("Core")
-                    && propertyName == QStringLiteral("Initialize"))
-                {
-                    if (propertyValue.trimmed() == QStringLiteral("0"))
+                    const QString propertyName = QString::fromStdString(rawName).trimmed();
+                    if (propertyName.isEmpty())
                     {
-                        inPreInitSection = true;
                         continue;
                     }
-                    if (propertyValue.trimmed() == QStringLiteral("1"))
+
+                    const std::string property = propertyName.toStdString();
+
+                    QString value;
+                    try
                     {
-                        inPreInitSection = false;
+                        value = QString::fromStdString(core.getProperty(label.c_str(), property.c_str()));
+                    }
+                    catch (const CMMError&)
+                    {
                         continue;
                     }
-                }
 
-                if (command != QStringLiteral("Property")
-                    || deviceLabel.isEmpty()
-                    || deviceLabel == QStringLiteral("Core"))
-                {
-                    continue;
-                }
+                    bool preInit = false;
+                    try
+                    {
+                        preInit = core.isPropertyPreInit(label.c_str(), property.c_str());
+                    }
+                    catch (const CMMError&)
+                    {
+                    }
 
-                DevicePropertyConfig& config = deviceProperties[deviceLabel];
-                const QString encodedProperty = encodePropertyPayload(propertyName, propertyValue);
-                if (inPreInitSection)
-                {
-                    config.preInitProperties.append(encodedProperty);
-                }
-                else
-                {
-                    config.properties.append(encodedProperty);
+                    bool readOnly = false;
+                    try
+                    {
+                        readOnly = core.isPropertyReadOnly(label.c_str(), property.c_str());
+                    }
+                    catch (const CMMError&)
+                    {
+                    }
+
+                    if (!preInit && readOnly)
+                    {
+                        continue;
+                    }
+
+                    const QString encodedProperty = encodePropertyPayload(propertyName, value);
+                    if (preInit)
+                    {
+                        state.preInitProperties.append(encodedProperty);
+                    }
+                    else
+                    {
+                        state.properties.append(encodedProperty);
+                    }
                 }
             }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote()
+                    << QString("Failed to snapshot properties for '%1': %2")
+                           .arg(trimmedLabel, QString::fromStdString(error.getMsg()));
+            }
 
-            return deviceProperties;
+            return state;
         }
     } // namespace
 
@@ -171,8 +172,7 @@ namespace scopeone::core::internal
     }
 
     std::vector<CameraLoadInfo> loadedCameraInfos(CMMCore& core,
-                                                  const QStringList& loadedDevices,
-                                                  const QHash<QString, DevicePropertyConfig>& deviceProperties)
+                                                  const QStringList& loadedDevices)
     {
         // Read camera metadata before backend startup
         std::vector<CameraLoadInfo> cameras;
@@ -215,12 +215,9 @@ namespace scopeone::core::internal
                 catch (const CMMError&)
                 {
                 }
-                const auto propertyIt = deviceProperties.constFind(deviceName);
-                if (propertyIt != deviceProperties.constEnd())
-                {
-                    info.preInitProperties = propertyIt->preInitProperties;
-                    info.properties = propertyIt->properties;
-                }
+                const DevicePropertyState propertyState = captureDevicePropertyState(core, deviceName);
+                info.preInitProperties = propertyState.preInitProperties;
+                info.properties = propertyState.properties;
 
                 cameras.push_back(std::move(info));
             }
@@ -298,9 +295,8 @@ namespace scopeone::core::internal
         {
             qWarning().noquote() << QString("Failed to query loaded devices: %1").arg(listError);
         }
-        const QHash<QString, DevicePropertyConfig> deviceProperties = loadDevicePropertiesFromConfig(configPath);
         const std::vector<CameraLoadInfo> cameraInfos =
-            loadedCameraInfos(*m_mmcore, loadedDevices, deviceProperties);
+            loadedCameraInfos(*m_mmcore, loadedDevices);
         const bool useSingleCamera = (cameraInfos.size() == 1);
 
         int successCount = 0;
