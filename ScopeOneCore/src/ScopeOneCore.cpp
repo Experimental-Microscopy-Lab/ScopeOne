@@ -519,7 +519,6 @@ namespace scopeone::core
     }
 
     bool ScopeOneCore::loadConfigurationInternal(const QString& configPath,
-                                                 const QStringList& existingCameraIds,
                                                  LoadConfigResult* result,
                                                  QString* errorMessage)
     {
@@ -534,7 +533,7 @@ namespace scopeone::core
         }
         MMCoreManager::LoadConfigResult mmResult;
         if (!m_managers->mmcoreManager->loadConfigurationAndStartCameras(
-            configPath, m_managers->mpcm, existingCameraIds, &mmResult, errorMessage))
+            configPath, m_managers->mpcm, &mmResult, errorMessage))
         {
             return false;
         }
@@ -551,7 +550,15 @@ namespace scopeone::core
                                          LoadConfigResult* result,
                                          QString* errorMessage)
     {
-        return loadConfigurationInternal(configPath, m_cameraIds, result, errorMessage);
+        if (configPath.trimmed().isEmpty())
+        {
+            return loadConfigurationInternal(configPath, result, errorMessage);
+        }
+        if (!loadedDevices().isEmpty())
+        {
+            unloadConfiguration();
+        }
+        return loadConfigurationInternal(configPath, result, errorMessage);
     }
 
     void ScopeOneCore::unloadConfiguration()

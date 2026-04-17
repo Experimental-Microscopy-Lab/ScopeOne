@@ -32,6 +32,7 @@ namespace scopeone::core::internal
 
         bool startAgentFor(const QString& cameraId, const QString& adapter, const QString& device,
                            const QStringList& preInitProperties = QStringList(),
+                           const QStringList& properties = QStringList(),
                            double exposureMs = 0.0);
         bool stopAgentFor(const QString& cameraId);
 

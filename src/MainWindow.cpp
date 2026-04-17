@@ -746,6 +746,14 @@ namespace scopeone::ui
         settings.setValue(QStringLiteral("LastConfigDirectory"), QFileInfo(fileName).absolutePath());
         closeLoadConfigProgress();
 
+        const QStringList previousCameraIds = m_scopeonecore->cameraIds();
+        if (!m_scopeonecore->loadedDevices().isEmpty())
+        {
+            m_scopeonecore->unloadConfiguration();
+            applyUnloadedCameraState(previousCameraIds);
+            refreshDevicePanels();
+        }
+
         m_loadConfigProgress = new QProgressDialog(tr("Loading configuration..."),
                                                    QString(),
                                                    0, 0,

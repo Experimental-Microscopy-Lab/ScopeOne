@@ -5,61 +5,60 @@
 #include <memory>
 #include "MMCore.h"
 
-namespace scopeone::core::internal {
-
-class MultiProcessCameraManager;
-
-enum class DeviceType {
-    UnknownType = 0,
-    AnyType,
-    CameraDevice,
-    ShutterDevice,
-    StateDevice,
-    StageDevice,
-    XYStageDevice,
-    SerialDevice,
-    GenericDevice,
-    AutoFocusDevice,
-    CoreDevice,
-    ImageProcessorDevice,
-    SignalIODevice,
-    MagnifierDevice,
-    SLMDevice,
-    GalvoDevice,
-    HubDevice
-};
-
-class MMCoreManager : public QObject
+namespace scopeone::core::internal
 {
-    Q_OBJECT
+    class MultiProcessCameraManager;
 
-public:
-    struct LoadConfigResult {
-        QStringList cameraIds;
-        QStringList agentsStarted;
-        int successCount{0};
-        int failCount{0};
-        int skippedCameraCount{0};
-        bool foundCamera{false};
+    enum class DeviceType
+    {
+        UnknownType = 0,
+        AnyType,
+        CameraDevice,
+        ShutterDevice,
+        StateDevice,
+        StageDevice,
+        XYStageDevice,
+        SerialDevice,
+        GenericDevice,
+        AutoFocusDevice,
+        CoreDevice,
+        ImageProcessorDevice,
+        SignalIODevice,
+        MagnifierDevice,
+        SLMDevice,
+        GalvoDevice,
+        HubDevice
     };
 
-    explicit MMCoreManager(QObject* parent = nullptr);
-    ~MMCoreManager() override = default;
+    class MMCoreManager : public QObject
+    {
+        Q_OBJECT
 
-    std::shared_ptr<CMMCore> getCore() const { return m_mmcore; }
+    public:
+        struct LoadConfigResult
+        {
+            QStringList cameraIds;
+            QStringList agentsStarted;
+            int successCount{0};
+            int failCount{0};
+            int skippedCameraCount{0};
+            bool foundCamera{false};
+        };
 
-    QString getDeviceTypeString(DeviceType type) const;
-    bool loadConfigurationAndStartCameras(const QString& configPath,
-                                          MultiProcessCameraManager* mpcm,
-                                          const QStringList& existingCameraIds,
-                                          LoadConfigResult* result,
-                                          QString* errorMessage);
+        explicit MMCoreManager(QObject* parent = nullptr);
+        ~MMCoreManager() override = default;
 
-private:
-    std::shared_ptr<CMMCore> m_mmcore;
+        std::shared_ptr<CMMCore> getCore() const { return m_mmcore; }
 
-};
+        QString getDeviceTypeString(DeviceType type) const;
+        bool loadConfigurationAndStartCameras(const QString& configPath,
+                                              MultiProcessCameraManager* mpcm,
+                                              LoadConfigResult* result,
+                                              QString* errorMessage);
 
+    private:
+        std::shared_ptr<CMMCore> m_mmcore;
+    };
 }
 
 Q_DECLARE_METATYPE(scopeone::core::internal::DeviceType)

@@ -2002,6 +2002,7 @@ namespace scopeone::core::internal
                                                   const QString& adapter,
                                                   const QString& device,
                                                   const QStringList& preInitProperties,
+                                                  const QStringList& properties,
                                                   double exposureMs)
     {
         if (cameraId.trimmed().isEmpty() || adapter.trimmed().isEmpty() || device.trimmed().isEmpty())
@@ -2057,6 +2058,13 @@ namespace scopeone::core::internal
             if (!encodedProperty.isEmpty())
             {
                 args << "--preinit" << encodedProperty;
+            }
+        }
+        for (const QString& encodedProperty : properties)
+        {
+            if (!encodedProperty.isEmpty())
+            {
+                args << "--property" << encodedProperty;
             }
         }
         slot->process->setProgram(agentPath);

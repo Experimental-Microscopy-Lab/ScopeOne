@@ -163,6 +163,7 @@ namespace scopeone::core::internal
                      QString device,
                      QString shmKey,
                      QStringList preInitProperties,
+                     QStringList properties,
                      double exposureMs,
                      bool autoPreview,
                      QObject* parent = nullptr)
@@ -172,6 +173,7 @@ namespace scopeone::core::internal
               , m_device(std::move(device))
               , m_shmKey(std::move(shmKey))
               , m_preInitProperties(std::move(preInitProperties))
+              , m_properties(std::move(properties))
               , m_exposureMs(exposureMs)
               , m_autoPreview(autoPreview)
         {
@@ -204,7 +206,7 @@ namespace scopeone::core::internal
 
                 m_mmcore->loadDevice(label.c_str(), adapter.c_str(), device.c_str());
                 QString preInitError;
-                if (!applyPreInitProperties(label, &preInitError))
+                if (!applyProperties(m_preInitProperties, label, QStringLiteral("pre-init property"), &preInitError))
                 {
                     m_lastError = preInitError;
                     setState(State::Error, m_lastError);
@@ -212,6 +214,14 @@ namespace scopeone::core::internal
                 }
                 m_mmcore->initializeDevice(label.c_str());
                 m_mmcore->setCameraDevice(label.c_str());
+
+                QString propertyError;
+                if (!applyProperties(m_properties, label, QStringLiteral("property"), &propertyError))
+                {
+                    m_lastError = propertyError;
+                    setState(State::Error, m_lastError);
+                    return false;
+                }
 
                 try
                 {
@@ -331,7 +341,10 @@ namespace scopeone::core::internal
                                       quint64 requestId,
                                       const QString& error) const;
         QJsonObject makeEvent(const QString& type) const;
-        bool applyPreInitProperties(const std::string& label, QString* errorMessage);
+        bool applyProperties(const QStringList& encodedProperties,
+                             const std::string& label,
+                             const QString& propertyKind,
+                             QString* errorMessage);
         void emitPreviewStateEvent();
         void emitAgentErrorEvent(const QString& error);
         void emitBufferOverflowEvent(long bufferCapacity);
@@ -348,6 +361,7 @@ namespace scopeone::core::internal
         QString m_device;
         QString m_shmKey;
         QStringList m_preInitProperties;
+        QStringList m_properties;
         double m_exposureMs{10.0};
         bool m_autoPreview{false};
 
@@ -372,9 +386,12 @@ namespace scopeone::core::internal
         emit eventReady(makeEvent(agent::kEventHello));
     }
 
-    bool AgentRuntime::applyPreInitProperties(const std::string& label, QString* errorMessage)
+    bool AgentRuntime::applyProperties(const QStringList& encodedProperties,
+                                       const std::string& label,
+                                       const QString& propertyKind,
+                                       QString* errorMessage)
     {
-        for (const QString& encodedProperty : m_preInitProperties)
+        for (const QString& encodedProperty : encodedProperties)
         {
             if (encodedProperty.isEmpty())
             {
@@ -387,8 +404,8 @@ namespace scopeone::core::internal
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("Invalid pre-init property payload for '%1'")
-                        .arg(m_cameraId);
+                    *errorMessage = QStringLiteral("Invalid %1 payload for '%2'")
+                        .arg(propertyKind, m_cameraId);
                 }
                 return false;
             }
@@ -400,8 +417,8 @@ namespace scopeone::core::internal
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("Missing pre-init property name for '%1'")
-                        .arg(m_cameraId);
+                    *errorMessage = QStringLiteral("Missing %1 name for '%2'")
+                        .arg(propertyKind, m_cameraId);
                 }
                 return false;
             }
@@ -416,8 +433,8 @@ namespace scopeone::core::internal
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QString("Failed to apply pre-init property '%1': %2")
-                        .arg(propertyName, QString::fromStdString(mmError.getMsg()));
+                    *errorMessage = QString("Failed to apply %1 '%2': %3")
+                        .arg(propertyKind, propertyName, QString::fromStdString(mmError.getMsg()));
                 }
                 return false;
             }
@@ -1236,6 +1253,7 @@ namespace scopeone::core::internal
               QString device,
               QString shmKey,
               QStringList preInitProperties,
+              QStringList properties,
               double exposureMs,
               bool autoPreview,
               QObject* parent = nullptr)
@@ -1246,6 +1264,7 @@ namespace scopeone::core::internal
               , m_shmKey(std::move(shmKey))
               , m_serverName(agent::controlServerName(m_cameraId))
               , m_preInitProperties(std::move(preInitProperties))
+              , m_properties(std::move(properties))
               , m_exposureMs(exposureMs)
               , m_autoPreview(autoPreview)
         {
@@ -1275,6 +1294,7 @@ namespace scopeone::core::internal
         QString m_shmKey;
         QString m_serverName;
         QStringList m_preInitProperties;
+        QStringList m_properties;
         double m_exposureMs{0.0};
         bool m_autoPreview{false};
 
@@ -1292,6 +1312,7 @@ namespace scopeone::core::internal
                                      m_device,
                                      m_shmKey,
                                      m_preInitProperties,
+                                     m_properties,
                                      m_exposureMs,
                                      m_autoPreview);
         m_runtime->moveToThread(&m_runtimeThread);
@@ -1438,6 +1459,9 @@ int main(int argc, char* argv[])
     QCommandLineOption optPreInit(QStringLiteral("preinit"),
                                   QStringLiteral("JSON-encoded pre-init property"),
                                   QStringLiteral("json"));
+    QCommandLineOption optProperty(QStringLiteral("property"),
+                                   QStringLiteral("JSON-encoded initialized property"),
+                                   QStringLiteral("json"));
     QCommandLineOption optAuto(QStringLiteral("autoPreview"),
                                QStringLiteral("Start preview immediately"));
 
@@ -1447,6 +1471,7 @@ int main(int argc, char* argv[])
     parser.addOption(optShm);
     parser.addOption(optExp);
     parser.addOption(optPreInit);
+    parser.addOption(optProperty);
     parser.addOption(optAuto);
     parser.process(app);
 
@@ -1465,6 +1490,7 @@ int main(int argc, char* argv[])
                                           parser.value(optDevice),
                                           parser.value(optShm),
                                           parser.values(optPreInit),
+                                          parser.values(optProperty),
                                           parser.isSet(optExp)
                                               ? parser.value(optExp).toDouble()
                                               : 0.0,

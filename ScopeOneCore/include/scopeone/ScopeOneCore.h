@@ -592,7 +592,6 @@ namespace scopeone::core
         };
 
         bool loadConfigurationInternal(const QString& configPath,
-                                       const QStringList& existingCameraIds,
                                        LoadConfigResult* result,
                                        QString* errorMessage);
         std::shared_ptr<CMMCore> core() const;
