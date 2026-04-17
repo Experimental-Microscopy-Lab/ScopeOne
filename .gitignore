@@ -2,6 +2,11 @@
 !src/
 !ScopeOneCore/
 !resources/
+!config/
+config/*
+!config/MMConfig_demo.cfg
+!config/dual_hamamatsu_897D.cfg
+!config/MMConfig_demo_dual.cfg
 
 !CMakeLists.txt
 !README.md
