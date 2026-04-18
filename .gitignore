@@ -1,7 +1,10 @@
 *
 !src/
 !ScopeOneCore/
+
 !resources/
+!resources/*
+
 !config/
 config/*
 !config/MMConfig_demo.cfg
