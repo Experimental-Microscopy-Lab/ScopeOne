@@ -1,6 +1,8 @@
 *
 !src/
 !ScopeOneCore/
+!scripts/
+!scripts/*
 
 !resources/
 !resources/*
@@ -15,5 +17,4 @@ config/*
 !README.md
 
 !.gitignore
-
 

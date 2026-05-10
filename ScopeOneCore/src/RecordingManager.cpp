@@ -201,6 +201,41 @@ namespace scopeone::core::internal
             return true;
         }
 
+        QByteArray frameInfoHeaderLine()
+        {
+            return QByteArray(
+                "camera_id,frame_index,timestamp_ns,width,height,bits_per_sample,stride,pixel_format,pixel_format_id,raw_bytes\n");
+        }
+
+        QByteArray frameInfoLine(const QString& cameraId, const scopeone::core::ScopeOneCore::RecordingFrame& frame)
+        {
+            return QStringLiteral("%1,%2,%3,%4,%5,%6,%7,%8,%9,%10\n")
+                .arg(cameraId)
+                .arg(frame.header.frameIndex)
+                .arg(frame.header.timestampNs)
+                .arg(frame.width)
+                .arg(frame.height)
+                .arg(frame.bits)
+                .arg(frame.header.stride)
+                .arg(pixelFormatName(frame.header.pixelFormat))
+                .arg(frame.header.pixelFormat)
+                .arg(frame.rawData.size())
+                .toUtf8();
+        }
+
+        void discardIncompleteFile(QFile& file)
+        {
+            const QString filePath = file.fileName();
+            if (file.isOpen())
+            {
+                file.close();
+            }
+            if (!filePath.isEmpty())
+            {
+                QFile::remove(filePath);
+            }
+        }
+
         bool prepareSessionOutput(const QString& saveDir,
                                   const QString& baseName,
                                   const QString& metadataFileName,
@@ -944,25 +979,12 @@ namespace scopeone::core::internal
 
     void RecordingManager::writeFrameInfoHeader(CameraOutput& output)
     {
-        static const QByteArray header(
-            "camera_id,frame_index,timestamp_ns,width,height,bits_per_sample,stride,pixel_format,pixel_format_id,raw_bytes\n");
-        output.frameInfoFile.write(header);
+        output.frameInfoFile.write(frameInfoHeaderLine());
     }
 
     QByteArray RecordingManager::buildFrameInfoLine(const QString& cameraId, const RecordingFrame& frame) const
     {
-        return QStringLiteral("%1,%2,%3,%4,%5,%6,%7,%8,%9,%10\n")
-               .arg(cameraId)
-               .arg(frame.header.frameIndex)
-               .arg(frame.header.timestampNs)
-               .arg(frame.width)
-               .arg(frame.height)
-               .arg(frame.bits)
-               .arg(frame.header.stride)
-               .arg(pixelFormatName(frame.header.pixelFormat))
-               .arg(frame.header.pixelFormat)
-               .arg(frame.rawData.size())
-               .toUtf8();
+        return frameInfoLine(cameraId, frame);
     }
 
     QString RecordingManager::formatName(RecordingFormat format) const
@@ -1625,6 +1647,31 @@ namespace scopeone::core::internal
                                                                    capturePlan.baseName,
                                                                    cameraId,
                                                                    capturePlan.format);
+            QFile frameInfoFile;
+            if (requiresFrameInfo(capturePlan.format))
+            {
+                frameInfoFile.setFileName(paths.frameInfoPath);
+                if (!frameInfoFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
+                {
+                    const QString errorMessage = QString("Failed to open frame info output for %1").arg(cameraId);
+                    session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
+                    return updateSessionResult(
+                        session,
+                        QStringLiteral("Error: %1").arg(errorMessage),
+                        false);
+                }
+                const QByteArray header = frameInfoHeaderLine();
+                if (frameInfoFile.write(header) != header.size())
+                {
+                    discardIncompleteFile(frameInfoFile);
+                    const QString errorMessage = QString("Failed to write frame info header for %1").arg(cameraId);
+                    session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
+                    return updateSessionResult(
+                        session,
+                        QStringLiteral("Error: %1").arg(errorMessage),
+                        false);
+                }
+            }
             if (!rawSaver.startStackRaw(paths.rawPath,
                                         capturePlan.format,
                                         first.width,
@@ -1632,6 +1679,7 @@ namespace scopeone::core::internal
                                         first.bits,
                                         tiffOpts))
             {
+                discardIncompleteFile(frameInfoFile);
                 const QString errorMessage = QString("Failed to start raw output for %1").arg(cameraId);
                 session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
                 return updateSessionResult(
@@ -1646,6 +1694,7 @@ namespace scopeone::core::internal
                                         frame.rawData.size(),
                                         buildImageDescriptionJson(outputInfo.metadataFileName)))
                 {
+                    discardIncompleteFile(frameInfoFile);
                     rawSaver.stopStack();
                     const QString errorMessage = QString("Failed to append raw frame %1 for %2").arg(saved).arg(
                         cameraId);
@@ -1655,10 +1704,29 @@ namespace scopeone::core::internal
                         QStringLiteral("Error: %1").arg(errorMessage),
                         false);
                 }
+                if (frameInfoFile.isOpen())
+                {
+                    const QByteArray infoLine = frameInfoLine(cameraId, frame);
+                    if (frameInfoFile.write(infoLine) != infoLine.size())
+                    {
+                        discardIncompleteFile(frameInfoFile);
+                        rawSaver.stopStack();
+                        const QString errorMessage = QString("Failed to write frame info for %1").arg(cameraId);
+                        session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
+                        return updateSessionResult(
+                            session,
+                            QStringLiteral("Error: %1").arg(errorMessage),
+                            false);
+                    }
+                }
                 saved += 1;
             }
+            if (frameInfoFile.isOpen())
+            {
+                frameInfoFile.close();
+            }
             rawSaver.stopStack();
-            session->setOutputFilePaths(cameraId, paths.rawPath, QString());
+            session->setOutputFilePaths(cameraId, paths.rawPath, paths.frameInfoPath);
             session->setOutputFramesWritten(cameraId, saved);
             session->addWrittenFrames(saved);
         }
