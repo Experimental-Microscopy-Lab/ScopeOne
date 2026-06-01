@@ -511,7 +511,14 @@ namespace scopeone::core
         bool readZPosition(const QString& zStageLabel, double& z) const;
         bool moveXYRelative(const QString& xyStageLabel, double dx, double dy);
         bool moveZRelative(const QString& zStageLabel, double dz);
+        bool moveXYTo(const QString& xyStageLabel, double x, double y);
+        bool moveZTo(const QString& zStageLabel, double z);
         bool readExposure(const QString& cameraIdOrAll, double& exposureMs) const;
+
+        QStringList availableConfigGroups() const;
+        QStringList availableConfigs(const QString& configGroup) const;
+        QString currentConfig(const QString& groupName) const;
+        bool setConfig(const QString& groupName, const QString& configName);
 
 
         QStringList loadedDevices() const;
@@ -596,7 +603,9 @@ namespace scopeone::core
                                        QString* errorMessage);
         std::shared_ptr<CMMCore> core() const;
         bool isAgentCamera(const QString& deviceLabel) const;
+        bool isNativeCamera(const QString& deviceLabel) const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
+        QStringList runningPreviewCameraIds() const;
         bool getLatestRawTransport(const QString& cameraId,
                                    SharedFrameHeader& header,
                                    QByteArray& data) const;

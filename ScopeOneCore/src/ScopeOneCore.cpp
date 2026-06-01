@@ -118,6 +118,40 @@ namespace
         return trimmedBaseName + QStringLiteral("_metadata.json");
     }
 
+    template <typename Operation>
+    bool runWithTrimmedLabel(const std::shared_ptr<CMMCore>& handle, const QString& rawLabel, Operation&& operation)
+    {
+        const QString label = rawLabel.trimmed();
+        if (!handle || label.isEmpty())
+        {
+            return false;
+        }
+        try
+        {
+            operation(label.toStdString());
+            return true;
+        }
+        catch (const CMMError&)
+        {
+            return false;
+        }
+    }
+
+    template <typename Operation>
+    bool withSuspendedPreviews(scopeone::core::ScopeOneCore* core, const QStringList& cameraIds, Operation&& operation)
+    {
+        for (const QString& cameraId : cameraIds)
+        {
+            core->stopPreview(cameraId);
+        }
+        const bool ok = operation();
+        for (const QString& cameraId : cameraIds)
+        {
+            core->startPreview(cameraId);
+        }
+        return ok;
+    }
+
     bool computeHistogramStatsInternal(const scopeone::core::ImageFrame& frame,
                                        scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
@@ -289,6 +323,7 @@ namespace
         managerSettings.mdaIntervalMs = settings.mdaIntervalMs;
         managerSettings.positions = settings.positions;
         managerSettings.zPositions = settings.zPositions;
+
         managerSettings.order.clear();
         managerSettings.order.reserve(settings.order.size());
         for (scopeone::core::ScopeOneCore::RecordingAxis axis : settings.order)
@@ -516,6 +551,47 @@ namespace scopeone::core
     bool ScopeOneCore::isAgentCamera(const QString& deviceLabel) const
     {
         return m_cameraIds.contains(deviceLabel);
+    }
+
+    bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
+    {
+        const QString device = deviceLabel.trimmed();
+        if (device.isEmpty() || isAgentCamera(device))
+        {
+            return false;
+        }
+
+        auto handle = core();
+        if (!handle)
+        {
+            return false;
+        }
+        try
+        {
+            return handle->getDeviceType(device.toStdString().c_str()) == MM::CameraDevice;
+        }
+        catch (const CMMError&)
+        {
+            return false;
+        }
+    }
+
+    QStringList ScopeOneCore::runningPreviewCameraIds() const
+    {
+        QStringList running;
+        if (!m_managers || !m_managers->mpcm)
+        {
+            return running;
+        }
+
+        for (const QString& cameraId : m_cameraIds)
+        {
+            if (m_managers->mpcm->isPreviewRunning(cameraId))
+            {
+                running.append(cameraId);
+            }
+        }
+        return running;
     }
 
     bool ScopeOneCore::loadConfigurationInternal(const QString& configPath,
@@ -989,42 +1065,129 @@ namespace scopeone::core
 
     bool ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
-        const QString label = xyStageLabel.trimmed();
         auto handle = core();
-        if (!handle || label.isEmpty())
+        return runWithTrimmedLabel(handle, xyStageLabel, [&](const std::string& label)
         {
-            return false;
-        }
-        try
-        {
-            handle->setRelativeXYPosition(label.toStdString().c_str(), dx, dy);
-            handle->waitForDevice(label.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+            handle->setRelativeXYPosition(label.c_str(), dx, dy);
+            handle->waitForDevice(label.c_str());
+        });
     }
 
     bool ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
-        const QString label = zStageLabel.trimmed();
         auto handle = core();
-        if (!handle || label.isEmpty())
+        return runWithTrimmedLabel(handle, zStageLabel, [&](const std::string& label)
         {
-            return false;
+            handle->setRelativePosition(label.c_str(), dz);
+            handle->waitForDevice(label.c_str());
+        });
+    }
+
+    bool ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
+    {
+        auto handle = core();
+        return runWithTrimmedLabel(handle, xyStageLabel, [&](const std::string& label)
+        {
+            handle->setXYPosition(label.c_str(), x, y);
+            handle->waitForDevice(label.c_str());
+        });
+    }
+
+    bool ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
+    {
+        auto handle = core();
+        return runWithTrimmedLabel(handle, zStageLabel, [&](const std::string& label)
+        {
+            handle->setPosition(label.c_str(), z);
+            handle->waitForDevice(label.c_str());
+        });
+    }
+
+    QStringList ScopeOneCore::availableConfigGroups() const
+    {
+        auto handle = core();
+        if (!handle)
+        {
+            return {};
         }
         try
         {
-            handle->setRelativePosition(label.toStdString().c_str(), dz);
-            handle->waitForDevice(label.toStdString().c_str());
-            return true;
+            const auto groups = handle->getAvailableConfigGroups();
+            QStringList result;
+            for (const auto& g : groups)
+            {
+                result.append(QString::fromStdString(g));
+            }
+            return result;
         }
         catch (const CMMError&)
         {
+            return {};
+        }
+    }
+
+    QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
+    {
+        auto handle = core();
+        if (!handle || configGroup.isEmpty())
+        {
+            return {};
+        }
+        try
+        {
+            const auto configs = handle->getAvailableConfigs(configGroup.toStdString().c_str());
+            QStringList result;
+            for (const auto& c : configs)
+            {
+                result.append(QString::fromStdString(c));
+            }
+            return result;
+        }
+        catch (const CMMError&)
+        {
+            return {};
+        }
+    }
+
+    QString ScopeOneCore::currentConfig(const QString& groupName) const
+    {
+        auto handle = core();
+        if (!handle || groupName.isEmpty())
+        {
+            return {};
+        }
+        try
+        {
+            return QString::fromStdString(handle->getCurrentConfig(groupName.toStdString().c_str()));
+        }
+        catch (const CMMError&)
+        {
+            return {};
+        }
+    }
+
+    bool ScopeOneCore::setConfig(const QString& groupName, const QString& configName)
+    {
+        auto handle = core();
+        if (!handle || groupName.isEmpty() || configName.isEmpty())
+        {
             return false;
         }
+        const QStringList runningPreviewIds = runningPreviewCameraIds();
+        return withSuspendedPreviews(this, runningPreviewIds, [&]()
+        {
+            try
+            {
+                handle->setConfig(groupName.toStdString().c_str(), configName.toStdString().c_str());
+                handle->waitForSystem();
+                handle->updateSystemStateCache();
+                return true;
+            }
+            catch (const CMMError&)
+            {
+                return false;
+            }
+        });
     }
 
     bool ScopeOneCore::readExposure(const QString& cameraIdOrAll, double& exposureMs) const
@@ -1410,21 +1573,31 @@ namespace scopeone::core
             return false;
         }
 
-        try
+        const bool isCamera = isNativeCamera(device);
+        const QStringList runningPreviewIds = isCamera ? runningPreviewCameraIds() : QStringList{};
+        const auto applyProperty = [&]() -> bool
         {
-            handle->setProperty(device.toStdString().c_str(),
-                                property.toStdString().c_str(),
-                                value.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage)
+            try
             {
-                *errorMessage = QString::fromStdString(e.getMsg());
+                handle->setProperty(device.toStdString().c_str(),
+                                    property.toStdString().c_str(),
+                                    value.toStdString().c_str());
+                handle->waitForDevice(device.toStdString().c_str());
+                handle->updateSystemStateCache();
+                return true;
             }
-            return false;
-        }
+            catch (const CMMError& e)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QString::fromStdString(e.getMsg());
+                }
+                return false;
+            }
+        };
+        return isCamera
+                   ? withSuspendedPreviews(this, runningPreviewIds, applyProperty)
+                   : applyProperty();
     }
 
     bool ScopeOneCore::isRealTimeProcessingEnabled() const

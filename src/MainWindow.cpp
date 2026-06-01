@@ -6,6 +6,7 @@
 #include "ConsoleWidget.h"
 #include "DeviceControlWidget.h"
 #include "DevicePropertyWidget.h"
+#include "ConfigPresetWidget.h"
 #include "PreviewWidget.h"
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
@@ -25,6 +26,7 @@
 #include <QProgressDialog>
 #include <QSettings>
 #include <QStatusBar>
+#include <QTabWidget>
 
 namespace scopeone::ui
 {
@@ -272,6 +274,11 @@ namespace scopeone::ui
                     this, &MainWindow::openSettingsDialog);
         }
 
+        connectPropertyPanels();
+    }
+
+    void MainWindow::connectPropertyPanels()
+    {
         if (m_propertyBrowser)
         {
             connect(m_propertyBrowser, &DevicePropertyWidget::propertyChanged,
@@ -280,8 +287,20 @@ namespace scopeone::ui
                         qInfo().noquote() << QString("Property changed: %1.%2 = %3")
                             .arg(device, property, value);
                     });
-
             connect(m_propertyBrowser, &DevicePropertyWidget::errorOccurred,
+                    this, [](const QString& message)
+                    {
+                        qCritical().noquote() << message;
+                    });
+        }
+        if (m_configPresetWidget)
+        {
+            connect(m_configPresetWidget, &ConfigPresetWidget::configChanged,
+                    this, [](const QString& group, const QString& preset)
+                    {
+                        qInfo().noquote() << QString("Config changed: %1 = %2").arg(group, preset);
+                    });
+            connect(m_configPresetWidget, &ConfigPresetWidget::errorOccurred,
                     this, [](const QString& message)
                     {
                         qCritical().noquote() << message;
@@ -393,7 +412,12 @@ namespace scopeone::ui
         m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
         m_propertyBrowser = new DevicePropertyWidget(m_scopeonecore, this);
-        m_propertyDockWidget->setWidget(m_propertyBrowser);
+        m_configPresetWidget = new ConfigPresetWidget(m_scopeonecore, this);
+
+        auto* tabWidget = new QTabWidget(m_propertyDockWidget);
+        tabWidget->addTab(m_propertyBrowser, tr("Properties"));
+        tabWidget->addTab(m_configPresetWidget, tr("Configs"));
+        m_propertyDockWidget->setWidget(tabWidget);
 
         addDockWidget(Qt::LeftDockWidgetArea, m_propertyDockWidget);
     }
@@ -552,6 +576,10 @@ namespace scopeone::ui
         if (m_propertyBrowser)
         {
             m_propertyBrowser->refresh(fromCache);
+        }
+        if (m_configPresetWidget)
+        {
+            m_configPresetWidget->refresh();
         }
         if (m_deviceControlWidget)
         {

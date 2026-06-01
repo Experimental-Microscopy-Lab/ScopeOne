@@ -1,11 +1,17 @@
 *
 !src/
+!src/**
 !ScopeOneCore/
+!ScopeOneCore/**
+ScopeOneCore/install/**
+ScopeOneCore/build/**
+ScopeOneCore/external/**
+ScopeOneCore/python/**
 !scripts/
-!scripts/*
+!scripts/**
 
 !resources/
-!resources/*
+!resources/**
 
 !config/
 config/*
@@ -17,4 +23,7 @@ config/*
 !README.md
 
 !.gitignore
+
+build/**
+ref/**
 

@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Qt6 REQUIRED COMPONENTS Core Gui)
+
+include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneCoreTargets.cmake")
+
+check_required_components(ScopeOneCore)

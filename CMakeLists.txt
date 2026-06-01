@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.410 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.429 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -62,6 +62,7 @@ set(SCOPEONE_UI_SOURCES
         src/RecordingWidget.cpp
         src/ImageSessionDialog.cpp
         src/DevicePropertyWidget.cpp
+        src/ConfigPresetWidget.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
@@ -77,6 +78,7 @@ set(SCOPEONE_UI_HEADERS
         src/RecordingWidget.h
         src/ImageSessionDialog.h
         src/DevicePropertyWidget.h
+        src/ConfigPresetWidget.h
 )
 
 if (WIN32)
