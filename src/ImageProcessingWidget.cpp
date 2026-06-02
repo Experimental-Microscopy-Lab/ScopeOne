@@ -623,11 +623,6 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::updateModuleList()
     {
-        if (!m_moduleList)
-        {
-            return;
-        }
-
         const int currentRow = m_moduleList->currentRow();
         const QList<ProcessingModuleInfo> modules = m_scopeonecore->processingModules();
 
@@ -647,11 +642,6 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::updateConfigWidget()
     {
-        if (!m_configStack)
-        {
-            return;
-        }
-
         while (m_configStack->count() > 1)
         {
             QWidget* widget = m_configStack->widget(1);
@@ -660,7 +650,7 @@ namespace scopeone::ui
         }
         m_configStack->setCurrentWidget(m_emptyConfigWidget);
 
-        const int currentRow = m_moduleList ? m_moduleList->currentRow() : -1;
+        const int currentRow = m_moduleList->currentRow();
         const QList<ProcessingModuleInfo> modules = m_scopeonecore->processingModules();
         if (currentRow < 0 || currentRow >= modules.size())
         {
@@ -718,11 +708,6 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::onRemoveModuleClicked()
     {
-        if (!m_moduleList)
-        {
-            return;
-        }
-
         const int currentRow = m_moduleList->currentRow();
         if (currentRow < 0)
         {

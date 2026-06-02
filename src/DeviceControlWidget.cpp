@@ -1097,11 +1097,6 @@ namespace scopeone::ui
     void DeviceControlWidget::onExposureChanged()
     {
         // Apply exposure on Enter
-        if (!m_exposureLineEdit)
-        {
-            return;
-        }
-
         bool ok = false;
         const double exposureMs = m_exposureLineEdit->text().trimmed().toDouble(&ok);
         if (!ok || exposureMs < 0.1 || exposureMs > 10000.0)
@@ -1170,11 +1165,6 @@ namespace scopeone::ui
 
     void DeviceControlWidget::setControlTargets(const QStringList& cameraIds)
     {
-        if (!m_cameraSelectCombo)
-        {
-            return;
-        }
-
         QString current = m_cameraSelectCombo->currentText();
 
         {

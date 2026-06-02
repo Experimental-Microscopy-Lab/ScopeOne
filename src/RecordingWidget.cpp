@@ -940,9 +940,6 @@ std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWid
 
 void RecordingWidget::moveOrderItem(int delta)
 {
-    if (!m_mdaOrderList) {
-        return;
-    }
     const int row = m_mdaOrderList->currentRow();
     const int newRow = row + delta;
     if (row < 0 || newRow < 0 || newRow >= m_mdaOrderList->count()) {
@@ -982,9 +979,6 @@ void RecordingWidget::moveOrderItem(int delta)
 void RecordingWidget::syncOrderList()
 {
     // Rebuild the visible order from stored preferences
-    if (!m_mdaOrderList) {
-        return;
-    }
     if (m_orderPreference.empty()) {
         m_orderPreference = {
             static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time),
