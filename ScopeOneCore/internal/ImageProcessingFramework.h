@@ -13,6 +13,7 @@
 #include "internal/FFTModule.h"
 #include "internal/MedianFilterModule.h"
 #include "internal/BackgroundCalibrationModule.h"
+#include "internal/DifferentialRollingModule.h"
 
 namespace scopeone::core::internal {
 

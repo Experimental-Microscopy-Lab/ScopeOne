@@ -72,6 +72,7 @@ set(CORE_SOURCES
         src/FFTModule.cpp
         src/MedianFilterModule.cpp
         src/BackgroundCalibrationModule.cpp
+        src/DifferentialRollingModule.cpp
         src/ProcessingModuleTemplate.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
@@ -91,6 +92,7 @@ set(CORE_HEADERS
         internal/FFTModule.h
         internal/MedianFilterModule.h
         internal/BackgroundCalibrationModule.h
+        internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
         internal/MultiProcessCameraManager.h

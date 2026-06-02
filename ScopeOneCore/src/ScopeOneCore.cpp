@@ -384,6 +384,10 @@ namespace
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::GaussianBlur;
         }
+        if (qobject_cast<const scopeone::core::internal::DifferentialRollingModule*>(module))
+        {
+            return scopeone::core::ScopeOneCore::ProcessingModuleKind::DifferentialRolling;
+        }
         return scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown;
     }
 
@@ -447,6 +451,7 @@ namespace scopeone::core
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipeline;
     using scopeone::core::internal::RecordingManager;
+    using scopeone::core::internal::DifferentialRollingModule;
     using scopeone::core::internal::SpatiotemporalBinningModule;
 
     struct ScopeOneCore::Managers
@@ -1679,6 +1684,9 @@ namespace scopeone::core
         case ProcessingModuleKind::GaussianBlur:
             module = std::make_unique<GaussianBlurModule>(pipeline);
             break;
+        case ProcessingModuleKind::DifferentialRolling:
+            module = std::make_unique<DifferentialRollingModule>(pipeline);
+            break;
         case ProcessingModuleKind::Unknown:
             return false;
         }
@@ -1741,6 +1749,12 @@ namespace scopeone::core
         if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
         {
             background->resetCalibration();
+            emit processingModulesChanged();
+            return true;
+        }
+        if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
+        {
+            differentialRolling->resetBuffer();
             emit processingModulesChanged();
             return true;
         }

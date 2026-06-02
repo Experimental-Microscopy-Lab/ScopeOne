@@ -54,6 +54,7 @@ namespace scopeone::core
             BackgroundCalibration = 2,
             SpatiotemporalBinning = 3,
             GaussianBlur = 4,
+            DifferentialRolling = 5,
             Unknown = 255
         };
 

@@ -2,6 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QDoubleSpinBox>
@@ -315,6 +316,63 @@ namespace scopeone::ui
             QPushButton* m_resetButton{nullptr};
         };
 
+        class DifferentialRollingModuleConfigWidget : public ProcessingModuleConfigWidgetBase
+        {
+        public:
+            DifferentialRollingModuleConfigWidget(scopeone::core::ScopeOneCore* core,
+                                                  int moduleIndex,
+                                                  const ProcessingModuleInfo& info,
+                                                  QWidget* parent = nullptr)
+                : ProcessingModuleConfigWidgetBase(core, moduleIndex, parent)
+            {
+                auto* layout = new QVBoxLayout(this);
+                auto* group = new QGroupBox("Differential Rolling Settings", this);
+                auto* groupLayout = new QGridLayout(group);
+                groupLayout->addWidget(new QLabel("Batch size:", group), 0, 0);
+
+                m_batchSizeSpin = new QSpinBox(group);
+                m_batchSizeSpin->setRange(1, 256);
+                m_batchSizeSpin->setValue(info.parameters().value("batch_size", 16).toInt());
+                groupLayout->addWidget(m_batchSizeSpin, 0, 1);
+
+                m_normalizeCheck = new QCheckBox("Normalize by batch_1", group);
+                m_normalizeCheck->setChecked(info.parameters().value("normalize", true).toBool());
+                groupLayout->addWidget(m_normalizeCheck, 1, 0, 1, 2);
+
+                layout->addWidget(group);
+                layout->addWidget(new QLabel("Preview is zero-centered grayscale around mid-gray.", this));
+
+                m_resetButton = new QPushButton("Reset Buffer", this);
+                connect(m_batchSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]()
+                {
+                    apply();
+                });
+                connect(m_normalizeCheck, &QCheckBox::toggled, this, [this]()
+                {
+                    apply();
+                });
+                connect(m_resetButton, &QPushButton::clicked, this, [this]()
+                {
+                    resetModule();
+                });
+                layout->addWidget(m_resetButton);
+                layout->addStretch();
+            }
+
+        private:
+            void apply()
+            {
+                QVariantMap params;
+                params["batch_size"] = m_batchSizeSpin->value();
+                params["normalize"] = m_normalizeCheck->isChecked();
+                applyParameters(params);
+            }
+
+            QSpinBox* m_batchSizeSpin{nullptr};
+            QCheckBox* m_normalizeCheck{nullptr};
+            QPushButton* m_resetButton{nullptr};
+        };
+
         class BackgroundCalibrationModuleConfigWidget : public ProcessingModuleConfigWidgetBase
         {
         public:
@@ -436,6 +494,8 @@ namespace scopeone::ui
                 return new GaussianBlurModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::MedianFilter:
                 return new MedianFilterModuleConfigWidget(core, moduleIndex, info, parent);
+            case ProcessingModuleKind::DifferentialRolling:
+                return new DifferentialRollingModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::BackgroundCalibration:
                 return new BackgroundCalibrationModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::Unknown:
@@ -529,6 +589,8 @@ namespace scopeone::ui
         m_moduleTypeCombo->addItem("Gaussian Blur", static_cast<int>(ProcessingModuleKind::GaussianBlur));
         m_moduleTypeCombo->addItem("FFT Bandpass", static_cast<int>(ProcessingModuleKind::FFT));
         m_moduleTypeCombo->addItem("Temporal Median", static_cast<int>(ProcessingModuleKind::MedianFilter));
+        m_moduleTypeCombo->addItem("Differential Rolling",
+                                   static_cast<int>(ProcessingModuleKind::DifferentialRolling));
         m_moduleTypeCombo->addItem("Background Calibration",
                                    static_cast<int>(ProcessingModuleKind::BackgroundCalibration));
         controlsLayout->addWidget(m_moduleTypeCombo);
@@ -617,10 +679,11 @@ namespace scopeone::ui
     void ImageProcessingWidget::updateRunButtons()
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
+        const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
         // Lock edits while processing runs
         if (m_startButton)
         {
-            m_startButton->setEnabled(!running);
+            m_startButton->setEnabled(!running && hasModules);
         }
         if (m_stopButton)
         {
@@ -650,6 +713,7 @@ namespace scopeone::ui
         {
             m_moduleList->setCurrentRow(m_moduleList->count() - 1);
         }
+        updateRunButtons();
     }
 
     void ImageProcessingWidget::onRemoveModuleClicked()
@@ -674,6 +738,18 @@ namespace scopeone::ui
 
         updateModuleList();
         updateConfigWidget();
+        const bool noModules = m_scopeonecore->processingModules().isEmpty();
+        if (m_scopeonecore->processingModules().isEmpty()
+            && m_scopeonecore->isRealTimeProcessingEnabled())
+        {
+            m_scopeonecore->setRealTimeProcessingEnabled(false);
+            emit processingStopped();
+        }
+        else if (noModules)
+        {
+            emit processingStopped();
+        }
+        updateRunButtons();
     }
 
     void ImageProcessingWidget::onModuleSelectionChanged()
@@ -683,6 +759,12 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::onStartProcessing()
     {
+        if (m_scopeonecore->processingModules().isEmpty())
+        {
+            QMessageBox::information(this, "Information", "Please add a processing module first");
+            updateRunButtons();
+            return;
+        }
         m_scopeonecore->setRealTimeProcessingEnabled(true);
         updateRunButtons();
         emit processingStarted();
@@ -693,6 +775,7 @@ namespace scopeone::ui
     {
         m_scopeonecore->setRealTimeProcessingEnabled(false);
         updateRunButtons();
+        emit processingStopped();
         qInfo().noquote() << "Processing stopped";
     }
 } // namespace scopeone::ui

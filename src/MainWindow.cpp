@@ -47,6 +47,20 @@ namespace scopeone::ui
             }
             return streamKeys;
         }
+
+        QStringList rawOnlyStreamKeys(const QStringList& streamKeys)
+        {
+            QStringList rawKeys;
+            rawKeys.reserve(streamKeys.size());
+            for (const QString& streamKey : streamKeys)
+            {
+                if (streamKey.startsWith(QStringLiteral("raw:")))
+                {
+                    rawKeys.append(streamKey);
+                }
+            }
+            return rawKeys;
+        }
     }
 
     MainWindow::MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent)
@@ -255,6 +269,16 @@ namespace scopeone::ui
 
                         m_previewWidget->setSelectedStreams(selectedStreams);
                         m_previewWidget->setStreamLayoutMode(PreviewWidget::StreamLayoutMode::SideBySide);
+                    });
+            connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStopped,
+                    this, [this]()
+                    {
+                        QStringList selectedStreams = rawOnlyStreamKeys(m_previewWidget->selectedStreams());
+                        if (selectedStreams.isEmpty())
+                        {
+                            selectedStreams = rawStreamKeys(m_previewWidget->availableCameraIds());
+                        }
+                        m_previewWidget->setSelectedStreams(selectedStreams);
                     });
         }
 

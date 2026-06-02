@@ -21,6 +21,7 @@ public:
 
 signals:
     void processingStarted();
+    void processingStopped();
 
 private:
     void onAddModuleClicked();

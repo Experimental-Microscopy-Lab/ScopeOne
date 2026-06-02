@@ -36,10 +36,6 @@ ImageFrame ProcessingPipeline::process(const ImageFrame& input)
     ModuleInput currentInput(input);
 
     for (const auto& module : m_modules) {
-        if (!module) {
-            continue;
-        }
-
         ModuleOutput moduleOutput;
         const bool success = module->process(currentInput, moduleOutput);
         if (success && moduleOutput.isValid()) {
@@ -55,10 +51,6 @@ ImageFrame ProcessingPipeline::process(const ImageFrame& input)
         } else {
             qWarning() << "Module" << module->getModuleName() << "failed";
         }
-    }
-
-    if (!result.isValid()) {
-        result = currentInput.frame;
     }
 
     return result;
@@ -160,10 +152,6 @@ void ImageProcessingManager::processCameraQueue(const QString& cameraKey)
         }
 
         ProcessingPipeline* pipeline = m_pipeline.get();
-
-        if (!pipeline) {
-            continue;
-        }
 
         try {
             const ImageFrame result = pipeline->process(frame);
