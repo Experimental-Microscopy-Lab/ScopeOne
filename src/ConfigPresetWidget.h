@@ -5,37 +5,39 @@
 class QTimer;
 class QTreeWidget;
 
-namespace scopeone::core { class ScopeOneCore; }
-
-namespace scopeone::ui {
-
-class ConfigPresetWidget : public QWidget
+namespace scopeone::core
 {
-    Q_OBJECT
+    class ScopeOneCore;
+}
 
-public:
-    explicit ConfigPresetWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
-    ~ConfigPresetWidget() override = default;
+namespace scopeone::ui
+{
+    class ConfigPresetWidget : public QWidget
+    {
+        Q_OBJECT
 
-    void refresh();
+    public:
+        explicit ConfigPresetWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
+        ~ConfigPresetWidget() override = default;
 
-signals:
-    void configChanged(const QString& group, const QString& preset);
-    void errorOccurred(const QString& message);
+        void refresh();
 
-private:
-    void onRefreshClicked();
-    void onAutoRefreshToggled(bool enabled);
-    void onAutoRefreshTimer();
+    signals:
+        void configChanged(const QString& group, const QString& preset);
+        void errorOccurred(const QString& message);
 
-    void setupUI();
-    void populateConfigTree();
+    private:
+        void onRefreshClicked();
+        void onAutoRefreshToggled(bool enabled);
+        void onAutoRefreshTimer();
 
-    scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-    QTreeWidget* m_configTree{nullptr};
-    QTimer* m_autoRefreshTimer{nullptr};
-    bool m_autoRefresh{false};
-    bool m_updating{false};
-};
+        void setupUI();
+        void populateConfigTree();
 
+        scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        QTreeWidget* m_configTree{nullptr};
+        QTimer* m_autoRefreshTimer{nullptr};
+        bool m_autoRefresh{false};
+        bool m_updating{false};
+    };
 }

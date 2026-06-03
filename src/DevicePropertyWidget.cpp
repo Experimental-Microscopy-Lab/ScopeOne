@@ -375,5 +375,4 @@ namespace scopeone::ui
             refresh(true);
         }
     }
-
 } // namespace scopeone::ui

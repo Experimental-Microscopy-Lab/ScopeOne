@@ -7,50 +7,52 @@ class QComboBox;
 class QPushButton;
 class QStackedWidget;
 
-namespace scopeone::core { class ScopeOneCore; }
-
-namespace scopeone::ui {
-
-class ImageProcessingWidget : public QWidget
+namespace scopeone::core
 {
-    Q_OBJECT
+    class ScopeOneCore;
+}
 
-public:
-    explicit ImageProcessingWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
-    ~ImageProcessingWidget() override = default;
+namespace scopeone::ui
+{
+    class ImageProcessingWidget : public QWidget
+    {
+        Q_OBJECT
 
-signals:
-    void processingStarted();
-    void processingStopped();
+    public:
+        explicit ImageProcessingWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
+        ~ImageProcessingWidget() override = default;
 
-private:
-    void onAddModuleClicked();
-    void onRemoveModuleClicked();
-    void onModuleSelectionChanged();
-    void onProcessingBitDepthChanged();
-    void onStartProcessing();
-    void onStopProcessing();
+    signals:
+        void processingStarted();
+        void processingStopped();
 
-    void setupUI();
-    void setupRunControls();
-    void setupModuleList();
-    void setupModuleConfig();
-    void updateProcessingSettings();
-    void updateModuleList();
-    void updateConfigWidget();
-    void updateRunButtons();
+    private:
+        void onAddModuleClicked();
+        void onRemoveModuleClicked();
+        void onModuleSelectionChanged();
+        void onProcessingBitDepthChanged();
+        void onStartProcessing();
+        void onStopProcessing();
 
-    scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-    QWidget* m_runControlsWidget{nullptr};
-    QPushButton* m_startButton{nullptr};
-    QPushButton* m_stopButton{nullptr};
-    QComboBox* m_processingBitDepthCombo{nullptr};
-    QListWidget* m_moduleList{nullptr};
-    QPushButton* m_addModuleButton{nullptr};
-    QPushButton* m_removeModuleButton{nullptr};
-    QComboBox* m_moduleTypeCombo{nullptr};
-    QStackedWidget* m_configStack{nullptr};
-    QWidget* m_emptyConfigWidget{nullptr};
-};
+        void setupUI();
+        void setupRunControls();
+        void setupModuleList();
+        void setupModuleConfig();
+        void updateProcessingSettings();
+        void updateModuleList();
+        void updateConfigWidget();
+        void updateRunButtons();
 
+        scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        QWidget* m_runControlsWidget{nullptr};
+        QPushButton* m_startButton{nullptr};
+        QPushButton* m_stopButton{nullptr};
+        QComboBox* m_processingBitDepthCombo{nullptr};
+        QListWidget* m_moduleList{nullptr};
+        QPushButton* m_addModuleButton{nullptr};
+        QPushButton* m_removeModuleButton{nullptr};
+        QComboBox* m_moduleTypeCombo{nullptr};
+        QStackedWidget* m_configStack{nullptr};
+        QWidget* m_emptyConfigWidget{nullptr};
+    };
 }

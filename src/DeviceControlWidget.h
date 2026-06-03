@@ -47,8 +47,7 @@ namespace scopeone::ui
 
         void setPreviewRunning(bool running);
 
-        signals :
-
+    signals :
         void startPreviewRequested();
 
         void stopPreviewRequested();
