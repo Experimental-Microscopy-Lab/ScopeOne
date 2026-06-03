@@ -120,6 +120,48 @@ function Ensure-Directory {
     }
 }
 
+function Normalize-CMakePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    return ($Path -replace "\\", "/").TrimEnd("/")
+}
+
+function Get-CMakeCacheValue {
+    param(
+        [string]$CachePath,
+        [string]$Key
+    )
+
+    if (-not (Test-Path $CachePath)) {
+        return $null
+    }
+
+    $match = Select-String -Path $CachePath -Pattern "^${Key}(:[^=]+)?=" | Select-Object -First 1
+    if (-not $match) {
+        return $null
+    }
+
+    $parts = $match.Line -split "=", 2
+    if ($parts.Count -ne 2) {
+        return $null
+    }
+
+    return $parts[1]
+}
+
+function Find-ConfigureOverride {
+    param(
+        [string[]]$Options,
+        [string]$Prefix
+    )
+
+    return $Options | Where-Object { $_ -like "$Prefix*" } | Select-Object -First 1
+}
+
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -132,6 +174,8 @@ $coreSourceDir = Join-Path $repoRoot "ScopeOneCore"
 $coreBuildDir = Join-Path $coreSourceDir "build"
 $coreInstallDir = Join-Path $coreSourceDir "install"
 $config = "Release"
+$coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
+$guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 
 if ($clean) {
     if ($target -in @("all", "gui") -and (Test-Path $guiBuildDir)) {
@@ -146,15 +190,35 @@ if ($clean) {
 
 Ensure-Directory $repoRoot
 
-$needCoreConfigure = $configure -or -not (Test-Path (Join-Path $coreBuildDir "CMakeCache.txt"))
-$needGuiConfigure = $configure -or -not (Test-Path (Join-Path $guiBuildDir "CMakeCache.txt"))
+$coreConfigureOptionOverride = $coreConfigureOption.Count -gt 0
+$guiConfigureOptionOverride = $guiConfigureOption.Count -gt 0
+
+$needCoreConfigure = $configure -or $coreConfigureOptionOverride -or -not (Test-Path $coreCachePath)
+$needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Path $guiCachePath)
+
+$installPrefixOverride = Find-ConfigureOverride -Options $coreConfigureOption -Prefix "-DCMAKE_INSTALL_PREFIX="
+
+if (-not $needCoreConfigure -and $target -in @("all", "core")) {
+    $cachedInstallPrefix = Normalize-CMakePath (Get-CMakeCacheValue -CachePath $coreCachePath -Key "CMAKE_INSTALL_PREFIX")
+    $expectedInstallPrefix = Normalize-CMakePath $coreInstallDir
+
+    if (-not $installPrefixOverride -and $cachedInstallPrefix -ne $expectedInstallPrefix) {
+        $needCoreConfigure = $true
+    }
+}
 
 if ($target -in @("all", "core")) {
     if ($needCoreConfigure) {
         $coreConfigureArgs = @(
             "-S", $coreSourceDir,
             "-B", $coreBuildDir
-        ) + $coreConfigureOption
+        )
+
+        if (-not $installPrefixOverride) {
+            $coreConfigureArgs += "-DCMAKE_INSTALL_PREFIX=$coreInstallDir"
+        }
+
+        $coreConfigureArgs += $coreConfigureOption
 
         Invoke-Step `
             -Label "Configuring ScopeOneCore" `

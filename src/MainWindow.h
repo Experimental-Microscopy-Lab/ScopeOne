@@ -22,6 +22,7 @@ class PreviewWidget;
 class ConsoleWidget;
 class DeviceControlWidget;
 class RecordingWidget;
+class ScopeOneLocalApiServer;
 
 class MainWindow : public QMainWindow
 {
@@ -106,6 +107,7 @@ private:
 
     QPointer<QProgressDialog> m_loadConfigProgress;
     scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+    ScopeOneLocalApiServer* m_apiServer{nullptr};
     QString m_currentControlTarget{QStringLiteral("All")};
 };
 

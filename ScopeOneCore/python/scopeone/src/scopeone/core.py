@@ -2,66 +2,40 @@
 
 from __future__ import annotations
 
-try:
-    from . import _core
-except ImportError:
-    _core = None
-
-
-class RecordingSession:
-    def __init__(self, native_session) -> None:
-        self._session = native_session
-
-    def camera_ids(self):
-        return self._session.camera_ids()
-
-    def frame_count(self, camera=None):
-        return self._session.frame_count(camera)
-
-    def frame(self, camera: str, index: int):
-        return self._session.frame(camera, index)
-
-    def frames(self, camera: str):
-        return self._session.frames(camera)
-
-    def save(
-        self,
-        save_dir: str,
-        base_name: str,
-        format: str = "tiff",
-        compression: bool = False,
-        compression_level: int = 6,
-    ):
-        return self._session.save(
-            save_dir,
-            base_name,
-            format,
-            compression,
-            compression_level,
-        )
+from .client import ExternalClient, LOCAL_SERVER_NAME
+from .session import RecordingSession
 
 
 class ScopeOne:
-    def __init__(self) -> None:
-        if _core is None:
-            raise RuntimeError("scopeone._core is not available.")
-        self._core = _core.ScopeOne()
+    def __init__(self, endpoint: str = "local") -> None:
+        server_name = LOCAL_SERVER_NAME if endpoint == "local" else endpoint
+        self._client = ExternalClient(server_name)
 
-    def load(self, config_path: str):
-        return self._core.load(config_path)
+    @classmethod
+    def connect(cls, endpoint: str = "local") -> "ScopeOne":
+        return cls(endpoint)
 
-    def unload(self):
-        return self._core.unload()
+    def load_config(self, config_path: str):
+        return self._client.load_config(config_path)
+
+    def unload_config(self):
+        self._client.unload_config()
 
     def camera_ids(self):
-        return self._core.camera_ids()
+        return self._client.camera_ids()
+
+    def start_preview(self, camera: str = "All"):
+        self._client.start_preview(camera)
+
+    def stop_preview(self, camera: str = "All"):
+        self._client.stop_preview(camera)
 
     def record(
         self,
-        frame_count: int,
+        frames: int,
         camera: str = "All",
         timeout_ms: int = 120000,
     ) -> RecordingSession:
         return RecordingSession(
-            self._core.record(frame_count, camera, timeout_ms)
+            self._client.record(frames, camera, timeout_ms)
         )

@@ -11,6 +11,7 @@
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
+#include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
 #include <QApplication>
@@ -72,6 +73,7 @@ namespace scopeone::ui
             qFatal("MainWindow requires ScopeOneCore");
         }
 
+        m_apiServer = new ScopeOneLocalApiServer(m_scopeonecore, this);
         setupUI();
         setupSignalWiring();
         applyStoredApplicationSettings();
