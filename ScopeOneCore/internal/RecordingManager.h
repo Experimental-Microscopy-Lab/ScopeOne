@@ -220,8 +220,6 @@ private:
     void requestWriterStop();
     void writerLoop(const std::shared_ptr<CameraOutput>& output);
     bool writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage);
-    void writeFrameInfoHeader(CameraOutput& output);
-    QByteArray buildFrameInfoLine(const QString& cameraId, const RecordingFrame& frame) const;
     QString formatName(RecordingFormat format) const;
     void emitBufferUsageChanged(qint64 pendingWriteBytes);
     void emitWriterStatus();

@@ -1,5 +1,8 @@
 #include "internal/FrameBufferUtils.h"
 
+#include <cstring>
+#include <opencv2/core.hpp>
+
 namespace scopeone::core::internal {
 
 using scopeone::core::ImageFrame;
@@ -12,9 +15,6 @@ int mono8ValueFrom16(int value, int bitsPerSample)
     const int clampedBits = qBound(1, bitsPerSample, 16);
     if (clampedBits <= 8) {
         const int maxIn = (1 << clampedBits) - 1;
-        if (maxIn <= 0) {
-            return 0;
-        }
         return qBound(0, (value * 255 + maxIn / 2) / maxIn, 255);
     }
 
@@ -27,7 +27,6 @@ int mono8ValueFrom16(int value, int bitsPerSample)
 
 bool convertFrameToMono8(const ImageFrame& src, ImageFrame& dst)
 {
-    // Normalize supported input formats to mono8
     if (!src.isValid()) {
         return false;
     }
@@ -59,12 +58,29 @@ bool convertFrameToMono8(const ImageFrame& src, ImageFrame& dst)
     return dst.isValid();
 }
 
+bool convertFrameForProcessing(const ImageFrame& src, ImageFrame& dst, int processingBitDepth)
+{
+    const int bitDepth = processingBitDepth >= 16 ? 16 : 8;
+    if (!src.isValid()) {
+        return false;
+    }
+
+    if (bitDepth == 8) {
+        return convertFrameToMono8(src, dst);
+    }
+
+    if (src.isMono8() || src.isMono16()) {
+        dst = src;
+        return true;
+    }
+    return false;
+}
+
 ImageFrame makeMono8Frame(const QString& cameraId,
                           int width,
                           int height,
                           QByteArray bytes)
 {
-    // Build a compact mono8 frame container
     ImageFrame frame;
     frame.cameraId = cameraId;
     frame.width = width;
@@ -74,6 +90,49 @@ ImageFrame makeMono8Frame(const QString& cameraId,
     frame.pixelFormat = ImagePixelFormat::Mono8;
     frame.bytes = std::move(bytes);
     return frame;
+}
+
+ImageFrame makeMono16Frame(const QString& cameraId,
+                           int width,
+                           int height,
+                           QByteArray bytes,
+                           int bitsPerSample)
+{
+    ImageFrame frame;
+    frame.cameraId = cameraId;
+    frame.width = width;
+    frame.height = height;
+    frame.stride = width * static_cast<int>(sizeof(quint16));
+    frame.bitsPerSample = qBound(9, bitsPerSample, 16);
+    frame.pixelFormat = ImagePixelFormat::Mono16;
+    frame.bytes = std::move(bytes);
+    return frame;
+}
+
+ImageFrame makeFrameLike(const ImageFrame& reference,
+                         int width,
+                         int height,
+                         QByteArray bytes)
+{
+    if (reference.isMono16()) {
+        return makeMono16Frame(reference.cameraId,
+                               width,
+                               height,
+                               std::move(bytes),
+                               reference.bitsPerSample > 8 ? reference.bitsPerSample : 16);
+    }
+    return makeMono8Frame(reference.cameraId, width, height, std::move(bytes));
+}
+
+QByteArray copyMatBytes(const cv::Mat& mat)
+{
+    QByteArray bytes;
+    const int rowBytes = mat.cols * static_cast<int>(mat.elemSize());
+    bytes.resize(rowBytes * mat.rows);
+    for (int y = 0; y < mat.rows; ++y) {
+        std::memcpy(bytes.data() + y * rowBytes, mat.ptr(y), static_cast<size_t>(rowBytes));
+    }
+    return bytes;
 }
 
 } // namespace scopeone::core::internal

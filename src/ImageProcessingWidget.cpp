@@ -2,6 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QDoubleSpinBox>
@@ -315,6 +316,63 @@ namespace scopeone::ui
             QPushButton* m_resetButton{nullptr};
         };
 
+        class DifferentialRollingModuleConfigWidget : public ProcessingModuleConfigWidgetBase
+        {
+        public:
+            DifferentialRollingModuleConfigWidget(scopeone::core::ScopeOneCore* core,
+                                                  int moduleIndex,
+                                                  const ProcessingModuleInfo& info,
+                                                  QWidget* parent = nullptr)
+                : ProcessingModuleConfigWidgetBase(core, moduleIndex, parent)
+            {
+                auto* layout = new QVBoxLayout(this);
+                auto* group = new QGroupBox("Differential Rolling Settings", this);
+                auto* groupLayout = new QGridLayout(group);
+                groupLayout->addWidget(new QLabel("Batch size:", group), 0, 0);
+
+                m_batchSizeSpin = new QSpinBox(group);
+                m_batchSizeSpin->setRange(1, 256);
+                m_batchSizeSpin->setValue(info.parameters().value("batch_size", 16).toInt());
+                groupLayout->addWidget(m_batchSizeSpin, 0, 1);
+
+                m_normalizeCheck = new QCheckBox("Normalize by batch_1", group);
+                m_normalizeCheck->setChecked(info.parameters().value("normalize", true).toBool());
+                groupLayout->addWidget(m_normalizeCheck, 1, 0, 1, 2);
+
+                layout->addWidget(group);
+                layout->addWidget(new QLabel("Preview is zero-centered grayscale around mid-gray.", this));
+
+                m_resetButton = new QPushButton("Reset Buffer", this);
+                connect(m_batchSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]()
+                {
+                    apply();
+                });
+                connect(m_normalizeCheck, &QCheckBox::toggled, this, [this]()
+                {
+                    apply();
+                });
+                connect(m_resetButton, &QPushButton::clicked, this, [this]()
+                {
+                    resetModule();
+                });
+                layout->addWidget(m_resetButton);
+                layout->addStretch();
+            }
+
+        private:
+            void apply()
+            {
+                QVariantMap params;
+                params["batch_size"] = m_batchSizeSpin->value();
+                params["normalize"] = m_normalizeCheck->isChecked();
+                applyParameters(params);
+            }
+
+            QSpinBox* m_batchSizeSpin{nullptr};
+            QCheckBox* m_normalizeCheck{nullptr};
+            QPushButton* m_resetButton{nullptr};
+        };
+
         class BackgroundCalibrationModuleConfigWidget : public ProcessingModuleConfigWidgetBase
         {
         public:
@@ -436,6 +494,8 @@ namespace scopeone::ui
                 return new GaussianBlurModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::MedianFilter:
                 return new MedianFilterModuleConfigWidget(core, moduleIndex, info, parent);
+            case ProcessingModuleKind::DifferentialRolling:
+                return new DifferentialRollingModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::BackgroundCalibration:
                 return new BackgroundCalibrationModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::Unknown:
@@ -460,6 +520,8 @@ namespace scopeone::ui
                     updateModuleList();
                     updateConfigWidget();
                 });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingSettingsChanged,
+                this, &ImageProcessingWidget::updateProcessingSettings);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingError,
                 this, [](const QString& error)
                 {
@@ -467,6 +529,7 @@ namespace scopeone::ui
                 });
 
         setupUI();
+        updateProcessingSettings();
         updateModuleList();
         updateConfigWidget();
         updateRunButtons();
@@ -504,11 +567,17 @@ namespace scopeone::ui
         auto* layout = new QHBoxLayout(m_runControlsWidget);
         m_startButton = new QPushButton("Start Processing", m_runControlsWidget);
         m_stopButton = new QPushButton("Stop Processing", m_runControlsWidget);
+        m_processingBitDepthCombo = new QComboBox(m_runControlsWidget);
+        m_processingBitDepthCombo->addItem("8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
+        m_processingBitDepthCombo->addItem("16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
         connect(m_startButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStartProcessing);
         connect(m_stopButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStopProcessing);
+        connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &ImageProcessingWidget::onProcessingBitDepthChanged);
 
         layout->addWidget(m_startButton);
         layout->addWidget(m_stopButton);
+        layout->addWidget(m_processingBitDepthCombo);
         layout->addStretch();
     }
 
@@ -529,6 +598,8 @@ namespace scopeone::ui
         m_moduleTypeCombo->addItem("Gaussian Blur", static_cast<int>(ProcessingModuleKind::GaussianBlur));
         m_moduleTypeCombo->addItem("FFT Bandpass", static_cast<int>(ProcessingModuleKind::FFT));
         m_moduleTypeCombo->addItem("Temporal Median", static_cast<int>(ProcessingModuleKind::MedianFilter));
+        m_moduleTypeCombo->addItem("Differential Rolling",
+                                   static_cast<int>(ProcessingModuleKind::DifferentialRolling));
         m_moduleTypeCombo->addItem("Background Calibration",
                                    static_cast<int>(ProcessingModuleKind::BackgroundCalibration));
         controlsLayout->addWidget(m_moduleTypeCombo);
@@ -561,11 +632,6 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::updateModuleList()
     {
-        if (!m_moduleList)
-        {
-            return;
-        }
-
         const int currentRow = m_moduleList->currentRow();
         const QList<ProcessingModuleInfo> modules = m_scopeonecore->processingModules();
 
@@ -585,11 +651,6 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::updateConfigWidget()
     {
-        if (!m_configStack)
-        {
-            return;
-        }
-
         while (m_configStack->count() > 1)
         {
             QWidget* widget = m_configStack->widget(1);
@@ -598,7 +659,7 @@ namespace scopeone::ui
         }
         m_configStack->setCurrentWidget(m_emptyConfigWidget);
 
-        const int currentRow = m_moduleList ? m_moduleList->currentRow() : -1;
+        const int currentRow = m_moduleList->currentRow();
         const QList<ProcessingModuleInfo> modules = m_scopeonecore->processingModules();
         if (currentRow < 0 || currentRow >= modules.size())
         {
@@ -617,14 +678,19 @@ namespace scopeone::ui
     void ImageProcessingWidget::updateRunButtons()
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
+        const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
         // Lock edits while processing runs
         if (m_startButton)
         {
-            m_startButton->setEnabled(!running);
+            m_startButton->setEnabled(!running && hasModules);
         }
         if (m_stopButton)
         {
             m_stopButton->setEnabled(running);
+        }
+        if (m_processingBitDepthCombo)
+        {
+            m_processingBitDepthCombo->setEnabled(!running);
         }
         if (m_moduleList && m_moduleList->parentWidget())
         {
@@ -633,6 +699,23 @@ namespace scopeone::ui
         if (m_configStack && m_configStack->parentWidget())
         {
             m_configStack->parentWidget()->setEnabled(!running);
+        }
+    }
+
+    void ImageProcessingWidget::updateProcessingSettings()
+    {
+        if (!m_processingBitDepthCombo)
+        {
+            return;
+        }
+
+        const auto currentBitDepth = static_cast<int>(m_scopeonecore->processingBitDepth());
+        const int index = m_processingBitDepthCombo->findData(currentBitDepth);
+        if (index >= 0 && index != m_processingBitDepthCombo->currentIndex())
+        {
+            m_processingBitDepthCombo->blockSignals(true);
+            m_processingBitDepthCombo->setCurrentIndex(index);
+            m_processingBitDepthCombo->blockSignals(false);
         }
     }
 
@@ -650,15 +733,11 @@ namespace scopeone::ui
         {
             m_moduleList->setCurrentRow(m_moduleList->count() - 1);
         }
+        updateRunButtons();
     }
 
     void ImageProcessingWidget::onRemoveModuleClicked()
     {
-        if (!m_moduleList)
-        {
-            return;
-        }
-
         const int currentRow = m_moduleList->currentRow();
         if (currentRow < 0)
         {
@@ -674,6 +753,18 @@ namespace scopeone::ui
 
         updateModuleList();
         updateConfigWidget();
+        const bool noModules = m_scopeonecore->processingModules().isEmpty();
+        if (m_scopeonecore->processingModules().isEmpty()
+            && m_scopeonecore->isRealTimeProcessingEnabled())
+        {
+            m_scopeonecore->setRealTimeProcessingEnabled(false);
+            emit processingStopped();
+        }
+        else if (noModules)
+        {
+            emit processingStopped();
+        }
+        updateRunButtons();
     }
 
     void ImageProcessingWidget::onModuleSelectionChanged()
@@ -681,8 +772,30 @@ namespace scopeone::ui
         updateConfigWidget();
     }
 
+    void ImageProcessingWidget::onProcessingBitDepthChanged()
+    {
+        if (!m_processingBitDepthCombo)
+        {
+            return;
+        }
+
+        const auto bitDepth = static_cast<scopeone::core::ScopeOneCore::ProcessingBitDepth>(
+            m_processingBitDepthCombo->currentData().toInt());
+        if (!m_scopeonecore->setProcessingBitDepth(bitDepth))
+        {
+            QMessageBox::warning(this, "Warning", "Failed to update processing bit depth");
+            updateProcessingSettings();
+        }
+    }
+
     void ImageProcessingWidget::onStartProcessing()
     {
+        if (m_scopeonecore->processingModules().isEmpty())
+        {
+            QMessageBox::information(this, "Information", "Please add a processing module first");
+            updateRunButtons();
+            return;
+        }
         m_scopeonecore->setRealTimeProcessingEnabled(true);
         updateRunButtons();
         emit processingStarted();
@@ -693,6 +806,7 @@ namespace scopeone::ui
     {
         m_scopeonecore->setRealTimeProcessingEnabled(false);
         updateRunButtons();
+        emit processingStopped();
         qInfo().noquote() << "Processing stopped";
     }
 } // namespace scopeone::ui

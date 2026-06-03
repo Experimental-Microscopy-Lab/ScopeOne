@@ -24,7 +24,7 @@ void ProcessingPipeline::removeModule(int index)
     }
 }
 
-ImageFrame ProcessingPipeline::process(const ImageFrame& input)
+ImageFrame ProcessingPipeline::process(const ImageFrame& input, int processingBitDepth)
 {
     // Run modules in order and keep the last valid frame
     ImageFrame result(input);
@@ -33,13 +33,9 @@ ImageFrame ProcessingPipeline::process(const ImageFrame& input)
         return result;
     }
 
-    ModuleInput currentInput(input);
+    ModuleInput currentInput(input, processingBitDepth);
 
     for (const auto& module : m_modules) {
-        if (!module) {
-            continue;
-        }
-
         ModuleOutput moduleOutput;
         const bool success = module->process(currentInput, moduleOutput);
         if (success && moduleOutput.isValid()) {
@@ -49,16 +45,13 @@ ImageFrame ProcessingPipeline::process(const ImageFrame& input)
             }
 
             currentInput.frame = std::move(nextFrame);
+            currentInput.processingBitDepth = processingBitDepth;
             result = currentInput.frame;
         } else if (moduleOutput.hasError()) {
             qWarning() << "Module" << module->getModuleName() << "failed:" << moduleOutput.error;
         } else {
             qWarning() << "Module" << module->getModuleName() << "failed";
         }
-    }
-
-    if (!result.isValid()) {
-        result = currentInput.frame;
     }
 
     return result;
@@ -96,6 +89,11 @@ ProcessingPipeline* ImageProcessingManager::pipeline() const
 void ImageProcessingManager::enableRealTimeProcessing(bool enabled)
 {
     m_realTimeEnabled = enabled;
+}
+
+void ImageProcessingManager::setProcessingBitDepth(int bitDepth)
+{
+    m_processingBitDepth = bitDepth >= 16 ? 16 : 8;
 }
 
 void ImageProcessingManager::processFrameAsync(const ImageFrame& frame)
@@ -161,12 +159,8 @@ void ImageProcessingManager::processCameraQueue(const QString& cameraKey)
 
         ProcessingPipeline* pipeline = m_pipeline.get();
 
-        if (!pipeline) {
-            continue;
-        }
-
         try {
-            const ImageFrame result = pipeline->process(frame);
+            const ImageFrame result = pipeline->process(frame, m_processingBitDepth.load());
             emit imageProcessed(result);
         } catch (const std::exception& e) {
             emit processingError(QString("Processing failed: %1").arg(e.what()));

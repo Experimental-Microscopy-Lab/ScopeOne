@@ -38,16 +38,9 @@ int modeValue(SpatiotemporalBinningModule::BinningMode mode, const std::vector<i
     return values.front();
 }
 
-int frameSample(const ImageFrame& frame, int x, int y)
-{
-    return static_cast<int>(
-        reinterpret_cast<const uchar*>(frame.bytes.constData() + y * frame.stride)[x]);
-}
-
 ImageFrame applyTemporalBinning(const std::deque<ImageFrame>& buffer,
                                 SpatiotemporalBinningModule::BinningMode mode)
 {
-    // Combine buffered frames into one temporal output
     if (buffer.empty()) {
         return {};
     }
@@ -57,22 +50,25 @@ ImageFrame applyTemporalBinning(const std::deque<ImageFrame>& buffer,
 
     const int width = buffer.front().width;
     const int height = buffer.front().height;
-    QByteArray bytes;
-    bytes.resize(width * height);
-    uchar* outData = reinterpret_cast<uchar*>(bytes.data());
+    const int maxValue = buffer.front().maxValue();
     std::vector<int> samples(buffer.size());
-
-    for (int y = 0; y < height; ++y) {
-        uchar* dstRow = outData + y * width;
-        for (int x = 0; x < width; ++x) {
-            for (int i = 0; i < static_cast<int>(buffer.size()); ++i) {
-                samples[static_cast<size_t>(i)] = frameSample(buffer[static_cast<size_t>(i)], x, y);
+    QByteArray bytes = dispatchFrameType(buffer.front(), [&]<typename Pixel>()
+    {
+        QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+        for (int y = 0; y < height; ++y) {
+            Pixel* dstRow = mutableRowData<Pixel>(outBytes, width, y);
+            for (int x = 0; x < width; ++x) {
+                for (int i = 0; i < static_cast<int>(buffer.size()); ++i) {
+                    samples[static_cast<size_t>(i)] = static_cast<int>(
+                        frameRowData<Pixel>(buffer[static_cast<size_t>(i)], y)[x]);
+                }
+                dstRow[x] = clampPixelValue<Pixel>(modeValue(mode, samples), maxValue);
             }
-            dstRow[x] = static_cast<uchar>(qBound(0, modeValue(mode, samples), 255));
         }
-    }
+        return outBytes;
+    });
 
-    return makeMono8Frame(buffer.front().cameraId, width, height, std::move(bytes));
+    return makeFrameLike(buffer.front(), width, height, std::move(bytes));
 }
 
 ImageFrame applySpatialBinning(const ImageFrame& frame,
@@ -90,26 +86,29 @@ ImageFrame applySpatialBinning(const ImageFrame& frame,
         return frame;
     }
 
-    QByteArray bytes;
-    bytes.resize(width * height);
-    uchar* outData = reinterpret_cast<uchar*>(bytes.data());
     std::vector<int> samples;
     samples.reserve(static_cast<size_t>(binX * binY));
-
-    for (int y = 0; y < height; ++y) {
-        uchar* dst = outData + y * width;
-        for (int x = 0; x < width; ++x) {
-            samples.clear();
-            for (int yy = 0; yy < binY; ++yy) {
-                for (int xx = 0; xx < binX; ++xx) {
-                    samples.push_back(frameSample(frame, x * binX + xx, y * binY + yy));
+    const int maxValue = frame.maxValue();
+    QByteArray bytes = dispatchFrameType(frame, [&]<typename Pixel>()
+    {
+        QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+        for (int y = 0; y < height; ++y) {
+            Pixel* dst = mutableRowData<Pixel>(outBytes, width, y);
+            for (int x = 0; x < width; ++x) {
+                samples.clear();
+                for (int yy = 0; yy < binY; ++yy) {
+                    for (int xx = 0; xx < binX; ++xx) {
+                        samples.push_back(static_cast<int>(
+                            frameRowData<Pixel>(frame, y * binY + yy)[x * binX + xx]));
+                    }
                 }
+                dst[x] = clampPixelValue<Pixel>(modeValue(mode, samples), maxValue);
             }
-            dst[x] = static_cast<uchar>(qBound(0, modeValue(mode, samples), 255));
         }
-    }
+        return outBytes;
+    });
 
-    return makeMono8Frame(frame.cameraId, width, height, std::move(bytes));
+    return makeFrameLike(frame, width, height, std::move(bytes));
 }
 
 } // namespace
@@ -121,7 +120,6 @@ SpatiotemporalBinningModule::SpatiotemporalBinningModule(QObject* parent)
 
 bool SpatiotemporalBinningModule::process(const ModuleInput& in, ModuleOutput& out)
 {
-    // Apply temporal binning before spatial binning
     if (!in.frame.isValid()) {
         out.frame = in.frame;
         out.error = "Invalid input";
@@ -129,13 +127,16 @@ bool SpatiotemporalBinningModule::process(const ModuleInput& in, ModuleOutput& o
     }
 
     try {
-        ImageFrame mono8Frame;
-        if (!convertFrameToMono8(in.frame, mono8Frame)) {
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth)) {
             out.frame = in.frame;
             out.error = "Unsupported input frame";
             return false;
         }
-        m_frameBuffer.push_back(mono8Frame);
+        if (!m_frameBuffer.empty() && !m_frameBuffer.front().isCompatibleWith(workingFrame)) {
+            m_frameBuffer.clear();
+        }
+        m_frameBuffer.push_back(workingFrame);
         while (static_cast<int>(m_frameBuffer.size()) > m_temporalBin) {
             m_frameBuffer.pop_front();
         }
@@ -167,7 +168,6 @@ QVariantMap SpatiotemporalBinningModule::getParameters() const
 
 void SpatiotemporalBinningModule::setParameters(const QVariantMap& params)
 {
-    // Reset temporal history when timing changes
     bool resetBuffer = false;
 
     if (params.contains("spatial_bin_x")) {

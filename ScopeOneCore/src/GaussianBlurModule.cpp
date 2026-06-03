@@ -1,8 +1,6 @@
 #include "internal/GaussianBlurModule.h"
 #include "internal/FrameBufferUtils.h"
 
-#include <cstring>
-
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -15,7 +13,6 @@ GaussianBlurModule::GaussianBlurModule(QObject* parent)
 
 bool GaussianBlurModule::process(const ModuleInput& in, ModuleOutput& out)
 {
-    // Blur one mono frame with the current kernel
     if (!in.frame.isValid()) {
         out.frame = in.frame;
         out.error = "Invalid input";
@@ -23,25 +20,21 @@ bool GaussianBlurModule::process(const ModuleInput& in, ModuleOutput& out)
     }
 
     try {
-        ImageFrame mono8Frame;
-        if (!convertFrameToMono8(in.frame, mono8Frame)) {
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth)) {
             out.frame = in.frame;
             out.error = "Unsupported input frame";
             return false;
         }
 
-        cv::Mat src(mono8Frame.height, mono8Frame.width, CV_8UC1,
-                    mono8Frame.bytes.data(), mono8Frame.stride);
+        const int cvType = workingFrame.isMono16() ? CV_16UC1 : CV_8UC1;
+        cv::Mat src(workingFrame.height, workingFrame.width, cvType,
+                    workingFrame.bytes.data(), workingFrame.stride);
         cv::Mat blurred;
         cv::GaussianBlur(src, blurred, cv::Size(m_kernelSize, m_kernelSize), m_sigma, m_sigma);
 
-        QByteArray bytes;
-        bytes.resize(blurred.cols * blurred.rows);
-        for (int y = 0; y < blurred.rows; ++y) {
-            memcpy(bytes.data() + y * blurred.cols, blurred.ptr(y), static_cast<size_t>(blurred.cols));
-        }
-
-        out.frame = makeMono8Frame(in.frame.cameraId, blurred.cols, blurred.rows, std::move(bytes));
+        QByteArray bytes = copyMatBytes(blurred);
+        out.frame = makeFrameLike(workingFrame, blurred.cols, blurred.rows, std::move(bytes));
     } catch (const std::exception& e) {
         out.frame = in.frame;
         out.error = QString("Gaussian blur failed: %1").arg(e.what());
@@ -60,7 +53,6 @@ QVariantMap GaussianBlurModule::getParameters() const
 
 void GaussianBlurModule::setParameters(const QVariantMap& params)
 {
-    // Force a valid odd kernel size
     if (params.contains("kernel_size")) {
         int kernelSize = qMax(1, params.value("kernel_size").toInt());
         if ((kernelSize % 2) == 0) {

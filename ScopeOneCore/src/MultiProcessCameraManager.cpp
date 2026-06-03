@@ -511,7 +511,8 @@ namespace scopeone::core::internal
             {
                 return false;
             }
-            return setPropertyFor(resolvedCameraId, name, value);
+            return applyWithPreviewRestart(
+                resolvedCameraId, [&]() { return setPropertyFor(resolvedCameraId, name, value); });
         }
 
         bool setROI(const QString& cameraId, int x, int y, int width, int height) override
@@ -852,9 +853,11 @@ namespace scopeone::core::internal
             }
             try
             {
+                owner.m_nativeCore->setCameraDevice(cameraId.toStdString().c_str());
                 owner.m_nativeCore->setProperty(cameraId.toStdString().c_str(),
                                                 name.toStdString().c_str(),
                                                 value.toStdString().c_str());
+                owner.m_nativeCore->waitForDevice(cameraId.toStdString().c_str());
                 return true;
             }
             catch (const CMMError&)
@@ -2293,7 +2296,28 @@ namespace scopeone::core::internal
 
     bool MultiProcessCameraManager::setProperty(const QString& cameraId, const QString& name, const QString& value)
     {
-        return m_runtime && m_runtime->setProperty(cameraId, name, value);
+        if (!m_runtime)
+        {
+            return false;
+        }
+        const bool ok = m_runtime->setProperty(cameraId, name, value);
+        if (ok)
+        {
+            const QString propKey = QString("%1:%2").arg(cameraId, name);
+            m_propertyTypeCache.remove(propKey);
+            m_propertyReadOnlyCache.remove(propKey);
+            m_propertyAllowedValuesCache.remove(propKey);
+            m_propertyHasLimitsCache.remove(propKey);
+            m_propertyLowerLimitCache.remove(propKey);
+            m_propertyUpperLimitCache.remove(propKey);
+        }
+        return ok;
+    }
+
+    bool MultiProcessCameraManager::isPreviewRunning(const QString& cameraId) const
+    {
+        const auto it = m_cameras.constFind(cameraId);
+        return it != m_cameras.constEnd() && it.value() && it.value()->isRunning;
     }
 
     bool MultiProcessCameraManager::startPreviewFor(const QString& cameraId)

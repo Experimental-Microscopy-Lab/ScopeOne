@@ -44,6 +44,7 @@ namespace scopeone::core::internal
         bool setExposure(const QString& cameraIdOrAll, double exposureMs);
         bool startPreviewFor(const QString& cameraId);
         bool stopPreviewFor(const QString& cameraId);
+        bool isPreviewRunning(const QString& cameraId) const;
         QStringList listProperties(const QString& cameraId);
         QString getProperty(const QString& cameraId, const QString& name);
         bool setProperty(const QString& cameraId, const QString& name, const QString& value);

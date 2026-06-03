@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.408 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.603 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -72,6 +72,7 @@ set(CORE_SOURCES
         src/FFTModule.cpp
         src/MedianFilterModule.cpp
         src/BackgroundCalibrationModule.cpp
+        src/DifferentialRollingModule.cpp
         src/ProcessingModuleTemplate.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
@@ -91,6 +92,7 @@ set(CORE_HEADERS
         internal/FFTModule.h
         internal/MedianFilterModule.h
         internal/BackgroundCalibrationModule.h
+        internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
         internal/MultiProcessCameraManager.h

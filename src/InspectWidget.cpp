@@ -470,19 +470,11 @@ namespace scopeone::ui
 
     void InspectWidget::clearCrossSectionProfile()
     {
-        if (!m_crossSectionWidget)
-        {
-            return;
-        }
         m_crossSectionWidget->clear();
     }
 
     void InspectWidget::setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values)
     {
-        if (!m_crossSectionWidget)
-        {
-            return;
-        }
         m_crossSectionWidget->setProfile(cameraId, processed, values);
     }
 

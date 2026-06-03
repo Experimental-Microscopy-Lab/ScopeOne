@@ -54,7 +54,14 @@ namespace scopeone::core
             BackgroundCalibration = 2,
             SpatiotemporalBinning = 3,
             GaussianBlur = 4,
+            DifferentialRolling = 5,
             Unknown = 255
+        };
+
+        enum class ProcessingBitDepth
+        {
+            Bit8 = 8,
+            Bit16 = 16
         };
 
         struct LoadConfigResult
@@ -511,7 +518,14 @@ namespace scopeone::core
         bool readZPosition(const QString& zStageLabel, double& z) const;
         bool moveXYRelative(const QString& xyStageLabel, double dx, double dy);
         bool moveZRelative(const QString& zStageLabel, double dz);
+        bool moveXYTo(const QString& xyStageLabel, double x, double y);
+        bool moveZTo(const QString& zStageLabel, double z);
         bool readExposure(const QString& cameraIdOrAll, double& exposureMs) const;
+
+        QStringList availableConfigGroups() const;
+        QStringList availableConfigs(const QString& configGroup) const;
+        QString currentConfig(const QString& groupName) const;
+        bool setConfig(const QString& groupName, const QString& configName);
 
 
         QStringList loadedDevices() const;
@@ -533,6 +547,8 @@ namespace scopeone::core
 
         bool isRealTimeProcessingEnabled() const;
         void setRealTimeProcessingEnabled(bool enabled);
+        ProcessingBitDepth processingBitDepth() const;
+        bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         void processFrameAsync(const ImageFrame& frame);
         QList<ProcessingModuleInfo> processingModules() const;
         bool addProcessingModule(ProcessingModuleKind kind);
@@ -559,6 +575,7 @@ namespace scopeone::core
         void lineProfileCleared();
         void processingError(const QString& errorMessage);
         void processingModulesChanged();
+        void processingSettingsChanged();
 
         void recordingProgressChanged(int phase,
                                       qint64 frameCurrent,
@@ -596,7 +613,9 @@ namespace scopeone::core
                                        QString* errorMessage);
         std::shared_ptr<CMMCore> core() const;
         bool isAgentCamera(const QString& deviceLabel) const;
+        bool isNativeCamera(const QString& deviceLabel) const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
+        QStringList runningPreviewCameraIds() const;
         bool getLatestRawTransport(const QString& cameraId,
                                    SharedFrameHeader& header,
                                    QByteArray& data) const;

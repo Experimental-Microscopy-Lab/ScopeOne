@@ -10,7 +10,7 @@ TemplateModule::TemplateModule(QObject* parent)
 
 bool TemplateModule::process(const ModuleInput& in, ModuleOutput& out)
 {
-    // Minimal example module that forwards mono8 data
+    // Minimal example module that forwards the configured working format
     if (!in.frame.isValid()) {
         out.frame = in.frame;
         out.error = "Invalid input";
@@ -18,14 +18,14 @@ bool TemplateModule::process(const ModuleInput& in, ModuleOutput& out)
     }
 
     try {
-        ImageFrame gray;
-        if (!convertFrameToMono8(in.frame, gray)) {
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth)) {
             out.frame = in.frame;
-            out.error = "Failed to convert frame to grayscale";
+            out.error = "Failed to convert frame to processing format";
             return false;
         }
 
-        out.frame = gray;
+        out.frame = workingFrame;
         return true;
     } catch (const std::exception& e) {
         out.frame = in.frame;

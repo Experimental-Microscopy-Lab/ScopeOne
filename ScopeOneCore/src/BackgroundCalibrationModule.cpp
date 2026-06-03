@@ -1,6 +1,5 @@
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/FrameBufferUtils.h"
-#include <QDebug>
 #include <algorithm>
 
 namespace scopeone::core::internal {
@@ -16,7 +15,6 @@ BackgroundCalibrationModule::BackgroundCalibrationModule(QObject* parent)
 
 void BackgroundCalibrationModule::resetCalibration()
 {
-    // Drop the current background model
     m_buffer.clear();
     m_background = ImageFrame{};
     m_calibrated = false;
@@ -24,25 +22,22 @@ void BackgroundCalibrationModule::resetCalibration()
 
 void BackgroundCalibrationModule::computeBackground()
 {
-    // Rebuild the background frame from buffered samples
     if (m_buffer.empty()) return;
 
     const int w = m_buffer.front().width;
     const int h = m_buffer.front().height;
-    QByteArray bgBytes;
-    bgBytes.resize(w * h);
-    uchar* bgData = reinterpret_cast<uchar*>(bgBytes.data());
-
-    switch (m_method) {
+    const int maxValue = m_buffer.front().maxValue();
+    QByteArray bgBytes = dispatchFrameType(m_buffer.front(), [&]<typename Pixel>()
+    {
+        QByteArray outBytes = allocatePixelBytes<Pixel>(w, h);
+        switch (m_method) {
         case BackgroundMethod::Median: {
-            std::vector<uchar> vals(m_buffer.size());
+            std::vector<Pixel> vals(m_buffer.size());
             for (int y = 0; y < h; ++y) {
-                uchar* dst = bgData + y * w;
+                Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
                 for (int x = 0; x < w; ++x) {
                     for (size_t k = 0; k < m_buffer.size(); ++k) {
-                        vals[k] = static_cast<uchar>(
-                            reinterpret_cast<const uchar*>(
-                                m_buffer[k].bytes.constData() + y * m_buffer[k].stride)[x]);
+                        vals[k] = frameRowData<Pixel>(m_buffer[k], y)[x];
                     }
                     std::nth_element(vals.begin(), vals.begin() + vals.size() / 2, vals.end());
                     dst[x] = vals[vals.size() / 2];
@@ -50,61 +45,56 @@ void BackgroundCalibrationModule::computeBackground()
             }
             break;
         }
-
         case BackgroundMethod::Mean: {
             for (int y = 0; y < h; ++y) {
-                uchar* dst = bgData + y * w;
+                Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
                 for (int x = 0; x < w; ++x) {
-                    int sum = 0;
+                    qint64 sum = 0;
                     for (size_t k = 0; k < m_buffer.size(); ++k) {
-                        sum += reinterpret_cast<const uchar*>(
-                            m_buffer[k].bytes.constData() + y * m_buffer[k].stride)[x];
+                        sum += static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]);
                     }
-                    dst[x] = static_cast<uchar>(sum / m_buffer.size());
+                    dst[x] = clampPixelValue<Pixel>(
+                        static_cast<int>(sum / static_cast<qint64>(m_buffer.size())),
+                        maxValue);
                 }
             }
             break;
         }
-
         case BackgroundMethod::Maximum: {
             for (int y = 0; y < h; ++y) {
-                uchar* dst = bgData + y * w;
+                Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
                 for (int x = 0; x < w; ++x) {
-                    uchar maxVal = 0;
+                    int best = 0;
                     for (size_t k = 0; k < m_buffer.size(); ++k) {
-                        uchar val = reinterpret_cast<const uchar*>(
-                            m_buffer[k].bytes.constData() + y * m_buffer[k].stride)[x];
-                        if (val > maxVal) maxVal = val;
+                        best = qMax(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
                     }
-                    dst[x] = maxVal;
+                    dst[x] = clampPixelValue<Pixel>(best, maxValue);
                 }
             }
             break;
         }
-
         case BackgroundMethod::Minimum: {
             for (int y = 0; y < h; ++y) {
-                uchar* dst = bgData + y * w;
+                Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
                 for (int x = 0; x < w; ++x) {
-                    uchar minVal = 255;
+                    int best = maxValue;
                     for (size_t k = 0; k < m_buffer.size(); ++k) {
-                        uchar val = reinterpret_cast<const uchar*>(
-                            m_buffer[k].bytes.constData() + y * m_buffer[k].stride)[x];
-                        if (val < minVal) minVal = val;
+                        best = qMin(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
                     }
-                    dst[x] = minVal;
+                    dst[x] = clampPixelValue<Pixel>(best, maxValue);
                 }
             }
             break;
         }
-    }
+        }
+        return outBytes;
+    });
 
-    m_background = makeMono8Frame(m_buffer.front().cameraId, w, h, std::move(bgBytes));
+    m_background = makeFrameLike(m_buffer.front(), w, h, std::move(bgBytes));
 }
 
 bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& out)
 {
-    // Learn or apply the background model on mono frames
     if (!in.frame.isValid()) {
         out.frame = in.frame;
         out.error = "Invalid input";
@@ -112,16 +102,21 @@ bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& o
     }
 
     try {
-        ImageFrame gray;
-        if (!convertFrameToMono8(in.frame, gray)) {
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth)) {
             out.frame = in.frame;
             out.error = "Unsupported input frame";
             return false;
         }
 
+        if ((!m_buffer.empty() && !m_buffer.front().isCompatibleWith(workingFrame))
+            || (m_background.isValid() && !m_background.isCompatibleWith(workingFrame))) {
+            resetCalibration();
+        }
+
         if (m_mode == BackgroundMode::Snapshot) {
             if (!m_calibrated) {
-                m_buffer.push_back(gray);
+                m_buffer.push_back(workingFrame);
                 while ((int)m_buffer.size() > m_calibrationFrames) m_buffer.pop_front();
 
                 if ((int)m_buffer.size() < m_calibrationFrames) {
@@ -138,27 +133,24 @@ bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& o
         }
 
         if (m_mode == BackgroundMode::Running) {
-            m_buffer.push_back(gray);
+            m_buffer.push_back(workingFrame);
             while ((int)m_buffer.size() > m_calibrationFrames) {
                 m_buffer.pop_front();
             }
         }
 
-        if (m_background.isValid() && m_background.isCompatibleWith(gray)) {
-            QByteArray outBytes;
-            outBytes.resize(gray.width * gray.height);
-            uchar* outData = reinterpret_cast<uchar*>(outBytes.data());
-
-            for (int y = 0; y < gray.height; ++y) {
-                const uchar* s = reinterpret_cast<const uchar*>(gray.bytes.constData() + y * gray.stride);
-                const uchar* b = reinterpret_cast<const uchar*>(m_background.bytes.constData()
-                                                                + y * m_background.stride);
-                uchar* d = outData + y * gray.width;
-
-                for (int x = 0; x < gray.width; ++x) {
-                    int result = 0;
-
-                    switch (m_operation) {
+        if (m_background.isValid() && m_background.isCompatibleWith(workingFrame)) {
+            const int maxValue = workingFrame.maxValue();
+            QByteArray outBytes = dispatchFrameType(workingFrame, [&]<typename Pixel>()
+            {
+                QByteArray bytes = allocatePixelBytes<Pixel>(workingFrame.width, workingFrame.height);
+                for (int y = 0; y < workingFrame.height; ++y) {
+                    const Pixel* s = frameRowData<Pixel>(workingFrame, y);
+                    const Pixel* b = frameRowData<Pixel>(m_background, y);
+                    Pixel* d = mutableRowData<Pixel>(bytes, workingFrame.width, y);
+                    for (int x = 0; x < workingFrame.width; ++x) {
+                        int result = 0;
+                        switch (m_operation) {
                         case BackgroundOperation::Subtract:
                             result = int(s[x]) - int(b[x]);
                             break;
@@ -166,20 +158,26 @@ bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& o
                             result = int(s[x]) + int(b[x]);
                             break;
                         case BackgroundOperation::Multiply:
-                            result = (int(s[x]) * int(b[x])) / 255;
+                            result = static_cast<int>((static_cast<qint64>(s[x]) * b[x]) / maxValue);
                             break;
                         case BackgroundOperation::Divide:
-                            result = (b[x] > 0) ? (int(s[x]) * 255) / int(b[x]) : 255;
+                            result = (b[x] > 0)
+                                ? static_cast<int>((static_cast<qint64>(s[x]) * maxValue) / b[x])
+                                : maxValue;
                             break;
+                        }
+                        d[x] = clampPixelValue<Pixel>(result, maxValue);
                     }
-
-                    d[x] = static_cast<uchar>(qBound(0, result, 255));
                 }
-            }
+                return bytes;
+            });
 
-            out.frame = makeMono8Frame(in.frame.cameraId, gray.width, gray.height, std::move(outBytes));
+            out.frame = makeFrameLike(workingFrame,
+                                      workingFrame.width,
+                                      workingFrame.height,
+                                      std::move(outBytes));
         } else {
-            out.frame = gray;
+            out.frame = workingFrame;
         }
 
     } catch (const std::exception& e) {
@@ -203,7 +201,6 @@ QVariantMap BackgroundCalibrationModule::getParameters() const
 
 void BackgroundCalibrationModule::setParameters(const QVariantMap& params)
 {
-    // Reset calibration when model settings change
     bool needsReset = false;
 
     if (params.contains("calibration_frames")) {

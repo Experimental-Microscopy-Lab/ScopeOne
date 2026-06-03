@@ -13,6 +13,7 @@
 #include "internal/FFTModule.h"
 #include "internal/MedianFilterModule.h"
 #include "internal/BackgroundCalibrationModule.h"
+#include "internal/DifferentialRollingModule.h"
 
 namespace scopeone::core::internal {
 
@@ -26,7 +27,7 @@ public:
     void addModule(std::unique_ptr<ProcessingModule> module);
     void removeModule(int index);
 
-    ImageFrame process(const ImageFrame& input);
+    ImageFrame process(const ImageFrame& input, int processingBitDepth);
 
     int getModuleCount() const { return static_cast<int>(m_modules.size()); }
     ProcessingModule* getModule(int index) const;
@@ -47,6 +48,8 @@ public:
 
     void enableRealTimeProcessing(bool enabled);
     bool isRealTimeProcessingEnabled() const { return m_realTimeEnabled; }
+    int processingBitDepth() const { return m_processingBitDepth.load(); }
+    void setProcessingBitDepth(int bitDepth);
 
     void processFrameAsync(const ImageFrame& frame);
 
@@ -66,6 +69,7 @@ private:
     void processCameraQueue(const QString& cameraKey);
     std::shared_ptr<ProcessingPipeline> m_pipeline;
     std::atomic<bool> m_realTimeEnabled;
+    std::atomic<int> m_processingBitDepth{8};
     void submitFrame(const ImageFrame& frame);
     mutable QMutex m_frameMutex;
     QHash<QString, CameraSlot> m_cameraSlots;

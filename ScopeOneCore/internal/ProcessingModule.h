@@ -13,10 +13,12 @@ using ImageFrame = scopeone::core::ImageFrame;
 struct ModuleInput
 {
     ImageFrame frame;
+    int processingBitDepth{8};
     ModuleInput() = default;
 
-    explicit ModuleInput(const ImageFrame& f)
-        : frame(f) {}
+    explicit ModuleInput(const ImageFrame& f, int bitDepth = 8)
+        : frame(f)
+        , processingBitDepth(bitDepth) {}
 };
 
 struct ModuleOutput

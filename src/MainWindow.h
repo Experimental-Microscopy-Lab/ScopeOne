@@ -15,6 +15,7 @@ namespace scopeone::core { class ScopeOneCore; }
 namespace scopeone::ui {
 
 class DevicePropertyWidget;
+class ConfigPresetWidget;
 class ImageProcessingWidget;
 class InspectWidget;
 class PreviewWidget;
@@ -50,6 +51,7 @@ private:
     void refreshDevicePanels(bool fromCache = false);
     void applyStoredApplicationSettings();
     void openSettingsDialog();
+    void connectPropertyPanels();
 
     void handlePreviewMousePosition(const QPoint& pos);
     void handleRoiDrawn(const QString& cameraId, int x, int y, int width, int height);
@@ -74,6 +76,7 @@ private:
 
     QDockWidget* m_propertyDockWidget{nullptr};
     DevicePropertyWidget* m_propertyBrowser{nullptr};
+    ConfigPresetWidget* m_configPresetWidget{nullptr};
 
     QDockWidget* m_recordingDockWidget{nullptr};
     RecordingWidget* m_recordingWidget{nullptr};

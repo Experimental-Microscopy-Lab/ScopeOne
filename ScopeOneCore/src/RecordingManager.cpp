@@ -294,17 +294,19 @@ namespace scopeone::core::internal
                                               double timestampMs)
         {
             SharedFrameHeader header{};
+            const bool mono16 = (bytesPerPixel > 0)
+                ? (bytesPerPixel >= 2)
+                : (bitsPerSample > 8);
             header.state = 2;
             header.width = static_cast<quint32>(width);
             header.height = static_cast<quint32>(height);
             header.bitsPerSample = static_cast<quint16>(bitsPerSample);
             header.channels = 1;
-            header.pixelFormat =
-                (bitsPerSample > 8)
-                    ? static_cast<quint32>(SharedPixelFormat::Mono16)
-                    : static_cast<quint32>(SharedPixelFormat::Mono8);
+            header.pixelFormat = mono16
+                ? static_cast<quint32>(SharedPixelFormat::Mono16)
+                : static_cast<quint32>(SharedPixelFormat::Mono8);
             const int resolvedBytesPerPixel =
-                (bytesPerPixel > 0) ? bytesPerPixel : (bitsPerSample > 8 ? 2 : 1);
+                (bytesPerPixel > 0) ? bytesPerPixel : (mono16 ? 2 : 1);
             header.stride = static_cast<quint32>(width * resolvedBytesPerPixel);
             header.frameIndex = frameIndex;
             header.timestampNs = static_cast<quint64>(timestampMs) * 1000000ull;
@@ -747,7 +749,7 @@ namespace scopeone::core::internal
                     return false;
                 }
 
-                writeFrameInfoHeader(*output);
+                output->frameInfoFile.write(frameInfoHeaderLine());
                 output->frameInfoFile.flush();
             }
 
@@ -967,7 +969,7 @@ namespace scopeone::core::internal
 
         if (output.frameInfoFile.isOpen())
         {
-            const QByteArray infoLine = buildFrameInfoLine(output.cameraId, task.frame);
+            const QByteArray infoLine = frameInfoLine(output.cameraId, task.frame);
             if (output.frameInfoFile.write(infoLine) != infoLine.size())
             {
                 errorMessage = QStringLiteral("Failed writing frame info for %1").arg(output.cameraId);
@@ -975,16 +977,6 @@ namespace scopeone::core::internal
             }
         }
         return true;
-    }
-
-    void RecordingManager::writeFrameInfoHeader(CameraOutput& output)
-    {
-        output.frameInfoFile.write(frameInfoHeaderLine());
-    }
-
-    QByteArray RecordingManager::buildFrameInfoLine(const QString& cameraId, const RecordingFrame& frame) const
-    {
-        return frameInfoLine(cameraId, frame);
     }
 
     QString RecordingManager::formatName(RecordingFormat format) const
@@ -1334,6 +1326,7 @@ namespace scopeone::core::internal
         frame.width = static_cast<int>(packet.header.width);
         frame.height = static_cast<int>(packet.header.height);
         frame.bits = resolveFrameBits(packet.header);
+
         if (frame.width <= 0 || frame.height <= 0 || frame.bits <= 0)
         {
             qWarning().noquote() << QStringLiteral("Skipping invalid frame for %1").arg(packet.cameraId);
