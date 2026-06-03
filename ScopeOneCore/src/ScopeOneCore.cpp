@@ -360,10 +360,6 @@ namespace
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::FFT;
         }
-        if (qobject_cast<const scopeone::core::internal::MedianFilterModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::MedianFilter;
-        }
         if (qobject_cast<const scopeone::core::internal::BackgroundCalibrationModule*>(module))
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::BackgroundCalibration;
@@ -438,7 +434,6 @@ namespace scopeone::core
     using scopeone::core::internal::ImageFrame;
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::MMCoreManager;
-    using scopeone::core::internal::MedianFilterModule;
     using scopeone::core::internal::MultiProcessCameraManager;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipeline;
@@ -1619,8 +1614,8 @@ namespace scopeone::core
             return ProcessingBitDepth::Bit8;
         }
         return m_managers->imageProcessingManager->processingBitDepth() >= 16
-            ? ProcessingBitDepth::Bit16
-            : ProcessingBitDepth::Bit8;
+                   ? ProcessingBitDepth::Bit16
+                   : ProcessingBitDepth::Bit8;
     }
 
     bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
@@ -1689,9 +1684,6 @@ namespace scopeone::core
         case ProcessingModuleKind::FFT:
             module = std::make_unique<FFTModule>(pipeline);
             break;
-        case ProcessingModuleKind::MedianFilter:
-            module = std::make_unique<MedianFilterModule>(pipeline);
-            break;
         case ProcessingModuleKind::BackgroundCalibration:
             module = std::make_unique<BackgroundCalibrationModule>(pipeline);
             break;
@@ -1756,12 +1748,6 @@ namespace scopeone::core
         if (!module)
         {
             return false;
-        }
-        if (auto* median = qobject_cast<MedianFilterModule*>(module))
-        {
-            median->resetBuffer();
-            emit processingModulesChanged();
-            return true;
         }
         if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
         {

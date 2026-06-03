@@ -269,53 +269,6 @@ namespace scopeone::ui
             QDoubleSpinBox* m_sigmaSpin{nullptr};
         };
 
-        class MedianFilterModuleConfigWidget : public ProcessingModuleConfigWidgetBase
-        {
-        public:
-            MedianFilterModuleConfigWidget(scopeone::core::ScopeOneCore* core,
-                                           int moduleIndex,
-                                           const ProcessingModuleInfo& info,
-                                           QWidget* parent = nullptr)
-                : ProcessingModuleConfigWidgetBase(core, moduleIndex, parent)
-            {
-                auto* layout = new QVBoxLayout(this);
-                auto* group = new QGroupBox("Temporal Median Settings", this);
-                auto* groupLayout = new QGridLayout(group);
-
-                groupLayout->addWidget(new QLabel("Window Size:", group), 0, 0);
-                m_windowSizeSpin = new QSpinBox(group);
-                m_windowSizeSpin->setRange(3, 99);
-                m_windowSizeSpin->setSingleStep(2);
-                groupLayout->addWidget(m_windowSizeSpin, 0, 1);
-
-                m_resetButton = new QPushButton("Reset Buffer", this);
-
-                layout->addWidget(group);
-                layout->addWidget(m_resetButton);
-                layout->addStretch();
-
-                m_windowSizeSpin->setValue(info.parameters().value("window_size", 5).toInt());
-
-                connect(m_windowSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-                        this, [this]() { apply(); });
-                connect(m_resetButton, &QPushButton::clicked, this, [this]()
-                {
-                    resetModule();
-                });
-            }
-
-        private:
-            void apply()
-            {
-                QVariantMap params;
-                params["window_size"] = m_windowSizeSpin->value();
-                applyParameters(params);
-            }
-
-            QSpinBox* m_windowSizeSpin{nullptr};
-            QPushButton* m_resetButton{nullptr};
-        };
-
         class DifferentialRollingModuleConfigWidget : public ProcessingModuleConfigWidgetBase
         {
         public:
@@ -492,8 +445,6 @@ namespace scopeone::ui
                 return new SpatiotemporalBinningModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::GaussianBlur:
                 return new GaussianBlurModuleConfigWidget(core, moduleIndex, info, parent);
-            case ProcessingModuleKind::MedianFilter:
-                return new MedianFilterModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::DifferentialRolling:
                 return new DifferentialRollingModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::BackgroundCalibration:
@@ -568,8 +519,10 @@ namespace scopeone::ui
         m_startButton = new QPushButton("Start Processing", m_runControlsWidget);
         m_stopButton = new QPushButton("Stop Processing", m_runControlsWidget);
         m_processingBitDepthCombo = new QComboBox(m_runControlsWidget);
-        m_processingBitDepthCombo->addItem("8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
-        m_processingBitDepthCombo->addItem("16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
+        m_processingBitDepthCombo->addItem(
+            "8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
+        m_processingBitDepthCombo->addItem(
+            "16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
         connect(m_startButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStartProcessing);
         connect(m_stopButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStopProcessing);
         connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -597,7 +550,6 @@ namespace scopeone::ui
                                    static_cast<int>(ProcessingModuleKind::SpatiotemporalBinning));
         m_moduleTypeCombo->addItem("Gaussian Blur", static_cast<int>(ProcessingModuleKind::GaussianBlur));
         m_moduleTypeCombo->addItem("FFT Bandpass", static_cast<int>(ProcessingModuleKind::FFT));
-        m_moduleTypeCombo->addItem("Temporal Median", static_cast<int>(ProcessingModuleKind::MedianFilter));
         m_moduleTypeCombo->addItem("Differential Rolling",
                                    static_cast<int>(ProcessingModuleKind::DifferentialRolling));
         m_moduleTypeCombo->addItem("Background Calibration",

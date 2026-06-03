@@ -3,58 +3,54 @@
 #include "internal/ProcessingModule.h"
 #include <deque>
 
-namespace scopeone::core::internal {
-
-enum class BackgroundMethod
+namespace scopeone::core::internal
 {
-    Median,
-    Mean,
-    Maximum,
-    Minimum
-};
+    enum class BackgroundMethod
+    {
+        Median,
+        Mean,
+        Maximum,
+        Minimum
+    };
 
+    enum class BackgroundOperation
+    {
+        Subtract,
+        Add,
+        Multiply,
+        Divide
+    };
 
-enum class BackgroundOperation
-{
-    Subtract,
-    Add,
-    Multiply,
-    Divide
-};
+    enum class BackgroundMode
+    {
+        Snapshot,
+        Running
+    };
 
+    class BackgroundCalibrationModule : public ProcessingModule
+    {
+        Q_OBJECT
 
+    public:
+        explicit BackgroundCalibrationModule(QObject* parent = nullptr);
 
-enum class BackgroundMode
-{
-    Snapshot,
-    Running
-};
+        bool process(const ModuleInput& in, ModuleOutput& out) override;
+        QString getModuleName() const override { return "Background Calibration"; }
 
-class BackgroundCalibrationModule : public ProcessingModule
-{
-    Q_OBJECT
+        QVariantMap getParameters() const override;
+        void setParameters(const QVariantMap& params) override;
 
-public:
-    explicit BackgroundCalibrationModule(QObject* parent = nullptr);
+        void resetCalibration();
 
-    bool process(const ModuleInput& in, ModuleOutput& out) override;
-    QString getModuleName() const override { return "Background Calibration"; }
+    private:
+        void computeBackground();
 
-    QVariantMap getParameters() const override;
-    void setParameters(const QVariantMap& params) override;
-
-    void resetCalibration();
-
-private:
-    void computeBackground();
-
-    int m_calibrationFrames;
-    std::deque<ImageFrame> m_buffer;
-    ImageFrame m_background;
-    bool m_calibrated;
-    BackgroundOperation m_operation;
-    BackgroundMethod m_method;
-    BackgroundMode m_mode{BackgroundMode::Snapshot};
-};
-
+        int m_calibrationFrames;
+        std::deque<ImageFrame> m_buffer;
+        ImageFrame m_background;
+        bool m_calibrated;
+        BackgroundOperation m_operation;
+        BackgroundMethod m_method;
+        BackgroundMode m_mode{BackgroundMode::Snapshot};
+    };
 }

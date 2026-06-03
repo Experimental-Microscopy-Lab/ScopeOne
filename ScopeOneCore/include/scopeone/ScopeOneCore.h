@@ -50,7 +50,6 @@ namespace scopeone::core
         enum class ProcessingModuleKind
         {
             FFT = 0,
-            MedianFilter = 1,
             BackgroundCalibration = 2,
             SpatiotemporalBinning = 3,
             GaussianBlur = 4,

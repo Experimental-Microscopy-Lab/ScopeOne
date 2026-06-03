@@ -75,7 +75,6 @@ set(CORE_SOURCES
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
-        src/MedianFilterModule.cpp
         src/BackgroundCalibrationModule.cpp
         src/DifferentialRollingModule.cpp
         src/ProcessingModuleTemplate.cpp
@@ -95,7 +94,6 @@ set(CORE_HEADERS
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
         internal/FFTModule.h
-        internal/MedianFilterModule.h
         internal/BackgroundCalibrationModule.h
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
