@@ -1789,6 +1789,21 @@ namespace scopeone::core
         }
 
         RecordingSettings settingsSnapshot = settings;
+        const bool useMda = !settingsSnapshot.positions.empty() || !settingsSnapshot.zPositions.empty();
+        QStringList suspendedPreviewIds;
+        if (useMda)
+        {
+            const QStringList runningPreviewIds = runningPreviewCameraIds();
+            for (const QString& cameraId : activeCameraIds)
+            {
+                if (runningPreviewIds.contains(cameraId))
+                {
+                    suspendedPreviewIds.append(cameraId);
+                    stopPreview(cameraId);
+                }
+            }
+        }
+
         if (settingsSnapshot.metadataFileName.trimmed().isEmpty())
         {
             settingsSnapshot.metadataFileName = recordingMetadataFileName(settingsSnapshot.baseName);
@@ -1797,9 +1812,40 @@ namespace scopeone::core
         {
             settingsSnapshot.sessionMetadataJson = buildDevicePropertyMetadataJson(*this);
         }
-        return m_managers->recordingManager->start(
+
+        QMetaObject::Connection restorePreviewConnection;
+        if (!suspendedPreviewIds.isEmpty())
+        {
+            restorePreviewConnection = connect(
+                m_managers->recordingManager,
+                &RecordingManager::recordingStopped,
+                this,
+                [this, suspendedPreviewIds](const std::shared_ptr<RecordingSessionData>&)
+                {
+                    for (const QString& cameraId : suspendedPreviewIds)
+                    {
+                        startPreview(cameraId);
+                    }
+                },
+                Qt::SingleShotConnection);
+        }
+
+        const bool started = m_managers->recordingManager->start(
             toRecordingManagerSettings(settingsSnapshot),
             activeCameraIds);
+        if (!started)
+        {
+            if (restorePreviewConnection)
+            {
+                disconnect(restorePreviewConnection);
+            }
+            for (const QString& cameraId : suspendedPreviewIds)
+            {
+                startPreview(cameraId);
+            }
+            return false;
+        }
+        return true;
     }
 
     void ScopeOneCore::stopRecording()

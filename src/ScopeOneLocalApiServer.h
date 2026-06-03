@@ -28,7 +28,7 @@ private:
     void sendResponse(QLocalSocket* socket, const QJsonObject& response);
     QJsonObject processRequest(const QJsonObject& request);
     std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> runRecording(
-        int frameCount,
+        const scopeone::core::ScopeOneCore::RecordingSettings& settings,
         const QString& cameraIdOrAll,
         int timeoutMs,
         QString& errorMessage);

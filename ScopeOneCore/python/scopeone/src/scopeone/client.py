@@ -41,20 +41,137 @@ class ExternalClient:
     def stop_preview(self, camera: str = "All") -> None:
         self._request({"type": "stop_preview", "camera": camera})
 
+    def device_properties(self, device: str, from_cache: bool = True) -> list[dict]:
+        response = self._request(
+            {
+                "type": "device_properties",
+                "device": device,
+                "fromCache": from_cache,
+            }
+        )
+        return list(response.get("properties", []))
+
+    def device_property_names(self, device: str) -> list[str]:
+        response = self._request({"type": "device_property_names", "device": device})
+        return list(response.get("names", []))
+
+    def get_property(self, device: str, property: str, from_cache: bool = True) -> str:
+        response = self._request(
+            {
+                "type": "get_property",
+                "device": device,
+                "property": property,
+                "fromCache": from_cache,
+            }
+        )
+        return str(response.get("value", ""))
+
+    def set_property(self, device: str, property: str, value: str) -> None:
+        self._request(
+            {
+                "type": "set_property",
+                "device": device,
+                "property": property,
+                "value": str(value),
+            }
+        )
+
+    def xy_stage_devices(self) -> list[str]:
+        response = self._request({"type": "xy_stage_devices"})
+        return list(response.get("devices", []))
+
+    def z_stage_devices(self) -> list[str]:
+        response = self._request({"type": "z_stage_devices"})
+        return list(response.get("devices", []))
+
+    def current_xy_stage_device(self) -> str:
+        response = self._request({"type": "current_xy_stage_device"})
+        return str(response.get("device", ""))
+
+    def current_focus_device(self) -> str:
+        response = self._request({"type": "current_focus_device"})
+        return str(response.get("device", ""))
+
+    def read_xy_position(self, device: str | None = None) -> tuple[float, float]:
+        response = self._request(
+            {
+                "type": "read_xy_position",
+                "device": device or "",
+            }
+        )
+        return float(response["x"]), float(response["y"])
+
+    def read_z_position(self, device: str | None = None) -> float:
+        response = self._request(
+            {
+                "type": "read_z_position",
+                "device": device or "",
+            }
+        )
+        return float(response["z"])
+
+    def move_xy_relative(self, dx: float, dy: float, device: str | None = None) -> None:
+        self._request(
+            {
+                "type": "move_xy_relative",
+                "device": device or "",
+                "dx": float(dx),
+                "dy": float(dy),
+            }
+        )
+
+    def move_z_relative(self, dz: float, device: str | None = None) -> None:
+        self._request(
+            {
+                "type": "move_z_relative",
+                "device": device or "",
+                "dz": float(dz),
+            }
+        )
+
+    def move_xy_to(self, x: float, y: float, device: str | None = None) -> None:
+        self._request(
+            {
+                "type": "move_xy_to",
+                "device": device or "",
+                "x": float(x),
+                "y": float(y),
+            }
+        )
+
+    def move_z_to(self, z: float, device: str | None = None) -> None:
+        self._request(
+            {
+                "type": "move_z_to",
+                "device": device or "",
+                "z": float(z),
+            }
+        )
+
     def record(
         self,
         frames: int,
         camera: str = "All",
         timeout_ms: int = 120000,
+        mda_interval_ms: float = 0.0,
+        z_positions: list[float] | None = None,
+        positions: list[tuple[float, float]] | None = None,
+        order: list[str] | None = None,
     ):
-        response = self._request(
-            {
-                "type": "record",
-                "frames": frames,
-                "camera": camera,
-                "timeoutMs": timeout_ms,
-            }
-        )
+        request = {
+            "type": "record",
+            "frames": frames,
+            "camera": camera,
+            "timeoutMs": timeout_ms,
+            "mdaIntervalMs": float(mda_interval_ms),
+        }
+        if z_positions is not None:
+            request["zPositions"] = [float(z) for z in z_positions]
+        if positions is not None:
+            request["positions"] = [[float(x), float(y)] for x, y in positions]
+        if order is not None:
+            request["order"] = [str(axis) for axis in order]
+        response = self._request(request)
         return ExternalRecordingSession(self, str(response["sessionId"]))
 
     @staticmethod

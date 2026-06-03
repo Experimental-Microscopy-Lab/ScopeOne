@@ -83,6 +83,70 @@ QJsonObject makeResponse(const QString& type, bool ok)
     return response;
 }
 
+QJsonObject propertyInfoToJson(const scopeone::core::ScopeOneCore::DevicePropertyInfo& info)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("name"), info.name());
+    object.insert(QStringLiteral("value"), info.value());
+    object.insert(QStringLiteral("type"), info.type());
+    object.insert(QStringLiteral("readOnly"), info.isReadOnly());
+    object.insert(QStringLiteral("preInit"), info.isPreInit());
+    object.insert(QStringLiteral("allowedValues"), QJsonArray::fromStringList(info.allowedValues()));
+    object.insert(QStringLiteral("hasLimits"), info.hasLimits());
+    if (info.hasLimits()) {
+        object.insert(QStringLiteral("lowerLimit"), info.lowerLimit());
+        object.insert(QStringLiteral("upperLimit"), info.upperLimit());
+    }
+    return object;
+}
+
+scopeone::core::ScopeOneCore::RecordingAxis axisFromName(const QString& name)
+{
+    const QString normalized = name.trimmed().toLower();
+    if (normalized == QStringLiteral("z")) {
+        return scopeone::core::ScopeOneCore::RecordingAxis::Z;
+    }
+    if (normalized == QStringLiteral("xy")) {
+        return scopeone::core::ScopeOneCore::RecordingAxis::XY;
+    }
+    return scopeone::core::ScopeOneCore::RecordingAxis::Time;
+}
+
+std::vector<double> doubleArrayFromJson(const QJsonArray& array)
+{
+    std::vector<double> values;
+    values.reserve(static_cast<size_t>(array.size()));
+    for (const QJsonValue& value : array) {
+        values.push_back(value.toDouble());
+    }
+    return values;
+}
+
+std::vector<QPointF> pointArrayFromJson(const QJsonArray& array)
+{
+    std::vector<QPointF> points;
+    points.reserve(static_cast<size_t>(array.size()));
+    for (const QJsonValue& value : array) {
+        if (value.isArray()) {
+            const QJsonArray point = value.toArray();
+            if (point.size() >= 2) {
+                points.emplace_back(point.at(0).toDouble(), point.at(1).toDouble());
+            }
+        } else if (value.isObject()) {
+            const QJsonObject point = value.toObject();
+            points.emplace_back(point.value(QStringLiteral("x")).toDouble(),
+                                point.value(QStringLiteral("y")).toDouble());
+        }
+    }
+    return points;
+}
+
+QString stringValueOrDefault(const QJsonObject& object, const QString& key, const QString& fallback)
+{
+    const QString value = object.value(key).toString().trimmed();
+    return value.isEmpty() ? fallback : value;
+}
+
 QStringList resolveCameraIds(scopeone::core::ScopeOneCore* core, const QString& cameraIdOrAll)
 {
     const QStringList availableCameraIds = core->cameraIds();
@@ -253,12 +317,198 @@ QJsonObject ScopeOneLocalApiServer::processRequest(const QJsonObject& request)
         return makeResponse(type, true);
     }
 
+    if (type == QStringLiteral("device_properties")) {
+        const QString device = request.value(QStringLiteral("device")).toString().trimmed();
+        const bool fromCache = request.value(QStringLiteral("fromCache")).toBool(true);
+        QJsonObject response = makeResponse(type, !device.isEmpty());
+        if (device.isEmpty()) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Missing device"));
+            return response;
+        }
+
+        QJsonArray properties;
+        for (const auto& info : m_scopeonecore->deviceProperties(device, fromCache)) {
+            properties.append(propertyInfoToJson(info));
+        }
+        response.insert(QStringLiteral("properties"), properties);
+        return response;
+    }
+
+    if (type == QStringLiteral("device_property_names")) {
+        const QString device = request.value(QStringLiteral("device")).toString().trimmed();
+        QJsonObject response = makeResponse(type, !device.isEmpty());
+        if (device.isEmpty()) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Missing device"));
+            return response;
+        }
+        response.insert(QStringLiteral("names"),
+                        QJsonArray::fromStringList(m_scopeonecore->devicePropertyNames(device)));
+        return response;
+    }
+
+    if (type == QStringLiteral("get_property")) {
+        const QString device = request.value(QStringLiteral("device")).toString().trimmed();
+        const QString property = request.value(QStringLiteral("property")).toString().trimmed();
+        const bool fromCache = request.value(QStringLiteral("fromCache")).toBool(true);
+        QJsonObject response = makeResponse(type, !device.isEmpty() && !property.isEmpty());
+        if (device.isEmpty() || property.isEmpty()) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Missing device or property"));
+            return response;
+        }
+        response.insert(QStringLiteral("value"), m_scopeonecore->getPropertyValue(device, property, fromCache));
+        return response;
+    }
+
+    if (type == QStringLiteral("set_property")) {
+        QString errorMessage;
+        const QString device = request.value(QStringLiteral("device")).toString().trimmed();
+        const QString property = request.value(QStringLiteral("property")).toString().trimmed();
+        const QString value = request.value(QStringLiteral("value")).toString();
+        const bool ok = !device.isEmpty()
+            && !property.isEmpty()
+            && m_scopeonecore->setPropertyValue(device, property, value, &errorMessage);
+        QJsonObject response = makeResponse(type, ok);
+        if (!ok) {
+            response.insert(QStringLiteral("error"),
+                            errorMessage.isEmpty()
+                                ? QStringLiteral("Failed to set property")
+                                : errorMessage);
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("xy_stage_devices")) {
+        QJsonObject response = makeResponse(type, true);
+        response.insert(QStringLiteral("devices"), QJsonArray::fromStringList(m_scopeonecore->xyStageDevices()));
+        return response;
+    }
+
+    if (type == QStringLiteral("z_stage_devices")) {
+        QJsonObject response = makeResponse(type, true);
+        response.insert(QStringLiteral("devices"), QJsonArray::fromStringList(m_scopeonecore->zStageDevices()));
+        return response;
+    }
+
+    if (type == QStringLiteral("current_xy_stage_device")) {
+        QJsonObject response = makeResponse(type, true);
+        response.insert(QStringLiteral("device"), m_scopeonecore->currentXYStageDevice());
+        return response;
+    }
+
+    if (type == QStringLiteral("current_focus_device")) {
+        QJsonObject response = makeResponse(type, true);
+        response.insert(QStringLiteral("device"), m_scopeonecore->currentFocusDevice());
+        return response;
+    }
+
+    if (type == QStringLiteral("read_xy_position")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentXYStageDevice());
+        double x = 0.0;
+        double y = 0.0;
+        const bool ok = m_scopeonecore->readXYPosition(device, x, y);
+        QJsonObject response = makeResponse(type, ok);
+        if (ok) {
+            response.insert(QStringLiteral("x"), x);
+            response.insert(QStringLiteral("y"), y);
+        } else {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to read XY position"));
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("read_z_position")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentFocusDevice());
+        double z = 0.0;
+        const bool ok = m_scopeonecore->readZPosition(device, z);
+        QJsonObject response = makeResponse(type, ok);
+        if (ok) {
+            response.insert(QStringLiteral("z"), z);
+        } else {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to read Z position"));
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("move_xy_relative")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentXYStageDevice());
+        const bool ok = m_scopeonecore->moveXYRelative(device,
+                                                       request.value(QStringLiteral("dx")).toDouble(),
+                                                       request.value(QStringLiteral("dy")).toDouble());
+        QJsonObject response = makeResponse(type, ok);
+        if (!ok) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to move XY stage"));
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("move_z_relative")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentFocusDevice());
+        const bool ok = m_scopeonecore->moveZRelative(device, request.value(QStringLiteral("dz")).toDouble());
+        QJsonObject response = makeResponse(type, ok);
+        if (!ok) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to move Z stage"));
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("move_xy_to")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentXYStageDevice());
+        const bool ok = m_scopeonecore->moveXYTo(device,
+                                                 request.value(QStringLiteral("x")).toDouble(),
+                                                 request.value(QStringLiteral("y")).toDouble());
+        QJsonObject response = makeResponse(type, ok);
+        if (!ok) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to move XY stage"));
+        }
+        return response;
+    }
+
+    if (type == QStringLiteral("move_z_to")) {
+        const QString device = stringValueOrDefault(request,
+                                                    QStringLiteral("device"),
+                                                    m_scopeonecore->currentFocusDevice());
+        const bool ok = m_scopeonecore->moveZTo(device, request.value(QStringLiteral("z")).toDouble());
+        QJsonObject response = makeResponse(type, ok);
+        if (!ok) {
+            response.insert(QStringLiteral("error"), QStringLiteral("Failed to move Z stage"));
+        }
+        return response;
+    }
+
     if (type == QStringLiteral("record")) {
         QString errorMessage;
         const int frameCount = request.value(QStringLiteral("frames")).toInt();
         const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
         const int timeoutMs = request.value(QStringLiteral("timeoutMs")).toInt(120000);
-        const auto session = runRecording(frameCount, camera, timeoutMs, errorMessage);
+        scopeone::core::ScopeOneCore::RecordingSettings settings;
+        settings.format = scopeone::core::RecordingFormat::Tiff;
+        settings.streamToDisk = false;
+        settings.framesPerBurst = frameCount;
+        settings.burstMode = false;
+        settings.targetBursts = 1;
+        settings.enableCompression = false;
+        settings.captureAll = true;
+        settings.mdaIntervalMs = request.value(QStringLiteral("mdaIntervalMs")).toDouble(0.0);
+        settings.zPositions = doubleArrayFromJson(request.value(QStringLiteral("zPositions")).toArray());
+        settings.positions = pointArrayFromJson(request.value(QStringLiteral("positions")).toArray());
+        const QJsonArray orderArray = request.value(QStringLiteral("order")).toArray();
+        if (!orderArray.isEmpty()) {
+            settings.order.clear();
+            for (const QJsonValue& axis : orderArray) {
+                settings.order.push_back(axisFromName(axis.toString()));
+            }
+        }
+        const auto session = runRecording(settings, camera, timeoutMs, errorMessage);
         QJsonObject response = makeResponse(type, static_cast<bool>(session));
         if (!session) {
             response.insert(QStringLiteral("error"),
@@ -373,12 +623,12 @@ QJsonObject ScopeOneLocalApiServer::processRequest(const QJsonObject& request)
 }
 
 std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLocalApiServer::runRecording(
-    int frameCount,
+    const scopeone::core::ScopeOneCore::RecordingSettings& settings,
     const QString& cameraIdOrAll,
     int timeoutMs,
     QString& errorMessage)
 {
-    if (frameCount <= 0) {
+    if (settings.framesPerBurst <= 0) {
         errorMessage = QStringLiteral("frames must be > 0");
         return {};
     }
@@ -388,15 +638,7 @@ std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLoca
         errorMessage = QStringLiteral("No cameras available");
         return {};
     }
-
-    scopeone::core::ScopeOneCore::RecordingSettings settings;
-    settings.format = scopeone::core::RecordingFormat::Tiff;
-    settings.streamToDisk = false;
-    settings.framesPerBurst = frameCount;
-    settings.burstMode = false;
-    settings.targetBursts = 1;
-    settings.enableCompression = false;
-    settings.captureAll = true;
+    const bool useMda = !settings.positions.empty() || !settings.zPositions.empty();
 
     std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> recordedSession;
     const QMetaObject::Connection connection = QObject::connect(
@@ -409,12 +651,16 @@ std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLoca
         });
 
     try {
-        m_scopeonecore->startPreview(cameraIdOrAll);
+        if (!useMda) {
+            m_scopeonecore->startPreview(cameraIdOrAll);
+        }
 
         if (!m_scopeonecore->startRecording(settings, activeCameraIds)) {
             errorMessage = QStringLiteral("Failed to start recording");
             QObject::disconnect(connection);
-            m_scopeonecore->stopPreview(cameraIdOrAll);
+            if (!useMda) {
+                m_scopeonecore->stopPreview(cameraIdOrAll);
+            }
             return {};
         }
 
@@ -435,13 +681,17 @@ std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLoca
             QThread::msleep(10);
         }
 
-        m_scopeonecore->stopPreview(cameraIdOrAll);
+        if (!useMda) {
+            m_scopeonecore->stopPreview(cameraIdOrAll);
+        }
         QObject::disconnect(connection);
     } catch (...) {
         if (m_scopeonecore->isRecording()) {
             m_scopeonecore->stopRecording();
         }
-        m_scopeonecore->stopPreview(cameraIdOrAll);
+        if (!useMda) {
+            m_scopeonecore->stopPreview(cameraIdOrAll);
+        }
         QObject::disconnect(connection);
         throw;
     }
