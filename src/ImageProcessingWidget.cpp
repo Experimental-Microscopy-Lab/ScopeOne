@@ -520,6 +520,8 @@ namespace scopeone::ui
                     updateModuleList();
                     updateConfigWidget();
                 });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingSettingsChanged,
+                this, &ImageProcessingWidget::updateProcessingSettings);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingError,
                 this, [](const QString& error)
                 {
@@ -527,6 +529,7 @@ namespace scopeone::ui
                 });
 
         setupUI();
+        updateProcessingSettings();
         updateModuleList();
         updateConfigWidget();
         updateRunButtons();
@@ -564,11 +567,17 @@ namespace scopeone::ui
         auto* layout = new QHBoxLayout(m_runControlsWidget);
         m_startButton = new QPushButton("Start Processing", m_runControlsWidget);
         m_stopButton = new QPushButton("Stop Processing", m_runControlsWidget);
+        m_processingBitDepthCombo = new QComboBox(m_runControlsWidget);
+        m_processingBitDepthCombo->addItem("8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
+        m_processingBitDepthCombo->addItem("16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
         connect(m_startButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStartProcessing);
         connect(m_stopButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStopProcessing);
+        connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &ImageProcessingWidget::onProcessingBitDepthChanged);
 
         layout->addWidget(m_startButton);
         layout->addWidget(m_stopButton);
+        layout->addWidget(m_processingBitDepthCombo);
         layout->addStretch();
     }
 
@@ -679,6 +688,10 @@ namespace scopeone::ui
         {
             m_stopButton->setEnabled(running);
         }
+        if (m_processingBitDepthCombo)
+        {
+            m_processingBitDepthCombo->setEnabled(!running);
+        }
         if (m_moduleList && m_moduleList->parentWidget())
         {
             m_moduleList->parentWidget()->setEnabled(!running);
@@ -686,6 +699,23 @@ namespace scopeone::ui
         if (m_configStack && m_configStack->parentWidget())
         {
             m_configStack->parentWidget()->setEnabled(!running);
+        }
+    }
+
+    void ImageProcessingWidget::updateProcessingSettings()
+    {
+        if (!m_processingBitDepthCombo)
+        {
+            return;
+        }
+
+        const auto currentBitDepth = static_cast<int>(m_scopeonecore->processingBitDepth());
+        const int index = m_processingBitDepthCombo->findData(currentBitDepth);
+        if (index >= 0 && index != m_processingBitDepthCombo->currentIndex())
+        {
+            m_processingBitDepthCombo->blockSignals(true);
+            m_processingBitDepthCombo->setCurrentIndex(index);
+            m_processingBitDepthCombo->blockSignals(false);
         }
     }
 
@@ -740,6 +770,22 @@ namespace scopeone::ui
     void ImageProcessingWidget::onModuleSelectionChanged()
     {
         updateConfigWidget();
+    }
+
+    void ImageProcessingWidget::onProcessingBitDepthChanged()
+    {
+        if (!m_processingBitDepthCombo)
+        {
+            return;
+        }
+
+        const auto bitDepth = static_cast<scopeone::core::ScopeOneCore::ProcessingBitDepth>(
+            m_processingBitDepthCombo->currentData().toInt());
+        if (!m_scopeonecore->setProcessingBitDepth(bitDepth))
+        {
+            QMessageBox::warning(this, "Warning", "Failed to update processing bit depth");
+            updateProcessingSettings();
+        }
     }
 
     void ImageProcessingWidget::onStartProcessing()

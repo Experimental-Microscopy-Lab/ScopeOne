@@ -192,10 +192,6 @@ namespace
             stats.bitDepth = 16;
         }
         stats.maxValue = (1 << stats.bitDepth) - 1;
-        if (stats.maxValue <= 0)
-        {
-            stats.maxValue = mono16 ? 65535 : 255;
-        }
         stats.histogram.assign(kHistogramBinCount, 0);
 
         stats.minVal = static_cast<double>(stats.maxValue);
@@ -360,10 +356,6 @@ namespace
     scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKind(
         const scopeone::core::internal::ProcessingModule* module)
     {
-        if (!module)
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown;
-        }
         if (qobject_cast<const scopeone::core::internal::FFTModule*>(module))
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::FFT;
@@ -1620,6 +1612,35 @@ namespace scopeone::core
         m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
     }
 
+    ScopeOneCore::ProcessingBitDepth ScopeOneCore::processingBitDepth() const
+    {
+        if (!m_managers || !m_managers->imageProcessingManager)
+        {
+            return ProcessingBitDepth::Bit8;
+        }
+        return m_managers->imageProcessingManager->processingBitDepth() >= 16
+            ? ProcessingBitDepth::Bit16
+            : ProcessingBitDepth::Bit8;
+    }
+
+    bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
+    {
+        if (!m_managers || !m_managers->imageProcessingManager)
+        {
+            return false;
+        }
+
+        const int nextBitDepth = bitDepth == ProcessingBitDepth::Bit16 ? 16 : 8;
+        if (m_managers->imageProcessingManager->processingBitDepth() == nextBitDepth)
+        {
+            return true;
+        }
+
+        m_managers->imageProcessingManager->setProcessingBitDepth(nextBitDepth);
+        emit processingSettingsChanged();
+        return true;
+    }
+
     void ScopeOneCore::processFrameAsync(const ImageFrame& frame)
     {
         if (!m_managers || !m_managers->imageProcessingManager || !frame.isValid())
@@ -1644,10 +1665,6 @@ namespace scopeone::core
         for (int i = 0; i < count; ++i)
         {
             ProcessingModule* module = pipeline->getModule(i);
-            if (!module)
-            {
-                continue;
-            }
             ProcessingModuleInfo info;
             info.setKind(processingModuleKind(module));
             info.setName(module->getModuleName());

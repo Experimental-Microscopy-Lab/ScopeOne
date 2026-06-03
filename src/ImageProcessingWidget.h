@@ -27,6 +27,7 @@ private:
     void onAddModuleClicked();
     void onRemoveModuleClicked();
     void onModuleSelectionChanged();
+    void onProcessingBitDepthChanged();
     void onStartProcessing();
     void onStopProcessing();
 
@@ -34,6 +35,7 @@ private:
     void setupRunControls();
     void setupModuleList();
     void setupModuleConfig();
+    void updateProcessingSettings();
     void updateModuleList();
     void updateConfigWidget();
     void updateRunButtons();
@@ -42,6 +44,7 @@ private:
     QWidget* m_runControlsWidget{nullptr};
     QPushButton* m_startButton{nullptr};
     QPushButton* m_stopButton{nullptr};
+    QComboBox* m_processingBitDepthCombo{nullptr};
     QListWidget* m_moduleList{nullptr};
     QPushButton* m_addModuleButton{nullptr};
     QPushButton* m_removeModuleButton{nullptr};

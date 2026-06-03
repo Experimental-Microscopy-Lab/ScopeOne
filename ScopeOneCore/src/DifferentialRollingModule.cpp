@@ -16,26 +16,28 @@ QString frameHistoryKey(const ImageFrame& frame)
     return frame.cameraId.isEmpty() ? QStringLiteral("__default__") : frame.cameraId;
 }
 
+void accumulateFrameSum(const ImageFrame& frame, std::vector<int>& sum, int sign)
+{
+    dispatchFrameType(frame, [&]<typename Pixel>()
+    {
+        for (int y = 0; y < frame.height; ++y) {
+            const Pixel* row = frameRowData<Pixel>(frame, y);
+            const int rowOffset = y * frame.width;
+            for (int x = 0; x < frame.width; ++x) {
+                sum[static_cast<size_t>(rowOffset + x)] += sign * static_cast<int>(row[x]);
+            }
+        }
+    });
+}
+
 void addFrameToSum(const ImageFrame& frame, std::vector<int>& sum)
 {
-    for (int y = 0; y < frame.height; ++y) {
-        const uchar* row = reinterpret_cast<const uchar*>(frame.bytes.constData() + y * frame.stride);
-        const int rowOffset = y * frame.width;
-        for (int x = 0; x < frame.width; ++x) {
-            sum[static_cast<size_t>(rowOffset + x)] += static_cast<int>(row[x]);
-        }
-    }
+    accumulateFrameSum(frame, sum, 1);
 }
 
 void subtractFrameFromSum(const ImageFrame& frame, std::vector<int>& sum)
 {
-    for (int y = 0; y < frame.height; ++y) {
-        const uchar* row = reinterpret_cast<const uchar*>(frame.bytes.constData() + y * frame.stride);
-        const int rowOffset = y * frame.width;
-        for (int x = 0; x < frame.width; ++x) {
-            sum[static_cast<size_t>(rowOffset + x)] -= static_cast<int>(row[x]);
-        }
-    }
+    accumulateFrameSum(frame, sum, -1);
 }
 
 void resetState(DifferentialRollingModule::CameraState& state, const ImageFrame& frame)
@@ -50,32 +52,40 @@ void resetState(DifferentialRollingModule::CameraState& state, const ImageFrame&
 ImageFrame makeDifferentialOutput(const QString& cameraId,
                                   int width,
                                   int height,
+                                  const ImageFrame& reference,
                                   const std::vector<int>& sumA,
                                   const std::vector<int>& sumB,
                                   int batchSize,
                                   bool normalize)
 {
-    QByteArray bytes;
-    bytes.resize(width * height);
-    uchar* outData = reinterpret_cast<uchar*>(bytes.data());
-
+    const int maxValue = reference.maxValue();
+    const double centerValue = reference.isMono16() ? 32768.0 : 128.0;
+    const double normalizationScale = reference.isMono16() ? 32767.0 : kNormalizedDisplayScale;
     const int pixelCount = width * height;
-    for (int i = 0; i < pixelCount; ++i) {
-        const double sum1 = static_cast<double>(sumA[static_cast<size_t>(i)]);
-        const double sum2 = static_cast<double>(sumB[static_cast<size_t>(i)]);
-        const double averageDiff = (sum2 - sum1) / static_cast<double>(batchSize);
-        double displayValue = averageDiff + 128.0;
-        if (normalize) {
-            const double normalized = (sum2 - sum1)
-                                      / (sum1 > static_cast<double>(batchSize)
-                                             ? sum1
-                                             : static_cast<double>(batchSize) * kNormalizationEpsilon);
-            displayValue = 128.0 + normalized * kNormalizedDisplayScale;
+    QByteArray bytes = dispatchFrameType(reference, [&]<typename Pixel>()
+    {
+        QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+        auto* outData = reinterpret_cast<Pixel*>(outBytes.data());
+        for (int i = 0; i < pixelCount; ++i) {
+            const double sum1 = static_cast<double>(sumA[static_cast<size_t>(i)]);
+            const double sum2 = static_cast<double>(sumB[static_cast<size_t>(i)]);
+            const double averageDiff = (sum2 - sum1) / static_cast<double>(batchSize);
+            double displayValue = averageDiff + centerValue;
+            if (normalize) {
+                const double normalized = (sum2 - sum1)
+                                          / (sum1 > static_cast<double>(batchSize)
+                                                 ? sum1
+                                                 : static_cast<double>(batchSize) * kNormalizationEpsilon);
+                displayValue = centerValue + normalized * normalizationScale;
+            }
+            outData[i] = clampPixelValue<Pixel>(qRound(displayValue), maxValue);
         }
-        outData[i] = static_cast<uchar>(qBound(0, qRound(displayValue), 255));
-    }
+        return outBytes;
+    });
 
-    return makeMono8Frame(cameraId, width, height, std::move(bytes));
+    ImageFrame output = makeFrameLike(reference, width, height, std::move(bytes));
+    output.cameraId = cameraId;
+    return output;
 }
 
 } // namespace
@@ -94,8 +104,8 @@ bool DifferentialRollingModule::process(const ModuleInput& in, ModuleOutput& out
     }
 
     try {
-        ImageFrame mono8Frame;
-        if (!convertFrameToMono8(in.frame, mono8Frame)) {
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth)) {
             out.frame = in.frame;
             out.error = "Unsupported input frame";
             return false;
@@ -105,31 +115,35 @@ bool DifferentialRollingModule::process(const ModuleInput& in, ModuleOutput& out
         QMutexLocker locker(&m_mutex);
 
         CameraState& state = m_states[cameraKey];
-        if (state.width != mono8Frame.width
-            || state.height != mono8Frame.height
-            || state.sumA.size() != mono8Frame.width * mono8Frame.height
-            || state.sumB.size() != mono8Frame.width * mono8Frame.height) {
-            resetState(state, mono8Frame);
+        const bool incompatibleBuffers = (!state.batchA.empty() && !state.batchA.front().isCompatibleWith(workingFrame))
+            || (!state.batchB.empty() && !state.batchB.front().isCompatibleWith(workingFrame));
+        if (incompatibleBuffers
+            || state.width != workingFrame.width
+            || state.height != workingFrame.height
+            || state.sumA.size() != workingFrame.width * workingFrame.height
+            || state.sumB.size() != workingFrame.width * workingFrame.height) {
+            resetState(state, workingFrame);
         }
 
         if (state.batchA.size() < static_cast<size_t>(m_batchSize)) {
-            state.batchA.push_back(mono8Frame);
-            addFrameToSum(mono8Frame, state.sumA);
+            state.batchA.push_back(workingFrame);
+            addFrameToSum(workingFrame, state.sumA);
             out.frame = in.frame;
             return true;
         }
 
         if (state.batchB.size() < static_cast<size_t>(m_batchSize)) {
-            state.batchB.push_back(mono8Frame);
-            addFrameToSum(mono8Frame, state.sumB);
+            state.batchB.push_back(workingFrame);
+            addFrameToSum(workingFrame, state.sumB);
             if (state.batchB.size() < static_cast<size_t>(m_batchSize)) {
                 out.frame = in.frame;
                 return true;
             }
 
             out.frame = makeDifferentialOutput(in.frame.cameraId,
-                                               mono8Frame.width,
-                                               mono8Frame.height,
+                                               workingFrame.width,
+                                               workingFrame.height,
+                                               workingFrame,
                                                state.sumA,
                                                state.sumB,
                                                m_batchSize,
@@ -147,12 +161,13 @@ bool DifferentialRollingModule::process(const ModuleInput& in, ModuleOutput& out
 
         subtractFrameFromSum(bridgeFrame, state.sumB);
         state.batchB.pop_front();
-        state.batchB.push_back(mono8Frame);
-        addFrameToSum(mono8Frame, state.sumB);
+        state.batchB.push_back(workingFrame);
+        addFrameToSum(workingFrame, state.sumB);
 
         out.frame = makeDifferentialOutput(in.frame.cameraId,
-                                           mono8Frame.width,
-                                           mono8Frame.height,
+                                           workingFrame.width,
+                                           workingFrame.height,
+                                           workingFrame,
                                            state.sumA,
                                            state.sumB,
                                            m_batchSize,

@@ -294,17 +294,19 @@ namespace scopeone::core::internal
                                               double timestampMs)
         {
             SharedFrameHeader header{};
+            const bool mono16 = (bytesPerPixel > 0)
+                ? (bytesPerPixel >= 2)
+                : (bitsPerSample > 8);
             header.state = 2;
             header.width = static_cast<quint32>(width);
             header.height = static_cast<quint32>(height);
             header.bitsPerSample = static_cast<quint16>(bitsPerSample);
             header.channels = 1;
-            header.pixelFormat =
-                (bitsPerSample > 8)
-                    ? static_cast<quint32>(SharedPixelFormat::Mono16)
-                    : static_cast<quint32>(SharedPixelFormat::Mono8);
+            header.pixelFormat = mono16
+                ? static_cast<quint32>(SharedPixelFormat::Mono16)
+                : static_cast<quint32>(SharedPixelFormat::Mono8);
             const int resolvedBytesPerPixel =
-                (bytesPerPixel > 0) ? bytesPerPixel : (bitsPerSample > 8 ? 2 : 1);
+                (bytesPerPixel > 0) ? bytesPerPixel : (mono16 ? 2 : 1);
             header.stride = static_cast<quint32>(width * resolvedBytesPerPixel);
             header.frameIndex = frameIndex;
             header.timestampNs = static_cast<quint64>(timestampMs) * 1000000ull;

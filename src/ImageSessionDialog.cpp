@@ -394,9 +394,15 @@ ImageFrame ImageSessionDialog::normalizedFrame(const ScopeOneCore::RecordingFram
     if (normalized.bitsPerSample <= 0) {
         normalized.bitsPerSample = 8;
     }
-    normalized.pixelFormat = (normalized.bitsPerSample > 8)
-        ? ImagePixelFormat::Mono16
-        : ImagePixelFormat::Mono8;
+    if (frame.header.pixelFormat == static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono16)) {
+        normalized.pixelFormat = ImagePixelFormat::Mono16;
+    } else if (frame.header.pixelFormat == static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono8)) {
+        normalized.pixelFormat = ImagePixelFormat::Mono8;
+    } else {
+        normalized.pixelFormat = (normalized.bitsPerSample > 8)
+            ? ImagePixelFormat::Mono16
+            : ImagePixelFormat::Mono8;
+    }
     const int bytesPerPixel = normalized.bytesPerPixel();
     normalized.stride = (frame.header.stride > 0)
         ? static_cast<int>(frame.header.stride)

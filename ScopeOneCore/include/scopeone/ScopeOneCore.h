@@ -58,6 +58,12 @@ namespace scopeone::core
             Unknown = 255
         };
 
+        enum class ProcessingBitDepth
+        {
+            Bit8 = 8,
+            Bit16 = 16
+        };
+
         struct LoadConfigResult
         {
             QStringList cameraIds;
@@ -541,6 +547,8 @@ namespace scopeone::core
 
         bool isRealTimeProcessingEnabled() const;
         void setRealTimeProcessingEnabled(bool enabled);
+        ProcessingBitDepth processingBitDepth() const;
+        bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         void processFrameAsync(const ImageFrame& frame);
         QList<ProcessingModuleInfo> processingModules() const;
         bool addProcessingModule(ProcessingModuleKind kind);
@@ -567,6 +575,7 @@ namespace scopeone::core
         void lineProfileCleared();
         void processingError(const QString& errorMessage);
         void processingModulesChanged();
+        void processingSettingsChanged();
 
         void recordingProgressChanged(int phase,
                                       qint64 frameCurrent,

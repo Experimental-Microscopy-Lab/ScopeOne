@@ -222,9 +222,14 @@ private:
         const py::ssize_t height = static_cast<py::ssize_t>(frame.height);
         const py::ssize_t width = static_cast<py::ssize_t>(frame.width);
         const size_t expectedPixels = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
-        const bool is16Bit =
-            frame.header.pixelFormat == static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono16)
-            || frame.bits > 8;
+        bool is16Bit = false;
+        if (frame.header.pixelFormat == static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono16)) {
+            is16Bit = true;
+        } else if (frame.header.pixelFormat == static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono8)) {
+            is16Bit = false;
+        } else {
+            is16Bit = frame.bits > 8;
+        }
 
         if (is16Bit) {
             const size_t expectedBytes = expectedPixels * sizeof(std::uint16_t);
