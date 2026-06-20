@@ -67,6 +67,72 @@ scopeone.unload_config()
 - `RecordingSession.frames(camera)`
 - `RecordingSession.save(save_dir, base_name, format="tiff", compression=False, compression_level=6)`
 
+## Local API Protocol
+
+ScopeOne uses one local control pipe for JSON commands and one shared-memory block for frame transfer.
+
+- Control endpoint: `\\.\pipe\ScopeOne.Api.local`
+- Message framing: 4-byte little-endian unsigned payload size, followed by UTF-8 JSON.
+- Maximum JSON payload: 256 KiB.
+- Success response: `{"type": "<request type>", "ok": true, ...}`
+- Error response: `{"type": "<request type>", "ok": false, "error": "..."}`
+
+### Control requests
+
+- `ping`: health check.
+- `load_config`: fields `configPath`; response `cameraIds`.
+- `unload_config`: unload current Micro-Manager config.
+- `camera_ids`: response `cameraIds`.
+- `start_preview`: fields `camera`, accepts a camera id or `"All"`.
+- `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
+- `device_property_names`: fields `device`; response `names`.
+- `device_properties`: fields `device`, `fromCache`; response `properties`.
+- `get_property`: fields `device`, `property`, `fromCache`; response `value`.
+- `set_property`: fields `device`, `property`, `value`.
+- `xy_stage_devices`: response `devices`.
+- `z_stage_devices`: response `devices`.
+- `current_xy_stage_device`: response `device`.
+- `current_focus_device`: response `device`.
+- `read_xy_position`: optional field `device`; response `x`, `y`.
+- `read_z_position`: optional field `device`; response `z`.
+- `move_xy_relative`: fields `device`, `dx`, `dy`.
+- `move_z_relative`: fields `device`, `dz`.
+- `move_xy_to`: fields `device`, `x`, `y`.
+- `move_z_to`: fields `device`, `z`.
+- `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
+- `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`.
+- `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`; response `paths`.
+
+### Record request
+
+```json
+{
+  "type": "record",
+  "frames": 1,
+  "camera": "Camera",
+  "timeoutMs": 120000,
+  "mdaIntervalMs": 0.0,
+  "zPositions": [0.0, 1.0],
+  "positions": [[0.0, 0.0]],
+  "order": ["time", "z", "xy"]
+}
+```
+
+`record` returns `sessionId` and `cameraIds`. If `zPositions` or `positions` is non-empty, recording uses the MDA snap path. If both are empty, recording uses the preview/raw-frame path.
+
+### Frame transfer
+
+`session_frame` writes the selected frame into shared memory:
+
+- Mapping name: `ScopeOne.Api.frame`
+- Header layout: `scopeone::core::SharedFrameHeader`
+- Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
+- Python reads this through `scopeone.shm.frame_to_ndarray()`
+
+### Error policy
+
+The server returns `ok: false` and a short actionable `error` string. Recording errors distinguish startup failure, timeout before session data, MDA captured no frames, preview-frame recording captured no frames, and invalid session/frame indexes.
+
 ## Notes
 
 - `ScopeOne()` connects to a running `ScopeOne.exe` control server over the local Windows pipe `\\.\pipe\ScopeOne.Api.local`.

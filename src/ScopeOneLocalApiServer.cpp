@@ -721,10 +721,11 @@ namespace scopeone::ui
         const QStringList activeCameraIds = resolveCameraIds(m_scopeonecore, cameraIdOrAll);
         if (activeCameraIds.isEmpty())
         {
-            errorMessage = QStringLiteral("No cameras available");
+            errorMessage = QStringLiteral("No matching camera available for recording: %1").arg(cameraIdOrAll);
             return {};
         }
         const bool useMda = !settings.positions.empty() || !settings.zPositions.empty();
+        bool timedOut = false;
 
         std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> recordedSession;
         const QMetaObject::Connection connection = QObject::connect(
@@ -745,7 +746,9 @@ namespace scopeone::ui
 
             if (!m_scopeonecore->startRecording(settings, activeCameraIds))
             {
-                errorMessage = QStringLiteral("Failed to start recording");
+                errorMessage = useMda
+                                   ? QStringLiteral("Failed to start MDA recording")
+                                   : QStringLiteral("Failed to start preview-frame recording");
                 QObject::disconnect(connection);
                 if (!useMda)
                 {
@@ -765,6 +768,7 @@ namespace scopeone::ui
 
             if (m_scopeonecore->isRecording())
             {
+                timedOut = true;
                 m_scopeonecore->stopRecording();
             }
 
@@ -796,12 +800,28 @@ namespace scopeone::ui
 
         if (!recordedSession)
         {
-            errorMessage = QStringLiteral("Recording finished but no session data was returned");
+            errorMessage = timedOut
+                               ? QStringLiteral("Recording timed out after %1 ms before session data was returned")
+                                     .arg(timeoutMs > 0 ? timeoutMs : 120000)
+                               : QStringLiteral("Recording finished but no session data was returned");
             return {};
         }
         if (!recordedSession->hasAnyFrames())
         {
-            errorMessage = QStringLiteral("Recording finished but captured no frames");
+            if (timedOut)
+            {
+                errorMessage = useMda
+                                   ? QStringLiteral("MDA recording timed out and captured no frames")
+                                   : QStringLiteral("Preview-frame recording timed out and captured no frames");
+            }
+            else
+            {
+                errorMessage = useMda
+                                   ? QStringLiteral(
+                                       "MDA recording finished but captured no frames. Check stage devices, camera snap support, and ScopeOne logs for MDA errors")
+                                   : QStringLiteral(
+                                       "Preview-frame recording finished but captured no frames. Check that preview is producing raw frames for the selected camera");
+            }
             return {};
         }
         return recordedSession;
