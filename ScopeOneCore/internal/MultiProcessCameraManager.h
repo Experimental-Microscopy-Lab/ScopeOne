@@ -47,7 +47,10 @@ namespace scopeone::core::internal
         bool isPreviewRunning(const QString& cameraId) const;
         QStringList listProperties(const QString& cameraId);
         QString getProperty(const QString& cameraId, const QString& name);
-        bool setProperty(const QString& cameraId, const QString& name, const QString& value);
+        bool setProperty(const QString& cameraId,
+                         const QString& name,
+                         const QString& value,
+                         QString* errorMessage = nullptr);
         QString getPropertyType(const QString& cameraId, const QString& name);
         bool isPropertyReadOnly(const QString& cameraId, const QString& name);
         QStringList getAllowedPropertyValues(const QString& cameraId, const QString& name);

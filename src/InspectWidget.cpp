@@ -983,9 +983,18 @@ namespace scopeone::ui
 
         const int minLevel = state.stats.autoMinLevel;
         const int maxLevel = state.stats.autoMaxLevel;
+        const int maxDisplayValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
+        if (state.displayRangeValid
+            && state.displayMin == minLevel
+            && state.displayMax == maxLevel
+            && state.maxDisplayValue == maxDisplayValue)
+        {
+            return;
+        }
+
         state.displayMin = minLevel;
         state.displayMax = maxLevel;
-        state.maxDisplayValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
+        state.maxDisplayValue = maxDisplayValue;
         state.displayRangeValid = true;
 
         auto it = m_cameraInfoGroups.find(streamKey);
