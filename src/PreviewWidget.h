@@ -104,10 +104,22 @@ namespace scopeone::ui
     private:
         struct CameraInfo
         {
-            QString cameraId;
             int width{0};
             int height{0};
             double fps{0.0};
+        };
+
+        struct FpsState
+        {
+            QElapsedTimer timer;
+            int frameCounter{0};
+            double lastFps{0.0};
+        };
+
+        struct FpsUpdate
+        {
+            double fps{0.0};
+            bool changed{false};
         };
 
         struct CameraFrameState
@@ -156,9 +168,7 @@ namespace scopeone::ui
         StreamLayoutMode m_streamLayoutMode{StreamLayoutMode::SideBySide};
         QMap<QString, CameraInfo> m_cameraInfos;
         QString m_cameraInfoText{QStringLiteral("No image loaded")};
-        QElapsedTimer m_fpsTimer;
-        int m_fpsFrameCounter{0};
-        double m_lastFps{0.0};
+        QMap<QString, FpsState> m_fpsStates;
 
         mutable QMutex m_mutex;
         QMap<QString, CameraFrameState> m_cameraFrames;
@@ -198,7 +208,7 @@ namespace scopeone::ui
         bool m_lineProcessed{false};
         bool m_lineVisible{false};
         void updateImageDisplay();
-        void updateFpsOnFrame();
+        FpsUpdate updateFpsOnFrame(const QString& streamKey);
         void updateCameraInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
         bool hasRawFrame(const CameraFrameState& frameState) const;

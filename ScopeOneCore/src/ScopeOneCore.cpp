@@ -16,7 +16,7 @@
 namespace
 {
     constexpr int kHistogramBinCount = 256;
-    constexpr double kHistogramAutoStretchOutlierPercent = 1.0;
+    constexpr double kHistogramAutoStretchIgnoredQuantile = 0.001;
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
 
     int histogramBinForValue(int value, int maxValue)
@@ -58,14 +58,13 @@ namespace
             return;
         }
 
-        const int outlierPixels = static_cast<int>(
-            stats.totalPixels * kHistogramAutoStretchOutlierPercent / 100.0);
+        const double outlierPixels = stats.totalPixels * kHistogramAutoStretchIgnoredQuantile;
 
-        int cumulative = 0;
+        qint64 cumulative = 0;
         for (int i = 0; i < static_cast<int>(stats.histogram.size()); ++i)
         {
             cumulative += stats.histogram[static_cast<size_t>(i)];
-            if (cumulative >= outlierPixels)
+            if (cumulative > outlierPixels)
             {
                 stats.autoMinLevel = histogramBinLowerValue(i, stats.maxValue);
                 break;
@@ -76,17 +75,33 @@ namespace
         for (int i = static_cast<int>(stats.histogram.size()) - 1; i >= 0; --i)
         {
             cumulative += stats.histogram[static_cast<size_t>(i)];
-            if (cumulative >= outlierPixels)
+            if (cumulative > outlierPixels)
             {
                 stats.autoMaxLevel = histogramBinUpperValue(i, stats.maxValue);
                 break;
             }
         }
 
-        if (stats.autoMinLevel >= stats.autoMaxLevel)
+        const int rangeMin = 0;
+        const int rangeMax = stats.maxValue > 0 ? stats.maxValue : 255;
+        if (stats.autoMaxLevel - stats.autoMinLevel < 2)
         {
-            stats.autoMinLevel = 0;
-            stats.autoMaxLevel = stats.maxValue > 0 ? stats.maxValue : 255;
+            const int mid = (stats.autoMinLevel + stats.autoMaxLevel) / 2;
+            if (mid <= rangeMin)
+            {
+                stats.autoMinLevel = rangeMin;
+                stats.autoMaxLevel = qMin(rangeMax, rangeMin + 2);
+            }
+            else if (mid >= rangeMax)
+            {
+                stats.autoMaxLevel = rangeMax;
+                stats.autoMinLevel = qMax(rangeMin, rangeMax - 2);
+            }
+            else
+            {
+                stats.autoMinLevel = mid - 1;
+                stats.autoMaxLevel = mid + 1;
+            }
         }
     }
 
@@ -360,10 +375,6 @@ namespace
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::FFT;
         }
-        if (qobject_cast<const scopeone::core::internal::MedianFilterModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::MedianFilter;
-        }
         if (qobject_cast<const scopeone::core::internal::BackgroundCalibrationModule*>(module))
         {
             return scopeone::core::ScopeOneCore::ProcessingModuleKind::BackgroundCalibration;
@@ -438,7 +449,6 @@ namespace scopeone::core
     using scopeone::core::internal::ImageFrame;
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::MMCoreManager;
-    using scopeone::core::internal::MedianFilterModule;
     using scopeone::core::internal::MultiProcessCameraManager;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipeline;
@@ -892,27 +902,50 @@ namespace scopeone::core
         const QString cacheKey = histogramStreamKey(trimmedCameraId, processed);
         HistogramJobState& state = m_histogramJobStates[cacheKey];
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        if (state.inFlight || (state.lastScheduledMs > 0 && (nowMs - state.lastScheduledMs) <
-            kHistogramRefreshIntervalMs))
+        if (state.inFlight)
+        {
+            state.pendingFrame = frame;
+            return;
+        }
+        if (state.lastScheduledMs > 0 && (nowMs - state.lastScheduledMs) < kHistogramRefreshIntervalMs)
         {
             return;
         }
 
         state.inFlight = true;
         state.lastScheduledMs = nowMs;
+        const quint64 sequence = ++m_nextHistogramSequence;
+        state.activeSequence = sequence;
 
         auto* watcher = new QFutureWatcher<HistogramStats>(this);
         connect(watcher, &QFutureWatcher<HistogramStats>::finished, this,
-                [this, watcher, trimmedCameraId, processed, cacheKey]()
+                [this, watcher, trimmedCameraId, processed, cacheKey, sequence]()
                 {
                     HistogramStats stats = watcher->result();
-                    m_histogramJobStates[cacheKey].inFlight = false;
-                    if (stats.hasData())
+                    ImageFrame pendingFrame;
+
+                    auto it = m_histogramJobStates.find(cacheKey);
+                    if (it != m_histogramJobStates.end() && it->activeSequence == sequence)
                     {
-                        m_latestHistogramStats.insert(cacheKey, stats);
-                        emit imageHistogramReady(trimmedCameraId, processed, stats);
+                        it->inFlight = false;
+                        if (stats.hasData())
+                        {
+                            m_latestHistogramStats.insert(cacheKey, stats);
+                            emit imageHistogramReady(trimmedCameraId, processed, stats);
+                        }
+                        if (it->pendingFrame.isValid())
+                        {
+                            pendingFrame = it->pendingFrame;
+                            it->pendingFrame = ImageFrame{};
+                            it->lastScheduledMs = 0;
+                        }
                     }
                     watcher->deleteLater();
+
+                    if (pendingFrame.isValid())
+                    {
+                        scheduleHistogramStats(trimmedCameraId, processed, pendingFrame);
+                    }
                 });
         watcher->setFuture(QtConcurrent::run([frame]()
         {
@@ -1548,12 +1581,15 @@ namespace scopeone::core
 
         if (isAgentCamera(device))
         {
+            QString agentError;
             if (!m_managers || !m_managers->mpcm
-                || !m_managers->mpcm->setProperty(device, property, value))
+                || !m_managers->mpcm->setProperty(device, property, value, &agentError))
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("Agent setProperty failed");
+                    *errorMessage = agentError.isEmpty()
+                                        ? QStringLiteral("Agent setProperty failed")
+                                        : agentError;
                 }
                 return false;
             }
@@ -1619,8 +1655,8 @@ namespace scopeone::core
             return ProcessingBitDepth::Bit8;
         }
         return m_managers->imageProcessingManager->processingBitDepth() >= 16
-            ? ProcessingBitDepth::Bit16
-            : ProcessingBitDepth::Bit8;
+                   ? ProcessingBitDepth::Bit16
+                   : ProcessingBitDepth::Bit8;
     }
 
     bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
@@ -1689,9 +1725,6 @@ namespace scopeone::core
         case ProcessingModuleKind::FFT:
             module = std::make_unique<FFTModule>(pipeline);
             break;
-        case ProcessingModuleKind::MedianFilter:
-            module = std::make_unique<MedianFilterModule>(pipeline);
-            break;
         case ProcessingModuleKind::BackgroundCalibration:
             module = std::make_unique<BackgroundCalibrationModule>(pipeline);
             break;
@@ -1757,12 +1790,6 @@ namespace scopeone::core
         {
             return false;
         }
-        if (auto* median = qobject_cast<MedianFilterModule*>(module))
-        {
-            median->resetBuffer();
-            emit processingModulesChanged();
-            return true;
-        }
         if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
         {
             background->resetCalibration();
@@ -1803,6 +1830,21 @@ namespace scopeone::core
         }
 
         RecordingSettings settingsSnapshot = settings;
+        const bool useMda = !settingsSnapshot.positions.empty() || !settingsSnapshot.zPositions.empty();
+        QStringList suspendedPreviewIds;
+        if (useMda)
+        {
+            const QStringList runningPreviewIds = runningPreviewCameraIds();
+            for (const QString& cameraId : activeCameraIds)
+            {
+                if (runningPreviewIds.contains(cameraId))
+                {
+                    suspendedPreviewIds.append(cameraId);
+                    stopPreview(cameraId);
+                }
+            }
+        }
+
         if (settingsSnapshot.metadataFileName.trimmed().isEmpty())
         {
             settingsSnapshot.metadataFileName = recordingMetadataFileName(settingsSnapshot.baseName);
@@ -1811,9 +1853,40 @@ namespace scopeone::core
         {
             settingsSnapshot.sessionMetadataJson = buildDevicePropertyMetadataJson(*this);
         }
-        return m_managers->recordingManager->start(
+
+        QMetaObject::Connection restorePreviewConnection;
+        if (!suspendedPreviewIds.isEmpty())
+        {
+            restorePreviewConnection = connect(
+                m_managers->recordingManager,
+                &RecordingManager::recordingStopped,
+                this,
+                [this, suspendedPreviewIds](const std::shared_ptr<RecordingSessionData>&)
+                {
+                    for (const QString& cameraId : suspendedPreviewIds)
+                    {
+                        startPreview(cameraId);
+                    }
+                },
+                Qt::SingleShotConnection);
+        }
+
+        const bool started = m_managers->recordingManager->start(
             toRecordingManagerSettings(settingsSnapshot),
             activeCameraIds);
+        if (!started)
+        {
+            if (restorePreviewConnection)
+            {
+                disconnect(restorePreviewConnection);
+            }
+            for (const QString& cameraId : suspendedPreviewIds)
+            {
+                startPreview(cameraId);
+            }
+            return false;
+        }
+        return true;
     }
 
     void ScopeOneCore::stopRecording()

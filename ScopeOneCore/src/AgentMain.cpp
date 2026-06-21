@@ -14,7 +14,6 @@
 #include <QThread>
 #include <QTimer>
 
-#include <cmath>
 #include <cstring>
 #include <memory>
 
@@ -235,7 +234,7 @@ namespace scopeone::core::internal
                 if (m_exposureMs > 0.0)
                 {
                     m_mmcore->setExposure(m_exposureMs);
-                    finalExposure = m_exposureMs;
+                    finalExposure = m_mmcore->getExposure();
                 }
                 else
                 {
@@ -497,11 +496,8 @@ namespace scopeone::core::internal
             {
                 try
                 {
-                    if (std::abs(exposureMs - m_exposureMs) > 0.0005)
-                    {
-                        m_mmcore->setExposure(exposureMs);
-                        m_exposureMs = exposureMs;
-                    }
+                    m_mmcore->setExposure(exposureMs);
+                    m_exposureMs = m_mmcore->getExposure();
                 }
                 catch (const CMMError& mmError)
                 {
@@ -513,6 +509,7 @@ namespace scopeone::core::internal
             if (ok)
             {
                 QJsonObject response = makeResponse(type, requestId, true);
+                response.insert(QStringLiteral("exposureMs"), m_exposureMs);
                 emit responseReady(connectionId, response);
             }
             else

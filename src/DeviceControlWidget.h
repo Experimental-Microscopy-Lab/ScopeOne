@@ -42,13 +42,13 @@ namespace scopeone::ui
         void setControlTargetEnabled(bool enabled);
 
         void refreshStageDevices();
+        void refreshCameraParameters();
 
         void onCameraInitialized(bool initialized);
 
         void setPreviewRunning(bool running);
 
-        signals :
-
+    signals :
         void startPreviewRequested();
 
         void stopPreviewRequested();
@@ -133,6 +133,7 @@ namespace scopeone::ui
         QString selectedZStageLabel() const;
         void moveXYStage(double dx, double dy);
         void moveZStage(double dz);
+        void updateExposureLimits();
 
         QComboBox* m_xyStageCombo{nullptr};
         QComboBox* m_zStageCombo{nullptr};
@@ -159,5 +160,7 @@ namespace scopeone::ui
         bool m_cameraInitialized;
         bool m_previewRunning;
         QString m_currentTarget;
+        double m_minExposureMs{0.1};
+        double m_maxExposureMs{10000.0};
     };
 }

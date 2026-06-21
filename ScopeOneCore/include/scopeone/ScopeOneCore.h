@@ -50,7 +50,6 @@ namespace scopeone::core
         enum class ProcessingModuleKind
         {
             FFT = 0,
-            MedianFilter = 1,
             BackgroundCalibration = 2,
             SpatiotemporalBinning = 3,
             GaussianBlur = 4,
@@ -606,6 +605,8 @@ namespace scopeone::core
         {
             bool inFlight{false};
             qint64 lastScheduledMs{0};
+            quint64 activeSequence{0};
+            ImageFrame pendingFrame;
         };
 
         bool loadConfigurationInternal(const QString& configPath,
@@ -645,6 +646,7 @@ namespace scopeone::core
         QHash<QString, ImageFrame> m_latestProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;
         QHash<QString, HistogramStats> m_latestHistogramStats;
+        quint64 m_nextHistogramSequence{0};
     };
 }
 

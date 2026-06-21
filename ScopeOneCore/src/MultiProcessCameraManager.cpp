@@ -386,7 +386,10 @@ namespace scopeone::core::internal
         virtual QStringList listProperties(const QString& cameraId) = 0;
         virtual bool fetchPropertySnapshot(const QString& cameraId, const QString& name, PropertySnapshot& snapshot) =
         0;
-        virtual bool setProperty(const QString& cameraId, const QString& name, const QString& value) = 0;
+        virtual bool setProperty(const QString& cameraId,
+                                 const QString& name,
+                                 const QString& value,
+                                 QString* errorMessage) = 0;
         virtual bool setROI(const QString& cameraId, int x, int y, int width, int height) = 0;
         virtual bool clearROI(const QString& cameraId) = 0;
         virtual bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height) = 0;
@@ -469,10 +472,9 @@ namespace scopeone::core::internal
                     {
                         return false;
                     }
-                    if (owner.m_cameras.contains(cameraId))
-                    {
-                        owner.m_cameras[cameraId]->exposureMs = exposureMs;
-                    }
+                    double actualExposureMs = exposureMs;
+                    readExposureFor(cameraId, actualExposureMs);
+                    owner.m_cameras[cameraId]->exposureMs = actualExposureMs;
                     return true;
                 }))
                 {
@@ -504,7 +506,10 @@ namespace scopeone::core::internal
             return fetchPropertySnapshotFor(resolvedCameraId, name, snapshot);
         }
 
-        bool setProperty(const QString& cameraId, const QString& name, const QString& value) override
+        bool setProperty(const QString& cameraId,
+                         const QString& name,
+                         const QString& value,
+                         QString* errorMessage) override
         {
             QString resolvedCameraId;
             if (!resolvePrimaryCameraId(cameraId, resolvedCameraId))
@@ -512,7 +517,7 @@ namespace scopeone::core::internal
                 return false;
             }
             return applyWithPreviewRestart(
-                resolvedCameraId, [&]() { return setPropertyFor(resolvedCameraId, name, value); });
+                resolvedCameraId, [&]() { return setPropertyFor(resolvedCameraId, name, value, errorMessage); });
         }
 
         bool setROI(const QString& cameraId, int x, int y, int width, int height) override
@@ -575,7 +580,10 @@ namespace scopeone::core::internal
         virtual bool fetchPropertySnapshotFor(const QString& cameraId,
                                               const QString& name,
                                               PropertySnapshot& snapshot) = 0;
-        virtual bool setPropertyFor(const QString& cameraId, const QString& name, const QString& value) = 0;
+        virtual bool setPropertyFor(const QString& cameraId,
+                                    const QString& name,
+                                    const QString& value,
+                                    QString* errorMessage) = 0;
         virtual bool setROIFor(const QString& cameraId, int x, int y, int width, int height) = 0;
         virtual bool clearROIFor(const QString& cameraId) = 0;
         virtual bool getROIFor(const QString& cameraId, int& x, int& y, int& width, int& height) = 0;
@@ -845,7 +853,10 @@ namespace scopeone::core::internal
             }
         }
 
-        bool setPropertyFor(const QString& cameraId, const QString& name, const QString& value) override
+        bool setPropertyFor(const QString& cameraId,
+                            const QString& name,
+                            const QString& value,
+                            QString* errorMessage) override
         {
             if (!owner.isSingleCamera(cameraId) || !owner.m_nativeCore)
             {
@@ -860,8 +871,12 @@ namespace scopeone::core::internal
                 owner.m_nativeCore->waitForDevice(cameraId.toStdString().c_str());
                 return true;
             }
-            catch (const CMMError&)
+            catch (const CMMError& e)
             {
+                if (errorMessage)
+                {
+                    *errorMessage = QString::fromStdString(e.getMsg());
+                }
                 return false;
             }
         }
@@ -1110,8 +1125,14 @@ namespace scopeone::core::internal
             req.insert(agent::kMessageTypeField, agent::kCommandSetExposure);
             req.insert(QStringLiteral("value"), exposureMs);
             QJsonObject resp;
-            return owner.sendControlCommand(cameraId, req, &resp, 1200)
-                && resp.value(QStringLiteral("ok")).toBool(false);
+            if (!owner.sendControlCommand(cameraId, req, &resp, 1200)
+                || !resp.value(QStringLiteral("ok")).toBool(false))
+            {
+                return false;
+            }
+            const double actualExposureMs = resp.value(QStringLiteral("exposureMs")).toDouble(exposureMs);
+            owner.m_cameras[cameraId]->exposureMs = actualExposureMs;
+            return true;
         }
 
         QStringList listPropertiesFor(const QString& cameraId) override
@@ -1166,7 +1187,10 @@ namespace scopeone::core::internal
             return true;
         }
 
-        bool setPropertyFor(const QString& cameraId, const QString& name, const QString& value) override
+        bool setPropertyFor(const QString& cameraId,
+                            const QString& name,
+                            const QString& value,
+                            QString* errorMessage) override
         {
             QJsonObject req;
             req.insert(agent::kMessageTypeField, agent::kCommandSetProperty);
@@ -1175,9 +1199,21 @@ namespace scopeone::core::internal
             QJsonObject resp;
             if (!owner.sendControlCommand(cameraId, req, &resp, 4000))
             {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Agent control request failed");
+                }
                 return false;
             }
-            return resp.value(QStringLiteral("ok")).toBool(false);
+            if (!resp.value(QStringLiteral("ok")).toBool(false))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = resp.value(QStringLiteral("error")).toString();
+                }
+                return false;
+            }
+            return true;
         }
 
         bool setROIFor(const QString& cameraId, int x, int y, int width, int height) override
@@ -2054,7 +2090,7 @@ namespace scopeone::core::internal
             << "--shm" << slot->shmKey;
         if (exposureMs > 0.0)
         {
-            args << "--exposure" << QString::number(exposureMs, 'f', 6);
+            args << "--exposure" << QString::number(exposureMs, 'f', 4);
         }
         for (const QString& encodedProperty : preInitProperties)
         {
@@ -2294,13 +2330,16 @@ namespace scopeone::core::internal
         return m_propertyReadOnlyCache.value(propKey, true);
     }
 
-    bool MultiProcessCameraManager::setProperty(const QString& cameraId, const QString& name, const QString& value)
+    bool MultiProcessCameraManager::setProperty(const QString& cameraId,
+                                                const QString& name,
+                                                const QString& value,
+                                                QString* errorMessage)
     {
         if (!m_runtime)
         {
             return false;
         }
-        const bool ok = m_runtime->setProperty(cameraId, name, value);
+        const bool ok = m_runtime->setProperty(cameraId, name, value, errorMessage);
         if (ok)
         {
             const QString propKey = QString("%1:%2").arg(cameraId, name);

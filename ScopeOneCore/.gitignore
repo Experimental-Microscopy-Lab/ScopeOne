@@ -6,7 +6,6 @@
 !README.md
 
 !python/
-!python/ScopeOneCoreBindings.cpp
 !python/scopeone/
 !python/scopeone/.gitignore
 !python/scopeone/README.md

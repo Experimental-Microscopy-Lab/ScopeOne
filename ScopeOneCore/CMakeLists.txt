@@ -1,20 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.603 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.619 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-option(SCOPEONE_BUILD_PYTHON_BINDINGS ON)
-
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install")
 set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
-
-set(PYBIND11_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/pybind11-3.0.1")
 
 set(MMCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/mmCoreAndDevices")
 set(MMCORE_INCLUDE_DIR "${MMCORE_DIR}/MMCore")
@@ -52,6 +48,15 @@ set(SCOPEONE_RUNTIME_DLLS
         ${MMCORE_RUNTIME_DLLS}
 )
 
+if (WIN32)
+    foreach (_qt_target IN ITEMS Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent)
+        get_target_property(_qt_runtime_dll ${_qt_target} IMPORTED_LOCATION_RELEASE)
+        if (_qt_runtime_dll)
+            list(APPEND SCOPEONE_RUNTIME_DLLS "${_qt_runtime_dll}")
+        endif ()
+    endforeach ()
+endif ()
+
 function(scopeone_add_runtime_copy_commands target destination)
     foreach (_dll IN LISTS SCOPEONE_RUNTIME_DLLS)
         add_custom_command(TARGET ${target} POST_BUILD
@@ -70,7 +75,6 @@ set(CORE_SOURCES
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
-        src/MedianFilterModule.cpp
         src/BackgroundCalibrationModule.cpp
         src/DifferentialRollingModule.cpp
         src/ProcessingModuleTemplate.cpp
@@ -90,7 +94,6 @@ set(CORE_HEADERS
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
         internal/FFTModule.h
-        internal/MedianFilterModule.h
         internal/BackgroundCalibrationModule.h
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
@@ -157,37 +160,6 @@ target_link_directories(ScopeOne_Agent PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Agent>)
 
-if (SCOPEONE_BUILD_PYTHON_BINDINGS)
-    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-    add_subdirectory("${PYBIND11_DIR}" "${CMAKE_BINARY_DIR}/_deps/pybind11" EXCLUDE_FROM_ALL)
-
-    pybind11_add_module(pyscopeonecore MODULE
-            python/ScopeOneCoreBindings.cpp
-    )
-    target_link_libraries(pyscopeonecore PRIVATE scopeone::ScopeOneCore)
-    set_target_properties(pyscopeonecore PROPERTIES
-            OUTPUT_NAME "_core"
-            LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
-            RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/src/scopeone>"
-    )
-    add_custom_command(TARGET pyscopeonecore POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ScopeOneCore>
-            $<TARGET_FILE_DIR:pyscopeonecore>
-    )
-    scopeone_add_runtime_copy_commands(pyscopeonecore $<TARGET_FILE_DIR:pyscopeonecore>)
-
-    install(TARGETS pyscopeonecore
-            LIBRARY DESTINATION "python/scopeone/src/scopeone"
-            RUNTIME DESTINATION "python/scopeone/src/scopeone"
-    )
-    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/scopeone/"
-            DESTINATION "python/scopeone"
-            FILES_MATCHING
-            PATTERN "*.py"
-    )
-endif ()
-
 if (MSVC)
     target_compile_options(ScopeOneCore PRIVATE
             $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
@@ -209,14 +181,6 @@ if (MSVC)
             $<$<CONFIG:Release>:/LTCG>
     )
 
-    if (TARGET pyscopeonecore)
-        target_compile_options(pyscopeonecore PRIVATE
-                $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-        )
-        target_compile_definitions(pyscopeonecore PRIVATE
-                $<$<CONFIG:Release>:NDEBUG>
-        )
-    endif ()
 endif ()
 
 configure_package_config_file(

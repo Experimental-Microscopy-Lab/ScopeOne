@@ -1,6 +1,6 @@
 # ScopeOneCore
 
-`ScopeOneCore` is the reusable runtime library behind the desktop app and Python bindings.
+`ScopeOneCore` is the reusable runtime library behind the desktop app.
 
 The desktop app currently assumes `ScopeOneCore` is checked out under the `ScopeOne` repository root.
 
@@ -12,12 +12,6 @@ Configure:
 
 ```powershell
 cmake -S . -B build
-```
-
-Python bindings are disabled by default. Enable them only if needed:
-
-```powershell
-cmake -S . -B build -DSCOPEONE_BUILD_PYTHON_BINDINGS=ON
 ```
 
 Build:
@@ -42,10 +36,6 @@ Outputs:
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_Agent.exe`
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
-
-When `SCOPEONE_BUILD_PYTHON_BINDINGS=ON`:
-
-- `python/scopeone/src/scopeone/pyscopeonecore*.pyd`
 
 
 ## Public API

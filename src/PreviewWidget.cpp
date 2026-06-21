@@ -19,6 +19,17 @@ namespace scopeone::ui
                        : QStringLiteral("raw:%1").arg(cameraId);
         }
 
+        QString cameraIdFromStreamKey(const QString& key)
+        {
+            const int separator = key.indexOf(QLatin1Char(':'));
+            return separator >= 0 ? key.mid(separator + 1) : key;
+        }
+
+        bool isProcessedStreamKey(const QString& key)
+        {
+            return key.startsWith(QStringLiteral("proc:"));
+        }
+
         QSet<QString> validStreamSelectionKeys(const QStringList& cameraIds)
         {
             QSet<QString> keys;
@@ -83,6 +94,22 @@ namespace scopeone::ui
         frameState.processedFrame = frame;
         lock.unlock();
 
+        if (frame.isValid())
+        {
+            const QString streamKey = streamSelectionKey(cameraId, true);
+            const FpsUpdate fps = updateFpsOnFrame(streamKey);
+
+            CameraInfo& info = m_cameraInfos[streamKey];
+            const bool sizeChanged = info.width != frame.width || info.height != frame.height;
+            info.width = frame.width;
+            info.height = frame.height;
+            info.fps = fps.fps;
+            if (sizeChanged || fps.changed)
+            {
+                updateCameraInfoDisplay();
+            }
+        }
+
         if (frame.isValid() && registerAvailableCamera(cameraId))
         {
             return;
@@ -99,14 +126,18 @@ namespace scopeone::ui
         }
         if (frame.isValid())
         {
-            updateFpsOnFrame();
+            const QString streamKey = streamSelectionKey(frame.cameraId, false);
+            const FpsUpdate fps = updateFpsOnFrame(streamKey);
 
-            CameraInfo& info = m_cameraInfos[frame.cameraId];
-            info.cameraId = frame.cameraId;
+            CameraInfo& info = m_cameraInfos[streamKey];
+            const bool sizeChanged = info.width != frame.width || info.height != frame.height;
             info.width = frame.width;
             info.height = frame.height;
-            info.fps = m_lastFps;
-            updateCameraInfoDisplay();
+            info.fps = fps.fps;
+            if (sizeChanged || fps.changed)
+            {
+                updateCameraInfoDisplay();
+            }
         }
         if (registerAvailableCamera(frame.cameraId))
         {
@@ -222,7 +253,10 @@ namespace scopeone::ui
 
     void PreviewWidget::clearCameraFrames(const QString& cameraId)
     {
-        m_cameraInfos.remove(cameraId);
+        m_cameraInfos.remove(streamSelectionKey(cameraId, false));
+        m_cameraInfos.remove(streamSelectionKey(cameraId, true));
+        m_fpsStates.remove(streamSelectionKey(cameraId, false));
+        m_fpsStates.remove(streamSelectionKey(cameraId, true));
         updateCameraInfoDisplay();
 
         QMutexLocker lock(&m_mutex);
@@ -354,23 +388,26 @@ namespace scopeone::ui
         update();
     }
 
-    void PreviewWidget::updateFpsOnFrame()
+    PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& streamKey)
     {
-        if (!m_fpsTimer.isValid())
+        FpsState& state = m_fpsStates[streamKey];
+        if (!state.timer.isValid())
         {
-            m_fpsTimer.start();
-            m_fpsFrameCounter = 0;
-            m_lastFps = 0.0;
+            state.timer.start();
+            state.frameCounter = 0;
+            state.lastFps = 0.0;
         }
 
-        ++m_fpsFrameCounter;
-        const qint64 elapsedMs = m_fpsTimer.elapsed();
+        ++state.frameCounter;
+        const qint64 elapsedMs = state.timer.elapsed();
         if (elapsedMs >= 3000)
         {
-            m_lastFps = (m_fpsFrameCounter * 1000.0) / elapsedMs;
-            m_fpsFrameCounter = 0;
-            m_fpsTimer.restart();
+            state.lastFps = (state.frameCounter * 1000.0) / elapsedMs;
+            state.frameCounter = 0;
+            state.timer.restart();
+            return {state.lastFps, true};
         }
+        return {state.lastFps, false};
     }
 
     bool PreviewWidget::hasRawFrame(const CameraFrameState& frameState) const
@@ -542,14 +579,36 @@ namespace scopeone::ui
         }
 
         QStringList lines;
-        for (auto it = m_cameraInfos.constBegin(); it != m_cameraInfos.constEnd(); ++it)
+        QSet<QString> appendedKeys;
+        const auto appendInfoLine = [this, &lines, &appendedKeys](const QString& key)
         {
+            if (appendedKeys.contains(key))
+            {
+                return;
+            }
+            const auto it = m_cameraInfos.constFind(key);
+            if (it == m_cameraInfos.constEnd())
+            {
+                return;
+            }
+            appendedKeys.insert(key);
             const CameraInfo& info = it.value();
-            lines.append(QString("%1: %2×%3 @ %4 FPS")
-                         .arg(info.cameraId)
+            lines.append(QString("%1 %2: %3×%4 @ %5 FPS")
+                         .arg(cameraIdFromStreamKey(key),
+                              isProcessedStreamKey(key) ? QStringLiteral("Processed") : QStringLiteral("Raw"))
                          .arg(info.width)
                          .arg(info.height)
                          .arg(info.fps, 0, 'f', 1));
+        };
+
+        for (const QString& cameraId : m_availableCameraIds)
+        {
+            appendInfoLine(streamSelectionKey(cameraId, false));
+            appendInfoLine(streamSelectionKey(cameraId, true));
+        }
+        for (auto it = m_cameraInfos.constBegin(); it != m_cameraInfos.constEnd(); ++it)
+        {
+            appendInfoLine(it.key());
         }
 
         m_cameraInfoText = lines.join(QStringLiteral("\n"));

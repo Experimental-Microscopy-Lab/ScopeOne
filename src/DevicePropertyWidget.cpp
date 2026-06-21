@@ -22,10 +22,40 @@
 #include <QDebug>
 #include <QtGlobal>
 
+#include <cmath>
+
 namespace scopeone::ui
 {
     namespace
     {
+        QString formatDoubleDisplay(double value)
+        {
+            QString text = QString::number(value, 'f', 4);
+            while (text.endsWith(QLatin1Char('0')))
+            {
+                text.chop(1);
+            }
+            if (text.endsWith(QLatin1Char('.')))
+            {
+                text.chop(1);
+            }
+            return text;
+        }
+
+        QString formatPropertyDisplayValue(const QString& value, bool isInteger, bool isFloat)
+        {
+            bool ok = false;
+            const double numericValue = QLocale::c().toDouble(value.trimmed(), &ok);
+            if (!ok)
+            {
+                return value;
+            }
+
+            return isInteger
+                ? QString::number(static_cast<int>(numericValue))
+                : formatDoubleDisplay(numericValue);
+        }
+
         class NoWheelComboBox : public QComboBox
         {
         public:
@@ -128,7 +158,7 @@ namespace scopeone::ui
     void DevicePropertyWidget::refresh(bool fromCache)
     {
         // Rebuild the tree and keep the scroll position
-        if (m_updating || !m_propertyTree)
+        if (m_updating)
         {
             return;
         }
@@ -151,7 +181,6 @@ namespace scopeone::ui
 
         QTimer::singleShot(0, this, [this, oldScrollValue]()
         {
-            if (!m_propertyTree) return;
             if (auto* sb = m_propertyTree->verticalScrollBar())
             {
                 sb->setValue(oldScrollValue);
@@ -163,11 +192,6 @@ namespace scopeone::ui
 
     void DevicePropertyWidget::populateDeviceTree(bool fromCache)
     {
-        if (!m_propertyTree)
-        {
-            return;
-        }
-
         const QStringList devices = m_scopeonecore->loadedDevices();
         for (const QString& deviceLabel : devices)
         {
@@ -177,13 +201,29 @@ namespace scopeone::ui
         m_propertyTree->expandAll();
     }
 
-    void DevicePropertyWidget::addDeviceToTree(const QString& deviceLabel, bool fromCache)
+    bool DevicePropertyWidget::applyPropertyValue(const QString& deviceLabel,
+                                                  const QString& propertyName,
+                                                  const QString& requestedValue,
+                                                  QString& actualValue)
     {
-        if (!m_propertyTree)
+        QString error;
+        if (!m_scopeonecore->setPropertyValue(deviceLabel, propertyName, requestedValue, &error))
         {
-            return;
+            emit errorOccurred(QString("Failed to set property %1.%2: %3")
+                .arg(deviceLabel, propertyName, error));
+            return false;
         }
 
+        actualValue = m_scopeonecore->getPropertyValue(deviceLabel, propertyName, false);
+        if (actualValue.isEmpty())
+        {
+            actualValue = requestedValue;
+        }
+        return true;
+    }
+
+    void DevicePropertyWidget::addDeviceToTree(const QString& deviceLabel, bool fromCache)
+    {
         try
         {
             QTreeWidgetItem* deviceItem = new QTreeWidgetItem(m_propertyTree);
@@ -213,12 +253,6 @@ namespace scopeone::ui
         const QString& deviceLabel,
         const scopeone::core::ScopeOneCore::DevicePropertyInfo& propertyInfo)
     {
-        // Build one editable row for one property
-        if (!m_propertyTree)
-        {
-            return;
-        }
-
         try
         {
             const QString propertyName = propertyInfo.name();
@@ -231,18 +265,21 @@ namespace scopeone::ui
             QTreeWidgetItem* propertyItem = new QTreeWidgetItem(deviceItem);
             propertyItem->setText(NameColumn, propertyName);
 
-            const QString value = propertyInfo.value();
-            propertyItem->setText(ValueColumn, value);
-
             const QString typeStr = propertyInfo.type();
+            const bool isInteger = (typeStr == "Integer");
+            const bool isFloat = (typeStr == "Float");
+            const QStringList allowedValues = propertyInfo.allowedValues();
+            const QString rawValue = propertyInfo.value();
+            const QString value = allowedValues.isEmpty() && (isInteger || isFloat)
+                ? formatPropertyDisplayValue(rawValue, isInteger, isFloat)
+                : rawValue;
+
+            propertyItem->setText(ValueColumn, value);
             propertyItem->setText(TypeColumn, typeStr.isEmpty() ? QStringLiteral("Unknown") : typeStr);
             propertyItem->setText(ReadOnlyColumn, isReadOnly ? "Yes" : "No");
 
             Qt::ItemFlags flags = propertyItem->flags();
             flags |= Qt::ItemIsSelectable | Qt::ItemIsEnabled;
-
-            const bool isInteger = (typeStr == "Integer");
-            const bool isFloat = (typeStr == "Float");
 
             if (isReadOnly)
             {
@@ -259,7 +296,6 @@ namespace scopeone::ui
 
                 QWidget* editor = nullptr;
 
-                const QStringList allowedValues = propertyInfo.allowedValues();
                 if (!allowedValues.isEmpty())
                 {
                     QComboBox* combo = new NoWheelComboBox();
@@ -270,16 +306,17 @@ namespace scopeone::ui
                     combo->setCurrentText(value);
 
                     connect(combo, &QComboBox::currentTextChanged, this,
-                            [this, deviceLabel, propertyName](const QString& newValue)
+                            [this, combo, deviceLabel, propertyName](const QString& newValue)
                             {
-                                QString error;
-                                if (!m_scopeonecore->setPropertyValue(deviceLabel, propertyName, newValue, &error))
+                                QString actualValue;
+                                if (!applyPropertyValue(deviceLabel, propertyName, newValue, actualValue))
                                 {
-                                    emit errorOccurred(QString("Failed to set property %1.%2: %3")
-                                        .arg(deviceLabel, propertyName, error));
                                     return;
                                 }
-                                emit propertyChanged(deviceLabel, propertyName, newValue);
+                                combo->blockSignals(true);
+                                combo->setCurrentText(actualValue);
+                                combo->blockSignals(false);
+                                emit propertyChanged(deviceLabel, propertyName, actualValue);
                             });
 
                     editor = combo;
@@ -305,17 +342,43 @@ namespace scopeone::ui
                     }
 
                     connect(lineEdit, &QLineEdit::editingFinished, this,
-                            [this, lineEdit, deviceLabel, propertyName]()
+                            [this,
+                             lineEdit,
+                             deviceLabel,
+                             propertyName,
+                             isInteger,
+                             isFloat,
+                             hasLimits = propertyInfo.hasLimits(),
+                             lowerLimit = propertyInfo.lowerLimit(),
+                             upperLimit = propertyInfo.upperLimit()]()
                             {
-                                QString error;
-                                const QString newValue = lineEdit->text().trimmed();
-                                if (!m_scopeonecore->setPropertyValue(deviceLabel, propertyName, newValue, &error))
+                                QString newValue = lineEdit->text().trimmed();
+                                bool ok = false;
+                                double numericValue = newValue.toDouble(&ok);
+                                if (!ok)
                                 {
-                                    emit errorOccurred(QString("Failed to set property %1.%2: %3")
-                                        .arg(deviceLabel, propertyName, error));
                                     return;
                                 }
-                                emit propertyChanged(deviceLabel, propertyName, newValue);
+                                if (hasLimits)
+                                {
+                                    const double lower = isInteger ? std::ceil(lowerLimit) : lowerLimit;
+                                    const double upper = isInteger ? std::floor(upperLimit) : upperLimit;
+                                    numericValue = qBound(lower, numericValue, upper);
+                                }
+                                newValue = isInteger
+                                    ? QString::number(static_cast<int>(numericValue))
+                                    : QString::number(numericValue, 'f', 4);
+
+                                QString actualValue;
+                                if (!applyPropertyValue(deviceLabel, propertyName, newValue, actualValue))
+                                {
+                                    return;
+                                }
+                                actualValue = formatPropertyDisplayValue(actualValue, isInteger, isFloat);
+                                lineEdit->blockSignals(true);
+                                lineEdit->setText(actualValue);
+                                lineEdit->blockSignals(false);
+                                emit propertyChanged(deviceLabel, propertyName, actualValue);
                             });
 
                     editor = lineEdit;
@@ -375,5 +438,4 @@ namespace scopeone::ui
             refresh(true);
         }
     }
-
 } // namespace scopeone::ui

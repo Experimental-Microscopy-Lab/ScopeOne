@@ -66,59 +66,85 @@ namespace scopeone::ui
                 : ProcessingModuleConfigWidgetBase(core, moduleIndex, parent)
             {
                 auto* layout = new QVBoxLayout(this);
-                auto* group = new QGroupBox("FFT Bandpass Settings", this);
+                auto* group = new QGroupBox("FFT Settings", this);
                 auto* groupLayout = new QGridLayout(group);
 
-                groupLayout->addWidget(new QLabel("Min width:", group), 0, 0);
-                m_minWidthSpin = new QDoubleSpinBox(group);
-                m_minWidthSpin->setRange(0.0, 1000.0);
-                m_minWidthSpin->setDecimals(2);
-                groupLayout->addWidget(m_minWidthSpin, 0, 1);
+                groupLayout->addWidget(new QLabel("Output:", group), 0, 0);
+                m_outputModeCombo = new QComboBox(group);
+                m_outputModeCombo->addItem("FFT Spectrum", 0);
+                m_outputModeCombo->addItem("Bandpass FFT Spectrum", 1);
+                m_outputModeCombo->addItem("Bandpass IFFT Image", 2);
+                groupLayout->addWidget(m_outputModeCombo, 0, 1);
 
-                groupLayout->addWidget(new QLabel("Max width:", group), 1, 0);
-                m_maxWidthSpin = new QDoubleSpinBox(group);
-                m_maxWidthSpin->setRange(0.0, 1000.0);
-                m_maxWidthSpin->setDecimals(2);
-                groupLayout->addWidget(m_maxWidthSpin, 1, 1);
+                groupLayout->addWidget(new QLabel("Min feature size:", group), 1, 0);
+                m_minFeatureSizeSpin = new QDoubleSpinBox(group);
+                m_minFeatureSizeSpin->setRange(0.0, 1000.0);
+                m_minFeatureSizeSpin->setDecimals(2);
+                groupLayout->addWidget(m_minFeatureSizeSpin, 1, 1);
 
-                groupLayout->addWidget(new QLabel("Filter kind:", group), 2, 0);
+                groupLayout->addWidget(new QLabel("Max feature size:", group), 2, 0);
+                m_maxFeatureSizeSpin = new QDoubleSpinBox(group);
+                m_maxFeatureSizeSpin->setRange(0.0, 1000.0);
+                m_maxFeatureSizeSpin->setDecimals(2);
+                groupLayout->addWidget(m_maxFeatureSizeSpin, 2, 1);
+
+                groupLayout->addWidget(new QLabel("Filter kind:", group), 3, 0);
                 m_filterKindCombo = new QComboBox(group);
                 m_filterKindCombo->addItem("Smooth", 0);
                 m_filterKindCombo->addItem("Hard", 1);
-                groupLayout->addWidget(m_filterKindCombo, 2, 1);
+                groupLayout->addWidget(m_filterKindCombo, 3, 1);
 
                 layout->addWidget(group);
                 layout->addStretch();
 
                 const QVariantMap params = info.parameters();
-                m_minWidthSpin->setValue(params.value("min_width", 2.0).toDouble());
-                m_maxWidthSpin->setValue(params.value("max_width", 10.0).toDouble());
+                const int outputModeIndex = m_outputModeCombo->findData(params.value("output_mode", 2).toInt());
+                if (outputModeIndex >= 0)
+                {
+                    m_outputModeCombo->setCurrentIndex(outputModeIndex);
+                }
+                m_minFeatureSizeSpin->setValue(params.value("min_feature_size", 2.0).toDouble());
+                m_maxFeatureSizeSpin->setValue(params.value("max_feature_size", 10.0).toDouble());
                 const int filterIndex = m_filterKindCombo->findData(params.value("filter_kind", 0).toInt());
                 if (filterIndex >= 0)
                 {
                     m_filterKindCombo->setCurrentIndex(filterIndex);
                 }
 
-                connect(m_minWidthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                connect(m_outputModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                         this, [this]() { apply(); });
-                connect(m_maxWidthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                connect(m_minFeatureSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                        this, [this]() { apply(); });
+                connect(m_maxFeatureSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                         this, [this]() { apply(); });
                 connect(m_filterKindCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                         this, [this]() { apply(); });
+                updateFilterControls();
             }
 
         private:
             void apply()
             {
                 QVariantMap params;
-                params["min_width"] = m_minWidthSpin->value();
-                params["max_width"] = m_maxWidthSpin->value();
+                params["output_mode"] = m_outputModeCombo->currentData().toInt();
+                params["min_feature_size"] = m_minFeatureSizeSpin->value();
+                params["max_feature_size"] = m_maxFeatureSizeSpin->value();
                 params["filter_kind"] = m_filterKindCombo->currentData().toInt();
+                updateFilterControls();
                 applyParameters(params);
             }
 
-            QDoubleSpinBox* m_minWidthSpin{nullptr};
-            QDoubleSpinBox* m_maxWidthSpin{nullptr};
+            void updateFilterControls()
+            {
+                const bool usesBandpass = m_outputModeCombo->currentData().toInt() != 0;
+                m_minFeatureSizeSpin->setEnabled(usesBandpass);
+                m_maxFeatureSizeSpin->setEnabled(usesBandpass);
+                m_filterKindCombo->setEnabled(usesBandpass);
+            }
+
+            QComboBox* m_outputModeCombo{nullptr};
+            QDoubleSpinBox* m_minFeatureSizeSpin{nullptr};
+            QDoubleSpinBox* m_maxFeatureSizeSpin{nullptr};
             QComboBox* m_filterKindCombo{nullptr};
         };
 
@@ -267,53 +293,6 @@ namespace scopeone::ui
 
             QSpinBox* m_kernelSizeSpin{nullptr};
             QDoubleSpinBox* m_sigmaSpin{nullptr};
-        };
-
-        class MedianFilterModuleConfigWidget : public ProcessingModuleConfigWidgetBase
-        {
-        public:
-            MedianFilterModuleConfigWidget(scopeone::core::ScopeOneCore* core,
-                                           int moduleIndex,
-                                           const ProcessingModuleInfo& info,
-                                           QWidget* parent = nullptr)
-                : ProcessingModuleConfigWidgetBase(core, moduleIndex, parent)
-            {
-                auto* layout = new QVBoxLayout(this);
-                auto* group = new QGroupBox("Temporal Median Settings", this);
-                auto* groupLayout = new QGridLayout(group);
-
-                groupLayout->addWidget(new QLabel("Window Size:", group), 0, 0);
-                m_windowSizeSpin = new QSpinBox(group);
-                m_windowSizeSpin->setRange(3, 99);
-                m_windowSizeSpin->setSingleStep(2);
-                groupLayout->addWidget(m_windowSizeSpin, 0, 1);
-
-                m_resetButton = new QPushButton("Reset Buffer", this);
-
-                layout->addWidget(group);
-                layout->addWidget(m_resetButton);
-                layout->addStretch();
-
-                m_windowSizeSpin->setValue(info.parameters().value("window_size", 5).toInt());
-
-                connect(m_windowSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-                        this, [this]() { apply(); });
-                connect(m_resetButton, &QPushButton::clicked, this, [this]()
-                {
-                    resetModule();
-                });
-            }
-
-        private:
-            void apply()
-            {
-                QVariantMap params;
-                params["window_size"] = m_windowSizeSpin->value();
-                applyParameters(params);
-            }
-
-            QSpinBox* m_windowSizeSpin{nullptr};
-            QPushButton* m_resetButton{nullptr};
         };
 
         class DifferentialRollingModuleConfigWidget : public ProcessingModuleConfigWidgetBase
@@ -492,8 +471,6 @@ namespace scopeone::ui
                 return new SpatiotemporalBinningModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::GaussianBlur:
                 return new GaussianBlurModuleConfigWidget(core, moduleIndex, info, parent);
-            case ProcessingModuleKind::MedianFilter:
-                return new MedianFilterModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::DifferentialRolling:
                 return new DifferentialRollingModuleConfigWidget(core, moduleIndex, info, parent);
             case ProcessingModuleKind::BackgroundCalibration:
@@ -568,8 +545,10 @@ namespace scopeone::ui
         m_startButton = new QPushButton("Start Processing", m_runControlsWidget);
         m_stopButton = new QPushButton("Stop Processing", m_runControlsWidget);
         m_processingBitDepthCombo = new QComboBox(m_runControlsWidget);
-        m_processingBitDepthCombo->addItem("8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
-        m_processingBitDepthCombo->addItem("16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
+        m_processingBitDepthCombo->addItem(
+            "8-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8));
+        m_processingBitDepthCombo->addItem(
+            "16-bit", static_cast<int>(scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16));
         connect(m_startButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStartProcessing);
         connect(m_stopButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStopProcessing);
         connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -596,8 +575,7 @@ namespace scopeone::ui
         m_moduleTypeCombo->addItem("Spatiotemporal Binning",
                                    static_cast<int>(ProcessingModuleKind::SpatiotemporalBinning));
         m_moduleTypeCombo->addItem("Gaussian Blur", static_cast<int>(ProcessingModuleKind::GaussianBlur));
-        m_moduleTypeCombo->addItem("FFT Bandpass", static_cast<int>(ProcessingModuleKind::FFT));
-        m_moduleTypeCombo->addItem("Temporal Median", static_cast<int>(ProcessingModuleKind::MedianFilter));
+        m_moduleTypeCombo->addItem("FFT", static_cast<int>(ProcessingModuleKind::FFT));
         m_moduleTypeCombo->addItem("Differential Rolling",
                                    static_cast<int>(ProcessingModuleKind::DifferentialRolling));
         m_moduleTypeCombo->addItem("Background Calibration",

@@ -2,66 +2,94 @@
 
 from __future__ import annotations
 
-try:
-    from . import _core
-except ImportError:
-    _core = None
-
-
-class RecordingSession:
-    def __init__(self, native_session) -> None:
-        self._session = native_session
-
-    def camera_ids(self):
-        return self._session.camera_ids()
-
-    def frame_count(self, camera=None):
-        return self._session.frame_count(camera)
-
-    def frame(self, camera: str, index: int):
-        return self._session.frame(camera, index)
-
-    def frames(self, camera: str):
-        return self._session.frames(camera)
-
-    def save(
-        self,
-        save_dir: str,
-        base_name: str,
-        format: str = "tiff",
-        compression: bool = False,
-        compression_level: int = 6,
-    ):
-        return self._session.save(
-            save_dir,
-            base_name,
-            format,
-            compression,
-            compression_level,
-        )
+from .client import ExternalClient, LOCAL_SERVER_NAME
+from .session import RecordingSession
 
 
 class ScopeOne:
-    def __init__(self) -> None:
-        if _core is None:
-            raise RuntimeError("scopeone._core is not available.")
-        self._core = _core.ScopeOne()
+    def __init__(self, endpoint: str = "local") -> None:
+        server_name = LOCAL_SERVER_NAME if endpoint == "local" else endpoint
+        self._client = ExternalClient(server_name)
 
-    def load(self, config_path: str):
-        return self._core.load(config_path)
+    @classmethod
+    def connect(cls, endpoint: str = "local") -> "ScopeOne":
+        return cls(endpoint)
 
-    def unload(self):
-        return self._core.unload()
+    def load_config(self, config_path: str):
+        return self._client.load_config(config_path)
+
+    def unload_config(self):
+        self._client.unload_config()
 
     def camera_ids(self):
-        return self._core.camera_ids()
+        return self._client.camera_ids()
+
+    def start_preview(self, camera: str = "All"):
+        self._client.start_preview(camera)
+
+    def stop_preview(self, camera: str = "All"):
+        self._client.stop_preview(camera)
+
+    def device_properties(self, device: str, from_cache: bool = True):
+        return self._client.device_properties(device, from_cache)
+
+    def device_property_names(self, device: str):
+        return self._client.device_property_names(device)
+
+    def get_property(self, device: str, property: str, from_cache: bool = True):
+        return self._client.get_property(device, property, from_cache)
+
+    def set_property(self, device: str, property: str, value: str):
+        self._client.set_property(device, property, value)
+
+    def xy_stage_devices(self):
+        return self._client.xy_stage_devices()
+
+    def z_stage_devices(self):
+        return self._client.z_stage_devices()
+
+    def current_xy_stage_device(self):
+        return self._client.current_xy_stage_device()
+
+    def current_focus_device(self):
+        return self._client.current_focus_device()
+
+    def read_xy_position(self, device: str | None = None):
+        return self._client.read_xy_position(device)
+
+    def read_z_position(self, device: str | None = None):
+        return self._client.read_z_position(device)
+
+    def move_xy_relative(self, dx: float, dy: float, device: str | None = None):
+        self._client.move_xy_relative(dx, dy, device)
+
+    def move_z_relative(self, dz: float, device: str | None = None):
+        self._client.move_z_relative(dz, device)
+
+    def move_xy_to(self, x: float, y: float, device: str | None = None):
+        self._client.move_xy_to(x, y, device)
+
+    def move_z_to(self, z: float, device: str | None = None):
+        self._client.move_z_to(z, device)
 
     def record(
         self,
-        frame_count: int,
+        frames: int,
         camera: str = "All",
         timeout_ms: int = 120000,
+        mda_interval_ms: float = 0.0,
+        z_positions: list[float] | None = None,
+        positions: list[tuple[float, float]] | None = None,
+        order: list[str] | None = None,
     ) -> RecordingSession:
         return RecordingSession(
-            self._core.record(frame_count, camera, timeout_ms)
+            self._client.record(
+                frames,
+                camera,
+                timeout_ms,
+                mda_interval_ms,
+                z_positions,
+                positions,
+                order,
+            )
         )

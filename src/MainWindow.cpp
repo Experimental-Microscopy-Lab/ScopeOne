@@ -11,6 +11,7 @@
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
+#include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
 #include <QApplication>
@@ -72,6 +73,7 @@ namespace scopeone::ui
             qFatal("MainWindow requires ScopeOneCore");
         }
 
+        m_apiServer = new ScopeOneLocalApiServer(m_scopeonecore, this);
         setupUI();
         setupSignalWiring();
         applyStoredApplicationSettings();
@@ -200,7 +202,12 @@ namespace scopeone::ui
             connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
                     this, [this](double ms)
                     {
-                        m_scopeonecore->setExposure(m_currentControlTarget, ms);
+                        if (!m_scopeonecore->setExposure(m_currentControlTarget, ms))
+                        {
+                            qWarning().noquote() << QString("Failed to set exposure: %1 ms").arg(ms);
+                        }
+                        m_deviceControlWidget->refreshCameraParameters();
+                        m_propertyBrowser->refresh(false);
                     });
         }
 
@@ -303,20 +310,18 @@ namespace scopeone::ui
 
     void MainWindow::connectPropertyPanels()
     {
-        if (m_propertyBrowser)
-        {
-            connect(m_propertyBrowser, &DevicePropertyWidget::propertyChanged,
-                    this, [](const QString& device, const QString& property, const QString& value)
-                    {
-                        qInfo().noquote() << QString("Property changed: %1.%2 = %3")
-                            .arg(device, property, value);
-                    });
-            connect(m_propertyBrowser, &DevicePropertyWidget::errorOccurred,
-                    this, [](const QString& message)
-                    {
-                        qCritical().noquote() << message;
-                    });
-        }
+        connect(m_propertyBrowser, &DevicePropertyWidget::propertyChanged,
+                this, [this](const QString& device, const QString& property, const QString& value)
+                {
+                    qInfo().noquote() << QString("Property changed: %1.%2 = %3")
+                        .arg(device, property, value);
+                    m_deviceControlWidget->refreshCameraParameters();
+                });
+        connect(m_propertyBrowser, &DevicePropertyWidget::errorOccurred,
+                this, [](const QString& message)
+                {
+                    qCritical().noquote() << message;
+                });
         if (m_configPresetWidget)
         {
             connect(m_configPresetWidget, &ConfigPresetWidget::configChanged,

@@ -1,6 +1,7 @@
 #include "internal/FFTModule.h"
 #include "internal/FrameBufferUtils.h"
 
+#include <cmath>
 #include <numbers>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -40,7 +41,34 @@ ImageFrame matToOutputFrame(const cv::Mat& input,
     return output;
 }
 
-cv::Mat buildMask(const cv::Size& size, double minWidth, double maxWidth, FFTModule::FilterKind filterKind)
+cv::Mat fftShift(const cv::Mat& image)
+{
+    cv::Mat shifted(image.size(), image.type());
+    const int xOffset = image.cols / 2;
+    const int yOffset = image.rows / 2;
+    for (int y = 0; y < image.rows; ++y) {
+        const float* srcRow = image.ptr<float>((y + yOffset) % image.rows);
+        float* dstRow = shifted.ptr<float>(y);
+        for (int x = 0; x < image.cols; ++x) {
+            dstRow[x] = srcRow[(x + xOffset) % image.cols];
+        }
+    }
+    return shifted;
+}
+
+cv::Mat magnitudeSpectrum(const cv::Mat* planes)
+{
+    cv::Mat magnitude;
+    cv::magnitude(planes[0], planes[1], magnitude);
+    magnitude += cv::Scalar::all(1.0);
+    cv::log(magnitude, magnitude);
+    return fftShift(magnitude);
+}
+
+cv::Mat buildMask(const cv::Size& size,
+                  double minFeatureSize,
+                  double maxFeatureSize,
+                  FFTModule::FilterKind filterKind)
 {
     constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
     cv::Mat centered(size, CV_32F);
@@ -51,11 +79,12 @@ cv::Mat buildMask(const cv::Size& size, double minWidth, double maxWidth, FFTMod
             const double fx = (static_cast<double>(x) - size.width / 2.0) / static_cast<double>(size.width);
             const double rsq = (kTwoPi * fx) * (kTwoPi * fx) + (kTwoPi * fy) * (kTwoPi * fy);
             if (filterKind == FFTModule::FilterKind::Hard) {
-                row[x] = (rsq * maxWidth * maxWidth > 1.0 && rsq * minWidth * minWidth < 1.0) ? 1.0f : 0.0f;
+                row[x] = (rsq * maxFeatureSize * maxFeatureSize > 1.0
+                          && rsq * minFeatureSize * minFeatureSize < 1.0) ? 1.0f : 0.0f;
             } else {
                 row[x] = static_cast<float>(
-                    std::exp(-rsq * minWidth * minWidth / 2.0)
-                    - std::exp(-rsq * maxWidth * maxWidth / 2.0));
+                    std::exp(-rsq * minFeatureSize * minFeatureSize / 2.0)
+                    - std::exp(-rsq * maxFeatureSize * maxFeatureSize / 2.0));
             }
         }
     }
@@ -99,6 +128,21 @@ bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
             return false;
         }
 
+        if (m_outputMode == OutputMode::Spectrum || m_outputMode == OutputMode::BandpassSpectrum) {
+            cv::Mat complex;
+            cv::dft(grayFloat, complex, cv::DFT_COMPLEX_OUTPUT);
+
+            cv::Mat planes[2];
+            cv::split(complex, planes);
+            if (m_outputMode == OutputMode::BandpassSpectrum) {
+                const cv::Mat mask = buildMask(grayFloat.size(), m_minFeatureSize, m_maxFeatureSize, m_filterKind);
+                planes[0] = planes[0].mul(mask);
+                planes[1] = planes[1].mul(mask);
+            }
+            out.frame = matToOutputFrame(magnitudeSpectrum(planes), workingFrame, in.frame.cameraId);
+            return true;
+        }
+
         int optRows = cv::getOptimalDFTSize(grayFloat.rows);
         int optCols = cv::getOptimalDFTSize(grayFloat.cols);
         cv::Mat padded;
@@ -109,7 +153,7 @@ bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
 
         cv::Mat planes[2];
         cv::split(complex, planes);
-        const cv::Mat mask = buildMask(padded.size(), m_minWidth, m_maxWidth, m_filterKind);
+        const cv::Mat mask = buildMask(padded.size(), m_minFeatureSize, m_maxFeatureSize, m_filterKind);
         planes[0] = planes[0].mul(mask);
         planes[1] = planes[1].mul(mask);
 
@@ -133,27 +177,34 @@ bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
 QVariantMap FFTModule::getParameters() const
 {
     QVariantMap params;
-    params["min_width"] = m_minWidth;
-    params["max_width"] = m_maxWidth;
+    params["min_feature_size"] = m_minFeatureSize;
+    params["max_feature_size"] = m_maxFeatureSize;
     params["filter_kind"] = static_cast<int>(m_filterKind);
+    params["output_mode"] = static_cast<int>(m_outputMode);
     return params;
 }
 
 void FFTModule::setParameters(const QVariantMap& params)
 {
-    if (params.contains("min_width")) {
-        m_minWidth = qMax(0.0, params.value("min_width").toDouble());
+    if (params.contains("min_feature_size")) {
+        m_minFeatureSize = qMax(0.0, params.value("min_feature_size").toDouble());
     }
-    if (params.contains("max_width")) {
-        m_maxWidth = qMax(0.0, params.value("max_width").toDouble());
+    if (params.contains("max_feature_size")) {
+        m_maxFeatureSize = qMax(0.0, params.value("max_feature_size").toDouble());
     }
-    if (m_minWidth > m_maxWidth) {
-        std::swap(m_minWidth, m_maxWidth);
+    if (m_minFeatureSize > m_maxFeatureSize) {
+        std::swap(m_minFeatureSize, m_maxFeatureSize);
     }
     if (params.contains("filter_kind")) {
         const int filterKind = params.value("filter_kind").toInt();
         if (filterKind == 0 || filterKind == 1) {
             m_filterKind = static_cast<FilterKind>(filterKind);
+        }
+    }
+    if (params.contains("output_mode")) {
+        const int outputMode = params.value("output_mode").toInt();
+        if (outputMode >= 0 && outputMode <= 2) {
+            m_outputMode = static_cast<OutputMode>(outputMode);
         }
     }
 }

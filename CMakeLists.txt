@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.603 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.619 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -63,6 +63,7 @@ set(SCOPEONE_UI_SOURCES
         src/ImageSessionDialog.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
+        src/ScopeOneLocalApiServer.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
@@ -79,6 +80,7 @@ set(SCOPEONE_UI_HEADERS
         src/ImageSessionDialog.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
+        src/ScopeOneLocalApiServer.h
 )
 
 if (WIN32)
@@ -91,6 +93,7 @@ target_link_libraries(ScopeOne PRIVATE
         Qt::Widgets
         Qt::OpenGL
         Qt::OpenGLWidgets
+        Qt::Network
         Qt::Concurrent
 )
 target_include_directories(ScopeOne PRIVATE
@@ -102,11 +105,20 @@ install(TARGETS ScopeOne
         RUNTIME DESTINATION .
 )
 
-add_custom_command(TARGET ScopeOne POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "$<TARGET_FILE_DIR:scopeone::ScopeOneCore>"
-        "$<TARGET_FILE_DIR:ScopeOne>"
+file(GLOB SCOPEONE_CORE_RUNTIME_FILES
+        LIST_DIRECTORIES false
+        "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/*.dll"
+        "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_Agent.exe"
 )
+
+if (SCOPEONE_CORE_RUNTIME_FILES)
+    add_custom_command(TARGET ScopeOne POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${SCOPEONE_CORE_RUNTIME_FILES}
+            "$<TARGET_FILE_DIR:ScopeOne>"
+            COMMAND_EXPAND_LISTS
+    )
+endif ()
 
 if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)
