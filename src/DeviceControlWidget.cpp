@@ -23,6 +23,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace scopeone::ui
 {
     namespace
@@ -37,6 +39,20 @@ namespace scopeone::ui
             return index == 1
                        ? PreviewWidget::StreamLayoutMode::Overlay
                        : PreviewWidget::StreamLayoutMode::SideBySide;
+        }
+
+        QString formatExposureMs(double exposureMs)
+        {
+            QString text = QString::number(exposureMs, 'f', 4);
+            while (text.endsWith(QLatin1Char('0')))
+            {
+                text.chop(1);
+            }
+            if (text.endsWith(QLatin1Char('.')))
+            {
+                text.chop(1);
+            }
+            return text;
         }
     } // namespace
 
@@ -616,7 +632,8 @@ namespace scopeone::ui
 
         layout->addWidget(new QLabel("Exposure (ms):"), row, 0);
         m_exposureLineEdit = new QLineEdit();
-        auto* exposureValidator = new QDoubleValidator(0.1, 10000.0, 1, m_exposureLineEdit);
+        auto* exposureValidator = new QDoubleValidator(0.1, 10000.0, 16, m_exposureLineEdit);
+        exposureValidator->setLocale(QLocale::c());
         exposureValidator->setNotation(QDoubleValidator::StandardNotation);
         m_exposureLineEdit->setValidator(exposureValidator);
         m_exposureLineEdit->setText(QStringLiteral("100.0"));
@@ -1094,18 +1111,26 @@ namespace scopeone::ui
         }
     }
 
+    void DeviceControlWidget::refreshCameraParameters()
+    {
+        updateCameraParametersFromHardware();
+    }
+
     void DeviceControlWidget::onExposureChanged()
     {
         // Apply exposure on Enter
+        updateExposureLimits();
+
         bool ok = false;
-        const double exposureMs = m_exposureLineEdit->text().trimmed().toDouble(&ok);
-        if (!ok || exposureMs < 0.1 || exposureMs > 10000.0)
+        double exposureMs = m_exposureLineEdit->text().trimmed().toDouble(&ok);
+        if (!ok)
         {
             updateCameraParametersFromHardware();
             return;
         }
+        exposureMs = qBound(m_minExposureMs, exposureMs, m_maxExposureMs);
 
-        m_exposureLineEdit->setText(QString::number(exposureMs, 'f', 1));
+        m_exposureLineEdit->setText(formatExposureMs(exposureMs));
         emit exposureValueChanged(exposureMs);
     }
 
@@ -1143,12 +1168,66 @@ namespace scopeone::ui
             return;
         }
 
+        updateExposureLimits();
+
         double exposure = 0.0;
         if (m_scopeonecore->readExposure(m_currentTarget, exposure))
         {
             m_exposureLineEdit->blockSignals(true);
-            m_exposureLineEdit->setText(QString::number(exposure, 'f', 1));
+            m_exposureLineEdit->setText(formatExposureMs(exposure));
             m_exposureLineEdit->blockSignals(false);
+        }
+    }
+
+    void DeviceControlWidget::updateExposureLimits()
+    {
+        m_minExposureMs = 0.1;
+        m_maxExposureMs = 10000.0;
+        double lower = 0.0;
+        double upper = 0.0;
+        if (!isAllTarget(m_currentTarget))
+        {
+            if (m_scopeonecore->getPropertyLimits(m_currentTarget, QStringLiteral("Exposure"), lower, upper)
+                && lower <= upper)
+            {
+                m_minExposureMs = lower;
+                m_maxExposureMs = upper;
+            }
+            return;
+        }
+
+        bool hasCommonLimits = false;
+        double commonLower = 0.0;
+        double commonUpper = 0.0;
+        for (int i = 0; i < m_cameraSelectCombo->count(); ++i)
+        {
+            const QString cameraId = m_cameraSelectCombo->itemText(i);
+            if (isAllTarget(cameraId))
+            {
+                continue;
+            }
+            if (!m_scopeonecore->getPropertyLimits(cameraId, QStringLiteral("Exposure"), lower, upper))
+            {
+                continue;
+            }
+
+            if (!hasCommonLimits)
+            {
+                commonLower = lower;
+                commonUpper = upper;
+                hasCommonLimits = true;
+            }
+            else
+            {
+                commonLower = std::max(commonLower, lower);
+                commonUpper = std::min(commonUpper, upper);
+            }
+        }
+
+        if (hasCommonLimits && commonLower <= commonUpper)
+        {
+            m_minExposureMs = commonLower;
+            m_maxExposureMs = commonUpper;
         }
     }
 

@@ -472,10 +472,9 @@ namespace scopeone::core::internal
                     {
                         return false;
                     }
-                    if (owner.m_cameras.contains(cameraId))
-                    {
-                        owner.m_cameras[cameraId]->exposureMs = exposureMs;
-                    }
+                    double actualExposureMs = exposureMs;
+                    readExposureFor(cameraId, actualExposureMs);
+                    owner.m_cameras[cameraId]->exposureMs = actualExposureMs;
                     return true;
                 }))
                 {
@@ -1126,8 +1125,14 @@ namespace scopeone::core::internal
             req.insert(agent::kMessageTypeField, agent::kCommandSetExposure);
             req.insert(QStringLiteral("value"), exposureMs);
             QJsonObject resp;
-            return owner.sendControlCommand(cameraId, req, &resp, 1200)
-                && resp.value(QStringLiteral("ok")).toBool(false);
+            if (!owner.sendControlCommand(cameraId, req, &resp, 1200)
+                || !resp.value(QStringLiteral("ok")).toBool(false))
+            {
+                return false;
+            }
+            const double actualExposureMs = resp.value(QStringLiteral("exposureMs")).toDouble(exposureMs);
+            owner.m_cameras[cameraId]->exposureMs = actualExposureMs;
+            return true;
         }
 
         QStringList listPropertiesFor(const QString& cameraId) override
@@ -2085,7 +2090,7 @@ namespace scopeone::core::internal
             << "--shm" << slot->shmKey;
         if (exposureMs > 0.0)
         {
-            args << "--exposure" << QString::number(exposureMs, 'f', 6);
+            args << "--exposure" << QString::number(exposureMs, 'f', 4);
         }
         for (const QString& encodedProperty : preInitProperties)
         {
