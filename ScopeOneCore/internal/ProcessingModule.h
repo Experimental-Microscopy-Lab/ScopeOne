@@ -6,44 +6,45 @@
 
 #include "scopeone/ImageFrame.h"
 
-namespace scopeone::core::internal {
-
-using ImageFrame = scopeone::core::ImageFrame;
-
-struct ModuleInput
+namespace scopeone::core::internal
 {
-    ImageFrame frame;
-    int processingBitDepth{8};
-    ModuleInput() = default;
+    using ImageFrame = scopeone::core::ImageFrame;
 
-    explicit ModuleInput(const ImageFrame& f, int bitDepth = 8)
-        : frame(f)
-        , processingBitDepth(bitDepth) {}
-};
+    struct ModuleInput
+    {
+        ImageFrame frame;
+        int processingBitDepth{8};
+        ModuleInput() = default;
 
-struct ModuleOutput
-{
-    ImageFrame frame;
-    QString error;
+        explicit ModuleInput(const ImageFrame& f, int bitDepth = 8)
+            : frame(f)
+              , processingBitDepth(bitDepth)
+        {
+        }
+    };
 
-    bool hasError() const { return !error.isEmpty(); }
-    bool isValid() const { return frame.isValid() && !hasError(); }
-};
+    struct ModuleOutput
+    {
+        ImageFrame frame;
+        QString error;
 
-class ProcessingModule : public QObject
-{
-    Q_OBJECT
+        bool hasError() const { return !error.isEmpty(); }
+        bool isValid() const { return frame.isValid() && !hasError(); }
+    };
 
-public:
-    explicit ProcessingModule(QObject* parent = nullptr);
-    virtual ~ProcessingModule() = default;
+    class ProcessingModule : public QObject
+    {
+        Q_OBJECT
 
-    virtual bool process(const ModuleInput& in, ModuleOutput& out) = 0;
+    public:
+        explicit ProcessingModule(QObject* parent = nullptr);
+        virtual ~ProcessingModule() = default;
 
-    virtual QString getModuleName() const = 0;
+        virtual bool process(const ModuleInput& in, ModuleOutput& out) = 0;
 
-    virtual QVariantMap getParameters() const = 0;
-    virtual void setParameters(const QVariantMap& params) = 0;
-};
+        virtual QString getModuleName() const = 0;
 
+        virtual QVariantMap getParameters() const = 0;
+        virtual void setParameters(const QVariantMap& params) = 0;
+    };
 }
