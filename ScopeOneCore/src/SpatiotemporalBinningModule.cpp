@@ -1,6 +1,8 @@
 #include "internal/SpatiotemporalBinningModule.h"
 #include "internal/FrameBufferUtils.h"
 
+#include <QMutexLocker>
+
 #include <algorithm>
 
 namespace scopeone::core::internal {
@@ -111,6 +113,11 @@ ImageFrame applySpatialBinning(const ImageFrame& frame,
     return makeFrameLike(frame, width, height, std::move(bytes));
 }
 
+QString frameHistoryKey(const ImageFrame& frame)
+{
+    return frame.cameraId.isEmpty() ? QStringLiteral("__default__") : frame.cameraId;
+}
+
 } // namespace
 
 SpatiotemporalBinningModule::SpatiotemporalBinningModule(QObject* parent)
@@ -133,19 +140,36 @@ bool SpatiotemporalBinningModule::process(const ModuleInput& in, ModuleOutput& o
             out.error = "Unsupported input frame";
             return false;
         }
-        if (!m_frameBuffer.empty() && !m_frameBuffer.front().isCompatibleWith(workingFrame)) {
-            m_frameBuffer.clear();
-        }
-        m_frameBuffer.push_back(workingFrame);
-        while (static_cast<int>(m_frameBuffer.size()) > m_temporalBin) {
-            m_frameBuffer.pop_front();
+        FrameBuffer frameBuffer;
+        int spatialBinX = 1;
+        int spatialBinY = 1;
+        int temporalBin = 1;
+        BinningMode spatialMode = BinningMode::Mean;
+        BinningMode temporalMode = BinningMode::Mean;
+        {
+            QMutexLocker locker(&m_mutex);
+            FrameBuffer& cameraBuffer = m_frameBuffers[frameHistoryKey(in.frame)];
+            if (!cameraBuffer.empty() && !cameraBuffer.front().isCompatibleWith(workingFrame)) {
+                cameraBuffer.clear();
+            }
+            cameraBuffer.push_back(workingFrame);
+            while (static_cast<int>(cameraBuffer.size()) > m_temporalBin) {
+                cameraBuffer.pop_front();
+            }
+
+            frameBuffer = cameraBuffer;
+            spatialBinX = m_spatialBinX;
+            spatialBinY = m_spatialBinY;
+            temporalBin = m_temporalBin;
+            spatialMode = m_spatialMode;
+            temporalMode = m_temporalMode;
         }
 
-        if (static_cast<int>(m_frameBuffer.size()) < m_temporalBin) {
+        if (static_cast<int>(frameBuffer.size()) < temporalBin) {
             out.frame = in.frame;
         } else {
-            const ImageFrame temporal = applyTemporalBinning(m_frameBuffer, m_temporalMode);
-            out.frame = applySpatialBinning(temporal, m_spatialBinX, m_spatialBinY, m_spatialMode);
+            const ImageFrame temporal = applyTemporalBinning(frameBuffer, temporalMode);
+            out.frame = applySpatialBinning(temporal, spatialBinX, spatialBinY, spatialMode);
         }
     } catch (const std::exception& e) {
         out.frame = in.frame;
@@ -168,6 +192,7 @@ QVariantMap SpatiotemporalBinningModule::getParameters() const
 
 void SpatiotemporalBinningModule::setParameters(const QVariantMap& params)
 {
+    QMutexLocker locker(&m_mutex);
     bool resetBuffer = false;
 
     if (params.contains("spatial_bin_x")) {
@@ -195,7 +220,7 @@ void SpatiotemporalBinningModule::setParameters(const QVariantMap& params)
     }
 
     if (resetBuffer) {
-        m_frameBuffer.clear();
+        m_frameBuffers.clear();
     }
 }
 

@@ -10,6 +10,30 @@ namespace scopeone::core::internal {
 
 namespace {
 
+struct FFTWorkspace
+{
+    cv::Mat mask;
+    cv::Size maskSize;
+    double maskMinFeatureSize{-1.0};
+    double maskMaxFeatureSize{-1.0};
+    FFTModule::FilterKind maskFilterKind{FFTModule::FilterKind::Smooth};
+
+    cv::Mat grayFloat;
+    cv::Mat padded;
+    cv::Mat complex;
+    cv::Mat planes[2];
+    cv::Mat filteredComplex;
+    cv::Mat filtered;
+    cv::Mat spectrumMagnitude;
+    cv::Mat shiftedSpectrum;
+};
+
+FFTWorkspace& workspace()
+{
+    thread_local FFTWorkspace state;
+    return state;
+}
+
 bool frameToGrayFloat(const ImageFrame& frame, cv::Mat& output)
 {
     if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16())) {
@@ -102,34 +126,32 @@ cv::Mat buildMask(const cv::Size& size,
     centered(cv::Rect(0, 0, cx, cy)).copyTo(mask(cv::Rect(size.width - cx, size.height - cy, cx, cy)));
     return mask;
 }
+
+const cv::Mat& maskForSize(FFTWorkspace& workspace,
+                           const cv::Size& size,
+                           double minFeatureSize,
+                           double maxFeatureSize,
+                           FFTModule::FilterKind filterKind)
+{
+    if (workspace.mask.empty()
+        || workspace.maskSize != size
+        || workspace.maskMinFeatureSize != minFeatureSize
+        || workspace.maskMaxFeatureSize != maxFeatureSize
+        || workspace.maskFilterKind != filterKind)
+    {
+        workspace.mask = buildMask(size, minFeatureSize, maxFeatureSize, filterKind);
+        workspace.maskSize = size;
+        workspace.maskMinFeatureSize = minFeatureSize;
+        workspace.maskMaxFeatureSize = maxFeatureSize;
+        workspace.maskFilterKind = filterKind;
+    }
+    return workspace.mask;
+}
 }
 
 FFTModule::FFTModule(QObject* parent)
     : ProcessingModule(parent)
 {
-}
-
-const cv::Mat& FFTModule::maskForSize(const cv::Size& size)
-{
-    if (m_mask.empty()
-        || m_maskSize != size
-        || m_maskMinFeatureSize != m_minFeatureSize
-        || m_maskMaxFeatureSize != m_maxFeatureSize
-        || m_maskFilterKind != m_filterKind)
-    {
-        m_mask = buildMask(size, m_minFeatureSize, m_maxFeatureSize, m_filterKind);
-        m_maskSize = size;
-        m_maskMinFeatureSize = m_minFeatureSize;
-        m_maskMaxFeatureSize = m_maxFeatureSize;
-        m_maskFilterKind = m_filterKind;
-    }
-    return m_mask;
-}
-
-void FFTModule::invalidateMask()
-{
-    m_mask.release();
-    m_maskSize = {};
 }
 
 bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
@@ -148,50 +170,59 @@ bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
             return false;
         }
 
-        if (!frameToGrayFloat(workingFrame, m_grayFloat)) {
+        FFTWorkspace& state = workspace();
+        if (!frameToGrayFloat(workingFrame, state.grayFloat)) {
             out.frame = in.frame;
             out.error = "Failed to convert frame to grayscale";
             return false;
         }
 
-        int optRows = cv::getOptimalDFTSize(m_grayFloat.rows);
-        int optCols = cv::getOptimalDFTSize(m_grayFloat.cols);
-        cv::copyMakeBorder(m_grayFloat,
-                           m_padded,
+        int optRows = cv::getOptimalDFTSize(state.grayFloat.rows);
+        int optCols = cv::getOptimalDFTSize(state.grayFloat.cols);
+        cv::copyMakeBorder(state.grayFloat,
+                           state.padded,
                            0,
-                           optRows - m_grayFloat.rows,
+                           optRows - state.grayFloat.rows,
                            0,
-                           optCols - m_grayFloat.cols,
+                           optCols - state.grayFloat.cols,
                            cv::BORDER_CONSTANT,
                            0);
 
-        cv::dft(m_padded, m_complex, cv::DFT_COMPLEX_OUTPUT);
-        cv::split(m_complex, m_planes);
+        cv::dft(state.padded, state.complex, cv::DFT_COMPLEX_OUTPUT);
+        cv::split(state.complex, state.planes);
 
         if (m_outputMode == OutputMode::Spectrum || m_outputMode == OutputMode::BandpassSpectrum) {
             if (m_outputMode == OutputMode::BandpassSpectrum) {
-                const cv::Mat& mask = maskForSize(m_padded.size());
-                cv::multiply(m_planes[0], mask, m_planes[0]);
-                cv::multiply(m_planes[1], mask, m_planes[1]);
+                const cv::Mat& mask = maskForSize(state,
+                                                  state.padded.size(),
+                                                  m_minFeatureSize,
+                                                  m_maxFeatureSize,
+                                                  m_filterKind);
+                cv::multiply(state.planes[0], mask, state.planes[0]);
+                cv::multiply(state.planes[1], mask, state.planes[1]);
             }
 
-            magnitudeSpectrum(m_planes, m_spectrumMagnitude, m_shiftedSpectrum);
-            cv::Mat spectrum = m_shiftedSpectrum;
-            if (spectrum.size() != m_grayFloat.size()) {
-                spectrum = cropCenter(spectrum, m_grayFloat.size());
+            magnitudeSpectrum(state.planes, state.spectrumMagnitude, state.shiftedSpectrum);
+            cv::Mat spectrum = state.shiftedSpectrum;
+            if (spectrum.size() != state.grayFloat.size()) {
+                spectrum = cropCenter(spectrum, state.grayFloat.size());
             }
             out.frame = matToOutputFrame(spectrum, workingFrame, in.frame.cameraId);
             return true;
         }
 
-        const cv::Mat& mask = maskForSize(m_padded.size());
-        cv::multiply(m_planes[0], mask, m_planes[0]);
-        cv::multiply(m_planes[1], mask, m_planes[1]);
+        const cv::Mat& mask = maskForSize(state,
+                                          state.padded.size(),
+                                          m_minFeatureSize,
+                                          m_maxFeatureSize,
+                                          m_filterKind);
+        cv::multiply(state.planes[0], mask, state.planes[0]);
+        cv::multiply(state.planes[1], mask, state.planes[1]);
 
-        cv::merge(m_planes, 2, m_filteredComplex);
-        cv::dft(m_filteredComplex, m_filtered, cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
+        cv::merge(state.planes, 2, state.filteredComplex);
+        cv::dft(state.filteredComplex, state.filtered, cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
 
-        const cv::Mat cropped = m_filtered(cv::Rect(0, 0, m_grayFloat.cols, m_grayFloat.rows));
+        const cv::Mat cropped = state.filtered(cv::Rect(0, 0, state.grayFloat.cols, state.grayFloat.rows));
         out.frame = matToOutputFrame(cropped, workingFrame, in.frame.cameraId);
 
     } catch (const std::exception& e) {
@@ -215,33 +246,19 @@ QVariantMap FFTModule::getParameters() const
 
 void FFTModule::setParameters(const QVariantMap& params)
 {
-    bool maskChanged = false;
     if (params.contains("min_feature_size")) {
-        const double oldValue = m_minFeatureSize;
         m_minFeatureSize = qMax(0.0, params.value("min_feature_size").toDouble());
-        if (m_minFeatureSize != oldValue) {
-            maskChanged = true;
-        }
     }
     if (params.contains("max_feature_size")) {
-        const double oldValue = m_maxFeatureSize;
         m_maxFeatureSize = qMax(0.0, params.value("max_feature_size").toDouble());
-        if (m_maxFeatureSize != oldValue) {
-            maskChanged = true;
-        }
     }
     if (m_minFeatureSize > m_maxFeatureSize) {
         std::swap(m_minFeatureSize, m_maxFeatureSize);
-        maskChanged = true;
     }
     if (params.contains("filter_kind")) {
         const int filterKind = params.value("filter_kind").toInt();
         if (filterKind == 0 || filterKind == 1) {
-            const auto newFilterKind = static_cast<FilterKind>(filterKind);
-            if (m_filterKind != newFilterKind) {
-                maskChanged = true;
-            }
-            m_filterKind = newFilterKind;
+            m_filterKind = static_cast<FilterKind>(filterKind);
         }
     }
     if (params.contains("output_mode")) {
@@ -249,9 +266,6 @@ void FFTModule::setParameters(const QVariantMap& params)
         if (outputMode >= 0 && outputMode <= 2) {
             m_outputMode = static_cast<OutputMode>(outputMode);
         }
-    }
-    if (maskChanged) {
-        invalidateMask();
     }
 }
 

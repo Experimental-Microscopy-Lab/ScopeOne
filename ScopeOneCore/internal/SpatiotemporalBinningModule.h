@@ -2,6 +2,9 @@
 
 #include "internal/ProcessingModule.h"
 
+#include <QHash>
+#include <QMutex>
+
 #include <deque>
 
 namespace scopeone::core::internal
@@ -29,11 +32,14 @@ namespace scopeone::core::internal
         void setParameters(const QVariantMap& params) override;
 
     private:
+        using FrameBuffer = std::deque<ImageFrame>;
+
         int m_spatialBinX{1};
         int m_spatialBinY{1};
         int m_temporalBin{1};
         BinningMode m_spatialMode{BinningMode::Mean};
         BinningMode m_temporalMode{BinningMode::Mean};
-        std::deque<ImageFrame> m_frameBuffer;
+        QHash<QString, FrameBuffer> m_frameBuffers;
+        QMutex m_mutex;
     };
 }

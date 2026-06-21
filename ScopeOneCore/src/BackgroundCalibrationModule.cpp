@@ -1,13 +1,23 @@
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/FrameBufferUtils.h"
+
+#include <QMutexLocker>
+
 #include <algorithm>
 
 namespace scopeone::core::internal
 {
+    namespace
+    {
+        QString frameHistoryKey(const ImageFrame& frame)
+        {
+            return frame.cameraId.isEmpty() ? QStringLiteral("__default__") : frame.cameraId;
+        }
+    }
+
     BackgroundCalibrationModule::BackgroundCalibrationModule(QObject* parent)
         : ProcessingModule(parent)
           , m_calibrationFrames(101)
-          , m_calibrated(false)
           , m_operation(BackgroundOperation::Subtract)
           , m_method(BackgroundMethod::Median)
     {
@@ -15,32 +25,36 @@ namespace scopeone::core::internal
 
     void BackgroundCalibrationModule::resetCalibration()
     {
-        m_buffer.clear();
-        m_background = ImageFrame{};
-        m_calibrated = false;
+        QMutexLocker locker(&m_mutex);
+        m_states.clear();
     }
 
-    void BackgroundCalibrationModule::computeBackground()
+    ImageFrame BackgroundCalibrationModule::computeBackground(const std::deque<ImageFrame>& buffer) const
     {
-        const int w = m_buffer.front().width;
-        const int h = m_buffer.front().height;
-        const int maxValue = m_buffer.front().maxValue();
-        QByteArray bgBytes = dispatchFrameType(m_buffer.front(), [&]<typename Pixel>()
+        if (buffer.empty())
+        {
+            return {};
+        }
+
+        const int w = buffer.front().width;
+        const int h = buffer.front().height;
+        const int maxValue = buffer.front().maxValue();
+        QByteArray bgBytes = dispatchFrameType(buffer.front(), [&]<typename Pixel>()
         {
             QByteArray outBytes = allocatePixelBytes<Pixel>(w, h);
             switch (m_method)
             {
             case BackgroundMethod::Median:
                 {
-                    std::vector<Pixel> vals(m_buffer.size());
+                    std::vector<Pixel> vals(buffer.size());
                     for (int y = 0; y < h; ++y)
                     {
                         Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
                         for (int x = 0; x < w; ++x)
                         {
-                            for (size_t k = 0; k < m_buffer.size(); ++k)
+                            for (size_t k = 0; k < buffer.size(); ++k)
                             {
-                                vals[k] = frameRowData<Pixel>(m_buffer[k], y)[x];
+                                vals[k] = frameRowData<Pixel>(buffer[k], y)[x];
                             }
                             std::nth_element(vals.begin(), vals.begin() + vals.size() / 2, vals.end());
                             dst[x] = vals[vals.size() / 2];
@@ -56,12 +70,12 @@ namespace scopeone::core::internal
                         for (int x = 0; x < w; ++x)
                         {
                             qint64 sum = 0;
-                            for (size_t k = 0; k < m_buffer.size(); ++k)
+                            for (size_t k = 0; k < buffer.size(); ++k)
                             {
-                                sum += static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]);
+                                sum += static_cast<int>(frameRowData<Pixel>(buffer[k], y)[x]);
                             }
                             dst[x] = clampPixelValue<Pixel>(
-                                static_cast<int>(sum / static_cast<qint64>(m_buffer.size())),
+                                static_cast<int>(sum / static_cast<qint64>(buffer.size())),
                                 maxValue);
                         }
                     }
@@ -75,9 +89,9 @@ namespace scopeone::core::internal
                         for (int x = 0; x < w; ++x)
                         {
                             int best = 0;
-                            for (size_t k = 0; k < m_buffer.size(); ++k)
+                            for (size_t k = 0; k < buffer.size(); ++k)
                             {
-                                best = qMax(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
+                                best = qMax(best, static_cast<int>(frameRowData<Pixel>(buffer[k], y)[x]));
                             }
                             dst[x] = clampPixelValue<Pixel>(best, maxValue);
                         }
@@ -92,9 +106,9 @@ namespace scopeone::core::internal
                         for (int x = 0; x < w; ++x)
                         {
                             int best = maxValue;
-                            for (size_t k = 0; k < m_buffer.size(); ++k)
+                            for (size_t k = 0; k < buffer.size(); ++k)
                             {
-                                best = qMin(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
+                                best = qMin(best, static_cast<int>(frameRowData<Pixel>(buffer[k], y)[x]));
                             }
                             dst[x] = clampPixelValue<Pixel>(best, maxValue);
                         }
@@ -105,7 +119,7 @@ namespace scopeone::core::internal
             return outBytes;
         });
 
-        m_background = makeFrameLike(m_buffer.front(), w, h, std::move(bgBytes));
+        return makeFrameLike(buffer.front(), w, h, std::move(bgBytes));
     }
 
     bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& out)
@@ -127,48 +141,57 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            if ((!m_buffer.empty() && !m_buffer.front().isCompatibleWith(workingFrame))
-                || (m_background.isValid() && !m_background.isCompatibleWith(workingFrame)))
+            ImageFrame background;
+            BackgroundOperation operation = BackgroundOperation::Subtract;
             {
-                resetCalibration();
-            }
-
-            if (m_mode == BackgroundMode::Running)
-            {
-                if ((int)m_buffer.size() == m_calibrationFrames)
+                QMutexLocker locker(&m_mutex);
+                CameraState& state = m_states[frameHistoryKey(in.frame)];
+                if ((!state.buffer.empty() && !state.buffer.front().isCompatibleWith(workingFrame))
+                    || (state.background.isValid() && !state.background.isCompatibleWith(workingFrame)))
                 {
-                    computeBackground();
-                }
-                m_buffer.push_back(workingFrame);
-                if ((int)m_buffer.size() > m_calibrationFrames)
-                {
-                    m_buffer.pop_front();
-                }
-                if (!m_background.isValid())
-                {
-                    out.frame = in.frame;
-                    return true;
-                }
-            }
-            else if (!m_calibrated)
-            {
-                m_buffer.push_back(workingFrame);
-                if ((int)m_buffer.size() > m_calibrationFrames)
-                {
-                    m_buffer.pop_front();
-                }
-                if ((int)m_buffer.size() < m_calibrationFrames)
-                {
-                    out.frame = in.frame;
-                    return true;
+                    state = CameraState{};
                 }
 
-                computeBackground();
-                m_buffer.clear();
-                m_calibrated = true;
+                if (m_mode == BackgroundMode::Running)
+                {
+                    if ((int)state.buffer.size() == m_calibrationFrames)
+                    {
+                        state.background = computeBackground(state.buffer);
+                    }
+                    state.buffer.push_back(workingFrame);
+                    if ((int)state.buffer.size() > m_calibrationFrames)
+                    {
+                        state.buffer.pop_front();
+                    }
+                    if (!state.background.isValid())
+                    {
+                        out.frame = in.frame;
+                        return true;
+                    }
+                }
+                else if (!state.calibrated)
+                {
+                    state.buffer.push_back(workingFrame);
+                    if ((int)state.buffer.size() > m_calibrationFrames)
+                    {
+                        state.buffer.pop_front();
+                    }
+                    if ((int)state.buffer.size() < m_calibrationFrames)
+                    {
+                        out.frame = in.frame;
+                        return true;
+                    }
+
+                    state.background = computeBackground(state.buffer);
+                    state.buffer.clear();
+                    state.calibrated = true;
+                }
+
+                background = state.background;
+                operation = m_operation;
             }
 
-            if (m_background.isValid() && m_background.isCompatibleWith(workingFrame))
+            if (background.isValid() && background.isCompatibleWith(workingFrame))
             {
                 const int maxValue = workingFrame.maxValue();
                 QByteArray outBytes = dispatchFrameType(workingFrame, [&]<typename Pixel>()
@@ -177,12 +200,12 @@ namespace scopeone::core::internal
                     for (int y = 0; y < workingFrame.height; ++y)
                     {
                         const Pixel* s = frameRowData<Pixel>(workingFrame, y);
-                        const Pixel* b = frameRowData<Pixel>(m_background, y);
+                        const Pixel* b = frameRowData<Pixel>(background, y);
                         Pixel* d = mutableRowData<Pixel>(bytes, workingFrame.width, y);
                         for (int x = 0; x < workingFrame.width; ++x)
                         {
                             int result = 0;
-                            switch (m_operation)
+                            switch (operation)
                             {
                             case BackgroundOperation::Subtract:
                                 result = int(s[x]) - int(b[x]);
@@ -237,6 +260,7 @@ namespace scopeone::core::internal
 
     void BackgroundCalibrationModule::setParameters(const QVariantMap& params)
     {
+        QMutexLocker locker(&m_mutex);
         bool needsReset = false;
 
         if (params.contains("calibration_frames"))
@@ -294,7 +318,7 @@ namespace scopeone::core::internal
 
         if (needsReset)
         {
-            resetCalibration();
+            m_states.clear();
         }
     }
 } // namespace scopeone::core::internal

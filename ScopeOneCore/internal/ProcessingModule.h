@@ -40,6 +40,8 @@ namespace scopeone::core::internal
         explicit ProcessingModule(QObject* parent = nullptr);
         virtual ~ProcessingModule() = default;
 
+        // Shared pipeline modules may process different cameras concurrently.
+        // Keep scratch buffers local/thread-local and key temporal state by cameraId.
         virtual bool process(const ModuleInput& in, ModuleOutput& out) = 0;
 
         virtual QString getModuleName() const = 0;
