@@ -501,12 +501,14 @@ namespace scopeone::core::internal
     {
     }
 
+    // Stops recording and writer threads during teardown
     RecordingManager::~RecordingManager()
     {
         stop();
         stopStreamingOutputs();
     }
 
+    // Sets the maximum queued write buffer size
     void RecordingManager::setRecordedMaxBytes(qint64 bytes)
     {
         if (bytes <= 0)
@@ -518,17 +520,20 @@ namespace scopeone::core::internal
         m_writerState.status.setMaxPendingWriteBytes(bytes);
     }
 
+    // Returns the maximum queued write buffer size
     qint64 RecordingManager::recordedMaxBytes() const
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
         return static_cast<qint64>(m_writerState.recordedMaxBytes);
     }
 
+    // Emits the current write buffer usage
     void RecordingManager::emitBufferUsageChanged(qint64 pendingWriteBytes)
     {
         emit bufferUsageChanged(pendingWriteBytes);
     }
 
+    // Emits a snapshot of writer status
     void RecordingManager::emitWriterStatus()
     {
         RecordingWriterStatus status;
@@ -545,6 +550,7 @@ namespace scopeone::core::internal
         emit writerStatusChanged(status);
     }
 
+    // Updates writer phase and optional error state
     void RecordingManager::setWriterStatus(RecordingWriterPhase phase, const QString& errorMessage)
     {
         {
@@ -556,18 +562,19 @@ namespace scopeone::core::internal
         emitWriterStatus();
     }
 
+    // Returns the total frame count written by all writer threads
     qint64 RecordingManager::totalFramesWritten() const
     {
         std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
         return m_writerState.status.framesWritten();
     }
 
+    // Builds the capture plan before recording starts
     bool RecordingManager::buildCapturePlan(const Settings& settings,
                                             const QStringList& activeCameraIds,
                                             CapturePlan& plan,
                                             QString& errorMessage) const
     {
-        // Pick the capture path before recording starts
         plan = CapturePlan{};
         plan.activeCameraIds = activeCameraIds;
         if (plan.activeCameraIds.isEmpty() && m_mmcore)
@@ -619,6 +626,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Resets counters and MDA state for a new capture plan
     void RecordingManager::resetCaptureState(const CapturePlan& plan)
     {
         m_captureState.activeCameraIds = plan.activeCameraIds;
@@ -651,9 +659,9 @@ namespace scopeone::core::internal
         m_mdaState.hasLastEvent = false;
     }
 
+    // Prepares a fresh session object for the next recording
     void RecordingManager::resetSessionState(const CapturePlan& plan)
     {
-        // Prepare a fresh session for this run
         m_sessionState.activeSession = std::make_shared<RecordingSessionData>();
         scopeone::core::ScopeOneCore::RecordingCapturePlanData manifestPlan;
         manifestPlan.cameraIds = plan.activeCameraIds;
@@ -679,6 +687,7 @@ namespace scopeone::core::internal
         m_sessionState.activeSession->clearFrames();
     }
 
+    // Writes final save result information into the active session
     void RecordingManager::finalizeActiveSession()
     {
         if (!m_sessionState.activeSession)
@@ -696,6 +705,7 @@ namespace scopeone::core::internal
         updateSessionResult(m_sessionState.activeSession, result, m_writerState.writerError.isEmpty());
     }
 
+    // Starts one writer thread per active camera output
     bool RecordingManager::startStreamingOutputs(const CapturePlan& plan)
     {
         stopStreamingOutputs();
@@ -787,6 +797,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Requests all writer threads to stop after queued work
     void RecordingManager::requestWriterStop()
     {
         QList<std::shared_ptr<CameraOutput>> outputs;
@@ -808,6 +819,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Stops writer threads and closes all output files
     void RecordingManager::stopStreamingOutputs()
     {
         QList<std::shared_ptr<CameraOutput>> outputs;
@@ -853,9 +865,9 @@ namespace scopeone::core::internal
         emitWriterStatus();
     }
 
+    // Drains queued frames for one camera writer thread
     void RecordingManager::writerLoop(const std::shared_ptr<CameraOutput>& output)
     {
-        // Drain queued frames for one camera on its dedicated writer thread
         const QString cameraId = output ? output->cameraId : QString{};
         while (true)
         {
@@ -921,6 +933,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Writes one queued frame to its camera output
     bool RecordingManager::writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage)
     {
         auto* backend = reinterpret_cast<SaveBackend*>(output.backend);
@@ -979,11 +992,13 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Converts a recording format enum into its display name
     QString RecordingManager::formatName(RecordingFormat format) const
     {
         return recordingFormatName(format);
     }
 
+    // Starts a recording session using the requested settings
     bool RecordingManager::start(const Settings& settings, const QStringList& activeCameraIds)
     {
         if (m_captureState.isRecording)
@@ -1046,6 +1061,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Stops the active recording session and emits the finished session
     void RecordingManager::stop()
     {
         if (!m_captureState.isRecording) return;
@@ -1100,6 +1116,7 @@ namespace scopeone::core::internal
         emit recordingStopped(session);
     }
 
+    // Receives one raw preview frame for recording ingestion
     void RecordingManager::onNewRawFrameReady(const QString& cameraId,
                                               const SharedFrameHeader& header,
                                               const QByteArray& rawData)
@@ -1107,6 +1124,7 @@ namespace scopeone::core::internal
         ingestFrame(FramePacket{cameraId, header, rawData, FramePacket::Source::PreviewStream});
     }
 
+    // Seeds last frame indices to skip stale preview frames
     void RecordingManager::primeLastFrameIndices()
     {
         m_captureState.lastFrameIndex.clear();
@@ -1126,6 +1144,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Emits recording progress for UI and API listeners
     void RecordingManager::emitProgress()
     {
         qint64 frameCurrent = 0;
@@ -1197,9 +1216,9 @@ namespace scopeone::core::internal
                              z);
     }
 
+    // Adds one captured frame to the asynchronous writer queue
     bool RecordingManager::enqueueFrame(const RecordingFrame& frame, const QString& cameraId)
     {
-        // Stop capture if the writer queue grows too large
         const size_t frameBytes = static_cast<size_t>(frame.rawData.size());
         qint64 pendingWriteBytes = 0;
         std::shared_ptr<CameraOutput> output;
@@ -1263,6 +1282,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Decides whether a frame belongs to the active recording window
     bool RecordingManager::shouldAcceptFrame(const FramePacket& packet) const
     {
         if (!m_captureState.isRecording) return false;
@@ -1272,9 +1292,9 @@ namespace scopeone::core::internal
         return packet.header.frameIndex > m_captureState.lastFrameIndex.value(packet.cameraId, 0);
     }
 
+    // Applies burst timing and records one accepted frame
     void RecordingManager::ingestFrame(const FramePacket& packet)
     {
-        // Drop duplicates and enforce burst timing
         if (!shouldAcceptFrame(packet)) return;
 
         if (m_captureState.waitingBetweenBursts)
@@ -1353,6 +1373,7 @@ namespace scopeone::core::internal
         (void)advanceBurstStateIfNeeded();
     }
 
+    // Converts MDA output frames into recording frame packets
     void RecordingManager::handleMdaFrame(const MDAOutput& frame)
     {
         if (!m_captureState.isRecording || !m_mdaState.usingMda) return;
@@ -1405,6 +1426,7 @@ namespace scopeone::core::internal
         dispatchMdaFrame(m_mdaState.cameraId, header, frame.raw);
     }
 
+    // Starts MDA driven recording capture
     bool RecordingManager::startMdaCapture()
     {
         if (!m_mmcore)
@@ -1499,6 +1521,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Starts the next MDA burst run
     void RecordingManager::startMdaRun()
     {
         if (!m_captureState.isRecording || !m_mdaState.usingMda)
@@ -1525,11 +1548,13 @@ namespace scopeone::core::internal
                                   m_mdaState.zPositions, m_mdaState.order, false);
     }
 
+    // Checks whether one camera still needs frames in the current burst
     bool RecordingManager::shouldCaptureCamera(const QString& cameraId) const
     {
         return m_captureState.framesCapturedThisBurst.value(cameraId, 0) < m_captureState.framesPerBurst;
     }
 
+    // Checks whether all cameras reached the current frame target
     bool RecordingManager::allCamerasReachedTarget() const
     {
         if (m_captureState.activeCameraIds.isEmpty()) return true;
@@ -1543,6 +1568,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Advances burst state after an accepted frame
     bool RecordingManager::advanceBurstStateIfNeeded()
     {
         if (m_mdaState.usingMda)
@@ -1584,9 +1610,9 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Saves a buffered session that was not streamed live
     QString RecordingManager::saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session)
     {
-        // Save buffered sessions that were not streamed live
         if (!session)
         {
             return QStringLiteral("Error: Missing recording session");

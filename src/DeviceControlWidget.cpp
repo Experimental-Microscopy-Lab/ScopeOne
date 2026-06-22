@@ -29,11 +29,13 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Converts a preview layout mode to combo index
         int streamLayoutComboIndex(PreviewWidget::StreamLayoutMode mode)
         {
             return mode == PreviewWidget::StreamLayoutMode::Overlay ? 1 : 0;
         }
 
+        // Converts a combo index to preview layout mode
         PreviewWidget::StreamLayoutMode streamLayoutModeFromComboIndex(int index)
         {
             return index == 1
@@ -41,6 +43,7 @@ namespace scopeone::ui
                        : PreviewWidget::StreamLayoutMode::SideBySide;
         }
 
+        // Formats exposure with compact decimal precision
         QString formatExposureMs(double exposureMs)
         {
             QString text = QString::number(exposureMs, 'f', 4);
@@ -56,6 +59,7 @@ namespace scopeone::ui
         }
     } // namespace
 
+    // Creates the device control widget and initializes controls
     DeviceControlWidget::DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QWidget(parent)
           , m_scopeonecore(core)
@@ -79,6 +83,7 @@ namespace scopeone::ui
         }
     }
 
+    // Builds the device control layout
     void DeviceControlWidget::setupUI()
     {
         QVBoxLayout* mainLayout = new QVBoxLayout(this);
@@ -107,6 +112,7 @@ namespace scopeone::ui
         mainLayout->addWidget(scrollArea);
     }
 
+    // Connects the preview widget to control panel state
     void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
     {
         if (m_previewWidget == preview)
@@ -180,6 +186,7 @@ namespace scopeone::ui
         updatePreviewZoomControls();
     }
 
+    // Builds preview zoom stream and alignment controls
     QWidget* DeviceControlWidget::createPreviewControlsGroup()
     {
         m_previewControlsGroup = new QGroupBox("Preview Controls", this);
@@ -389,6 +396,7 @@ namespace scopeone::ui
         return m_previewControlsGroup;
     }
 
+    // Updates zoom controls from fit to window state
     void DeviceControlWidget::updatePreviewZoomControls()
     {
         if (!m_zoomSpinBox || !m_fitToWindowCheckBox)
@@ -398,6 +406,7 @@ namespace scopeone::ui
         m_zoomSpinBox->setEnabled(!m_fitToWindowCheckBox->isChecked());
     }
 
+    // Rebuilds the preview stream selection menu
     void DeviceControlWidget::rebuildPreviewStreamMenu(const QStringList& cameraIds)
     {
         if (!m_streamMenu)
@@ -429,6 +438,7 @@ namespace scopeone::ui
         }
     }
 
+    // Applies menu checked states to preview selection
     void DeviceControlWidget::updatePreviewSelectionFromActions()
     {
         QStringList selectedStreamKeys;
@@ -446,6 +456,7 @@ namespace scopeone::ui
         }
     }
 
+    // Adds bulk selection actions to the stream menu
     void DeviceControlWidget::populatePreviewStreamMenuHeader()
     {
         if (!m_streamMenu)
@@ -476,6 +487,7 @@ namespace scopeone::ui
         m_streamMenu->addSeparator();
     }
 
+    // Applies a stream selection to menu actions and preview
     void DeviceControlWidget::applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview)
     {
         const QSet<QString> selectedStreamKeys(streamKeys.begin(), streamKeys.end());
@@ -491,6 +503,7 @@ namespace scopeone::ui
         }
     }
 
+    // Sets checked states for stream menu actions
     void DeviceControlWidget::setPreviewStreamActionStates(const QString& selectedPrefix,
                                                            bool checkedWhenPrefixEmpty)
     {
@@ -505,6 +518,7 @@ namespace scopeone::ui
         updatePreviewSelectionFromActions();
     }
 
+    // Syncs preview camera choices when available cameras change
     void DeviceControlWidget::onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds)
     {
         rebuildPreviewStreamMenu(cameraIds);
@@ -895,6 +909,7 @@ namespace scopeone::ui
         return group;
     }
 
+    // Refreshes available XY and Z stage devices
     void DeviceControlWidget::refreshStageDevices()
     {
         if (!m_xyStageCombo || !m_zStageCombo)
@@ -958,6 +973,7 @@ namespace scopeone::ui
         updateStagePositions();
     }
 
+    // Updates enabled state for stage controls
     void DeviceControlWidget::updateStageControlsEnabled()
     {
         const bool hasCore = m_scopeonecore->hasCore();
@@ -984,6 +1000,7 @@ namespace scopeone::ui
         if (m_zBigDownButton) m_zBigDownButton->setEnabled(hasZ);
     }
 
+    // Reads current stage positions into labels
     void DeviceControlWidget::updateStagePositions()
     {
         if (!m_xPosLabel || !m_yPosLabel || !m_zPosLabel)
@@ -1058,6 +1075,7 @@ namespace scopeone::ui
         return m_zStageCombo->currentText().trimmed();
     }
 
+    // Moves the selected XY stage by a relative offset
     void DeviceControlWidget::moveXYStage(double dx, double dy)
     {
         if (!m_scopeonecore->hasCore())
@@ -1079,6 +1097,7 @@ namespace scopeone::ui
         }
     }
 
+    // Moves the selected Z stage by a relative offset
     void DeviceControlWidget::moveZStage(double dz)
     {
         if (!m_scopeonecore->hasCore())
@@ -1100,6 +1119,7 @@ namespace scopeone::ui
         }
     }
 
+    // Updates control state when cameras initialize
     void DeviceControlWidget::onCameraInitialized(bool initialized)
     {
         m_cameraInitialized = initialized;
@@ -1111,14 +1131,15 @@ namespace scopeone::ui
         }
     }
 
+    // Refreshes camera parameters from hardware
     void DeviceControlWidget::refreshCameraParameters()
     {
         updateCameraParametersFromHardware();
     }
 
+    // Applies exposure from the editor
     void DeviceControlWidget::onExposureChanged()
     {
-        // Apply exposure on Enter
         updateExposureLimits();
 
         bool ok = false;
@@ -1134,9 +1155,9 @@ namespace scopeone::ui
         emit exposureValueChanged(exposureMs);
     }
 
+    // Keeps device control buttons in sync
     void DeviceControlWidget::updateControlsState()
     {
-        // Keep button state in sync
         if (m_exposureLineEdit)
         {
             m_exposureLineEdit->setEnabled(m_cameraInitialized);
@@ -1161,6 +1182,7 @@ namespace scopeone::ui
         updateStageControlsEnabled();
     }
 
+    // Reads camera parameters back from hardware
     void DeviceControlWidget::updateCameraParametersFromHardware()
     {
         if (!m_scopeonecore->hasCore() || !m_cameraInitialized)
@@ -1179,6 +1201,7 @@ namespace scopeone::ui
         }
     }
 
+    // Updates exposure limits for the selected target
     void DeviceControlWidget::updateExposureLimits()
     {
         m_minExposureMs = 0.1;
@@ -1231,6 +1254,7 @@ namespace scopeone::ui
         }
     }
 
+    // Updates preview running state for the control button
     void DeviceControlWidget::setPreviewRunning(bool running)
     {
         m_previewRunning = running;
@@ -1242,6 +1266,7 @@ namespace scopeone::ui
         return target.compare("All", Qt::CaseInsensitive) == 0;
     }
 
+    // Rebuilds available camera control targets
     void DeviceControlWidget::setControlTargets(const QStringList& cameraIds)
     {
         QString current = m_cameraSelectCombo->currentText();
@@ -1281,6 +1306,7 @@ namespace scopeone::ui
         onControlTargetSelectionChanged(m_cameraSelectCombo->currentText());
     }
 
+    // Checks whether a camera stream matches the selected target
     bool DeviceControlWidget::acceptsCameraStream(const QString& cameraId) const
     {
         if (cameraId.isEmpty())
@@ -1295,9 +1321,9 @@ namespace scopeone::ui
         return m_currentTarget == cameraId;
     }
 
+    // Emits start or stop preview request from the toggle button
     void DeviceControlWidget::onPreviewToggleClicked()
     {
-        // Use one button for preview
         if (m_previewRunning)
         {
             emit stopPreviewRequested();
@@ -1308,6 +1334,7 @@ namespace scopeone::ui
         }
     }
 
+    // Enables or disables the camera target selector
     void DeviceControlWidget::setControlTargetEnabled(bool enabled)
     {
         if (m_cameraSelectCombo)
@@ -1316,6 +1343,7 @@ namespace scopeone::ui
         }
     }
 
+    // Applies a new camera control target
     void DeviceControlWidget::onControlTargetSelectionChanged(const QString& target)
     {
         const QString normalizedTarget = target.trimmed();
@@ -1329,6 +1357,7 @@ namespace scopeone::ui
         emit controlTargetChanged(normalizedTarget);
     }
 
+    // Starts ROI drawing for the selected camera
     void DeviceControlWidget::onDrawROIClicked()
     {
         if (isAllTarget(m_currentTarget))
@@ -1339,6 +1368,7 @@ namespace scopeone::ui
         emit requestDrawROI(m_currentTarget);
     }
 
+    // Requests ROI clearing for the selected target
     void DeviceControlWidget::onClearROIClicked()
     {
         emit requestClearROI(m_currentTarget);

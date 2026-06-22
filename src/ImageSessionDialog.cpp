@@ -16,6 +16,7 @@
 
 namespace
 {
+    // Build the frame status text for the session viewer
     QString formatFrameInfoText(const QString& cameraId, int frameIndex, int frameCount)
     {
         if (cameraId.isEmpty())
@@ -32,6 +33,7 @@ namespace
                .arg(frameCount);
     }
 
+    // Build the zoom label text for the session viewer
     QString formatZoomText(int zoomPercent)
     {
         return QStringLiteral("Zoom: %1%").arg(zoomPercent);
@@ -44,6 +46,7 @@ namespace scopeone::ui
     using scopeone::core::ImageFrame;
     using scopeone::core::ImagePixelFormat;
 
+    // Create an empty image session viewer
     ImageSessionDialog::ImageSessionDialog(QWidget* parent)
         : QDialog(parent)
     {
@@ -51,6 +54,7 @@ namespace scopeone::ui
         rebuildCameraList();
     }
 
+    // Create an image session viewer for recorded data
     ImageSessionDialog::ImageSessionDialog(
         std::shared_ptr<const ScopeOneCore::RecordingSessionData> session,
         QWidget* parent)
@@ -60,6 +64,7 @@ namespace scopeone::ui
         setRecordingSession(std::move(session));
     }
 
+    // Replace the recorded session shown by the viewer
     void ImageSessionDialog::setRecordingSession(
         std::shared_ptr<const ScopeOneCore::RecordingSessionData> session)
     {
@@ -67,6 +72,7 @@ namespace scopeone::ui
         rebuildCameraList();
     }
 
+    // Add or replace a live frame for still preview
     void ImageSessionDialog::setLiveFrame(const ImageFrame& frame)
     {
         if (!frame.isValid() || frame.cameraId.trimmed().isEmpty())
@@ -95,12 +101,14 @@ namespace scopeone::ui
         }
     }
 
+    // Remove all live frames from the viewer
     void ImageSessionDialog::clearLiveFrames()
     {
         m_liveFrames.clear();
         rebuildCameraList();
     }
 
+    // Allow the owner to enable session saving
     void ImageSessionDialog::setSaveEnabled(bool enabled)
     {
         m_saveEnabledByOwner = enabled;
@@ -110,6 +118,7 @@ namespace scopeone::ui
         }
     }
 
+    // Let the owner customize the save button label
     void ImageSessionDialog::setSaveButtonText(const QString& text)
     {
         if (m_saveButton)
@@ -118,6 +127,7 @@ namespace scopeone::ui
         }
     }
 
+    // Build the session preview and inspection layout
     void ImageSessionDialog::setupUI()
     {
         setWindowTitle(QStringLiteral("Image Session"));
@@ -276,9 +286,9 @@ namespace scopeone::ui
         }
     }
 
+    // Merge recorded and live cameras into one selector
     void ImageSessionDialog::rebuildCameraList()
     {
-        // Merge recorded and live cameras into one selector
         QStringList cameraIds;
         if (m_session)
         {
@@ -322,9 +332,9 @@ namespace scopeone::ui
         updateDisplayedFrame();
     }
 
+    // Keep frame controls aligned with the current camera
     void ImageSessionDialog::updateFrameControls()
     {
-        // Keep frame controls aligned with the current camera
         const int count = currentFrameCount();
         const int maxIndex = (count > 0) ? count - 1 : 0;
 
@@ -347,9 +357,9 @@ namespace scopeone::ui
         m_saveButton->setEnabled(m_saveEnabledByOwner && m_session && count > 0);
     }
 
+    // Prefer recorded frames and fall back to live frames
     void ImageSessionDialog::updateDisplayedFrame()
     {
-        // Prefer recorded frames and fall back to live frames
         if (!m_previewWidget)
         {
             return;
@@ -405,6 +415,7 @@ namespace scopeone::ui
         }
     }
 
+    // Count frames available for the selected camera
     int ImageSessionDialog::currentFrameCount() const
     {
         const QString cameraId = currentCameraId();
@@ -425,15 +436,16 @@ namespace scopeone::ui
         return m_liveFrames.contains(cameraId) ? 1 : 0;
     }
 
+    // Return the selected camera id from the viewer
     QString ImageSessionDialog::currentCameraId() const
     {
         return m_cameraCombo ? m_cameraCombo->currentText().trimmed() : QString();
     }
 
+    // Convert stored recording data into a preview frame
     ImageFrame ImageSessionDialog::normalizedFrame(const ScopeOneCore::RecordingFrame& frame,
                                                    const QString& cameraId) const
     {
-        // Convert stored recording data into a preview frame
         ImageFrame normalized;
         normalized.cameraId = cameraId;
         normalized.width = (frame.width > 0) ? frame.width : static_cast<int>(frame.header.width);
@@ -465,9 +477,9 @@ namespace scopeone::ui
         return normalized;
     }
 
+    // Show one frame and refresh its histogram view
     void ImageSessionDialog::showPreviewFrame(const ImageFrame& frame)
     {
-        // Show one frame and refresh its histogram view
         if (!frame.isValid() || frame.cameraId.isEmpty())
         {
             return;

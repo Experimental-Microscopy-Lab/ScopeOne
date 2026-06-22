@@ -4,6 +4,7 @@
 
 namespace scopeone::core::internal
 {
+    // Creates a background calibration module with median subtraction defaults
     BackgroundCalibrationModule::BackgroundCalibrationModule(QObject* parent)
         : ProcessingModule(parent)
           , m_calibrationFrames(101)
@@ -13,6 +14,7 @@ namespace scopeone::core::internal
     {
     }
 
+    // Clears the buffered frames and computed background
     void BackgroundCalibrationModule::resetCalibration()
     {
         m_buffer.clear();
@@ -20,6 +22,7 @@ namespace scopeone::core::internal
         m_calibrated = false;
     }
 
+    // Computes the background image from buffered calibration frames
     void BackgroundCalibrationModule::computeBackground()
     {
         const int w = m_buffer.front().width;
@@ -108,6 +111,7 @@ namespace scopeone::core::internal
         m_background = makeFrameLike(m_buffer.front(), w, h, std::move(bgBytes));
     }
 
+    // Applies background calibration to one mono frame
     bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& out)
     {
         if (!in.frame.isValid())
@@ -225,6 +229,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Returns the current background calibration parameters
     QVariantMap BackgroundCalibrationModule::getParameters() const
     {
         QVariantMap p;
@@ -235,6 +240,7 @@ namespace scopeone::core::internal
         return p;
     }
 
+    // Updates calibration parameters and resets state when needed
     void BackgroundCalibrationModule::setParameters(const QVariantMap& params)
     {
         bool needsReset = false;

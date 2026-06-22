@@ -9,6 +9,7 @@ namespace scopeone::core::internal
         constexpr double kNormalizedDisplayScale = 4096.0;
         constexpr double kNormalizationEpsilon = 1.0;
 
+        // Adds or removes one frame from a rolling pixel sum
         void accumulateFrameSum(const ImageFrame& frame, std::vector<int>& sum, int sign)
         {
             dispatchFrameType(frame, [&]<typename Pixel>()
@@ -25,16 +26,19 @@ namespace scopeone::core::internal
             });
         }
 
+        // Adds one frame to a rolling pixel sum
         void addFrameToSum(const ImageFrame& frame, std::vector<int>& sum)
         {
             accumulateFrameSum(frame, sum, 1);
         }
 
+        // Removes one frame from a rolling pixel sum
         void subtractFrameFromSum(const ImageFrame& frame, std::vector<int>& sum)
         {
             accumulateFrameSum(frame, sum, -1);
         }
 
+        // Resets rolling state for a new frame size
         void resetState(DifferentialRollingModule::CameraState& state, const ImageFrame& frame)
         {
             state = DifferentialRollingModule::CameraState{};
@@ -44,6 +48,7 @@ namespace scopeone::core::internal
             state.sumB.assign(static_cast<size_t>(frame.width * frame.height), 0);
         }
 
+        // Builds the differential rolling output frame
         ImageFrame makeDifferentialOutput(const QString& cameraId,
                                           int width,
                                           int height,
@@ -86,11 +91,13 @@ namespace scopeone::core::internal
         }
     } // namespace
 
+    // Creates a differential rolling processing module
     DifferentialRollingModule::DifferentialRollingModule(QObject* parent)
         : ProcessingModule(parent)
     {
     }
 
+    // Updates rolling batches and emits the current differential frame
     bool DifferentialRollingModule::process(const ModuleInput& in, ModuleOutput& out)
     {
         if (!in.frame.isValid())
@@ -182,6 +189,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Returns the current rolling differential parameters
     QVariantMap DifferentialRollingModule::getParameters() const
     {
         QVariantMap params;
@@ -190,6 +198,7 @@ namespace scopeone::core::internal
         return params;
     }
 
+    // Updates rolling differential parameters
     void DifferentialRollingModule::setParameters(const QVariantMap& params)
     {
         bool resetState = false;
@@ -214,6 +223,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Clears all accumulated rolling state
     void DifferentialRollingModule::resetBuffer()
     {
         m_state = CameraState{};

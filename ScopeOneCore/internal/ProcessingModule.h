@@ -40,7 +40,6 @@ namespace scopeone::core::internal
         explicit ProcessingModule(QObject* parent = nullptr);
         virtual ~ProcessingModule() = default;
 
-        // Runtime pipelines are per-camera, so module member state belongs to one camera stream.
         virtual bool process(const ModuleInput& in, ModuleOutput& out) = 0;
 
         virtual QString getModuleName() const = 0;

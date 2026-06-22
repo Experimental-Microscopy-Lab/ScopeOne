@@ -24,6 +24,7 @@ namespace scopeone::ui
             using QComboBox::QComboBox;
 
         protected:
+            // Ignore wheel edits inside preset combo boxes
             void wheelEvent(QWheelEvent* event) override
             {
                 event->ignore();
@@ -31,6 +32,7 @@ namespace scopeone::ui
         };
     }
 
+    // Create the preset browser around the shared core facade
     ConfigPresetWidget::ConfigPresetWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QWidget(parent)
           , m_scopeonecore(core)
@@ -47,6 +49,7 @@ namespace scopeone::ui
         connect(m_autoRefreshTimer, &QTimer::timeout, this, &ConfigPresetWidget::onAutoRefreshTimer);
     }
 
+    // Build the preset table and refresh controls
     void ConfigPresetWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -78,6 +81,7 @@ namespace scopeone::ui
         mainLayout->addWidget(m_configTree);
     }
 
+    // Rebuild the preset table while preserving scroll position
     void ConfigPresetWidget::refresh()
     {
         if (m_updating || !m_configTree)
@@ -115,6 +119,7 @@ namespace scopeone::ui
         m_updating = false;
     }
 
+    // Add every config group and editable preset selector
     void ConfigPresetWidget::populateConfigTree()
     {
         const QStringList groups = m_scopeonecore->availableConfigGroups();
@@ -161,11 +166,13 @@ namespace scopeone::ui
         }
     }
 
+    // Refresh config presets on demand
     void ConfigPresetWidget::onRefreshClicked()
     {
         refresh();
     }
 
+    // Toggle periodic config preset refresh
     void ConfigPresetWidget::onAutoRefreshToggled(bool enabled)
     {
         m_autoRefresh = enabled;
@@ -177,6 +184,7 @@ namespace scopeone::ui
         m_autoRefreshTimer->stop();
     }
 
+    // Refresh presets when the timer fires
     void ConfigPresetWidget::onAutoRefreshTimer()
     {
         if (!m_updating)

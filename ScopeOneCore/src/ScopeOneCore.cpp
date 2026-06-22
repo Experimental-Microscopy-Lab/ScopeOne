@@ -15,10 +15,14 @@
 
 namespace
 {
+    // Histogram bins are fixed to keep UI cost stable
     constexpr int kHistogramBinCount = 256;
+    // Auto stretch ignores a small tail on each side
     constexpr double kHistogramAutoStretchIgnoredQuantile = 0.001;
+    // Histogram refresh is throttled to keep preview responsive
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
 
+    // Map a sample value into the shared histogram bin space
     int histogramBinForValue(int value, int maxValue)
     {
         if (maxValue <= 0)
@@ -29,6 +33,7 @@ namespace
         return qBound(0, static_cast<int>(scaled / maxValue), kHistogramBinCount - 1);
     }
 
+    // Convert a histogram bin to its lower source value
     int histogramBinLowerValue(int binIndex, int maxValue)
     {
         if (maxValue <= 0 || binIndex <= 0)
@@ -39,6 +44,7 @@ namespace
         return qBound(0, static_cast<int>(numerator / kHistogramBinCount), maxValue);
     }
 
+    // Convert a histogram bin to its upper source value
     int histogramBinUpperValue(int binIndex, int maxValue)
     {
         if (maxValue <= 0)
@@ -49,6 +55,7 @@ namespace
         return qBound(0, static_cast<int>((numerator - 1) / kHistogramBinCount), maxValue);
     }
 
+    // Estimate display levels while ignoring small outlier tails
     void computeAutoLevels(scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
         stats.autoMinLevel = 0;
@@ -105,6 +112,7 @@ namespace
         }
     }
 
+    // Convert MMCore string vectors into Qt string lists
     QStringList toQStringList(const std::vector<std::string>& values)
     {
         QStringList out;
@@ -116,6 +124,7 @@ namespace
         return out;
     }
 
+    // Build the cache key for raw and processed histogram streams
     QString histogramStreamKey(const QString& cameraId, bool processed)
     {
         return QStringLiteral("%1:%2")
@@ -123,6 +132,7 @@ namespace
                  cameraId.trimmed());
     }
 
+    // Derive a stable metadata file name from the recording base name
     QString recordingMetadataFileName(const QString& baseName)
     {
         const QString trimmedBaseName = baseName.trimmed();
@@ -134,6 +144,7 @@ namespace
     }
 
     template <typename Operation>
+    // Run an MMCore operation only after validating the device label
     bool runWithTrimmedLabel(const std::shared_ptr<CMMCore>& handle, const QString& rawLabel, Operation&& operation)
     {
         const QString label = rawLabel.trimmed();
@@ -153,6 +164,7 @@ namespace
     }
 
     template <typename Operation>
+    // Apply camera changes while preview streams are temporarily stopped
     bool withSuspendedPreviews(scopeone::core::ScopeOneCore* core, const QStringList& cameraIds, Operation&& operation)
     {
         for (const QString& cameraId : cameraIds)
@@ -167,6 +179,7 @@ namespace
         return ok;
     }
 
+    // Compute intensity statistics for mono preview frames
     bool computeHistogramStatsInternal(const scopeone::core::ImageFrame& frame,
                                        scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
@@ -259,6 +272,7 @@ namespace
         return true;
     }
 
+    // Read one mono sample from a frame at image coordinates
     bool sampleFrameValue(const scopeone::core::ImageFrame& frame,
                           const QPoint& point,
                           int& value)
@@ -287,6 +301,7 @@ namespace
     }
 
     template <typename Sampler>
+    // Sample a straight line through an image using the supplied sampler
     bool sampleLine(const QPoint& start, const QPoint& end, QVector<int>& values, Sampler&& sampler)
     {
         const int dx = end.x() - start.x();
@@ -307,6 +322,7 @@ namespace
         return !values.isEmpty();
     }
 
+    // Translate manager load results into the public facade result
     scopeone::core::ScopeOneCore::LoadConfigResult toFacadeLoadConfigResult(
         const scopeone::core::internal::MMCoreManager::LoadConfigResult& result)
     {
@@ -319,6 +335,7 @@ namespace
         return facade;
     }
 
+    // Translate public recording settings into manager settings
     scopeone::core::internal::RecordingManager::Settings toRecordingManagerSettings(
         const scopeone::core::ScopeOneCore::RecordingSettings& settings)
     {
@@ -368,6 +385,7 @@ namespace
         return managerSettings;
     }
 
+    // Identify the public module kind from a concrete module instance
     scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKind(
         const scopeone::core::internal::ProcessingModule* module)
     {
@@ -394,6 +412,7 @@ namespace
         return scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown;
     }
 
+    // Return the editable processing pipeline owned by the manager
     scopeone::core::internal::ProcessingPipeline* processingPipeline(
         scopeone::core::internal::ImageProcessingManager* manager)
     {
@@ -404,6 +423,7 @@ namespace
         return manager->pipeline();
     }
 
+    // Capture current device properties for recording metadata
     QByteArray buildDevicePropertyMetadataJson(const scopeone::core::ScopeOneCore& core)
     {
         QStringList deviceLabels = core.loadedDevices();
@@ -464,11 +484,13 @@ namespace scopeone::core
         ImageProcessingManager* imageProcessingManager{nullptr};
     };
 
+    // Return the compiled core version string
     QString ScopeOneCore::getVersion()
     {
         return QStringLiteral(SCOPEONE_CORE_VERSION_STRING);
     }
 
+    // Wire core managers and public signals into one facade object
     ScopeOneCore::ScopeOneCore(QObject* parent)
         : QObject(parent)
           , m_managers(std::make_unique<Managers>())
@@ -536,11 +558,13 @@ namespace scopeone::core
                 this, &ScopeOneCore::processingError);
     }
 
+    // Release loaded devices before the facade is destroyed
     ScopeOneCore::~ScopeOneCore()
     {
         unloadConfiguration();
     }
 
+    // Expose the native MMCore handle for low level callers
     std::shared_ptr<CMMCore> ScopeOneCore::core() const
     {
         if (!m_managers || !m_managers->mmcoreManager)
@@ -555,11 +579,13 @@ namespace scopeone::core
         return core() != nullptr;
     }
 
+    // Check whether a device is owned by the agent camera path
     bool ScopeOneCore::isAgentCamera(const QString& deviceLabel) const
     {
         return m_cameraIds.contains(deviceLabel);
     }
 
+    // Check whether a device is a native MMCore camera
     bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
     {
         const QString device = deviceLabel.trimmed();
@@ -583,6 +609,7 @@ namespace scopeone::core
         }
     }
 
+    // Collect camera ids that currently have active preview streams
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
         QStringList running;
@@ -601,6 +628,7 @@ namespace scopeone::core
         return running;
     }
 
+    // Load devices and agent cameras from a Micro Manager config
     bool ScopeOneCore::loadConfigurationInternal(const QString& configPath,
                                                  LoadConfigResult* result,
                                                  QString* errorMessage)
@@ -629,6 +657,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Replace the active configuration with a new device setup
     bool ScopeOneCore::loadConfiguration(const QString& configPath,
                                          LoadConfigResult* result,
                                          QString* errorMessage)
@@ -644,6 +673,7 @@ namespace scopeone::core
         return loadConfigurationInternal(configPath, result, errorMessage);
     }
 
+    // Stop cameras and clear all cached runtime state
     void ScopeOneCore::unloadConfiguration()
     {
         if (m_managers && m_managers->mpcm)
@@ -671,6 +701,7 @@ namespace scopeone::core
         clearLineProfile();
     }
 
+    // Start preview for one camera or the full camera set
     void ScopeOneCore::startPreview(const QString& cameraIdOrAll)
     {
         // Route preview to one camera or all cameras
@@ -693,6 +724,7 @@ namespace scopeone::core
         }
     }
 
+    // Stop preview for one camera or the full camera set
     void ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
     {
         if (!m_managers || !m_managers->mpcm)
@@ -714,6 +746,7 @@ namespace scopeone::core
         }
     }
 
+    // Submit exposure changes through the active camera manager
     bool ScopeOneCore::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
         if (!m_managers || !m_managers->mpcm)
@@ -728,6 +761,7 @@ namespace scopeone::core
         return m_managers->mpcm->setExposure(target, exposureMs);
     }
 
+    // Apply an ROI rectangle to a camera stream
     bool ScopeOneCore::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
         if (!m_managers || !m_managers->mpcm || cameraId.trimmed().isEmpty())
@@ -746,6 +780,7 @@ namespace scopeone::core
         return m_managers->mpcm->clearROI(cameraId);
     }
 
+    // Track the active line profile request for future frames
     void ScopeOneCore::setLineProfile(const QString& cameraId,
                                       const QPoint& start,
                                       const QPoint& end,
@@ -791,6 +826,7 @@ namespace scopeone::core
         emit lineProfileCleared();
     }
 
+    // Return the newest raw frame transport payload for recording and API use
     bool ScopeOneCore::getLatestRawTransport(const QString& cameraId,
                                              SharedFrameHeader& header,
                                              QByteArray& data) const
@@ -819,6 +855,7 @@ namespace scopeone::core
         return m_managers->mpcm->getLatestRaw(trimmedCameraId, header, data);
     }
 
+    // Publish raw frames and start dependent processing work
     void ScopeOneCore::handleIncomingRawFrame(const ImageFrame& frame,
                                               const SharedFrameHeader& header)
     {
@@ -846,6 +883,7 @@ namespace scopeone::core
         }
     }
 
+    // Convert the newest transport payload into an ImageFrame
     bool ScopeOneCore::getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const
     {
         const QString trimmedCameraId = cameraId.trimmed();
@@ -866,11 +904,13 @@ namespace scopeone::core
         return frame.isValid();
     }
 
+    // Compute public histogram statistics for a frame
     bool ScopeOneCore::computeHistogramStats(const ImageFrame& frame, HistogramStats& stats)
     {
         return computeHistogramStatsInternal(frame, stats);
     }
 
+    // Return cached raw statistics or compute them from the latest frame
     bool ScopeOneCore::getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const
     {
         const auto cached = m_latestHistogramStats.constFind(histogramStreamKey(cameraId, false));
@@ -888,6 +928,7 @@ namespace scopeone::core
         return computeHistogramStats(frame, stats);
     }
 
+    // Schedule throttled histogram work for a stream
     void ScopeOneCore::scheduleHistogramStats(const QString& cameraId,
                                               bool processed,
                                               const ImageFrame& frame)
@@ -955,6 +996,7 @@ namespace scopeone::core
         }));
     }
 
+    // Emit a line profile when the active request matches this frame
     void ScopeOneCore::updateLineProfile(const QString& cameraId,
                                          bool processed,
                                          const ImageFrame& frame)
@@ -1052,6 +1094,7 @@ namespace scopeone::core
         }
     }
 
+    // Read the current XY stage position from MMCore
     bool ScopeOneCore::readXYPosition(const QString& xyStageLabel, double& x, double& y) const
     {
         x = 0.0;
@@ -1073,6 +1116,7 @@ namespace scopeone::core
         }
     }
 
+    // Read the current Z stage position from MMCore
     bool ScopeOneCore::readZPosition(const QString& zStageLabel, double& z) const
     {
         z = 0.0;
@@ -1093,6 +1137,7 @@ namespace scopeone::core
         }
     }
 
+    // Move an XY stage by a relative offset and wait for completion
     bool ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
         auto handle = core();
@@ -1103,6 +1148,7 @@ namespace scopeone::core
         });
     }
 
+    // Move a Z stage by a relative offset and wait for completion
     bool ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
         auto handle = core();
@@ -1113,6 +1159,7 @@ namespace scopeone::core
         });
     }
 
+    // Move an XY stage to an absolute position and wait for completion
     bool ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
         auto handle = core();
@@ -1123,6 +1170,7 @@ namespace scopeone::core
         });
     }
 
+    // Move a Z stage to an absolute position and wait for completion
     bool ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
     {
         auto handle = core();
@@ -1133,6 +1181,7 @@ namespace scopeone::core
         });
     }
 
+    // List available Micro Manager configuration groups
     QStringList ScopeOneCore::availableConfigGroups() const
     {
         auto handle = core();
@@ -1156,6 +1205,7 @@ namespace scopeone::core
         }
     }
 
+    // List presets in a Micro Manager configuration group
     QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
     {
         auto handle = core();
@@ -1179,6 +1229,7 @@ namespace scopeone::core
         }
     }
 
+    // Read the current preset for a configuration group
     QString ScopeOneCore::currentConfig(const QString& groupName) const
     {
         auto handle = core();
@@ -1196,6 +1247,7 @@ namespace scopeone::core
         }
     }
 
+    // Apply a configuration preset while camera previews are paused
     bool ScopeOneCore::setConfig(const QString& groupName, const QString& configName)
     {
         auto handle = core();
@@ -1220,6 +1272,7 @@ namespace scopeone::core
         });
     }
 
+    // Read exposure from the active camera path
     bool ScopeOneCore::readExposure(const QString& cameraIdOrAll, double& exposureMs) const
     {
         exposureMs = 0.0;
@@ -1269,6 +1322,7 @@ namespace scopeone::core
         }
     }
 
+    // Merge native MMCore devices with agent camera labels
     QStringList ScopeOneCore::loadedDevices() const
     {
         auto handle = core();
@@ -1285,7 +1339,7 @@ namespace scopeone::core
             }
         }
 
-        // Agent cameras are not always loaded in the UI-side MMCore instance
+        // Agent cameras are not always loaded in the UI side MMCore instance
         for (const QString& cameraId : m_cameraIds)
         {
             if (!devices.contains(cameraId))
@@ -1296,10 +1350,10 @@ namespace scopeone::core
         return devices;
     }
 
+    // Build one property snapshot list for the UI
     QList<ScopeOneCore::DevicePropertyInfo> ScopeOneCore::deviceProperties(const QString& deviceLabel,
                                                                            bool fromCache) const
     {
-        // Build one property snapshot list for the UI
         QList<DevicePropertyInfo> properties;
         const QStringList names = devicePropertyNames(deviceLabel);
         properties.reserve(names.size());
@@ -1323,6 +1377,7 @@ namespace scopeone::core
         return properties;
     }
 
+    // List property names through the matching device backend
     QStringList ScopeOneCore::devicePropertyNames(const QString& deviceLabel) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1353,6 +1408,7 @@ namespace scopeone::core
         }
     }
 
+    // Read a property value from hardware or cache
     QString ScopeOneCore::getPropertyValue(const QString& deviceLabel, const QString& name, bool fromCache) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1391,6 +1447,7 @@ namespace scopeone::core
         }
     }
 
+    // Convert backend property types into UI strings
     QString ScopeOneCore::propertyTypeString(const QString& deviceLabel, const QString& name) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1430,6 +1487,7 @@ namespace scopeone::core
         }
     }
 
+    // Check whether a property can be edited
     bool ScopeOneCore::isPropertyReadOnly(const QString& deviceLabel, const QString& name) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1461,6 +1519,7 @@ namespace scopeone::core
         }
     }
 
+    // Check whether a native property must be set before initialization
     bool ScopeOneCore::isPropertyPreInit(const QString& deviceLabel, const QString& name) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1484,6 +1543,7 @@ namespace scopeone::core
         }
     }
 
+    // Return allowed values for enumerated properties
     QStringList ScopeOneCore::getAllowedPropertyValues(const QString& deviceLabel, const QString& name) const
     {
         const QString device = deviceLabel.trimmed();
@@ -1516,6 +1576,7 @@ namespace scopeone::core
         }
     }
 
+    // Return numeric limits for range constrained properties
     bool ScopeOneCore::getPropertyLimits(const QString& deviceLabel,
                                          const QString& name,
                                          double& lower,
@@ -1563,6 +1624,7 @@ namespace scopeone::core
         }
     }
 
+    // Set a property and refresh backend state after the device accepts it
     bool ScopeOneCore::setPropertyValue(const QString& deviceLabel,
                                         const QString& name,
                                         const QString& value,
@@ -1639,6 +1701,7 @@ namespace scopeone::core
             && m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
     }
 
+    // Toggle live processing without changing the module list
     void ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
         if (!m_managers || !m_managers->imageProcessingManager)
@@ -1648,6 +1711,7 @@ namespace scopeone::core
         m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
     }
 
+    // Return the configured processing precision exposed to the UI
     ScopeOneCore::ProcessingBitDepth ScopeOneCore::processingBitDepth() const
     {
         if (!m_managers || !m_managers->imageProcessingManager)
@@ -1659,6 +1723,7 @@ namespace scopeone::core
                    : ProcessingBitDepth::Bit8;
     }
 
+    // Change processing precision and rebuild runtime pipelines
     bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
     {
         if (!m_managers || !m_managers->imageProcessingManager)
@@ -1677,6 +1742,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Queue one frame for asynchronous processing
     void ScopeOneCore::processFrameAsync(const ImageFrame& frame)
     {
         if (!m_managers || !m_managers->imageProcessingManager || !frame.isValid())
@@ -1686,6 +1752,7 @@ namespace scopeone::core
         m_managers->imageProcessingManager->processFrameAsync(frame);
     }
 
+    // Export processing module descriptions for the UI
     QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
     {
         QList<ProcessingModuleInfo> out;
@@ -1708,6 +1775,7 @@ namespace scopeone::core
         return out;
     }
 
+    // Add a processing module to the editable pipeline
     bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
     {
         ProcessingPipeline* pipeline = processingPipeline(
@@ -1745,6 +1813,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Remove a processing module and drop stale runtime clones
     bool ScopeOneCore::removeProcessingModule(int index)
     {
         ProcessingPipeline* pipeline = processingPipeline(
@@ -1762,6 +1831,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Update module parameters and rebuild per camera runtime modules
     bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
     {
         ProcessingPipeline* pipeline = processingPipeline(
@@ -1784,6 +1854,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Reset stateful module buffers through the public facade
     bool ScopeOneCore::resetProcessingModuleState(int index)
     {
         ProcessingPipeline* pipeline = processingPipeline(
@@ -1832,6 +1903,7 @@ namespace scopeone::core
         return m_managers->recordingManager->recordedMaxBytes();
     }
 
+    // Start recording and suspend preview during MDA motion
     bool ScopeOneCore::startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds)
     {
         if (!m_managers || !m_managers->recordingManager)
@@ -1913,6 +1985,7 @@ namespace scopeone::core
             && m_managers->recordingManager->isRecording();
     }
 
+    // Save a completed session with device metadata attached
     QString ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session) const
     {
         if (!session)
@@ -1932,6 +2005,7 @@ namespace scopeone::core
         return RecordingManager::saveSessionToDisk(session);
     }
 
+    // Save a completed session on a worker thread
     void ScopeOneCore::saveRecordingSessionAsync(const std::shared_ptr<RecordingSessionData>& session)
     {
         if (!session)

@@ -374,6 +374,7 @@ namespace scopeone::ui
         stopRecording();
     }
 
+    // Builds the recording control panel
     void RecordingWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -607,6 +608,7 @@ namespace scopeone::ui
         mainLayout->addWidget(scrollArea);
     }
 
+    // Updates available detector choices
     void RecordingWidget::setAvailableCameras(const QStringList& cameraIds)
     {
         m_availableCameraIds = cameraIds;
@@ -626,6 +628,7 @@ namespace scopeone::ui
         updateUiState();
     }
 
+    // Opens a save directory picker
     void RecordingWidget::onBrowseClicked()
     {
         const QString startDir = getLastSaveDirectory();
@@ -635,11 +638,13 @@ namespace scopeone::ui
         setLastSaveDirectory(dir);
     }
 
+    // Generates a timestamp based recording name
     void RecordingWidget::onAutoNameClicked()
     {
         m_fileNameLineEdit->setText(buildTimestampBaseName());
     }
 
+    // Toggles recording between start and stop
     void RecordingWidget::onStartStopClicked()
     {
         if (m_isRecording)
@@ -652,16 +657,19 @@ namespace scopeone::ui
         }
     }
 
+    // Refreshes UI state when burst mode changes
     void RecordingWidget::onBurstModeToggled(bool)
     {
         updateUiState();
     }
 
+    // Refreshes UI state when detector selection changes
     void RecordingWidget::onDetectorChanged(const QString&)
     {
         updateUiState();
     }
 
+    // Appends current frames to the album
     void RecordingWidget::onToAlbumClicked()
     {
         if (appendSelectedFramesToAlbum())
@@ -670,6 +678,7 @@ namespace scopeone::ui
         }
     }
 
+    // Opens the album dialog and saves on request
     void RecordingWidget::onAlbumClicked()
     {
         if (!m_albumSession || albumFrameCount() <= 0)
@@ -699,15 +708,16 @@ namespace scopeone::ui
         m_scopeonecore->saveRecordingSessionAsync(sessionToSave);
     }
 
+    // Clears the current album session
     void RecordingWidget::onClearAlbumClicked()
     {
         m_albumSession.reset();
         updateAlbumState();
     }
 
+    // Updates widget enabled state from recording settings
     void RecordingWidget::updateUiState()
     {
-        // Lock editing while recording is active
         const bool editingEnabled = !m_isRecording;
         const bool burstEnabled = m_burstModeCheck->isChecked();
         const bool hasSelectedCameras = !selectedCameraIds().isEmpty();
@@ -757,6 +767,7 @@ namespace scopeone::ui
         updateAlbumState();
     }
 
+    // Reads the last save directory from settings
     QString RecordingWidget::getLastSaveDirectory() const
     {
         QSettings settings("ScopeOne", "ScopeOne");
@@ -768,22 +779,26 @@ namespace scopeone::ui
         return lastDir;
     }
 
+    // Stores the last save directory in settings
     void RecordingWidget::setLastSaveDirectory(const QString& path)
     {
         QSettings settings("ScopeOne", "ScopeOne");
         settings.setValue("LastSaveDirectory", path);
     }
 
+    // Builds a timestamp base name for recording output
     QString RecordingWidget::buildTimestampBaseName() const
     {
         return QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     }
 
+    // Returns a filesystem safe base name from the editor
     QString RecordingWidget::normalizedBaseName() const
     {
         return QFileInfo(m_fileNameLineEdit->text().trimmed()).fileName();
     }
 
+    // Resolves the selected detector list
     QStringList RecordingWidget::selectedCameraIds() const
     {
         const QString selected = m_detectorCombo->currentText().trimmed();
@@ -802,9 +817,9 @@ namespace scopeone::ui
         return {};
     }
 
+    // Collects form values and starts recording
     bool RecordingWidget::startRecording()
     {
-        // Collect one settings snapshot from the form
         QString saveDir = m_saveDirLineEdit->text().trimmed();
         if (saveDir.isEmpty())
         {
@@ -906,6 +921,7 @@ namespace scopeone::ui
         return true;
     }
 
+    // Updates album controls from current album state
     void RecordingWidget::updateAlbumState()
     {
         const int frameCount = albumFrameCount();
@@ -924,9 +940,9 @@ namespace scopeone::ui
         }
     }
 
+    // Captures latest selected frames into the album
     bool RecordingWidget::appendSelectedFramesToAlbum()
     {
-        // Capture the latest frame from each selected camera
         const QStringList cameraIds = selectedCameraIds();
         if (cameraIds.isEmpty())
         {
@@ -979,6 +995,7 @@ namespace scopeone::ui
         return true;
     }
 
+    // Returns total frame count in the album
     int RecordingWidget::albumFrameCount() const
     {
         if (!m_albumSession)
@@ -989,6 +1006,7 @@ namespace scopeone::ui
         return m_albumSession->frameCount();
     }
 
+    // Builds the output base name for album save
     QString RecordingWidget::albumBaseName() const
     {
         const QString base = normalizedBaseName();
@@ -999,6 +1017,7 @@ namespace scopeone::ui
         return base + QStringLiteral("_album");
     }
 
+    // Builds a saveable session from album frames
     std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWidget::buildAlbumSaveSession() const
     {
         if (!m_albumSession || albumFrameCount() <= 0)
@@ -1020,6 +1039,7 @@ namespace scopeone::ui
         return session;
     }
 
+    // Moves one MDA order item in the visible list
     void RecordingWidget::moveOrderItem(int delta)
     {
         const int row = m_mdaOrderList->currentRow();
@@ -1066,9 +1086,9 @@ namespace scopeone::ui
         updateUiState();
     }
 
+    // Rebuilds the visible MDA order list from preferences
     void RecordingWidget::syncOrderList()
     {
-        // Rebuild the visible order from stored preferences
         if (m_orderPreference.empty())
         {
             m_orderPreference = {
@@ -1149,6 +1169,7 @@ namespace scopeone::ui
         m_mdaOrderList->blockSignals(false);
     }
 
+    // Stops the active recording through core
     void RecordingWidget::stopRecording()
     {
         m_scopeonecore->stopRecording();

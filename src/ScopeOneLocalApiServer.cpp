@@ -26,6 +26,7 @@ namespace scopeone::ui
         const QString kServerName = QStringLiteral(R"(\\.\pipe\ScopeOne.Api.local)");
         const QString kFrameMappingName = QStringLiteral("ScopeOne.Api.frame");
 
+        // Encodes one JSON object with a little endian size prefix
         QByteArray encodeMessage(const QJsonObject& message)
         {
             const QByteArray payload = QJsonDocument(message).toJson(QJsonDocument::Compact);
@@ -44,6 +45,7 @@ namespace scopeone::ui
             Error
         };
 
+        // Decodes one framed JSON message from a socket buffer
         DecodeResult tryDecodeMessage(QByteArray& buffer, QJsonObject& message)
         {
             if (buffer.size() < static_cast<int>(sizeof(quint32)))
@@ -79,6 +81,7 @@ namespace scopeone::ui
             return DecodeResult::Complete;
         }
 
+        // Creates a standard local API response object
         QJsonObject makeResponse(const QString& type, bool ok)
         {
             QJsonObject response;
@@ -87,6 +90,7 @@ namespace scopeone::ui
             return response;
         }
 
+        // Converts device property metadata to JSON
         QJsonObject propertyInfoToJson(const scopeone::core::ScopeOneCore::DevicePropertyInfo& info)
         {
             QJsonObject object;
@@ -105,6 +109,7 @@ namespace scopeone::ui
             return object;
         }
 
+        // Converts an axis name into a recording axis enum
         scopeone::core::ScopeOneCore::RecordingAxis axisFromName(const QString& name)
         {
             const QString normalized = name.trimmed().toLower();
@@ -119,6 +124,7 @@ namespace scopeone::ui
             return scopeone::core::ScopeOneCore::RecordingAxis::Time;
         }
 
+        // Reads a JSON array as double values
         std::vector<double> doubleArrayFromJson(const QJsonArray& array)
         {
             std::vector<double> values;
@@ -130,6 +136,7 @@ namespace scopeone::ui
             return values;
         }
 
+        // Reads a JSON array as XY positions
         std::vector<QPointF> pointArrayFromJson(const QJsonArray& array)
         {
             std::vector<QPointF> points;
@@ -154,12 +161,14 @@ namespace scopeone::ui
             return points;
         }
 
+        // Reads a string field with fallback for empty values
         QString stringValueOrDefault(const QJsonObject& object, const QString& key, const QString& fallback)
         {
             const QString value = object.value(key).toString().trimmed();
             return value.isEmpty() ? fallback : value;
         }
 
+        // Resolves a request camera target against loaded cameras
         QStringList resolveCameraIds(scopeone::core::ScopeOneCore* core, const QString& cameraIdOrAll)
         {
             const QStringList availableCameraIds = core->cameraIds();
@@ -185,6 +194,7 @@ namespace scopeone::ui
         }
     } // namespace
 
+    // Starts the local API pipe server and frame mapping
     ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core, QObject* parent)
         : QObject(parent)
           , m_scopeonecore(core)
@@ -233,6 +243,7 @@ namespace scopeone::ui
         }
     }
 
+    // Releases local API shared frame resources
     ScopeOneLocalApiServer::~ScopeOneLocalApiServer()
     {
         if (m_frameMappingView)
@@ -247,6 +258,7 @@ namespace scopeone::ui
         }
     }
 
+    // Accepts pending local API socket connections
     void ScopeOneLocalApiServer::handleNewConnection()
     {
         while (QLocalSocket* socket = m_server->nextPendingConnection())
@@ -258,6 +270,7 @@ namespace scopeone::ui
         }
     }
 
+    // Reads and dispatches framed JSON messages from one socket
     void ScopeOneLocalApiServer::handleSocketReadyRead(QLocalSocket* socket)
     {
         QByteArray& buffer = m_readBuffers[socket];
@@ -281,18 +294,21 @@ namespace scopeone::ui
         }
     }
 
+    // Cleans up socket state after disconnect
     void ScopeOneLocalApiServer::handleSocketDisconnected(QLocalSocket* socket)
     {
         m_readBuffers.remove(socket);
         socket->deleteLater();
     }
 
+    // Writes one framed JSON response to a socket
     void ScopeOneLocalApiServer::sendResponse(QLocalSocket* socket, const QJsonObject& response)
     {
         socket->write(encodeMessage(response));
         socket->flush();
     }
 
+    // Dispatches one local API request object
     QJsonObject ScopeOneLocalApiServer::processRequest(const QJsonObject& request)
     {
         const QString type = request.value(QStringLiteral("type")).toString().trimmed();
@@ -706,6 +722,7 @@ namespace scopeone::ui
         return response;
     }
 
+    // Runs a blocking API recording and returns the captured session
     std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLocalApiServer::runRecording(
         const scopeone::core::ScopeOneCore::RecordingSettings& settings,
         const QString& cameraIdOrAll,
@@ -827,6 +844,7 @@ namespace scopeone::ui
         return recordedSession;
     }
 
+    // Exports one captured frame to the shared frame mapping
     bool ScopeOneLocalApiServer::exportFrameToSharedMemory(
         const scopeone::core::ScopeOneCore::RecordingFrame& frame,
         QString& errorMessage)

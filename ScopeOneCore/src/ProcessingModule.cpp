@@ -1,11 +1,10 @@
 #include "internal/ProcessingModule.h"
 
-namespace scopeone::core::internal {
-
-ProcessingModule::ProcessingModule(QObject* parent)
-    : QObject(parent)
+namespace scopeone::core::internal
 {
-    // Base class for all processing modules
-}
-
+    // Initialize the common QObject base for processing modules
+    ProcessingModule::ProcessingModule(QObject* parent)
+        : QObject(parent)
+    {
+    }
 } // namespace scopeone::core::internal

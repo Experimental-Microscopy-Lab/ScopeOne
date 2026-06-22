@@ -513,6 +513,7 @@ namespace scopeone::ui
         qInfo().noquote() << "Image Processing Widget initialized";
     }
 
+    // Builds the image processing widget layout
     void ImageProcessingWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -538,6 +539,7 @@ namespace scopeone::ui
         mainLayout->addWidget(splitter);
     }
 
+    // Builds processing start stop controls
     void ImageProcessingWidget::setupRunControls()
     {
         m_runControlsWidget = new QWidget(this);
@@ -560,6 +562,7 @@ namespace scopeone::ui
         layout->addStretch();
     }
 
+    // Builds the module list and add remove controls
     void ImageProcessingWidget::setupModuleList()
     {
         auto* group = new QGroupBox("Processing Modules", this);
@@ -593,6 +596,7 @@ namespace scopeone::ui
         layout->addLayout(controlsLayout);
     }
 
+    // Builds the module configuration stack
     void ImageProcessingWidget::setupModuleConfig()
     {
         auto* group = new QGroupBox("Module Configuration", this);
@@ -608,6 +612,7 @@ namespace scopeone::ui
         layout->addWidget(m_configStack);
     }
 
+    // Rebuilds the visible module list from core state
     void ImageProcessingWidget::updateModuleList()
     {
         const int currentRow = m_moduleList->currentRow();
@@ -627,6 +632,7 @@ namespace scopeone::ui
         m_moduleList->blockSignals(false);
     }
 
+    // Rebuilds the editor for the selected module
     void ImageProcessingWidget::updateConfigWidget()
     {
         while (m_configStack->count() > 1)
@@ -653,11 +659,11 @@ namespace scopeone::ui
         m_configStack->setCurrentWidget(configWidget);
     }
 
+    // Updates processing controls from running state
     void ImageProcessingWidget::updateRunButtons()
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
         const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
-        // Lock edits while processing runs
         if (m_startButton)
         {
             m_startButton->setEnabled(!running && hasModules);
@@ -680,6 +686,7 @@ namespace scopeone::ui
         }
     }
 
+    // Syncs processing settings from core state
     void ImageProcessingWidget::updateProcessingSettings()
     {
         if (!m_processingBitDepthCombo)
@@ -697,6 +704,7 @@ namespace scopeone::ui
         }
     }
 
+    // Adds the selected processing module
     void ImageProcessingWidget::onAddModuleClicked()
     {
         const auto kind = static_cast<ProcessingModuleKind>(m_moduleTypeCombo->currentData().toInt());
@@ -714,6 +722,7 @@ namespace scopeone::ui
         updateRunButtons();
     }
 
+    // Removes the selected processing module
     void ImageProcessingWidget::onRemoveModuleClicked()
     {
         const int currentRow = m_moduleList->currentRow();
@@ -745,11 +754,13 @@ namespace scopeone::ui
         updateRunButtons();
     }
 
+    // Updates configuration when module selection changes
     void ImageProcessingWidget::onModuleSelectionChanged()
     {
         updateConfigWidget();
     }
 
+    // Applies the selected processing bit depth
     void ImageProcessingWidget::onProcessingBitDepthChanged()
     {
         if (!m_processingBitDepthCombo)
@@ -766,6 +777,7 @@ namespace scopeone::ui
         }
     }
 
+    // Starts real time image processing
     void ImageProcessingWidget::onStartProcessing()
     {
         if (m_scopeonecore->processingModules().isEmpty())
@@ -780,6 +792,7 @@ namespace scopeone::ui
         qInfo().noquote() << "Processing started";
     }
 
+    // Stops real time image processing
     void ImageProcessingWidget::onStopProcessing()
     {
         m_scopeonecore->setRealTimeProcessingEnabled(false);

@@ -21,6 +21,7 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Build the inspect stream key for raw or processed data
         QString inspectStreamKey(const QString& cameraId, bool processed)
         {
             return QStringLiteral("%1:%2")
@@ -28,6 +29,7 @@ namespace scopeone::ui
                      cameraId.trimmed());
         }
 
+        // Return the short label used by inspect groups
         QString inspectStreamLabel(bool processed)
         {
             return processed ? QStringLiteral("proc") : QStringLiteral("raw");
@@ -44,6 +46,7 @@ namespace scopeone::ui
             setMaximumHeight(180);
         }
 
+        // Clear the current cross section plot
         void clear()
         {
             m_title.clear();
@@ -51,6 +54,7 @@ namespace scopeone::ui
             update();
         }
 
+        // Store a new cross section profile for painting
         void setProfile(const QString& cameraId, bool processed, const QVector<int>& values)
         {
             m_title = QStringLiteral("%1 [%2]").arg(
@@ -60,6 +64,7 @@ namespace scopeone::ui
         }
 
     protected:
+        // Paint the cross section curve and its summary labels
         void paintEvent(QPaintEvent* event) override
         {
             Q_UNUSED(event);
@@ -169,6 +174,7 @@ namespace scopeone::ui
             setMinimumHeight(150);
         }
 
+        // Store histogram data for one stream and repaint
         void updateCameraHistogram(const QString& cameraId,
                                    const scopeone::core::ScopeOneCore::HistogramStats& stats,
                                    const QColor& color)
@@ -181,6 +187,7 @@ namespace scopeone::ui
             update();
         }
 
+        // Toggle logarithmic histogram display
         void setLogScale(bool logScale)
         {
             m_logScale = logScale;
@@ -188,6 +195,7 @@ namespace scopeone::ui
         }
 
     protected:
+        // Paint all tracked camera histograms in one chart
         void paintEvent(QPaintEvent* event) override
         {
             Q_UNUSED(event)
@@ -267,6 +275,7 @@ namespace scopeone::ui
         }
 
     private:
+        // Draw intensity and count axes for the histogram plot
         void drawAxes(QPainter& painter, const QRect& rect, int maxValue)
         {
             painter.setPen(QPen(Qt::black, 1));
@@ -372,6 +381,7 @@ namespace scopeone::ui
         bool m_logScale{false};
     };
 
+    // Create the inspection panel and subscribe to core analysis signals
     InspectWidget::InspectWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QWidget(parent)
           , m_scopeonecore(core)
@@ -391,6 +401,7 @@ namespace scopeone::ui
         }
     }
 
+    // Enable inspect controls when camera state changes
     void InspectWidget::onCameraInitialized(bool initialized)
     {
         m_cameraInitialized = initialized;
@@ -402,12 +413,14 @@ namespace scopeone::ui
         }
     }
 
+    // Track the current camera target selected in the control panel
     void InspectWidget::setCurrentTarget(const QString& target)
     {
         m_currentTarget = target;
         updateControlsState();
     }
 
+    // Remove inspect state for cameras that are no longer available
     void InspectWidget::setAvailableCameras(const QStringList& cameraIds)
     {
         for (auto it = m_cameraStates.begin(); it != m_cameraStates.end();)
@@ -444,6 +457,7 @@ namespace scopeone::ui
         }
     }
 
+    // Show inspect data for a single still frame
     void InspectWidget::setFrameInspect(const QString& cameraId,
                                         const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
@@ -463,21 +477,25 @@ namespace scopeone::ui
         updateCameraInspect(cameraId, false, stats);
     }
 
+    // Clear all camera inspect groups
     void InspectWidget::clearInspect()
     {
         setAvailableCameras({});
     }
 
+    // Clear the cross section plot
     void InspectWidget::clearCrossSectionProfile()
     {
         m_crossSectionWidget->clear();
     }
 
+    // Display a freshly computed cross section profile
     void InspectWidget::setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values)
     {
         m_crossSectionWidget->setProfile(cameraId, processed, values);
     }
 
+    // Build the scrollable inspect panel
     void InspectWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -531,6 +549,7 @@ namespace scopeone::ui
         mainLayout->addWidget(scrollArea);
     }
 
+    // Create histogram controls for one stream
     QWidget* InspectWidget::createCameraInfoGroup(const QString& cameraId, bool processed)
     {
         const QString streamKey = inspectStreamKey(cameraId, processed);
@@ -651,6 +670,7 @@ namespace scopeone::ui
         return group;
     }
 
+    // Create labels for per stream image statistics
     QWidget* InspectWidget::createStatisticsGroup(CameraInfoGroup& infoGroup)
     {
         auto* group = new QGroupBox(QStringLiteral("Image Statistics"), this);
@@ -685,6 +705,7 @@ namespace scopeone::ui
         return group;
     }
 
+    // Add a stream group if it is not already visible
     void InspectWidget::addCameraInfo(const QString& cameraId, bool processed)
     {
         const QString streamKey = inspectStreamKey(cameraId, processed);
@@ -701,6 +722,7 @@ namespace scopeone::ui
         updateControlsState();
     }
 
+    // Remove a stream group and its widgets
     void InspectWidget::removeCameraInfo(const QString& streamKey)
     {
         auto it = m_cameraInfoGroups.find(streamKey);
@@ -718,6 +740,7 @@ namespace scopeone::ui
         m_cameraInfoGroups.erase(it);
     }
 
+    // Synchronize histogram controls with fresh statistics
     void InspectWidget::updateCameraInspect(
         const QString& cameraId,
         bool processed,
@@ -775,12 +798,12 @@ namespace scopeone::ui
         updateStatisticsDisplay(cameraId, processed, stats);
     }
 
+    // Create UI state on first histogram update
     void InspectWidget::onImageHistogramReady(
         const QString& cameraId,
         bool processed,
         const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
-        // Create UI state on first histogram update
         if (cameraId.isEmpty())
         {
             return;
@@ -793,6 +816,7 @@ namespace scopeone::ui
         updateCameraInspect(cameraId, processed, stats);
     }
 
+    // Apply the computed auto display range once
     void InspectWidget::onAutoButtonClicked(const QString& streamKey)
     {
         auto stateIt = m_cameraStates.find(streamKey);
@@ -834,6 +858,7 @@ namespace scopeone::ui
                                  state.maxDisplayValue);
     }
 
+    // Expand the display range to the full pixel range
     void InspectWidget::onFullButtonClicked(const QString& streamKey)
     {
         auto stateIt = m_cameraStates.find(streamKey);
@@ -872,6 +897,7 @@ namespace scopeone::ui
         onCameraSliderChanged(streamKey, 0, maxValue);
     }
 
+    // Toggle continuous auto stretch for one stream
     void InspectWidget::onAutoStretchChanged(const QString& streamKey, bool checked)
     {
         auto stateIt = m_cameraStates.find(streamKey);
@@ -910,6 +936,7 @@ namespace scopeone::ui
                                  state.maxDisplayValue);
     }
 
+    // Toggle logarithmic histogram scaling for one stream
     void InspectWidget::onLogScaleChanged(const QString& streamKey, bool checked)
     {
         auto it = m_cameraInfoGroups.find(streamKey);
@@ -920,6 +947,7 @@ namespace scopeone::ui
         it.value().histogramWidget->setLogScale(checked);
     }
 
+    // Update numeric statistics labels for one stream
     void InspectWidget::updateStatisticsDisplay(
         const QString& cameraId,
         bool processed,
@@ -950,6 +978,7 @@ namespace scopeone::ui
         infoGroup.pixelCountLabel->setText(QString::number(stats.totalPixels));
     }
 
+    // Enable controls according to camera and target state
     void InspectWidget::updateControlsState()
     {
         // Keep cross section controls tied to target state
@@ -973,9 +1002,9 @@ namespace scopeone::ui
         }
     }
 
+    // Push auto range back into sliders and preview
     void InspectWidget::applyAutoStretch(CameraDisplayState& state, const QString& streamKey)
     {
-        // Push auto range back into sliders and preview
         if (!state.hasStats)
         {
             return;
@@ -1018,6 +1047,7 @@ namespace scopeone::ui
                                  state.maxDisplayValue);
     }
 
+    // Return persistent display state for one stream
     InspectWidget::CameraDisplayState& InspectWidget::getOrCreateCameraState(const QString& cameraId, bool processed)
     {
         const QString streamKey = inspectStreamKey(cameraId, processed);
@@ -1032,6 +1062,7 @@ namespace scopeone::ui
         return it.value();
     }
 
+    // Pick a stable display color from the stream key
     QColor InspectWidget::getCameraColor(const QString& cameraId) const
     {
         static const QList<QColor> cameraColors = {
@@ -1045,6 +1076,7 @@ namespace scopeone::ui
         return cameraColors[index];
     }
 
+    // Apply manual display range changes from the sliders
     void InspectWidget::onCameraSliderChanged(const QString& streamKey, int minValue, int maxValue)
     {
         auto stateIt = m_cameraStates.find(streamKey);

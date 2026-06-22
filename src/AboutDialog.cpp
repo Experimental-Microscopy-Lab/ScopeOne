@@ -12,15 +12,16 @@
 
 namespace scopeone::ui
 {
+    // Create the about dialog shell
     AboutDialog::AboutDialog(QWidget* parent)
         : QDialog(parent)
     {
         setupUI();
     }
 
+    // Build a simple about dialog with version info
     void AboutDialog::setupUI()
     {
-        // Build a simple about dialog with version info
         setWindowTitle("About ScopeOne");
         resize(520, 320);
 
@@ -51,6 +52,7 @@ namespace scopeone::ui
         mainLayout->addLayout(contentLayout);
     }
 
+    // Show the about dialog modally
     int AboutDialog::showAbout(QWidget* parent, const QString& appName, const QString& version)
     {
         AboutDialog dialog(parent);
@@ -58,9 +60,9 @@ namespace scopeone::ui
         return dialog.exec();
     }
 
+    // Keep app and core version text in one place
     void AboutDialog::setContent(const QString& appName, const QString& version)
     {
-        // Keep app and core version text in one place
         const QString description =
             "A microscope control software based on Micro-Manager Core. "
             "Supports dual-camera real-time preview and image processing.";

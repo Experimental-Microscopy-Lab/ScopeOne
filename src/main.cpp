@@ -4,9 +4,9 @@
 #include "scopeone/ScopeOneCore.h"
 #include "MainWindow.h"
 
+// Create the shared core before the main window
 int main(int argc, char* argv[])
 {
-    // Create the shared core before the main window
     QApplication app(argc, argv);
     app.setStyle(QStringLiteral("Fusion"));
     app.setWindowIcon(QIcon(":/Scopeone_Icon.svg"));

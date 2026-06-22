@@ -38,6 +38,7 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
+        // Wrap one local control socket connection
         ControlConnection(quint64 connectionId, QLocalSocket* socket, QObject* parent = nullptr)
             : QObject(parent)
               , m_connectionId(connectionId)
@@ -60,6 +61,7 @@ namespace scopeone::core::internal
                     });
         }
 
+        // Send one encoded protocol message to the client
         void sendMessage(const QJsonObject& message)
         {
             if (!m_socket || m_socket->state() != QLocalSocket::ConnectedState)
@@ -78,6 +80,7 @@ namespace scopeone::core::internal
         void connectionClosed(quint64 connectionId);
 
     private slots:
+        // Decode queued socket bytes into control requests
         void onReadyRead()
         {
             if (!m_socket)
@@ -140,6 +143,7 @@ namespace scopeone::core::internal
             }
         }
 
+        // Notify the agent when this connection closes
         void onDisconnected()
         {
             emit connectionClosed(m_connectionId);
@@ -157,6 +161,7 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
+        // Store launch settings for one camera runtime
         AgentRuntime(QString cameraId,
                      QString adapter,
                      QString device,
@@ -183,6 +188,7 @@ namespace scopeone::core::internal
             return m_lastError;
         }
 
+        // Initialize MMCore camera state and shared memory transport
         bool initializeRuntime()
         {
             m_lastError.clear();
@@ -312,6 +318,7 @@ namespace scopeone::core::internal
         void shutdownRequested();
 
     private:
+        // Runtime state is mirrored to control clients
         enum class State
         {
             Starting,
@@ -321,6 +328,7 @@ namespace scopeone::core::internal
             ShuttingDown
         };
 
+        // Frame layout describes one shared memory payload shape
         struct FrameLayout
         {
             unsigned width{0};
@@ -380,11 +388,13 @@ namespace scopeone::core::internal
         int m_overflowCheckCounter{0};
     };
 
+    // Publish the initial hello event to connected clients
     void AgentRuntime::publishHello()
     {
         emit eventReady(makeEvent(agent::kEventHello));
     }
 
+    // Replay encoded cfg properties into the agent MMCore instance
     bool AgentRuntime::applyProperties(const QStringList& encodedProperties,
                                        const std::string& label,
                                        const QString& propertyKind,
@@ -442,6 +452,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Dispatch one control request and emit a matching response
     void AgentRuntime::handleRequest(quint64 connectionId,
                                      quint64 requestId,
                                      const QString& type,
@@ -800,17 +811,20 @@ namespace scopeone::core::internal
                                              QStringLiteral("Unknown control command")));
     }
 
+    // Stop preview before the runtime thread exits
     void AgentRuntime::stopForExit()
     {
         stopPreviewInternal(nullptr);
         setState(State::ShuttingDown);
     }
 
+    // Check whether the runtime is currently previewing
     bool AgentRuntime::previewRunning() const
     {
         return m_state == State::Previewing;
     }
 
+    // Update runtime state and publish state changes
     void AgentRuntime::setState(State state, const QString& error)
     {
         const bool changed = (m_state != state);
@@ -832,6 +846,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Build a protocol response envelope
     QJsonObject AgentRuntime::makeResponse(const QString& type, quint64 requestId, bool ok) const
     {
         QJsonObject response =
@@ -840,6 +855,7 @@ namespace scopeone::core::internal
         return response;
     }
 
+    // Build a protocol error response envelope
     QJsonObject AgentRuntime::makeErrorResponse(const QString& type,
                                                 quint64 requestId,
                                                 const QString& error) const
@@ -849,11 +865,13 @@ namespace scopeone::core::internal
         return response;
     }
 
+    // Build a protocol event envelope
     QJsonObject AgentRuntime::makeEvent(const QString& type) const
     {
         return agent::makeEnvelope(agent::kMessageKindEvent, type);
     }
 
+    // Publish current preview state to clients
     void AgentRuntime::emitPreviewStateEvent()
     {
         QJsonObject event = makeEvent(agent::kEventPreviewState);
@@ -861,6 +879,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
+    // Publish an agent error event to clients
     void AgentRuntime::emitAgentErrorEvent(const QString& error)
     {
         QJsonObject event = makeEvent(agent::kEventAgentError);
@@ -868,6 +887,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
+    // Publish a camera buffer overflow event
     void AgentRuntime::emitBufferOverflowEvent(long bufferCapacity)
     {
         QJsonObject event = makeEvent(agent::kEventBufferOverflow);
@@ -875,6 +895,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
+    // Publish the newest shared memory frame index
     void AgentRuntime::emitFrameAvailableEvent(quint64 frameIndex)
     {
         QJsonObject event = makeEvent(agent::kEventFrameAvailable);
@@ -882,6 +903,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
+    // Start continuous acquisition and polling
     bool AgentRuntime::startPreviewInternal(QString* errorMessage)
     {
         if (!m_mmcore)
@@ -929,6 +951,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Stop continuous acquisition and polling
     bool AgentRuntime::stopPreviewInternal(QString* errorMessage)
     {
         if (!m_mmcore)
@@ -966,6 +989,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Capture one frame for recording or API requests
     bool AgentRuntime::captureEventFrameInternal(quint64& frameIndex, QString* errorMessage)
     {
         frameIndex = 0;
@@ -1038,6 +1062,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Copy one camera frame into the shared memory ring buffer
     bool AgentRuntime::writeFrameToSharedMemory(const void* pixels, quint64* frameIndexOut)
     {
         if (!m_shm || !m_shm->isAttached())
@@ -1086,6 +1111,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Drain camera frames into shared memory and publish the newest index
     void AgentRuntime::pollAndWrite()
     {
         if (!m_mmcore)
@@ -1150,6 +1176,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Validate and cache the current frame memory layout
     bool AgentRuntime::ensureFrameLayout(unsigned width, unsigned height, unsigned bytesPerPixel)
     {
         const auto logOversized = [this](quint64 byteCount)
@@ -1245,6 +1272,7 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
+        // Create the control server wrapper for one camera agent
         Agent(QString cameraId,
               QString adapter,
               QString device,
@@ -1269,6 +1297,7 @@ namespace scopeone::core::internal
             qRegisterMetaType<quint64>("quint64");
         }
 
+        // Stop the runtime thread before destruction
         ~Agent() override
         {
             stopRuntime();
@@ -1302,6 +1331,7 @@ namespace scopeone::core::internal
         QHash<quint64, ControlConnection*> m_connections;
     };
 
+    // Start the runtime thread and local control server
     bool Agent::start()
     {
         m_runtime = new AgentRuntime(m_cameraId,
@@ -1362,6 +1392,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Accept pending local control connections
     void Agent::onNewControlConnection()
     {
         while (m_ctrlServer && m_ctrlServer->hasPendingConnections())
@@ -1388,6 +1419,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Route one runtime response back to its connection
     void Agent::onRuntimeResponse(quint64 connectionId, const QJsonObject& response)
     {
         auto it = m_connections.find(connectionId);
@@ -1398,6 +1430,7 @@ namespace scopeone::core::internal
         it.value()->sendMessage(response);
     }
 
+    // Broadcast one runtime event to all clients
     void Agent::broadcastEvent(const QJsonObject& event)
     {
         for (auto it = m_connections.begin(); it != m_connections.end(); ++it)
@@ -1409,11 +1442,13 @@ namespace scopeone::core::internal
         }
     }
 
+    // Remove a closed control connection
     void Agent::onConnectionClosed(quint64 connectionId)
     {
         m_connections.remove(connectionId);
     }
 
+    // Stop the runtime worker thread cleanly
     void Agent::stopRuntime()
     {
         if (!m_runtime)
@@ -1430,6 +1465,7 @@ namespace scopeone::core::internal
     }
 } // namespace scopeone::core::internal
 
+// Launch one camera agent process from command line arguments
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);

@@ -15,10 +15,10 @@ namespace
 
 namespace scopeone::ui
 {
+    // Create the settings dialog for recording limits
     SettingsDialog::SettingsDialog(qint64 maxPendingWriteBytes, QWidget* parent)
         : QDialog(parent)
     {
-        // Edit the recording buffer limit in GiB
         setWindowTitle(QStringLiteral("Settings"));
         setModal(true);
 
@@ -50,9 +50,9 @@ namespace scopeone::ui
         layout->addWidget(buttonBox);
     }
 
+    // Convert the form value back to bytes
     qint64 SettingsDialog::maxPendingWriteBytes() const
     {
-        // Convert the form value back to bytes
         return static_cast<qint64>(m_recordingBufferLimitEdit->text().toDouble() * kBytesPerGiB);
     }
 } // namespace scopeone::ui

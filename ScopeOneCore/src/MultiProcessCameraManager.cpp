@@ -1284,6 +1284,7 @@ namespace scopeone::core::internal
         }
     };
 
+    // Creates the camera manager and shared memory polling timer
     MultiProcessCameraManager::MultiProcessCameraManager(QObject* parent)
         : QObject(parent)
     {
@@ -1291,11 +1292,13 @@ namespace scopeone::core::internal
         connect(&m_pollTimer, &QTimer::timeout, this, &MultiProcessCameraManager::pollSharedMemory);
     }
 
+    // Sets the native MMCore instance for single camera mode
     void MultiProcessCameraManager::setNativeCore(const std::shared_ptr<CMMCore>& core)
     {
         m_nativeCore = core;
     }
 
+    // Prepares native single camera preview without launching an agent
     bool MultiProcessCameraManager::startSingleCamera(const QString& cameraId, double exposureMs)
     {
         if (!m_nativeCore)
@@ -1331,6 +1334,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Validates one shared frame header before reading pixels
     static bool headerLooksSane(const SharedFrameHeader& header)
     {
         if (header.state > 2) return false;
@@ -1352,6 +1356,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Updates native polling interval from active exposure times
     void MultiProcessCameraManager::updatePollingInterval()
     {
         if (m_runtime && !m_runtime->isNative())
@@ -1386,11 +1391,13 @@ namespace scopeone::core::internal
         }
     }
 
+    // Stops all camera backends during teardown
     MultiProcessCameraManager::~MultiProcessCameraManager()
     {
         stopAgents();
     }
 
+    // Checks whether any configured camera is currently running
     bool MultiProcessCameraManager::hasRunningCamera() const
     {
         for (auto it = m_cameras.begin(); it != m_cameras.end(); ++it)
@@ -1403,6 +1410,7 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Clears cached property metadata across camera backends
     void MultiProcessCameraManager::clearPropertyCaches()
     {
         m_propertyTypeCache.clear();
@@ -1413,11 +1421,13 @@ namespace scopeone::core::internal
         m_propertyUpperLimitCache.clear();
     }
 
+    // Waits for one agent control channel to become ready
     bool MultiProcessCameraManager::waitForControlReady(CameraSlot& slot, int timeoutMs)
     {
         return slot.control && slot.control->waitForReady(timeoutMs);
     }
 
+    // Stops all agent or native camera backends
     void MultiProcessCameraManager::stopAgents()
     {
         if (m_runtime)
@@ -1430,6 +1440,7 @@ namespace scopeone::core::internal
         clearPropertyCaches();
     }
 
+    // Ensures the shared memory block for one camera is attached
     bool MultiProcessCameraManager::ensureSharedMemory(CameraSlot& slot)
     {
         if (!slot.shm)
@@ -1462,11 +1473,13 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Checks whether a camera is handled by the native backend
     bool MultiProcessCameraManager::isSingleCamera(const QString& cameraId) const
     {
         return m_runtime && m_runtime->isNative() && !m_singleCameraId.isEmpty() && cameraId == m_singleCameraId;
     }
 
+    // Pulls queued frames from the native MMCore circular buffer
     void MultiProcessCameraManager::pollSingleCamera(CameraSlot& slot)
     {
         if (!m_nativeCore || !slot.isRunning)
@@ -1548,6 +1561,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Sends one JSON command to an agent control channel
     bool MultiProcessCameraManager::sendControlCommand(const QString& cameraId,
                                                        const QJsonObject& request,
                                                        QJsonObject* response,
@@ -1611,6 +1625,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Reads the latest ready frame from one shared memory block
     bool MultiProcessCameraManager::readLatestFrame(CameraSlot& slot)
     {
         if (!slot.shm || !slot.shm->isAttached())
@@ -1678,7 +1693,6 @@ namespace scopeone::core::internal
 
         if (!ok)
         {
-            // Use the newest ready slot
             quint64 bestIndex = slot.lastFrameIndex;
             int bestOffset = -1;
             SharedFrameHeader header{};
@@ -1711,6 +1725,7 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    // Consumes all new ready frames from one agent shared memory block
     bool MultiProcessCameraManager::consumeAgentFrames(CameraSlot& slot, bool emitFrames)
     {
         if (!slot.isRunning)
@@ -1823,6 +1838,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Returns the cached or shared memory latest frame for a camera
     bool MultiProcessCameraManager::getLatestRaw(const QString& cameraId,
                                                  SharedFrameHeader& header,
                                                  QByteArray& data)
@@ -1908,6 +1924,7 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    // Triggers one camera and waits for its event frame
     bool MultiProcessCameraManager::captureEventFrame(const QString& cameraId,
                                                       SharedFrameHeader& header,
                                                       QByteArray& data,
@@ -1984,6 +2001,7 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Pauses or resumes polling while another workflow controls capture
     void MultiProcessCameraManager::setPollingPaused(bool paused)
     {
         if (m_pollingPaused == paused)
@@ -2024,6 +2042,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Polls the native single camera backend for new frames
     void MultiProcessCameraManager::pollSharedMemory()
     {
         if (!m_runtime || !m_runtime->isNative() || m_pollingPaused)
@@ -2037,6 +2056,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Starts one camera agent process and connects its control channel
     bool MultiProcessCameraManager::startAgentFor(const QString& cameraId,
                                                   const QString& adapter,
                                                   const QString& device,
@@ -2068,7 +2088,6 @@ namespace scopeone::core::internal
         auto slot = std::make_shared<CameraSlot>();
         slot->cameraId = cameraId;
         slot->shmKey = agent::sharedMemoryKey(cameraId);
-        // Match the agent shared memory name
         slot->shm = std::make_shared<QSharedMemory>();
         slot->shm->setNativeKey(slot->shmKey);
         slot->process = std::make_shared<QProcess>(this);
@@ -2197,6 +2216,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Stops one camera agent process and releases its resources
     bool MultiProcessCameraManager::stopAgentFor(const QString& cameraId)
     {
         if (m_runtime&& m_runtime
@@ -2242,6 +2262,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Starts preview on the active camera backend
     void MultiProcessCameraManager::startPreview()
     {
         if (m_runtime)
@@ -2250,6 +2271,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Stops preview on the active camera backend
     void MultiProcessCameraManager::stopPreview()
     {
         if (m_runtime)
@@ -2258,12 +2280,14 @@ namespace scopeone::core::internal
         }
     }
 
+    // Sets exposure through the active camera backend
     bool MultiProcessCameraManager::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
         const QString target = cameraIdOrAll.trimmed();
         return !target.isEmpty() && m_runtime && m_runtime->setExposure(target, exposureMs);
     }
 
+    // Reads exposure through the active camera backend
     bool MultiProcessCameraManager::getExposure(const QString& cameraIdOrAll, double& exposureMs) const
     {
         exposureMs = 0.0;
@@ -2271,11 +2295,13 @@ namespace scopeone::core::internal
         return !target.isEmpty() && m_runtime && m_runtime->getExposure(target, exposureMs);
     }
 
+    // Lists properties for one camera
     QStringList MultiProcessCameraManager::listProperties(const QString& cameraId)
     {
         return m_runtime ? m_runtime->listProperties(cameraId) : QStringList{};
     }
 
+    // Reads a property and updates property metadata caches
     QString MultiProcessCameraManager::getProperty(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2308,6 +2334,7 @@ namespace scopeone::core::internal
         return snapshot.value;
     }
 
+    // Reads cached property type after refreshing if needed
     QString MultiProcessCameraManager::getPropertyType(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2319,6 +2346,7 @@ namespace scopeone::core::internal
         return m_propertyTypeCache.value(propKey, QStringLiteral("Unknown"));
     }
 
+    // Reads cached property mutability after refreshing if needed
     bool MultiProcessCameraManager::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2330,6 +2358,7 @@ namespace scopeone::core::internal
         return m_propertyReadOnlyCache.value(propKey, true);
     }
 
+    // Writes a camera property and invalidates cached metadata
     bool MultiProcessCameraManager::setProperty(const QString& cameraId,
                                                 const QString& name,
                                                 const QString& value,
@@ -2353,22 +2382,26 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    // Reports whether one camera preview is running
     bool MultiProcessCameraManager::isPreviewRunning(const QString& cameraId) const
     {
         const auto it = m_cameras.constFind(cameraId);
         return it != m_cameras.constEnd() && it.value() && it.value()->isRunning;
     }
 
+    // Starts preview for one camera
     bool MultiProcessCameraManager::startPreviewFor(const QString& cameraId)
     {
         return m_runtime && m_runtime->startPreviewFor(cameraId);
     }
 
+    // Stops preview for one camera
     bool MultiProcessCameraManager::stopPreviewFor(const QString& cameraId)
     {
         return m_runtime && m_runtime->stopPreviewFor(cameraId);
     }
 
+    // Reads cached allowed property values after refreshing if needed
     QStringList MultiProcessCameraManager::getAllowedPropertyValues(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2380,6 +2413,7 @@ namespace scopeone::core::internal
         return m_propertyAllowedValuesCache.value(propKey, QStringList());
     }
 
+    // Reads cached property limit availability after refreshing if needed
     bool MultiProcessCameraManager::hasPropertyLimits(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2391,6 +2425,7 @@ namespace scopeone::core::internal
         return m_propertyHasLimitsCache.value(propKey, false);
     }
 
+    // Reads cached lower property limit after refreshing if needed
     double MultiProcessCameraManager::getPropertyLowerLimit(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2402,6 +2437,7 @@ namespace scopeone::core::internal
         return m_propertyLowerLimitCache.value(propKey, 0.0);
     }
 
+    // Reads cached upper property limit after refreshing if needed
     double MultiProcessCameraManager::getPropertyUpperLimit(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
@@ -2413,16 +2449,19 @@ namespace scopeone::core::internal
         return m_propertyUpperLimitCache.value(propKey, 0.0);
     }
 
+    // Sets ROI through the active camera backend
     bool MultiProcessCameraManager::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
         return m_runtime && m_runtime->setROI(cameraId, x, y, width, height);
     }
 
+    // Clears ROI through the active camera backend
     bool MultiProcessCameraManager::clearROI(const QString& cameraId)
     {
         return m_runtime && m_runtime->clearROI(cameraId);
     }
 
+    // Reads ROI through the active camera backend
     bool MultiProcessCameraManager::getROI(const QString& cameraId, int& x, int& y, int& width, int& height)
     {
         return m_runtime && m_runtime->getROI(cameraId, x, y, width, height);

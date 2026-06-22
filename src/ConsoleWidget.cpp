@@ -15,6 +15,7 @@ namespace scopeone::ui
     {
         static ConsoleWidget* g_consoleSink = nullptr;
 
+        // Forward Qt messages into the active console widget
         static void qtMessageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
         {
             Q_UNUSED(ctx);
@@ -42,6 +43,7 @@ namespace scopeone::ui
 
 #include <QDebug>
 
+    // Create the live log console and its filters
     ConsoleWidget::ConsoleWidget(QWidget* parent)
         : QWidget(parent)
           , m_showTimestamps(true)
@@ -58,6 +60,7 @@ namespace scopeone::ui
         addMessage("Console initialized", "SYSTEM");
     }
 
+    // Remove this widget as the Qt message sink when destroyed
     ConsoleWidget::~ConsoleWidget()
     {
         if (g_consoleSink == this)
@@ -67,6 +70,7 @@ namespace scopeone::ui
         }
     }
 
+    // Build the console text view and filter controls
     void ConsoleWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -116,9 +120,9 @@ namespace scopeone::ui
         mainLayout->addLayout(controlLayout, 0);
     }
 
+    // Append one message and trim old history
     void ConsoleWidget::addMessage(const QString& message, const QString& type)
     {
-        // Append one message and trim old history
         ConsoleMessage msg;
         msg.message = message;
         msg.type = type.toUpper();
@@ -146,6 +150,7 @@ namespace scopeone::ui
         }
     }
 
+    // Clear all stored and visible messages
     void ConsoleWidget::clearMessages()
     {
         m_messages.clear();
@@ -153,6 +158,7 @@ namespace scopeone::ui
         m_messageCountLabel->setText("Messages: 0");
     }
 
+    // Toggle timestamp rendering for all messages
     void ConsoleWidget::setShowTimestamps(bool show)
     {
         if (m_showTimestamps != show)
@@ -168,6 +174,7 @@ namespace scopeone::ui
         return m_showTimestamps;
     }
 
+    // Toggle automatic scrolling to the newest message
     void ConsoleWidget::setAutoScroll(bool autoScroll)
     {
         if (m_autoScroll != autoScroll)
@@ -182,6 +189,7 @@ namespace scopeone::ui
         return m_autoScroll;
     }
 
+    // Replace the active message type filter
     void ConsoleWidget::setMessageFilter(const QStringList& types)
     {
         m_messageFilter = types;
@@ -193,9 +201,9 @@ namespace scopeone::ui
         return m_messageFilter;
     }
 
+    // Rebuild the visible log from filtered history
     void ConsoleWidget::updateDisplay()
     {
-        // Rebuild the visible log from filtered history
         m_consoleTextEdit->setUpdatesEnabled(false);
         m_consoleTextEdit->clear();
 
@@ -224,6 +232,7 @@ namespace scopeone::ui
         }
     }
 
+    // Convert one message into colored HTML
     QString ConsoleWidget::formatMessage(const ConsoleMessage& msg) const
     {
         QString timestamp;
@@ -244,6 +253,7 @@ namespace scopeone::ui
                .arg(escapedMessage);
     }
 
+    // Pick a display color for a message type
     QString ConsoleWidget::getTypeColor(const QString& type) const
     {
         if (type == "ERROR") return "#ff0000";
@@ -254,6 +264,7 @@ namespace scopeone::ui
         return "#d4d4d4";
     }
 
+    // Scroll the console view to the newest message
     void ConsoleWidget::scrollToBottom()
     {
         QScrollBar* scrollBar = m_consoleTextEdit->verticalScrollBar();
@@ -275,6 +286,7 @@ namespace scopeone::ui
         setAutoScroll(autoScroll);
     }
 
+    // Apply the selected message type filter
     void ConsoleWidget::onFilterChanged()
     {
         QString selectedFilter = m_filterComboBox->currentText();
@@ -292,9 +304,9 @@ namespace scopeone::ui
         updateDisplay();
     }
 
+    // Forward Qt log output into this widget
     void ConsoleWidget::installAsQtMessageSink(ConsoleWidget* sink)
     {
-        // Forward Qt log output into this widget
         g_consoleSink = sink;
         qInstallMessageHandler(qtMessageHandler);
     }

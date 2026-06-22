@@ -37,6 +37,7 @@ namespace scopeone::core::internal
             QString value;
         };
 
+        // Sets adapter search paths relative to the application directory
         void configureAdapterSearchPaths(CMMCore& core)
         {
             const QString appDir = QCoreApplication::applicationDirPath();
@@ -45,6 +46,7 @@ namespace scopeone::core::internal
             core.setDeviceAdapterSearchPaths(searchPaths);
         }
 
+        // Encodes one property replay entry as compact JSON
         QString encodePropertyPayload(const QString& name, const QString& value)
         {
             QJsonObject property;
@@ -53,6 +55,7 @@ namespace scopeone::core::internal
             return QString::fromUtf8(QJsonDocument(property).toJson(QJsonDocument::Compact));
         }
 
+        // Splits one configuration line into command fields
         QStringList splitConfigLine(const QString& line)
         {
             QStringList parts;
@@ -71,6 +74,7 @@ namespace scopeone::core::internal
             return parts;
         }
 
+        // Reads explicit property entries from a configuration file
         QHash<QString, QList<ConfigProperty>> explicitConfigProperties(const QString& configPath)
         {
             QHash<QString, QList<ConfigProperty>> properties;
@@ -106,6 +110,7 @@ namespace scopeone::core::internal
             return properties;
         }
 
+        // Separates replayable config properties by initialization phase
         DevicePropertyState prepareConfigPropertyReplay(CMMCore& core,
                                                         const QString& deviceLabel,
                                                         const QList<ConfigProperty>& properties)
@@ -176,9 +181,9 @@ namespace scopeone::core::internal
         }
     } // namespace
 
+    // Loads one config file into MMCore
     bool loadConfigurationFile(CMMCore& core, const QString& configPath, QString* errorMessage)
     {
-        // Load one Micro-Manager config file into MMCore
         if (configPath.trimmed().isEmpty())
         {
             if (errorMessage)
@@ -204,6 +209,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Reads labels for devices currently loaded in MMCore
     QStringList loadedDeviceLabels(CMMCore& core, QString* errorMessage)
     {
         try
@@ -226,12 +232,12 @@ namespace scopeone::core::internal
         }
     }
 
+    // Reads camera metadata before backend startup
     std::vector<CameraLoadInfo> loadedCameraInfos(
         CMMCore& core,
         const QStringList& loadedDevices,
         const QHash<QString, QList<ConfigProperty>>& explicitProperties)
     {
-        // Read camera metadata before backend startup
         std::vector<CameraLoadInfo> cameras;
         cameras.reserve(static_cast<size_t>(loadedDevices.size()));
         for (const QString& deviceName : loadedDevices)
@@ -288,6 +294,7 @@ namespace scopeone::core::internal
         return cameras;
     }
 
+    // Creates the MMCore manager and backing core instance
     MMCoreManager::MMCoreManager(QObject* parent)
         : QObject(parent)
           , m_mmcore(std::make_shared<CMMCore>())
@@ -295,6 +302,7 @@ namespace scopeone::core::internal
         qRegisterMetaType<DeviceType>("DeviceType");
     }
 
+    // Converts a device type enum into a UI label
     QString MMCoreManager::getDeviceTypeString(DeviceType type) const
     {
         switch (type)
@@ -320,12 +328,12 @@ namespace scopeone::core::internal
         }
     }
 
+    // Initializes devices and starts camera backends
     bool MMCoreManager::loadConfigurationAndStartCameras(const QString& configPath,
                                                          MultiProcessCameraManager* mpcm,
                                                          LoadConfigResult* result,
                                                          QString* errorMessage)
     {
-        // Initialize devices and choose native or agent camera startup
         if (result)
         {
             *result = LoadConfigResult{};

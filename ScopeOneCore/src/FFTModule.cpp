@@ -10,6 +10,7 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        // Converts a mono frame into a float matrix for OpenCV DFT
         bool frameToGrayFloat(const ImageFrame& frame, cv::Mat& output)
         {
             if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
@@ -27,6 +28,7 @@ namespace scopeone::core::internal
             return true;
         }
 
+        // Normalizes an OpenCV matrix into an output image frame
         ImageFrame matToOutputFrame(const cv::Mat& input,
                                     const ImageFrame& reference,
                                     const QString& cameraId)
@@ -41,6 +43,7 @@ namespace scopeone::core::internal
             return output;
         }
 
+        // Moves the zero frequency component to the image center
         void fftShift(const cv::Mat& image, cv::Mat& shifted)
         {
             shifted.create(image.size(), image.type());
@@ -57,6 +60,7 @@ namespace scopeone::core::internal
             }
         }
 
+        // Computes a log magnitude spectrum from complex DFT planes
         void magnitudeSpectrum(const cv::Mat* planes, cv::Mat& magnitude, cv::Mat& shifted)
         {
             cv::magnitude(planes[0], planes[1], magnitude);
@@ -65,6 +69,7 @@ namespace scopeone::core::internal
             fftShift(magnitude, shifted);
         }
 
+        // Crops the center region of a matrix to a target size
         cv::Mat cropCenter(const cv::Mat& image, const cv::Size& size)
         {
             const int x = (image.cols - size.width) / 2;
@@ -72,6 +77,7 @@ namespace scopeone::core::internal
             return image(cv::Rect(x, y, size.width, size.height));
         }
 
+        // Builds the frequency domain bandpass mask
         cv::Mat buildMask(const cv::Size& size,
                           double minFeatureSize,
                           double maxFeatureSize,
@@ -117,11 +123,13 @@ namespace scopeone::core::internal
         }
     }
 
+    // Creates an FFT processing module
     FFTModule::FFTModule(QObject* parent)
         : ProcessingModule(parent)
     {
     }
 
+    // Returns a cached mask for the current FFT parameters
     const cv::Mat& FFTModule::maskForSize(const cv::Size& size)
     {
         if (m_mask.empty()
@@ -139,12 +147,14 @@ namespace scopeone::core::internal
         return m_mask;
     }
 
+    // Clears the cached FFT mask
     void FFTModule::invalidateMask()
     {
         m_mask.release();
         m_maskSize = {};
     }
 
+    // Runs FFT spectrum or bandpass processing on one frame
     bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
     {
         if (!in.frame.isValid())
@@ -224,6 +234,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Returns the current FFT module parameters
     QVariantMap FFTModule::getParameters() const
     {
         QVariantMap params;
@@ -234,6 +245,7 @@ namespace scopeone::core::internal
         return params;
     }
 
+    // Updates FFT module parameters and invalidates cached masks
     void FFTModule::setParameters(const QVariantMap& params)
     {
         bool maskChanged = false;

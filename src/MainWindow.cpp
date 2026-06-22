@@ -33,11 +33,13 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Build the preview stream key for a raw camera feed
         QString rawStreamKey(const QString& cameraId)
         {
             return QStringLiteral("raw:%1").arg(cameraId);
         }
 
+        // Build raw stream keys for all camera ids
         QStringList rawStreamKeys(const QStringList& cameraIds)
         {
             QStringList streamKeys;
@@ -49,6 +51,7 @@ namespace scopeone::ui
             return streamKeys;
         }
 
+        // Keep only raw streams from the current preview selection
         QStringList rawOnlyStreamKeys(const QStringList& streamKeys)
         {
             QStringList rawKeys;
@@ -64,6 +67,7 @@ namespace scopeone::ui
         }
     }
 
+    // Build the main shell around the shared core facade
     MainWindow::MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QMainWindow(parent)
           , m_scopeonecore(core)
@@ -83,6 +87,7 @@ namespace scopeone::ui
         resize(1600, 900);
     }
 
+    // Connect core events and panel actions into one UI flow
     void MainWindow::setupSignalWiring()
     {
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewStateChanged,
@@ -308,6 +313,7 @@ namespace scopeone::ui
         connectPropertyPanels();
     }
 
+    // Connect property and preset panels to logging and refresh actions
     void MainWindow::connectPropertyPanels()
     {
         connect(m_propertyBrowser, &DevicePropertyWidget::propertyChanged,
@@ -337,6 +343,7 @@ namespace scopeone::ui
         }
     }
 
+    // Create the preview area and all docked tool panels
     void MainWindow::setupUI()
     {
         m_previewWidget = new PreviewWidget(this);
@@ -352,6 +359,7 @@ namespace scopeone::ui
         updateDockWidgetMenu();
     }
 
+    // Create application menus and persistent actions
     void MainWindow::setupMenuBar()
     {
         m_fileMenu = menuBar()->addMenu(tr("&File"));
@@ -374,6 +382,7 @@ namespace scopeone::ui
         m_aboutAction = m_helpMenu->addAction(tr("&About ScopeOne"));
     }
 
+    // Create the camera control dock
     void MainWindow::setupDeviceControl()
     {
         m_deviceControlDockWidget = new QDockWidget(tr("Control"), this);
@@ -384,6 +393,7 @@ namespace scopeone::ui
         addDockWidget(Qt::RightDockWidgetArea, m_deviceControlDockWidget);
     }
 
+    // Create the image inspection dock
     void MainWindow::setupInspect()
     {
         m_inspectDockWidget = new QDockWidget(tr("Inspect"), this);
@@ -401,6 +411,7 @@ namespace scopeone::ui
         }
     }
 
+    // Create the processing module dock
     void MainWindow::setupImageProcessing()
     {
         m_imageProcessingDockWidget = new QDockWidget(tr("Image Processing"), this);
@@ -423,6 +434,7 @@ namespace scopeone::ui
         m_deviceControlDockWidget->raise();
     }
 
+    // Create the log console dock and install the Qt message sink
     void MainWindow::setupConsole()
     {
         m_consoleDockWidget = new QDockWidget(tr("Console"), this);
@@ -435,6 +447,7 @@ namespace scopeone::ui
         splitDockWidget(m_deviceControlDockWidget, m_consoleDockWidget, Qt::Vertical);
     }
 
+    // Create the device property and config preset dock
     void MainWindow::setupPropertyBrowser()
     {
         m_propertyDockWidget = new QDockWidget(tr("Device Properties"), this);
@@ -451,6 +464,7 @@ namespace scopeone::ui
         addDockWidget(Qt::LeftDockWidgetArea, m_propertyDockWidget);
     }
 
+    // Create the recording control dock
     void MainWindow::setupRecording()
     {
         m_recordingDockWidget = new QDockWidget(tr("Recording"), this);
@@ -466,6 +480,7 @@ namespace scopeone::ui
         }
     }
 
+    // Close the modal configuration progress dialog if present
     void MainWindow::closeLoadConfigProgress()
     {
         if (!m_loadConfigProgress)
@@ -478,6 +493,7 @@ namespace scopeone::ui
         m_loadConfigProgress = nullptr;
     }
 
+    // Switch the active camera target and preview selection
     void MainWindow::updateControlTarget(const QString& target)
     {
         // Keep preview on the chosen target
@@ -515,6 +531,7 @@ namespace scopeone::ui
 
     }
 
+    // Rebuild the view menu from current dock widgets
     void MainWindow::updateDockWidgetMenu()
     {
         if (!m_dockWidgetsMenu)
@@ -542,6 +559,7 @@ namespace scopeone::ui
         addDock(m_imageProcessingDockWidget, QStringLiteral("Image Processing"));
     }
 
+    // Push loaded camera ids into every dependent panel
     void MainWindow::applyLoadedCameraState(const QStringList& cameraIds)
     {
         if (m_deviceControlWidget)
@@ -571,6 +589,7 @@ namespace scopeone::ui
         }
     }
 
+    // Clear preview and panel state after devices unload
     void MainWindow::applyUnloadedCameraState(const QStringList& cameraIds)
     {
         if (m_previewWidget)
@@ -600,6 +619,7 @@ namespace scopeone::ui
         }
     }
 
+    // Refresh panels that mirror device state
     void MainWindow::refreshDevicePanels(bool fromCache)
     {
         if (m_propertyBrowser)
@@ -616,6 +636,7 @@ namespace scopeone::ui
         }
     }
 
+    // Restore persistent settings that affect core behavior
     void MainWindow::applyStoredApplicationSettings()
     {
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
@@ -627,6 +648,7 @@ namespace scopeone::ui
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
     }
 
+    // Edit persistent application settings
     void MainWindow::openSettingsDialog()
     {
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
@@ -647,6 +669,7 @@ namespace scopeone::ui
             5000);
     }
 
+    // Display image coordinates and pixel value under the cursor
     void MainWindow::handlePreviewMousePosition(const QPoint& pos)
     {
         if (!m_previewWidget)
@@ -696,6 +719,7 @@ namespace scopeone::ui
         statusBar()->showMessage(msg);
     }
 
+    // Apply a user drawn ROI through the core facade
     void MainWindow::handleRoiDrawn(const QString& cameraId, int x, int y, int width, int height)
     {
         // Backend restarts preview for ROI
@@ -711,6 +735,7 @@ namespace scopeone::ui
         }
     }
 
+    // Apply UI state after a configuration load attempt
     void MainWindow::handleConfigurationLoadFinished(bool success,
                                                      const QString& configPath,
                                                      const QStringList& cameraIds,
@@ -764,6 +789,7 @@ namespace scopeone::ui
         qInfo().noquote() << QString("Configuration loaded successfully: %1").arg(configPath);
     }
 
+    // Apply UI state after a configuration unload attempt
     void MainWindow::handleConfigurationUnloadFinished(bool success,
                                                        const QStringList& cameraIds,
                                                        const QString& errorMessage)
@@ -781,6 +807,7 @@ namespace scopeone::ui
         qInfo().noquote() << "Configuration unload completed successfully";
     }
 
+    // Load a Micro Manager config selected by the user
     void MainWindow::loadConfigurationFromDialog()
     {
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
@@ -839,6 +866,7 @@ namespace scopeone::ui
                                         errorMessage);
     }
 
+    // Confirm and unload the active device configuration
     void MainWindow::unloadConfigurationWithConfirmation()
     {
         const QMessageBox::StandardButton reply = QMessageBox::question(
@@ -855,6 +883,7 @@ namespace scopeone::ui
         }
     }
 
+    // Toggle the main window between fullscreen and normal modes
     void MainWindow::setFullScreenEnabled(bool enabled)
     {
         if (enabled)

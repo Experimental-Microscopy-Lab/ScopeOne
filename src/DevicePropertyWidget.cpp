@@ -28,6 +28,7 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Format floating values like Micro Manager property cells
         QString formatDoubleDisplay(double value)
         {
             QString text = QString::number(value, 'f', 4);
@@ -42,6 +43,7 @@ namespace scopeone::ui
             return text;
         }
 
+        // Normalize numeric property values for display
         QString formatPropertyDisplayValue(const QString& value, bool isInteger, bool isFloat)
         {
             bool ok = false;
@@ -62,6 +64,7 @@ namespace scopeone::ui
             using QComboBox::QComboBox;
 
         protected:
+            // Ignore mouse wheel edits inside the property table
             void wheelEvent(QWheelEvent* event) override
             {
                 event->ignore();
@@ -69,6 +72,7 @@ namespace scopeone::ui
         };
     } // namespace
 
+    // Create the property browser around the shared core facade
     DevicePropertyWidget::DevicePropertyWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QWidget(parent)
           , m_scopeonecore(core)
@@ -89,6 +93,7 @@ namespace scopeone::ui
         connect(m_autoRefreshTimer, &QTimer::timeout, this, &DevicePropertyWidget::onAutoRefreshTimer);
     }
 
+    // Build the property table and filter controls
     void DevicePropertyWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -155,6 +160,7 @@ namespace scopeone::ui
         mainLayout->addWidget(m_propertyTree);
     }
 
+    // Rebuild visible properties while preserving scroll position
     void DevicePropertyWidget::refresh(bool fromCache)
     {
         // Rebuild the tree and keep the scroll position
@@ -190,6 +196,7 @@ namespace scopeone::ui
         m_updating = false;
     }
 
+    // Add every loaded device to the property tree
     void DevicePropertyWidget::populateDeviceTree(bool fromCache)
     {
         const QStringList devices = m_scopeonecore->loadedDevices();
@@ -201,6 +208,7 @@ namespace scopeone::ui
         m_propertyTree->expandAll();
     }
 
+    // Submit a property value and read back the actual accepted value
     bool DevicePropertyWidget::applyPropertyValue(const QString& deviceLabel,
                                                   const QString& propertyName,
                                                   const QString& requestedValue,
@@ -222,6 +230,7 @@ namespace scopeone::ui
         return true;
     }
 
+    // Add one device node and its properties to the tree
     void DevicePropertyWidget::addDeviceToTree(const QString& deviceLabel, bool fromCache)
     {
         try
@@ -248,6 +257,7 @@ namespace scopeone::ui
         }
     }
 
+    // Create the correct editor for one device property
     void DevicePropertyWidget::addPropertyToDevice(
         QTreeWidgetItem* deviceItem,
         const QString& deviceLabel,
@@ -401,23 +411,27 @@ namespace scopeone::ui
         }
     }
 
+    // Refresh all property values from hardware
     void DevicePropertyWidget::onRefreshClicked()
     {
         refresh(false);
     }
 
+    // Toggle read only property visibility
     void DevicePropertyWidget::onShowReadOnlyToggled(bool show)
     {
         m_showReadOnly = show;
         refresh(true);
     }
 
+    // Toggle pre init property visibility
     void DevicePropertyWidget::onShowPreInitToggled(bool show)
     {
         m_showPreInit = show;
         refresh(true);
     }
 
+    // Enable or disable cached periodic refresh
     void DevicePropertyWidget::onAutoRefreshToggled(bool enabled)
     {
         m_autoRefresh = enabled;
@@ -431,6 +445,7 @@ namespace scopeone::ui
         }
     }
 
+    // Refresh cached values when the timer fires
     void DevicePropertyWidget::onAutoRefreshTimer()
     {
         if (!m_updating)

@@ -7,6 +7,7 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        // Reduces a set of pixel values using the selected binning mode
         int modeValue(SpatiotemporalBinningModule::BinningMode mode, const std::vector<int>& values)
         {
             if (values.empty())
@@ -44,6 +45,7 @@ namespace scopeone::core::internal
             return values.front();
         }
 
+        // Combines buffered frames along the time axis
         ImageFrame applyTemporalBinning(const std::deque<ImageFrame>& buffer,
                                         SpatiotemporalBinningModule::BinningMode mode)
         {
@@ -82,6 +84,7 @@ namespace scopeone::core::internal
             return makeFrameLike(buffer.front(), width, height, std::move(bytes));
         }
 
+        // Combines neighboring pixels into spatial bins
         ImageFrame applySpatialBinning(const ImageFrame& frame,
                                        int binX,
                                        int binY,
@@ -129,11 +132,13 @@ namespace scopeone::core::internal
         }
     } // namespace
 
+    // Creates a spatiotemporal binning module
     SpatiotemporalBinningModule::SpatiotemporalBinningModule(QObject* parent)
         : ProcessingModule(parent)
     {
     }
 
+    // Updates temporal history and emits a binned frame when ready
     bool SpatiotemporalBinningModule::process(const ModuleInput& in, ModuleOutput& out)
     {
         if (!in.frame.isValid())
@@ -181,6 +186,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Returns the current spatiotemporal binning parameters
     QVariantMap SpatiotemporalBinningModule::getParameters() const
     {
         QVariantMap params;
@@ -192,6 +198,7 @@ namespace scopeone::core::internal
         return params;
     }
 
+    // Updates spatiotemporal binning parameters
     void SpatiotemporalBinningModule::setParameters(const QVariantMap& params)
     {
         bool resetBuffer = false;

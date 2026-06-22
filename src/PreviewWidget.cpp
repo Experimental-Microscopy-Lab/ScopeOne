@@ -12,6 +12,7 @@ namespace scopeone::ui
 
     namespace
     {
+        // Builds a stable stream key for raw or processed preview
         QString streamSelectionKey(const QString& cameraId, bool processed)
         {
             return processed
@@ -19,17 +20,20 @@ namespace scopeone::ui
                        : QStringLiteral("raw:%1").arg(cameraId);
         }
 
+        // Extracts the camera id from a stream key
         QString cameraIdFromStreamKey(const QString& key)
         {
             const int separator = key.indexOf(QLatin1Char(':'));
             return separator >= 0 ? key.mid(separator + 1) : key;
         }
 
+        // Checks whether a stream key points to processed preview
         bool isProcessedStreamKey(const QString& key)
         {
             return key.startsWith(QStringLiteral("proc:"));
         }
 
+        // Builds all valid stream selection keys for available cameras
         QSet<QString> validStreamSelectionKeys(const QStringList& cameraIds)
         {
             QSet<QString> keys;
@@ -41,6 +45,7 @@ namespace scopeone::ui
             return keys;
         }
 
+        // Reads one mono pixel value from a frame
         bool sampleFrameValue(const ImageFrame& frame, const QPoint& imagePos, int& outValue)
         {
             if (!frame.isValid()
@@ -67,6 +72,7 @@ namespace scopeone::ui
         }
     } // namespace
 
+    // Creates the OpenGL preview widget
     PreviewWidget::PreviewWidget(QWidget* parent)
         : QOpenGLWidget(parent)
     {
@@ -82,11 +88,13 @@ namespace scopeone::ui
         setFocusPolicy(Qt::StrongFocus);
     }
 
+    // Releases cached OpenGL textures
     PreviewWidget::~PreviewWidget()
     {
         cleanupTextureCache();
     }
 
+    // Stores one processed frame and updates stream statistics
     void PreviewWidget::setProcessedFrame(const QString& cameraId, const ImageFrame& frame)
     {
         QMutexLocker lock(&m_mutex);
@@ -117,6 +125,7 @@ namespace scopeone::ui
         updateImageDisplay();
     }
 
+    // Stores one raw frame and updates stream statistics
     void PreviewWidget::setRawFrame(const ImageFrame& frame)
     {
         {
@@ -146,6 +155,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Changes how multiple preview streams are laid out
     void PreviewWidget::setStreamLayoutMode(StreamLayoutMode mode)
     {
         if (m_streamLayoutMode == mode)
@@ -157,6 +167,7 @@ namespace scopeone::ui
         emit streamLayoutModeChanged(m_streamLayoutMode);
     }
 
+    // Sets overlay opacity for merged preview streams
     void PreviewWidget::setOverlayAlphaPercent(int percent)
     {
         percent = std::clamp(percent, 0, 100);
@@ -178,6 +189,7 @@ namespace scopeone::ui
         return m_streamLayoutMode;
     }
 
+    // Replaces the available camera list and keeps valid stream selections
     void PreviewWidget::setAvailableCameraIds(const QStringList& cameraIds)
     {
         const QStringList previousSelection = selectedStreams();
@@ -198,6 +210,7 @@ namespace scopeone::ui
         updateImageDisplay();
     }
 
+    // Sets the visible raw and processed preview streams
     void PreviewWidget::setSelectedStreams(const QStringList& streamKeys)
     {
         const QSet<QString> validKeys = validStreamSelectionKeys(m_availableCameraIds);
@@ -251,6 +264,7 @@ namespace scopeone::ui
         return m_cameraInfoText;
     }
 
+    // Clears preview state for one camera
     void PreviewWidget::clearCameraFrames(const QString& cameraId)
     {
         m_cameraInfos.remove(streamSelectionKey(cameraId, false));
@@ -283,6 +297,7 @@ namespace scopeone::ui
         doneCurrent();
     }
 
+    // Registers a camera when its first frame arrives
     bool PreviewWidget::registerAvailableCamera(const QString& cameraId)
     {
         if (cameraId.isEmpty() || m_availableCameraIds.contains(cameraId))
@@ -295,6 +310,7 @@ namespace scopeone::ui
         return true;
     }
 
+    // Sets the global preview zoom percentage
     void PreviewWidget::setZoomPercent(int percent)
     {
         const int nextPercent = qBound(10, percent, 500);
@@ -312,6 +328,7 @@ namespace scopeone::ui
         return m_zoomPercent;
     }
 
+    // Enables or disables fit to window display mode
     void PreviewWidget::setFitToWindow(bool enabled)
     {
         if (m_fitToWindow == enabled)
@@ -332,6 +349,7 @@ namespace scopeone::ui
         return m_fitToWindow;
     }
 
+    // Sets manual pixel offset for one camera stream
     void PreviewWidget::setCameraOffset(const QString& cameraId, int offsetX, int offsetY)
     {
         QMutexLocker lock(&m_mutex);
@@ -341,6 +359,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Sets preview flips for one camera stream
     void PreviewWidget::setCameraFlip(const QString& cameraId, bool flipX, bool flipY)
     {
         QMutexLocker lock(&m_mutex);
@@ -350,6 +369,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Sets per camera preview zoom percentage
     void PreviewWidget::setCameraZoomPercent(const QString& cameraId, int percent)
     {
         QMutexLocker lock(&m_mutex);
@@ -358,9 +378,9 @@ namespace scopeone::ui
         update();
     }
 
+    // Refreshes placeholder state and schedules repaint
     void PreviewWidget::updateImageDisplay()
     {
-        // Refresh placeholder text from current stream state
         bool hasDisplayableFrame = false;
         {
             QMutexLocker lock(&m_mutex);
@@ -388,6 +408,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Updates rolling FPS statistics for one stream
     PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& streamKey)
     {
         FpsState& state = m_fpsStates[streamKey];
@@ -410,17 +431,20 @@ namespace scopeone::ui
         return {state.lastFps, false};
     }
 
+    // Checks whether a camera state has a raw frame
     bool PreviewWidget::hasRawFrame(const CameraFrameState& frameState) const
     {
         return frameState.rawFrame.isValid();
     }
 
+    // Copies camera frame state under the preview mutex
     QMap<QString, PreviewWidget::CameraFrameState> PreviewWidget::snapshotCameraFrames() const
     {
         QMutexLocker lock(&m_mutex);
         return m_cameraFrames;
     }
 
+    // Builds render metadata for cameras with displayable frames
     std::vector<PreviewWidget::CameraRenderInfo> PreviewWidget::buildCameraRenderInfos(
         const QMap<QString, CameraFrameState>& cameraFrames) const
     {
@@ -439,6 +463,7 @@ namespace scopeone::ui
         return cameraRenderInfos;
     }
 
+    // Builds a complete render snapshot for painting or hit testing
     void PreviewWidget::buildRenderSnapshot(QMap<QString, CameraFrameState>& cameraFrames,
                                             std::vector<CameraRenderInfo>& cameraRenderInfos,
                                             std::vector<RenderItem>& renderItems) const
@@ -448,6 +473,7 @@ namespace scopeone::ui
         renderItems = buildRenderItems(cameraRenderInfos);
     }
 
+    // Resolves the displayed image rectangle for one stream
     bool PreviewWidget::resolveDisplayGeometry(const CameraFrameState& frameState,
                                                bool processed,
                                                const QRect& area,
@@ -479,6 +505,7 @@ namespace scopeone::ui
             && displayRect.height() > 0;
     }
 
+    // Maps one widget position into image coordinates
     bool PreviewWidget::mapWidgetPositionToImage(const CameraFrameState& frameState,
                                                  bool processed,
                                                  const QRect& area,
@@ -513,6 +540,7 @@ namespace scopeone::ui
         return true;
     }
 
+    // Paints the placeholder text when no frame is available
     void PreviewWidget::paintPlaceholder(const QString& text)
     {
         QPainter painter(this);
@@ -525,6 +553,7 @@ namespace scopeone::ui
                          text.isEmpty() ? QStringLiteral("No image loaded") : text);
     }
 
+    // Draws one render item into its assigned area
     void PreviewWidget::drawRenderItem(const RenderItem& item)
     {
         if (!item.info || !item.info->frameState)
@@ -569,6 +598,7 @@ namespace scopeone::ui
         }
     }
 
+    // Updates the camera info overlay text
     void PreviewWidget::updateCameraInfoDisplay()
     {
         if (m_cameraInfos.isEmpty())
@@ -615,12 +645,12 @@ namespace scopeone::ui
         emit cameraInfoTextChanged(m_cameraInfoText);
     }
 
+    // Resolves one widget point against active render items
     bool PreviewWidget::widgetToImageCoords(const QPoint& widgetPos,
                                             QString& outCameraId,
                                             QPoint& outImagePos,
                                             bool& outProcessed) const
     {
-        // Resolve one widget point against the active render items
         QMap<QString, CameraFrameState> cameraFrames;
         std::vector<CameraRenderInfo> cameraRenderInfos;
         std::vector<RenderItem> renderItems;
@@ -657,6 +687,7 @@ namespace scopeone::ui
         return false;
     }
 
+    // Finds the render target under a widget position
     bool PreviewWidget::locateRenderTarget(const QPoint& widgetPos,
                                            QString& cameraId,
                                            bool& processed,
@@ -700,6 +731,7 @@ namespace scopeone::ui
         return false;
     }
 
+    // Maps one widget point into image coordinates for a chosen camera
     bool PreviewWidget::widgetToImageCoordsForCamera(const QString& cameraId,
                                                      const QPoint& widgetPos,
                                                      QPoint& outImagePos,
@@ -745,6 +777,7 @@ namespace scopeone::ui
         return false;
     }
 
+    // Reads one raw or processed pixel value
     bool PreviewWidget::getPixelValue(const QString& cameraId,
                                       const QPoint& imagePos,
                                       bool processed,
@@ -772,6 +805,7 @@ namespace scopeone::ui
         return false;
     }
 
+    // Initializes OpenGL state for preview rendering
     void PreviewWidget::initializeGL()
     {
         initializeOpenGLFunctions();
@@ -780,6 +814,7 @@ namespace scopeone::ui
         ensureGlPipeline();
     }
 
+    // Updates the OpenGL viewport after resize
     void PreviewWidget::resizeGL(int w, int h)
     {
         Q_UNUSED(w);
@@ -787,6 +822,7 @@ namespace scopeone::ui
         applyViewportForRect(rect());
     }
 
+    // Computes tiled preview rectangles for visible streams
     std::vector<QRect> PreviewWidget::computeLayout(int count) const
     {
         std::vector<QRect> areas;
@@ -825,10 +861,10 @@ namespace scopeone::ui
         return areas;
     }
 
+    // Builds the render items that will be drawn this frame
     std::vector<PreviewWidget::RenderItem> PreviewWidget::buildRenderItems(
         const std::vector<CameraRenderInfo>& cameraRenderInfos) const
     {
-        // Build the streams that will be drawn this frame
         std::vector<RenderItem> items;
         if (cameraRenderInfos.empty())
         {
@@ -912,7 +948,6 @@ namespace scopeone::ui
                         return;
                     }
 
-                    // Skip ids that have no data now
                     const auto it = renderInfoByCameraId.constFind(cameraId);
                     if (it == renderInfoByCameraId.constEnd() || it.value() == nullptr)
                     {
@@ -937,7 +972,6 @@ namespace scopeone::ui
                 {
                     tryAdd(cameraId, false);
                 }
-                // Show raw streams before processed ones
                 for (const QString& cameraId : m_availableCameraIds)
                 {
                     tryAdd(cameraId, true);
@@ -961,7 +995,6 @@ namespace scopeone::ui
                 const int count = static_cast<int>(std::min<size_t>(4, streamItems.size()));
                 const auto areas = computeLayout(count);
                 const size_t limit = std::min<size_t>(streamItems.size(), areas.size());
-                // Draw at most four streams in the grid
                 for (size_t i = 0; i < limit; ++i)
                 {
                     addItem(streamItems[i].info, streamItems[i].processed, areas[i], 1.0f);
@@ -974,7 +1007,6 @@ namespace scopeone::ui
             {
                 return items;
             }
-            // Overlay mode uses the same full area
             addItem(streams[0].info, streams[0].processed, full, 1.0f);
             if (streams.size() > 1)
             {
@@ -1030,9 +1062,9 @@ namespace scopeone::ui
         return items;
     }
 
+    // Draws the current preview frame with OpenGL
     void PreviewWidget::paintGL()
     {
-        // Draw all visible streams from a stable snapshot
         if (!context() || !context()->isValid())
         {
             return;
@@ -1055,7 +1087,6 @@ namespace scopeone::ui
 
         if (canGpu)
         {
-            // Draw everything with GL when the pipeline is ready
             if (renderItems.empty())
             {
                 paintPlaceholder(m_placeholderText);
@@ -1096,7 +1127,6 @@ namespace scopeone::ui
         static bool warned = false;
         if (!warned)
         {
-            // Keep one warning so the log stays readable
             qWarning() << "PreviewWidget: GPU rendering unavailable; no CPU fallback path is enabled";
             warned = true;
         }
@@ -1105,6 +1135,7 @@ namespace scopeone::ui
         return;
     }
 
+    // Sets display intensity levels for one stream
     void PreviewWidget::setStreamDisplayLevels(const QString& cameraId,
                                                bool processed,
                                                int minLevel,
@@ -1124,6 +1155,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Creates shaders buffers and uniforms for preview rendering
     void PreviewWidget::ensureGlPipeline()
     {
         if (m_glInited) return;
@@ -1199,6 +1231,7 @@ namespace scopeone::ui
         m_glInited = true;
     }
 
+    // Sets texture coordinate transform for flips
     void PreviewWidget::setUvTransform(bool flipX, bool flipY)
     {
         const float sx = flipX ? -1.0f : 1.0f;
@@ -1210,6 +1243,7 @@ namespace scopeone::ui
         if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
     }
 
+    // Uploads and draws one image frame into a target rectangle
     void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                         const ImageFrame& frame,
                                         const QRect& r,
@@ -1291,6 +1325,7 @@ namespace scopeone::ui
     }
 
 
+    // Computes the target rectangle for an image inside an area
     QRect PreviewWidget::targetRectForImageSize(const QSize& imageSize,
                                                 const CameraFrameState& frameState,
                                                 const QRect& avail) const
@@ -1320,6 +1355,7 @@ namespace scopeone::ui
         return QRect(QPoint(x, y), s);
     }
 
+    // Applies an OpenGL viewport for a logical widget rectangle
     void PreviewWidget::applyViewportForRect(const QRect& logicalRect)
     {
         if (logicalRect.width() <= 0 || logicalRect.height() <= 0)
@@ -1337,6 +1373,7 @@ namespace scopeone::ui
         glViewport(xPx, glY, wPx, hPx);
     }
 
+    // Returns an existing texture or creates one with matching shape
     GLuint PreviewWidget::getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat)
     {
         auto it = m_textureCache.find(key);
@@ -1372,6 +1409,7 @@ namespace scopeone::ui
         return texId;
     }
 
+    // Deletes all cached OpenGL textures
     void PreviewWidget::cleanupTextureCache()
     {
         makeCurrent();
@@ -1383,6 +1421,7 @@ namespace scopeone::ui
         doneCurrent();
     }
 
+    // Starts ROI drawing for one camera
     void PreviewWidget::startROIDrawing(const QString& cameraId)
     {
         if (m_lineDrawingMode)
@@ -1397,6 +1436,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Cancels active ROI drawing
     void PreviewWidget::cancelROIDrawing()
     {
         if (!m_roiDrawingMode)
@@ -1410,6 +1450,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Starts line drawing for one camera
     void PreviewWidget::startLineDrawing(const QString& cameraId)
     {
         if (m_roiDrawingMode)
@@ -1424,6 +1465,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Cancels active line drawing
     void PreviewWidget::cancelLineDrawing()
     {
         if (!m_lineDrawingMode)
@@ -1437,6 +1479,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Clears the current line overlay
     void PreviewWidget::clearLine()
     {
         m_lineVisible = false;
@@ -1448,6 +1491,7 @@ namespace scopeone::ui
         update();
     }
 
+    // Starts ROI or line interaction from a mouse press
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
@@ -1485,6 +1529,7 @@ namespace scopeone::ui
         QOpenGLWidget::mousePressEvent(event);
     }
 
+    // Updates active ROI or line interaction during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
@@ -1505,9 +1550,9 @@ namespace scopeone::ui
         QOpenGLWidget::mouseMoveEvent(event);
     }
 
+    // Finishes ROI or line drawing in image coordinates
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
-        // Finish ROI and line drawing in image coordinates
         emit mousePositionChanged(event->pos());
         if (m_lineDrawingMode && event->button() == Qt::LeftButton && m_lineDragging)
         {
@@ -1578,6 +1623,7 @@ namespace scopeone::ui
         QOpenGLWidget::mouseReleaseEvent(event);
     }
 
+    // Handles control wheel zoom around the cursor anchor
     void PreviewWidget::wheelEvent(QWheelEvent* event)
     {
         if (!(event->modifiers() & Qt::ControlModifier))
@@ -1641,6 +1687,7 @@ namespace scopeone::ui
         event->accept();
     }
 
+    // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
         if (m_lineDrawingMode && event->key() == Qt::Key_Escape)

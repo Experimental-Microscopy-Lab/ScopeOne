@@ -7,6 +7,7 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        // Clones a concrete module and copies its parameter values
         std::unique_ptr<ProcessingModule> cloneModule(const ProcessingModule* source, QObject* parent)
         {
             std::unique_ptr<ProcessingModule> module;
@@ -39,11 +40,13 @@ namespace scopeone::core::internal
         }
     } // namespace
 
+    // Creates an empty configurable processing pipeline
     ProcessingPipeline::ProcessingPipeline(QObject* parent)
         : QObject(parent)
     {
     }
 
+    // Adds one module to the shared configuration pipeline
     void ProcessingPipeline::addModule(std::unique_ptr<ProcessingModule> module)
     {
         if (module)
@@ -53,6 +56,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Removes one module from the shared configuration pipeline
     bool ProcessingPipeline::removeModule(int index)
     {
         QMutexLocker locker(&m_modulesMutex);
@@ -64,6 +68,7 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Creates an independent runtime pipeline with copied module parameters
     std::shared_ptr<ProcessingPipeline> ProcessingPipeline::clone(QObject* parent) const
     {
         auto pipeline = std::make_shared<ProcessingPipeline>(parent);
@@ -75,15 +80,17 @@ namespace scopeone::core::internal
         return pipeline;
     }
 
-    void ProcessingPipeline::forEachModule(const std::function<void(const ProcessingModule *)> & visitor)
-    const
-{
-    QMutexLocker locker(&m_modulesMutex);
-    for (const auto& module : m_modules) {
-        visitor(module.get());
+    // Visits every configured module while holding the module list lock
+    void ProcessingPipeline::forEachModule(const std::function<void(const ProcessingModule *)>& visitor) const
+    {
+        QMutexLocker locker(&m_modulesMutex);
+        for (const auto& module : m_modules)
+        {
+            visitor(module.get());
+        }
     }
-}
 
+    // Gives controlled mutable access to one configured module
     bool ProcessingPipeline::withModule(int index, const std::function<bool(ProcessingModule *)>& visitor)
     {
         QMutexLocker locker(&m_modulesMutex);
@@ -94,9 +101,9 @@ namespace scopeone::core::internal
         return visitor(m_modules[static_cast<size_t>(index)].get());
     }
 
+    // Runs all modules in order for one frame
     ImageFrame ProcessingPipeline::process(const ImageFrame& input, int processingBitDepth)
     {
-        // Run modules in order and keep the last valid frame
         ImageFrame result(input);
 
         if (!input.isValid())
@@ -136,12 +143,14 @@ namespace scopeone::core::internal
         return result;
     }
 
+    // Returns the current configured module count
     int ProcessingPipeline::getModuleCount() const
     {
         QMutexLocker locker(&m_modulesMutex);
         return static_cast<int>(m_modules.size());
     }
 
+    // Creates the processing manager and sizes the worker pool
     ImageProcessingManager::ImageProcessingManager(QObject* parent)
         : QObject(parent)
           , m_pipeline(std::make_shared<ProcessingPipeline>())
@@ -152,33 +161,39 @@ namespace scopeone::core::internal
         m_threadPool->setMaxThreadCount(qMax(2, idealThreadCount - 1));
     }
 
+    // Waits briefly for active processing workers to finish
     ImageProcessingManager::~ImageProcessingManager()
     {
         m_threadPool->waitForDone(5000);
     }
 
+    // Returns the shared configuration pipeline
     ProcessingPipeline* ImageProcessingManager::pipeline() const
     {
         return m_pipeline.get();
     }
 
+    // Enables or disables real time processing for incoming frames
     void ImageProcessingManager::enableRealTimeProcessing(bool enabled)
     {
         m_realTimeEnabled = enabled;
     }
 
+    // Sets the processing bit depth and rebuilds runtime pipelines
     void ImageProcessingManager::setProcessingBitDepth(int bitDepth)
     {
         m_processingBitDepth = bitDepth >= 16 ? 16 : 8;
         clearRuntimePipelines();
     }
 
+    // Drops per camera runtime pipelines so they rebuild from configuration
     void ImageProcessingManager::clearRuntimePipelines()
     {
         QMutexLocker locker(&m_frameMutex);
         m_cameraPipelines.clear();
     }
 
+    // Queues one frame for asynchronous processing
     void ImageProcessingManager::processFrameAsync(const ImageFrame& frame)
     {
         if (!m_realTimeEnabled || !frame.isValid())
@@ -188,15 +203,16 @@ namespace scopeone::core::internal
         submitFrame(frame);
     }
 
+    // Builds a stable key for camera specific processing state
     QString ImageProcessingManager::getCameraKey(const ImageFrame& frame) const
     {
         const QString key = frame.cameraId;
         return key.isEmpty() ? QStringLiteral("__default__") : key;
     }
 
+    // Stores the newest frame and starts a worker when needed
     void ImageProcessingManager::submitFrame(const ImageFrame& frame)
     {
-        // Keep only the newest pending frame per camera
         if (!m_realTimeEnabled || !frame.isValid())
         {
             return;
@@ -208,7 +224,7 @@ namespace scopeone::core::internal
         {
             QMutexLocker locker(&m_frameMutex);
             CameraSlot& slot = m_cameraSlots[cameraKey];
-            slot.latestFrame = frame; // Keep only latest frame for this camera
+            slot.latestFrame = frame;
             slot.hasFrame = true;
             if (!slot.processing)
             {
@@ -226,6 +242,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Returns the runtime pipeline owned by one camera stream
     std::shared_ptr<ProcessingPipeline> ImageProcessingManager::pipelineForCamera(const QString& cameraKey)
     {
         QMutexLocker locker(&m_frameMutex);
@@ -240,9 +257,9 @@ namespace scopeone::core::internal
         return pipeline;
     }
 
+    // Drains the newest frame queue for one camera stream
     void ImageProcessingManager::processCameraQueue(const QString& cameraKey)
     {
-        // One worker drains one camera queue
         while (true)
         {
             ImageFrame frame;
