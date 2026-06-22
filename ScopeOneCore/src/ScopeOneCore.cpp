@@ -1696,17 +1696,15 @@ namespace scopeone::core
             return out;
         }
 
-        const int count = pipeline->getModuleCount();
-        out.reserve(count);
-        for (int i = 0; i < count; ++i)
+        out.reserve(pipeline->getModuleCount());
+        pipeline->forEachModule([&out](const ProcessingModule* module)
         {
-            ProcessingModule* module = pipeline->getModule(i);
             ProcessingModuleInfo info;
             info.setKind(processingModuleKind(module));
             info.setName(module->getModuleName());
             info.setParameters(module->getParameters());
             out.append(std::move(info));
-        }
+        });
         return out;
     }
 
@@ -1742,6 +1740,7 @@ namespace scopeone::core
         }
 
         pipeline->addModule(std::move(module));
+        m_managers->imageProcessingManager->clearRuntimePipelines();
         emit processingModulesChanged();
         return true;
     }
@@ -1750,11 +1749,15 @@ namespace scopeone::core
     {
         ProcessingPipeline* pipeline = processingPipeline(
             m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline || index < 0 || index >= pipeline->getModuleCount())
+        if (!pipeline)
         {
             return false;
         }
-        pipeline->removeModule(index);
+        if (!pipeline->removeModule(index))
+        {
+            return false;
+        }
+        m_managers->imageProcessingManager->clearRuntimePipelines();
         emit processingModulesChanged();
         return true;
     }
@@ -1767,12 +1770,16 @@ namespace scopeone::core
         {
             return false;
         }
-        ProcessingModule* module = pipeline->getModule(index);
-        if (!module)
+        const bool updated = pipeline->withModule(index, [&parameters](ProcessingModule* module)
+        {
+            module->setParameters(parameters);
+            return true;
+        });
+        if (!updated)
         {
             return false;
         }
-        module->setParameters(parameters);
+        m_managers->imageProcessingManager->clearRuntimePipelines();
         emit processingModulesChanged();
         return true;
     }
@@ -1785,20 +1792,23 @@ namespace scopeone::core
         {
             return false;
         }
-        ProcessingModule* module = pipeline->getModule(index);
-        if (!module)
+        const bool reset = pipeline->withModule(index, [](ProcessingModule* module)
         {
+            if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
+            {
+                background->resetCalibration();
+                return true;
+            }
+            if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
+            {
+                differentialRolling->resetBuffer();
+                return true;
+            }
             return false;
-        }
-        if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
+        });
+        if (reset)
         {
-            background->resetCalibration();
-            emit processingModulesChanged();
-            return true;
-        }
-        if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
-        {
-            differentialRolling->resetBuffer();
+            m_managers->imageProcessingManager->clearRuntimePipelines();
             emit processingModulesChanged();
             return true;
         }

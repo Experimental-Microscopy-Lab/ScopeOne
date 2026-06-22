@@ -2,9 +2,6 @@
 
 #include "internal/ProcessingModule.h"
 
-#include <QHash>
-#include <QMutex>
-
 #include <deque>
 #include <vector>
 
@@ -38,7 +35,6 @@ namespace scopeone::core::internal
     private:
         int m_batchSize{16};
         bool m_normalize{true};
-        QHash<QString, CameraState> m_states;
-        QMutex m_mutex;
+        CameraState m_state;
     };
 } // namespace scopeone::core::internal

@@ -1,10 +1,6 @@
 #pragma once
 
 #include "internal/ProcessingModule.h"
-
-#include <QHash>
-#include <QMutex>
-
 #include <deque>
 
 namespace scopeone::core::internal
@@ -47,20 +43,14 @@ namespace scopeone::core::internal
         void resetCalibration();
 
     private:
-        struct CameraState
-        {
-            std::deque<ImageFrame> buffer;
-            ImageFrame background;
-            bool calibrated{false};
-        };
-
-        ImageFrame computeBackground(const std::deque<ImageFrame>& buffer) const;
+        void computeBackground();
 
         int m_calibrationFrames;
+        std::deque<ImageFrame> m_buffer;
+        ImageFrame m_background;
+        bool m_calibrated;
         BackgroundOperation m_operation;
         BackgroundMethod m_method;
         BackgroundMode m_mode{BackgroundMode::Snapshot};
-        QHash<QString, CameraState> m_states;
-        QMutex m_mutex;
     };
 }
