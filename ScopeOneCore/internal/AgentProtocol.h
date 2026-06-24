@@ -55,20 +55,20 @@ namespace scopeone::core::internal::agent
         return QString::number(value);
     }
 
-    inline quint64 decodeUInt64(const QJsonValue& value, quint64 fallback = 0)
+    inline quint64 decodeUInt64(const QJsonValue& value, quint64 defaultValue = 0)
     {
         if (value.isString())
         {
             bool ok = false;
             const quint64 parsed = value.toString().toULongLong(&ok);
-            return ok ? parsed : fallback;
+            return ok ? parsed : defaultValue;
         }
         if (value.isDouble())
         {
-            const double numeric = value.toDouble(static_cast<double>(fallback));
-            return (numeric >= 0.0) ? static_cast<quint64>(numeric) : fallback;
+            const double numeric = value.toDouble(static_cast<double>(defaultValue));
+            return (numeric >= 0.0) ? static_cast<quint64>(numeric) : defaultValue;
         }
-        return fallback;
+        return defaultValue;
     }
 
     inline QJsonObject makeEnvelope(const QString& kind,

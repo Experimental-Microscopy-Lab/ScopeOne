@@ -75,7 +75,7 @@ namespace scopeone::core::internal
         std::shared_ptr<ProcessingPipeline> m_pipeline;
         QHash<QString, std::shared_ptr<ProcessingPipeline>> m_cameraPipelines;
         std::atomic<bool> m_realTimeEnabled;
-        std::atomic<int> m_processingBitDepth{8};
+        std::atomic<int> m_processingBitDepth{16};
         void submitFrame(const ImageFrame& frame);
         mutable QMutex m_frameMutex;
         QHash<QString, CameraSlot> m_cameraSlots;

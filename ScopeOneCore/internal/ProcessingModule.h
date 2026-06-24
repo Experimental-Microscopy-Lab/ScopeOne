@@ -13,10 +13,10 @@ namespace scopeone::core::internal
     struct ModuleInput
     {
         ImageFrame frame;
-        int processingBitDepth{8};
+        int processingBitDepth{16};
         ModuleInput() = default;
 
-        explicit ModuleInput(const ImageFrame& f, int bitDepth = 8)
+        explicit ModuleInput(const ImageFrame& f, int bitDepth = 16)
             : frame(f)
               , processingBitDepth(bitDepth)
         {

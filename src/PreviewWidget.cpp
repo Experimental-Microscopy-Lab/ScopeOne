@@ -1127,7 +1127,7 @@ namespace scopeone::ui
         static bool warned = false;
         if (!warned)
         {
-            qWarning() << "PreviewWidget: GPU rendering unavailable; no CPU fallback path is enabled";
+            qWarning() << "PreviewWidget: GPU rendering unavailable; CPU rendering is not enabled";
             warned = true;
         }
         paintPlaceholder(QStringLiteral(

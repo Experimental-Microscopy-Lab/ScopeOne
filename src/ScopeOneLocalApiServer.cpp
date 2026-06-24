@@ -161,11 +161,11 @@ namespace scopeone::ui
             return points;
         }
 
-        // Reads a string field with fallback for empty values
-        QString stringValueOrDefault(const QJsonObject& object, const QString& key, const QString& fallback)
+        // Reads a string field or returns the requested default value
+        QString stringValueOrDefault(const QJsonObject& object, const QString& key, const QString& defaultValue)
         {
             const QString value = object.value(key).toString().trimmed();
-            return value.isEmpty() ? fallback : value;
+            return value.isEmpty() ? defaultValue : value;
         }
 
         // Resolves a request camera target against loaded cameras
