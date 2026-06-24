@@ -84,7 +84,7 @@ namespace scopeone::ui
     // Rebuild the preset table while preserving scroll position
     void ConfigPresetWidget::refresh()
     {
-        if (m_updating || !m_configTree)
+        if (m_updating)
         {
             return;
         }
@@ -106,10 +106,6 @@ namespace scopeone::ui
 
         QTimer::singleShot(0, this, [this, oldScrollValue]()
         {
-            if (!m_configTree)
-            {
-                return;
-            }
             if (auto* sb = m_configTree->verticalScrollBar())
             {
                 sb->setValue(oldScrollValue);

@@ -525,10 +525,7 @@ namespace scopeone::ui
 
         auto* topWidget = new QWidget(this);
         auto* topLayout = new QVBoxLayout(topWidget);
-        if (m_runControlsWidget)
-        {
-            topLayout->addWidget(m_runControlsWidget);
-        }
+        topLayout->addWidget(m_runControlsWidget);
         topLayout->addWidget(m_moduleList->parentWidget());
 
         splitter->addWidget(topWidget);
@@ -664,36 +661,16 @@ namespace scopeone::ui
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
         const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
-        if (m_startButton)
-        {
-            m_startButton->setEnabled(!running && hasModules);
-        }
-        if (m_stopButton)
-        {
-            m_stopButton->setEnabled(running);
-        }
-        if (m_processingBitDepthCombo)
-        {
-            m_processingBitDepthCombo->setEnabled(!running);
-        }
-        if (m_moduleList && m_moduleList->parentWidget())
-        {
-            m_moduleList->parentWidget()->setEnabled(!running);
-        }
-        if (m_configStack && m_configStack->parentWidget())
-        {
-            m_configStack->parentWidget()->setEnabled(!running);
-        }
+        m_startButton->setEnabled(!running && hasModules);
+        m_stopButton->setEnabled(running);
+        m_processingBitDepthCombo->setEnabled(!running);
+        m_moduleList->parentWidget()->setEnabled(!running);
+        m_configStack->parentWidget()->setEnabled(!running);
     }
 
     // Syncs processing settings from core state
     void ImageProcessingWidget::updateProcessingSettings()
     {
-        if (!m_processingBitDepthCombo)
-        {
-            return;
-        }
-
         const auto currentBitDepth = static_cast<int>(m_scopeonecore->processingBitDepth());
         const int index = m_processingBitDepthCombo->findData(currentBitDepth);
         if (index >= 0 && index != m_processingBitDepthCombo->currentIndex())
@@ -715,7 +692,7 @@ namespace scopeone::ui
         }
 
         updateModuleList();
-        if (m_moduleList && m_moduleList->count() > 0)
+        if (m_moduleList->count() > 0)
         {
             m_moduleList->setCurrentRow(m_moduleList->count() - 1);
         }
@@ -741,8 +718,7 @@ namespace scopeone::ui
         updateModuleList();
         updateConfigWidget();
         const bool noModules = m_scopeonecore->processingModules().isEmpty();
-        if (m_scopeonecore->processingModules().isEmpty()
-            && m_scopeonecore->isRealTimeProcessingEnabled())
+        if (noModules && m_scopeonecore->isRealTimeProcessingEnabled())
         {
             m_scopeonecore->setRealTimeProcessingEnabled(false);
             emit processingStopped();
@@ -763,11 +739,6 @@ namespace scopeone::ui
     // Applies the selected processing bit depth
     void ImageProcessingWidget::onProcessingBitDepthChanged()
     {
-        if (!m_processingBitDepthCombo)
-        {
-            return;
-        }
-
         const auto bitDepth = static_cast<scopeone::core::ScopeOneCore::ProcessingBitDepth>(
             m_processingBitDepthCombo->currentData().toInt());
         if (!m_scopeonecore->setProcessingBitDepth(bitDepth))

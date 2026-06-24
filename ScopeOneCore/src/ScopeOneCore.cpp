@@ -145,10 +145,10 @@ namespace
 
     template <typename Operation>
     // Run an MMCore operation only after validating the device label
-    bool runWithTrimmedLabel(const std::shared_ptr<CMMCore>& handle, const QString& rawLabel, Operation&& operation)
+    bool runWithTrimmedLabel(const QString& rawLabel, Operation&& operation)
     {
         const QString label = rawLabel.trimmed();
-        if (!handle || label.isEmpty())
+        if (label.isEmpty())
         {
             return false;
         }
@@ -412,17 +412,6 @@ namespace
         return scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown;
     }
 
-    // Return the editable processing pipeline owned by the manager
-    scopeone::core::internal::ProcessingPipeline* processingPipeline(
-        scopeone::core::internal::ImageProcessingManager* manager)
-    {
-        if (!manager)
-        {
-            return nullptr;
-        }
-        return manager->pipeline();
-    }
-
     // Capture current device properties for recording metadata
     QByteArray buildDevicePropertyMetadataJson(const scopeone::core::ScopeOneCore& core)
     {
@@ -567,16 +556,7 @@ namespace scopeone::core
     // Expose the native MMCore handle for low level callers
     std::shared_ptr<CMMCore> ScopeOneCore::core() const
     {
-        if (!m_managers || !m_managers->mmcoreManager)
-        {
-            return {};
-        }
         return m_managers->mmcoreManager->getCore();
-    }
-
-    bool ScopeOneCore::hasCore() const
-    {
-        return core() != nullptr;
     }
 
     // Check whether a device is owned by the agent camera path
@@ -595,10 +575,6 @@ namespace scopeone::core
         }
 
         auto handle = core();
-        if (!handle)
-        {
-            return false;
-        }
         try
         {
             return handle->getDeviceType(device.toStdString().c_str()) == MM::CameraDevice;
@@ -613,11 +589,6 @@ namespace scopeone::core
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
         QStringList running;
-        if (!m_managers || !m_managers->mpcm)
-        {
-            return running;
-        }
-
         for (const QString& cameraId : m_cameraIds)
         {
             if (m_managers->mpcm->isPreviewRunning(cameraId))
@@ -633,15 +604,6 @@ namespace scopeone::core
                                                  LoadConfigResult* result,
                                                  QString* errorMessage)
     {
-        // Keep manager state aligned with loaded cameras
-        if (!m_managers || !m_managers->mmcoreManager || !m_managers->mpcm)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("ScopeOneCore is not initialized");
-            }
-            return false;
-        }
         MMCoreManager::LoadConfigResult mmResult;
         if (!m_managers->mmcoreManager->loadConfigurationAndStartCameras(
             configPath, m_managers->mpcm, &mmResult, errorMessage))
@@ -676,21 +638,15 @@ namespace scopeone::core
     // Stop cameras and clear all cached runtime state
     void ScopeOneCore::unloadConfiguration()
     {
-        if (m_managers && m_managers->mpcm)
-        {
-            m_managers->mpcm->stopPreview();
-            m_managers->mpcm->stopAgents();
-        }
+        m_managers->mpcm->stopPreview();
+        m_managers->mpcm->stopAgents();
         auto handle = core();
-        if (handle)
+        try
         {
-            try
-            {
-                handle->unloadAllDevices();
-            }
-            catch (const CMMError&)
-            {
-            }
+            handle->unloadAllDevices();
+        }
+        catch (const CMMError&)
+        {
         }
         m_cameraIds.clear();
         m_latestRawHeaders.clear();
@@ -705,10 +661,6 @@ namespace scopeone::core
     void ScopeOneCore::startPreview(const QString& cameraIdOrAll)
     {
         // Route preview to one camera or all cameras
-        if (!m_managers || !m_managers->mpcm)
-        {
-            return;
-        }
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
@@ -727,10 +679,6 @@ namespace scopeone::core
     // Stop preview for one camera or the full camera set
     void ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
     {
-        if (!m_managers || !m_managers->mpcm)
-        {
-            return;
-        }
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
@@ -749,10 +697,6 @@ namespace scopeone::core
     // Submit exposure changes through the active camera manager
     bool ScopeOneCore::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
-        if (!m_managers || !m_managers->mpcm)
-        {
-            return false;
-        }
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
@@ -764,7 +708,7 @@ namespace scopeone::core
     // Apply an ROI rectangle to a camera stream
     bool ScopeOneCore::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
-        if (!m_managers || !m_managers->mpcm || cameraId.trimmed().isEmpty())
+        if (cameraId.trimmed().isEmpty())
         {
             return false;
         }
@@ -773,7 +717,7 @@ namespace scopeone::core
 
     bool ScopeOneCore::clearROI(const QString& cameraId)
     {
-        if (!m_managers || !m_managers->mpcm || cameraId.trimmed().isEmpty())
+        if (cameraId.trimmed().isEmpty())
         {
             return false;
         }
@@ -848,10 +792,6 @@ namespace scopeone::core
             return true;
         }
 
-        if (!m_managers || !m_managers->mpcm)
-        {
-            return false;
-        }
         return m_managers->mpcm->getLatestRaw(trimmedCameraId, header, data);
     }
 
@@ -1029,10 +969,6 @@ namespace scopeone::core
     QStringList ScopeOneCore::xyStageDevices() const
     {
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(handle->getLoadedDevicesOfType(MM::XYStageDevice));
@@ -1046,10 +982,6 @@ namespace scopeone::core
     QStringList ScopeOneCore::zStageDevices() const
     {
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(handle->getLoadedDevicesOfType(MM::StageDevice));
@@ -1063,10 +995,6 @@ namespace scopeone::core
     QString ScopeOneCore::currentXYStageDevice() const
     {
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return QString::fromStdString(handle->getXYStageDevice());
@@ -1080,10 +1008,6 @@ namespace scopeone::core
     QString ScopeOneCore::currentFocusDevice() const
     {
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return QString::fromStdString(handle->getFocusDevice());
@@ -1101,7 +1025,7 @@ namespace scopeone::core
         y = 0.0;
         const QString label = xyStageLabel.trimmed();
         auto handle = core();
-        if (!handle || label.isEmpty())
+        if (label.isEmpty())
         {
             return false;
         }
@@ -1122,7 +1046,7 @@ namespace scopeone::core
         z = 0.0;
         const QString label = zStageLabel.trimmed();
         auto handle = core();
-        if (!handle || label.isEmpty())
+        if (label.isEmpty())
         {
             return false;
         }
@@ -1141,7 +1065,7 @@ namespace scopeone::core
     bool ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
         auto handle = core();
-        return runWithTrimmedLabel(handle, xyStageLabel, [&](const std::string& label)
+        return runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
         {
             handle->setRelativeXYPosition(label.c_str(), dx, dy);
             handle->waitForDevice(label.c_str());
@@ -1152,7 +1076,7 @@ namespace scopeone::core
     bool ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
         auto handle = core();
-        return runWithTrimmedLabel(handle, zStageLabel, [&](const std::string& label)
+        return runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
         {
             handle->setRelativePosition(label.c_str(), dz);
             handle->waitForDevice(label.c_str());
@@ -1163,7 +1087,7 @@ namespace scopeone::core
     bool ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
         auto handle = core();
-        return runWithTrimmedLabel(handle, xyStageLabel, [&](const std::string& label)
+        return runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
         {
             handle->setXYPosition(label.c_str(), x, y);
             handle->waitForDevice(label.c_str());
@@ -1174,7 +1098,7 @@ namespace scopeone::core
     bool ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
     {
         auto handle = core();
-        return runWithTrimmedLabel(handle, zStageLabel, [&](const std::string& label)
+        return runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
         {
             handle->setPosition(label.c_str(), z);
             handle->waitForDevice(label.c_str());
@@ -1185,10 +1109,6 @@ namespace scopeone::core
     QStringList ScopeOneCore::availableConfigGroups() const
     {
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             const auto groups = handle->getAvailableConfigGroups();
@@ -1209,7 +1129,7 @@ namespace scopeone::core
     QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
     {
         auto handle = core();
-        if (!handle || configGroup.isEmpty())
+        if (configGroup.isEmpty())
         {
             return {};
         }
@@ -1233,7 +1153,7 @@ namespace scopeone::core
     QString ScopeOneCore::currentConfig(const QString& groupName) const
     {
         auto handle = core();
-        if (!handle || groupName.isEmpty())
+        if (groupName.isEmpty())
         {
             return {};
         }
@@ -1251,7 +1171,7 @@ namespace scopeone::core
     bool ScopeOneCore::setConfig(const QString& groupName, const QString& configName)
     {
         auto handle = core();
-        if (!handle || groupName.isEmpty() || configName.isEmpty())
+        if (groupName.isEmpty() || configName.isEmpty())
         {
             return false;
         }
@@ -1282,28 +1202,21 @@ namespace scopeone::core
             return false;
         }
 
-        if (m_managers && m_managers->mpcm)
+        QString resolvedTarget = target;
+        if (resolvedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            QString resolvedTarget = target;
-            if (resolvedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+            if (m_cameraIds.isEmpty())
             {
-                if (m_cameraIds.isEmpty())
-                {
-                    return false;
-                }
-                resolvedTarget = m_cameraIds.first();
+                return false;
             }
-            if (m_cameraIds.contains(resolvedTarget) && m_managers->mpcm->getExposure(resolvedTarget, exposureMs))
-            {
-                return true;
-            }
+            resolvedTarget = m_cameraIds.first();
+        }
+        if (m_cameraIds.contains(resolvedTarget) && m_managers->mpcm->getExposure(resolvedTarget, exposureMs))
+        {
+            return true;
         }
 
         auto handle = core();
-        if (!handle)
-        {
-            return false;
-        }
         try
         {
             if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
@@ -1327,16 +1240,13 @@ namespace scopeone::core
     {
         auto handle = core();
         QStringList devices;
-        if (handle)
+        try
         {
-            try
-            {
-                devices = toQStringList(handle->getLoadedDevices());
-            }
-            catch (const CMMError&)
-            {
-                devices.clear();
-            }
+            devices = toQStringList(handle->getLoadedDevices());
+        }
+        catch (const CMMError&)
+        {
+            devices.clear();
         }
 
         // Agent cameras are not always loaded in the UI side MMCore instance
@@ -1387,17 +1297,9 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm)
-            {
-                return {};
-            }
             return m_managers->mpcm->listProperties(device);
         }
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(handle->getDevicePropertyNames(device.toStdString().c_str()));
@@ -1419,17 +1321,9 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm)
-            {
-                return {};
-            }
             return m_managers->mpcm->getProperty(device, property);
         }
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             if (fromCache)
@@ -1458,17 +1352,9 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm)
-            {
-                return QStringLiteral("Unknown");
-            }
             return m_managers->mpcm->getPropertyType(device, property);
         }
         auto handle = core();
-        if (!handle)
-        {
-            return QStringLiteral("Unknown");
-        }
         try
         {
             const MM::PropertyType type = handle->getPropertyType(device.toStdString().c_str(),
@@ -1498,17 +1384,9 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm)
-            {
-                return true;
-            }
             return m_managers->mpcm->isPropertyReadOnly(device, property);
         }
         auto handle = core();
-        if (!handle)
-        {
-            return true;
-        }
         try
         {
             return handle->isPropertyReadOnly(device.toStdString().c_str(), property.toStdString().c_str());
@@ -1529,10 +1407,6 @@ namespace scopeone::core
             return false;
         }
         auto handle = core();
-        if (!handle)
-        {
-            return false;
-        }
         try
         {
             return handle->isPropertyPreInit(device.toStdString().c_str(), property.toStdString().c_str());
@@ -1554,17 +1428,9 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm)
-            {
-                return {};
-            }
             return m_managers->mpcm->getAllowedPropertyValues(device, property);
         }
         auto handle = core();
-        if (!handle)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(
@@ -1593,8 +1459,7 @@ namespace scopeone::core
         }
         if (isAgentCamera(device))
         {
-            if (!m_managers || !m_managers->mpcm
-                || !m_managers->mpcm->hasPropertyLimits(device, property))
+            if (!m_managers->mpcm->hasPropertyLimits(device, property))
             {
                 return false;
             }
@@ -1604,10 +1469,6 @@ namespace scopeone::core
         }
 
         auto handle = core();
-        if (!handle)
-        {
-            return false;
-        }
         try
         {
             if (!handle->hasPropertyLimits(device.toStdString().c_str(), property.toStdString().c_str()))
@@ -1644,8 +1505,7 @@ namespace scopeone::core
         if (isAgentCamera(device))
         {
             QString agentError;
-            if (!m_managers || !m_managers->mpcm
-                || !m_managers->mpcm->setProperty(device, property, value, &agentError))
+            if (!m_managers->mpcm->setProperty(device, property, value, &agentError))
             {
                 if (errorMessage)
                 {
@@ -1659,15 +1519,6 @@ namespace scopeone::core
         }
 
         auto handle = core();
-        if (!handle)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
-
         const bool isCamera = isNativeCamera(device);
         const QStringList runningPreviewIds = isCamera ? runningPreviewCameraIds() : QStringList{};
         const auto applyProperty = [&]() -> bool
@@ -1697,27 +1548,18 @@ namespace scopeone::core
 
     bool ScopeOneCore::isRealTimeProcessingEnabled() const
     {
-        return m_managers && m_managers->imageProcessingManager
-            && m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
+        return m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
     }
 
     // Toggle live processing without changing the module list
     void ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
-        if (!m_managers || !m_managers->imageProcessingManager)
-        {
-            return;
-        }
         m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
     }
 
     // Return the configured processing precision exposed to the UI
     ScopeOneCore::ProcessingBitDepth ScopeOneCore::processingBitDepth() const
     {
-        if (!m_managers || !m_managers->imageProcessingManager)
-        {
-            return ProcessingBitDepth::Bit8;
-        }
         return m_managers->imageProcessingManager->processingBitDepth() >= 16
                    ? ProcessingBitDepth::Bit16
                    : ProcessingBitDepth::Bit8;
@@ -1726,11 +1568,6 @@ namespace scopeone::core
     // Change processing precision and rebuild runtime pipelines
     bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
     {
-        if (!m_managers || !m_managers->imageProcessingManager)
-        {
-            return false;
-        }
-
         const int nextBitDepth = bitDepth == ProcessingBitDepth::Bit16 ? 16 : 8;
         if (m_managers->imageProcessingManager->processingBitDepth() == nextBitDepth)
         {
@@ -1745,7 +1582,7 @@ namespace scopeone::core
     // Queue one frame for asynchronous processing
     void ScopeOneCore::processFrameAsync(const ImageFrame& frame)
     {
-        if (!m_managers || !m_managers->imageProcessingManager || !frame.isValid())
+        if (!frame.isValid())
         {
             return;
         }
@@ -1756,12 +1593,7 @@ namespace scopeone::core
     QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
     {
         QList<ProcessingModuleInfo> out;
-        ProcessingPipeline* pipeline = processingPipeline(
-            m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline)
-        {
-            return out;
-        }
+        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
 
         out.reserve(pipeline->getModuleCount());
         pipeline->forEachModule([&out](const ProcessingModule* module)
@@ -1778,12 +1610,7 @@ namespace scopeone::core
     // Add a processing module to the editable pipeline
     bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
     {
-        ProcessingPipeline* pipeline = processingPipeline(
-            m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline)
-        {
-            return false;
-        }
+        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
 
         std::unique_ptr<ProcessingModule> module;
         switch (kind)
@@ -1816,12 +1643,7 @@ namespace scopeone::core
     // Remove a processing module and drop stale runtime clones
     bool ScopeOneCore::removeProcessingModule(int index)
     {
-        ProcessingPipeline* pipeline = processingPipeline(
-            m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline)
-        {
-            return false;
-        }
+        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
         if (!pipeline->removeModule(index))
         {
             return false;
@@ -1834,12 +1656,7 @@ namespace scopeone::core
     // Update module parameters and rebuild per camera runtime modules
     bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
     {
-        ProcessingPipeline* pipeline = processingPipeline(
-            m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline)
-        {
-            return false;
-        }
+        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
         const bool updated = pipeline->withModule(index, [&parameters](ProcessingModule* module)
         {
             module->setParameters(parameters);
@@ -1857,12 +1674,7 @@ namespace scopeone::core
     // Reset stateful module buffers through the public facade
     bool ScopeOneCore::resetProcessingModuleState(int index)
     {
-        ProcessingPipeline* pipeline = processingPipeline(
-            m_managers ? m_managers->imageProcessingManager : nullptr);
-        if (!pipeline)
-        {
-            return false;
-        }
+        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
         const bool reset = pipeline->withModule(index, [](ProcessingModule* module)
         {
             if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
@@ -1888,29 +1700,17 @@ namespace scopeone::core
 
     void ScopeOneCore::setRecordingMaxPendingWriteBytes(qint64 bytes)
     {
-        if (m_managers && m_managers->recordingManager)
-        {
-            m_managers->recordingManager->setRecordedMaxBytes(bytes);
-        }
+        m_managers->recordingManager->setRecordedMaxBytes(bytes);
     }
 
     qint64 ScopeOneCore::recordingMaxPendingWriteBytes() const
     {
-        if (!m_managers || !m_managers->recordingManager)
-        {
-            return 0;
-        }
         return m_managers->recordingManager->recordedMaxBytes();
     }
 
     // Start recording and suspend preview during MDA motion
     bool ScopeOneCore::startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds)
     {
-        if (!m_managers || !m_managers->recordingManager)
-        {
-            return false;
-        }
-
         RecordingSettings settingsSnapshot = settings;
         const bool useMda = !settingsSnapshot.positions.empty() || !settingsSnapshot.zPositions.empty();
         QStringList suspendedPreviewIds;
@@ -1973,16 +1773,12 @@ namespace scopeone::core
 
     void ScopeOneCore::stopRecording()
     {
-        if (m_managers && m_managers->recordingManager)
-        {
-            m_managers->recordingManager->stop();
-        }
+        m_managers->recordingManager->stop();
     }
 
     bool ScopeOneCore::isRecording() const
     {
-        return m_managers && m_managers->recordingManager
-            && m_managers->recordingManager->isRecording();
+        return m_managers->recordingManager->isRecording();
     }
 
     // Save a completed session with device metadata attached

@@ -42,7 +42,6 @@ Outputs:
 
 
 - `ScopeOneCore::getVersion()`
-- `hasCore()`
 - `loadConfiguration(...)`
 - `unloadConfiguration()`
 - `cameraIds()`

@@ -77,10 +77,7 @@ namespace scopeone::ui
         setupUI();
         updateControlsState();
         refreshStageDevices();
-        if (m_cameraSelectCombo)
-        {
-            m_currentTarget = m_cameraSelectCombo->currentText();
-        }
+        m_currentTarget = m_cameraSelectCombo->currentText();
     }
 
     // Builds the device control layout
@@ -146,20 +143,14 @@ namespace scopeone::ui
         connect(m_previewWidget, &PreviewWidget::zoomLevelChanged, this,
                 [this](int value)
                 {
-                    if (m_zoomSpinBox)
-                    {
-                        const QSignalBlocker blocker(m_zoomSpinBox);
-                        m_zoomSpinBox->setValue(value);
-                    }
+                    const QSignalBlocker blocker(m_zoomSpinBox);
+                    m_zoomSpinBox->setValue(value);
                 });
         connect(m_previewWidget, &PreviewWidget::fitToWindowChanged, this,
                 [this](bool enabled)
                 {
-                    if (m_fitToWindowCheckBox)
-                    {
-                        const QSignalBlocker blocker(m_fitToWindowCheckBox);
-                        m_fitToWindowCheckBox->setChecked(enabled);
-                    }
+                    const QSignalBlocker blocker(m_fitToWindowCheckBox);
+                    m_fitToWindowCheckBox->setChecked(enabled);
                     updatePreviewZoomControls();
                 });
 
@@ -168,21 +159,12 @@ namespace scopeone::ui
         syncPreviewStreamLayoutCombo(streamLayoutComboIndex(m_previewWidget->streamLayoutMode()));
         onPreviewInfoTextChanged(m_previewWidget->cameraInfoText());
 
-        if (m_zoomSpinBox)
-        {
-            QSignalBlocker blocker(m_zoomSpinBox);
-            m_zoomSpinBox->setValue(m_previewWidget->zoomPercent());
-        }
-        if (m_fitToWindowCheckBox)
-        {
-            QSignalBlocker blocker(m_fitToWindowCheckBox);
-            m_fitToWindowCheckBox->setChecked(m_previewWidget->isFitToWindow());
-        }
-        if (m_overlayAlphaSpinBox)
-        {
-            QSignalBlocker blocker(m_overlayAlphaSpinBox);
-            m_overlayAlphaSpinBox->setValue(m_previewWidget->overlayAlphaPercent());
-        }
+        QSignalBlocker zoomBlocker(m_zoomSpinBox);
+        m_zoomSpinBox->setValue(m_previewWidget->zoomPercent());
+        QSignalBlocker fitBlocker(m_fitToWindowCheckBox);
+        m_fitToWindowCheckBox->setChecked(m_previewWidget->isFitToWindow());
+        QSignalBlocker alphaBlocker(m_overlayAlphaSpinBox);
+        m_overlayAlphaSpinBox->setValue(m_previewWidget->overlayAlphaPercent());
         updatePreviewZoomControls();
     }
 
@@ -316,7 +298,7 @@ namespace scopeone::ui
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int x)
                 {
-                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignYSpinBox)
+                    if (!m_previewWidget)
                     {
                         return;
                     }
@@ -330,7 +312,7 @@ namespace scopeone::ui
         connect(m_alignYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int y)
                 {
-                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignXSpinBox)
+                    if (!m_previewWidget)
                     {
                         return;
                     }
@@ -344,7 +326,7 @@ namespace scopeone::ui
         connect(m_alignZoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int percent)
                 {
-                    if (!m_previewWidget || !m_alignCameraCombo)
+                    if (!m_previewWidget)
                     {
                         return;
                     }
@@ -358,7 +340,7 @@ namespace scopeone::ui
         connect(m_alignFlipXCheckBox, &QCheckBox::toggled,
                 this, [this](bool enabled)
                 {
-                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipYCheckBox)
+                    if (!m_previewWidget)
                     {
                         return;
                     }
@@ -372,7 +354,7 @@ namespace scopeone::ui
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
                 this, [this](bool enabled)
                 {
-                    if (!m_previewWidget || !m_alignCameraCombo || !m_alignFlipXCheckBox)
+                    if (!m_previewWidget)
                     {
                         return;
                     }
@@ -386,10 +368,7 @@ namespace scopeone::ui
         connect(m_alignResetButton, &QPushButton::clicked,
                 this, [this]()
                 {
-                    if (m_alignCameraCombo)
-                    {
-                        resetAlignState(m_alignCameraCombo->currentText());
-                    }
+                    resetAlignState(m_alignCameraCombo->currentText());
                 });
 
         updatePreviewZoomControls();
@@ -399,21 +378,12 @@ namespace scopeone::ui
     // Updates zoom controls from fit to window state
     void DeviceControlWidget::updatePreviewZoomControls()
     {
-        if (!m_zoomSpinBox || !m_fitToWindowCheckBox)
-        {
-            return;
-        }
         m_zoomSpinBox->setEnabled(!m_fitToWindowCheckBox->isChecked());
     }
 
     // Rebuilds the preview stream selection menu
     void DeviceControlWidget::rebuildPreviewStreamMenu(const QStringList& cameraIds)
     {
-        if (!m_streamMenu)
-        {
-            return;
-        }
-
         m_streamMenu->clear();
         m_streamActions.clear();
         populatePreviewStreamMenuHeader();
@@ -459,11 +429,6 @@ namespace scopeone::ui
     // Adds bulk selection actions to the stream menu
     void DeviceControlWidget::populatePreviewStreamMenuHeader()
     {
-        if (!m_streamMenu)
-        {
-            return;
-        }
-
         QAction* selAllAct = m_streamMenu->addAction("Select All");
         connect(selAllAct, &QAction::triggered, this, [this]()
         {
@@ -523,42 +488,32 @@ namespace scopeone::ui
     {
         rebuildPreviewStreamMenu(cameraIds);
 
-        if (m_alignCameraCombo)
-        {
-            QString currentSelection = m_alignCameraCombo->currentText();
-            QSignalBlocker blocker(m_alignCameraCombo);
-            m_alignCameraCombo->clear();
-            m_alignCameraCombo->addItems(cameraIds);
+        QString currentSelection = m_alignCameraCombo->currentText();
+        QSignalBlocker blocker(m_alignCameraCombo);
+        m_alignCameraCombo->clear();
+        m_alignCameraCombo->addItems(cameraIds);
 
-            int idx = m_alignCameraCombo->findText(currentSelection);
-            if (idx >= 0)
-            {
-                m_alignCameraCombo->setCurrentIndex(idx);
-            }
-            else if (!cameraIds.isEmpty())
-            {
-                m_alignCameraCombo->setCurrentIndex(0);
-                resetAlignState(cameraIds.first());
-            }
+        int idx = m_alignCameraCombo->findText(currentSelection);
+        if (idx >= 0)
+        {
+            m_alignCameraCombo->setCurrentIndex(idx);
+        }
+        else if (!cameraIds.isEmpty())
+        {
+            m_alignCameraCombo->setCurrentIndex(0);
+            resetAlignState(cameraIds.first());
         }
     }
 
     void DeviceControlWidget::syncPreviewStreamLayoutCombo(int index)
     {
-        if (!m_streamLayoutCombo)
-        {
-            return;
-        }
         QSignalBlocker blocker(m_streamLayoutCombo);
         m_streamLayoutCombo->setCurrentIndex(index);
     }
 
     void DeviceControlWidget::onPreviewInfoTextChanged(const QString& text)
     {
-        if (m_imageInfoLabel)
-        {
-            m_imageInfoLabel->setText(text);
-        }
+        m_imageInfoLabel->setText(text);
     }
 
     void DeviceControlWidget::onPreviewZoomSpinBoxChanged(int value)
@@ -601,25 +556,18 @@ namespace scopeone::ui
 
     void DeviceControlWidget::resetAlignState(const QString& cameraId)
     {
-        if (m_alignXSpinBox && m_alignYSpinBox)
-        {
-            QSignalBlocker bx(*m_alignXSpinBox);
-            QSignalBlocker by(*m_alignYSpinBox);
-            m_alignXSpinBox->setValue(0);
-            m_alignYSpinBox->setValue(0);
-        }
-        if (m_alignZoomSpinBox)
-        {
-            QSignalBlocker bz(*m_alignZoomSpinBox);
-            m_alignZoomSpinBox->setValue(100);
-        }
-        if (m_alignFlipXCheckBox && m_alignFlipYCheckBox)
-        {
-            QSignalBlocker bfx(*m_alignFlipXCheckBox);
-            QSignalBlocker bfy(*m_alignFlipYCheckBox);
-            m_alignFlipXCheckBox->setChecked(false);
-            m_alignFlipYCheckBox->setChecked(false);
-        }
+        QSignalBlocker bx(*m_alignXSpinBox);
+        QSignalBlocker by(*m_alignYSpinBox);
+        m_alignXSpinBox->setValue(0);
+        m_alignYSpinBox->setValue(0);
+
+        QSignalBlocker bz(*m_alignZoomSpinBox);
+        m_alignZoomSpinBox->setValue(100);
+
+        QSignalBlocker bfx(*m_alignFlipXCheckBox);
+        QSignalBlocker bfy(*m_alignFlipYCheckBox);
+        m_alignFlipXCheckBox->setChecked(false);
+        m_alignFlipYCheckBox->setChecked(false);
 
         if (!cameraId.isEmpty() && m_previewWidget)
         {
@@ -912,22 +860,10 @@ namespace scopeone::ui
     // Refreshes available XY and Z stage devices
     void DeviceControlWidget::refreshStageDevices()
     {
-        if (!m_xyStageCombo || !m_zStageCombo)
-        {
-            return;
-        }
-
         QSignalBlocker blockXY(m_xyStageCombo);
         QSignalBlocker blockZ(m_zStageCombo);
         m_xyStageCombo->clear();
         m_zStageCombo->clear();
-
-        if (!m_scopeonecore->hasCore())
-        {
-            updateStageControlsEnabled();
-            updateStagePositions();
-            return;
-        }
 
         const QStringList xyDevices = m_scopeonecore->xyStageDevices();
         for (const QString& dev : xyDevices)
@@ -976,46 +912,32 @@ namespace scopeone::ui
     // Updates enabled state for stage controls
     void DeviceControlWidget::updateStageControlsEnabled()
     {
-        const bool hasCore = m_scopeonecore->hasCore();
-        const bool hasXY = hasCore && !selectedXYStageLabel().isEmpty();
-        const bool hasZ = hasCore && !selectedZStageLabel().isEmpty();
+        const bool hasXY = !selectedXYStageLabel().isEmpty();
+        const bool hasZ = !selectedZStageLabel().isEmpty();
 
-        if (m_xyStageCombo) m_xyStageCombo->setEnabled(hasCore && m_xyStageCombo->count() > 0);
-        if (m_zStageCombo) m_zStageCombo->setEnabled(hasCore && m_zStageCombo->count() > 0);
-        if (m_xyStepLineEdit) m_xyStepLineEdit->setEnabled(hasXY);
-        if (m_xyBigStepLineEdit) m_xyBigStepLineEdit->setEnabled(hasXY);
-        if (m_zStepLineEdit) m_zStepLineEdit->setEnabled(hasZ);
-        if (m_zBigStepLineEdit) m_zBigStepLineEdit->setEnabled(hasZ);
-        if (m_xyUpButton) m_xyUpButton->setEnabled(hasXY);
-        if (m_xyDownButton) m_xyDownButton->setEnabled(hasXY);
-        if (m_xyLeftButton) m_xyLeftButton->setEnabled(hasXY);
-        if (m_xyRightButton) m_xyRightButton->setEnabled(hasXY);
-        if (m_xyBigUpButton) m_xyBigUpButton->setEnabled(hasXY);
-        if (m_xyBigDownButton) m_xyBigDownButton->setEnabled(hasXY);
-        if (m_xyBigLeftButton) m_xyBigLeftButton->setEnabled(hasXY);
-        if (m_xyBigRightButton) m_xyBigRightButton->setEnabled(hasXY);
-        if (m_zUpButton) m_zUpButton->setEnabled(hasZ);
-        if (m_zDownButton) m_zDownButton->setEnabled(hasZ);
-        if (m_zBigUpButton) m_zBigUpButton->setEnabled(hasZ);
-        if (m_zBigDownButton) m_zBigDownButton->setEnabled(hasZ);
+        m_xyStageCombo->setEnabled(m_xyStageCombo->count() > 0);
+        m_zStageCombo->setEnabled(m_zStageCombo->count() > 0);
+        m_xyStepLineEdit->setEnabled(hasXY);
+        m_xyBigStepLineEdit->setEnabled(hasXY);
+        m_zStepLineEdit->setEnabled(hasZ);
+        m_zBigStepLineEdit->setEnabled(hasZ);
+        m_xyUpButton->setEnabled(hasXY);
+        m_xyDownButton->setEnabled(hasXY);
+        m_xyLeftButton->setEnabled(hasXY);
+        m_xyRightButton->setEnabled(hasXY);
+        m_xyBigUpButton->setEnabled(hasXY);
+        m_xyBigDownButton->setEnabled(hasXY);
+        m_xyBigLeftButton->setEnabled(hasXY);
+        m_xyBigRightButton->setEnabled(hasXY);
+        m_zUpButton->setEnabled(hasZ);
+        m_zDownButton->setEnabled(hasZ);
+        m_zBigUpButton->setEnabled(hasZ);
+        m_zBigDownButton->setEnabled(hasZ);
     }
 
     // Reads current stage positions into labels
     void DeviceControlWidget::updateStagePositions()
     {
-        if (!m_xPosLabel || !m_yPosLabel || !m_zPosLabel)
-        {
-            return;
-        }
-
-        if (!m_scopeonecore->hasCore())
-        {
-            m_xPosLabel->setText("X: N/A");
-            m_yPosLabel->setText("Y: N/A");
-            m_zPosLabel->setText("Z: N/A");
-            return;
-        }
-
         const QString xyLabel = selectedXYStageLabel();
         if (xyLabel.isEmpty())
         {
@@ -1059,7 +981,7 @@ namespace scopeone::ui
 
     QString DeviceControlWidget::selectedXYStageLabel() const
     {
-        if (!m_xyStageCombo || m_xyStageCombo->count() == 0)
+        if (m_xyStageCombo->count() == 0)
         {
             return QString();
         }
@@ -1068,7 +990,7 @@ namespace scopeone::ui
 
     QString DeviceControlWidget::selectedZStageLabel() const
     {
-        if (!m_zStageCombo || m_zStageCombo->count() == 0)
+        if (m_zStageCombo->count() == 0)
         {
             return QString();
         }
@@ -1078,10 +1000,6 @@ namespace scopeone::ui
     // Moves the selected XY stage by a relative offset
     void DeviceControlWidget::moveXYStage(double dx, double dy)
     {
-        if (!m_scopeonecore->hasCore())
-        {
-            return;
-        }
         const QString xyLabel = selectedXYStageLabel();
         if (xyLabel.isEmpty())
         {
@@ -1100,10 +1018,6 @@ namespace scopeone::ui
     // Moves the selected Z stage by a relative offset
     void DeviceControlWidget::moveZStage(double dz)
     {
-        if (!m_scopeonecore->hasCore())
-        {
-            return;
-        }
         const QString zLabel = selectedZStageLabel();
         if (zLabel.isEmpty())
         {
@@ -1125,7 +1039,7 @@ namespace scopeone::ui
         m_cameraInitialized = initialized;
         updateControlsState();
 
-        if (initialized && m_scopeonecore->hasCore())
+        if (initialized)
         {
             updateCameraParametersFromHardware();
         }
@@ -1158,26 +1072,13 @@ namespace scopeone::ui
     // Keeps device control buttons in sync
     void DeviceControlWidget::updateControlsState()
     {
-        if (m_exposureLineEdit)
-        {
-            m_exposureLineEdit->setEnabled(m_cameraInitialized);
-        }
-
-        if (m_previewToggleButton)
-        {
-            m_previewToggleButton->setEnabled(m_cameraInitialized);
-            m_previewToggleButton->setText(m_previewRunning
-                                               ? QStringLiteral("Stop Preview")
-                                               : QStringLiteral("Start Preview"));
-        }
-        if (m_drawROIButton)
-        {
-            m_drawROIButton->setEnabled(m_cameraInitialized && !isAllTarget(m_currentTarget));
-        }
-        if (m_clearROIButton)
-        {
-            m_clearROIButton->setEnabled(m_cameraInitialized);
-        }
+        m_exposureLineEdit->setEnabled(m_cameraInitialized);
+        m_previewToggleButton->setEnabled(m_cameraInitialized);
+        m_previewToggleButton->setText(m_previewRunning
+                                           ? QStringLiteral("Stop Preview")
+                                           : QStringLiteral("Start Preview"));
+        m_drawROIButton->setEnabled(m_cameraInitialized && !isAllTarget(m_currentTarget));
+        m_clearROIButton->setEnabled(m_cameraInitialized);
 
         updateStageControlsEnabled();
     }
@@ -1185,7 +1086,7 @@ namespace scopeone::ui
     // Reads camera parameters back from hardware
     void DeviceControlWidget::updateCameraParametersFromHardware()
     {
-        if (!m_scopeonecore->hasCore() || !m_cameraInitialized)
+        if (!m_cameraInitialized)
         {
             return;
         }
@@ -1337,10 +1238,7 @@ namespace scopeone::ui
     // Enables or disables the camera target selector
     void DeviceControlWidget::setControlTargetEnabled(bool enabled)
     {
-        if (m_cameraSelectCombo)
-        {
-            m_cameraSelectCombo->setEnabled(enabled);
-        }
+        m_cameraSelectCombo->setEnabled(enabled);
     }
 
     // Applies a new camera control target

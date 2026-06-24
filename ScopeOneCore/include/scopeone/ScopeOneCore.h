@@ -487,9 +487,6 @@ namespace scopeone::core
         ~ScopeOneCore() override;
         static QString getVersion();
 
-        bool hasCore() const;
-
-
         bool loadConfiguration(const QString& configPath,
                                LoadConfigResult* result,
                                QString* errorMessage);
