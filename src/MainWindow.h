@@ -6,6 +6,7 @@
 #include <QStringList>
 
 class QAction;
+class QCloseEvent;
 class QDockWidget;
 class QMenu;
 class QProgressDialog;
@@ -19,6 +20,7 @@ namespace scopeone::ui
 {
     class DevicePropertyWidget;
     class ConfigPresetWidget;
+    class ImageGalleryWidget;
     class ImageProcessingWidget;
     class InspectWidget;
     class PreviewWidget;
@@ -35,6 +37,9 @@ namespace scopeone::ui
         explicit MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~MainWindow() override = default;
 
+    protected:
+        void closeEvent(QCloseEvent* event) override;
+
     private:
         void setupUI();
         void setupSignalWiring();
@@ -43,6 +48,7 @@ namespace scopeone::ui
         void setupDeviceControl();
         void setupInspect();
         void setupImageProcessing();
+        void setupImageGallery();
         void setupConsole();
         void setupPropertyBrowser();
         void setupRecording();
@@ -84,6 +90,8 @@ namespace scopeone::ui
 
         QDockWidget* m_recordingDockWidget{nullptr};
         RecordingWidget* m_recordingWidget{nullptr};
+        QDockWidget* m_imageGalleryDockWidget{nullptr};
+        ImageGalleryWidget* m_imageGalleryWidget{nullptr};
 
         QDockWidget* m_deviceControlDockWidget{nullptr};
         DeviceControlWidget* m_deviceControlWidget{nullptr};

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.619 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.622 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -54,6 +54,7 @@ set(SCOPEONE_UI_SOURCES
         src/InspectWidget.cpp
         src/MainWindow.cpp
         src/ImageProcessingWidget.cpp
+        src/ImageGalleryWidget.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
@@ -71,6 +72,7 @@ set(SCOPEONE_UI_HEADERS
         src/InspectWidget.h
         src/MainWindow.h
         src/ImageProcessingWidget.h
+        src/ImageGalleryWidget.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
         src/AboutDialog.h

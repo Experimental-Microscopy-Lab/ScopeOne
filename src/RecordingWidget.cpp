@@ -1,5 +1,4 @@
 #include "RecordingWidget.h"
-#include "ImageSessionDialog.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -209,10 +208,6 @@ namespace
         return details.isEmpty() ? text : QStringLiteral("%1 - %2").arg(text, details.join(QStringLiteral(", ")));
     }
 
-    QString formatAlbumCountText(int frameCount)
-    {
-        return QStringLiteral("Album: %1 frame(s)").arg((std::max)(0, frameCount));
-    }
 } // namespace
 
 namespace scopeone::ui
@@ -232,9 +227,7 @@ namespace scopeone::ui
         connect(m_startStopButton, &QPushButton::clicked, this, &RecordingWidget::onStartStopClicked);
         connect(m_burstModeCheck, &QCheckBox::toggled, this, &RecordingWidget::onBurstModeToggled);
         connect(m_detectorCombo, &QComboBox::currentTextChanged, this, &RecordingWidget::onDetectorChanged);
-        connect(m_toAlbumButton, &QPushButton::clicked, this, &RecordingWidget::onToAlbumClicked);
-        connect(m_albumButton, &QPushButton::clicked, this, &RecordingWidget::onAlbumClicked);
-        connect(m_clearAlbumButton, &QPushButton::clicked, this, &RecordingWidget::onClearAlbumClicked);
+        connect(m_toGalleryButton, &QPushButton::clicked, this, &RecordingWidget::onToGalleryClicked);
         connect(m_saveDirLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_fileNameLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -298,10 +291,7 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingWriterStatusChanged, this,
                 [this](const scopeone::core::ScopeOneCore::RecordingWriterStatus& status)
                 {
-                    if (m_writerStatusLabel)
-                    {
-                        m_writerStatusLabel->setText(formatWriterStatusText(status));
-                    }
+                    m_writerStatusLabel->setText(formatWriterStatusText(status));
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
@@ -324,25 +314,21 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     const QString result = recordingResultMessage(session);
-                    if (m_writerStatusLabel)
+                    if (session && recordingResultSuccess(session))
                     {
-                        if (session && recordingResultSuccess(session))
-                        {
-                            m_writerStatusLabel->setText(QStringLiteral("Writer: Completed"));
-                        }
-                        else if (session && !result.isEmpty())
-                        {
-                            m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - %1").arg(result));
-                        }
-                        else
-                        {
-                            m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - Error: no session data"));
-                        }
+                        m_writerStatusLabel->setText(QStringLiteral("Writer: Completed"));
+                    }
+                    else if (session && !result.isEmpty())
+                    {
+                        m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - %1").arg(result));
+                    }
+                    else
+                    {
+                        m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - Error: no session data"));
                     }
                     if (result.isEmpty())
                     {
                         qWarning().noquote() << "Error: no session data";
-                        updateAlbumState();
                         return;
                     }
                     if (recordingResultSuccess(session))
@@ -353,7 +339,6 @@ namespace scopeone::ui
                     {
                         qWarning().noquote() << result;
                     }
-                    updateAlbumState();
                 });
 
         if (m_saveDirLineEdit->text().trimmed().isEmpty())
@@ -414,19 +399,12 @@ namespace scopeone::ui
         captureLayout->addWidget(m_fileNameLineEdit, 2, 1);
         captureLayout->addWidget(m_autoNameButton, 2, 2);
 
-        auto* albumRow = new QHBoxLayout();
-        albumRow->setSpacing(6);
-        m_toAlbumButton = new QPushButton("To Album", this);
-        m_albumButton = new QPushButton("Album", this);
-        m_clearAlbumButton = new QPushButton("Clear", this);
-        albumRow->addWidget(m_toAlbumButton);
-        albumRow->addWidget(m_albumButton);
-        albumRow->addWidget(m_clearAlbumButton);
-        captureLayout->addWidget(new QLabel("Album:", this), 3, 0);
-        captureLayout->addLayout(albumRow, 3, 1, 1, 2);
-
-        m_albumCountLabel = new QLabel(formatAlbumCountText(0), this);
-        captureLayout->addWidget(m_albumCountLabel, 4, 0, 1, 3);
+        auto* galleryRow = new QHBoxLayout();
+        galleryRow->setSpacing(6);
+        m_toGalleryButton = new QPushButton("Snap to Gallery", this);
+        galleryRow->addWidget(m_toGalleryButton);
+        captureLayout->addWidget(new QLabel("Gallery:", this), 3, 0);
+        captureLayout->addLayout(galleryRow, 3, 1, 1, 2);
 
         contentLayout->addWidget(captureGroup);
 
@@ -669,50 +647,10 @@ namespace scopeone::ui
         updateUiState();
     }
 
-    // Appends current frames to the album
-    void RecordingWidget::onToAlbumClicked()
+    // Appends current frames to the gallery
+    void RecordingWidget::onToGalleryClicked()
     {
-        if (appendSelectedFramesToAlbum())
-        {
-            updateAlbumState();
-        }
-    }
-
-    // Opens the album dialog and saves on request
-    void RecordingWidget::onAlbumClicked()
-    {
-        if (!m_albumSession || albumFrameCount() <= 0)
-        {
-            qWarning().noquote() << "Album is empty";
-            return;
-        }
-
-        ImageSessionDialog dialog(m_albumSession, this);
-        dialog.setSaveEnabled(true);
-        dialog.setSaveButtonText(QStringLiteral("Save Album"));
-        if (dialog.exec() != QDialog::Accepted || !dialog.saveRequested())
-        {
-            return;
-        }
-
-        auto sessionToSave = buildAlbumSaveSession();
-        if (!sessionToSave)
-        {
-            qWarning().noquote() << "Album save session is invalid";
-            return;
-        }
-        if (m_writerStatusLabel)
-        {
-            m_writerStatusLabel->setText(QStringLiteral("Writer: Saving album..."));
-        }
-        m_scopeonecore->saveRecordingSessionAsync(sessionToSave);
-    }
-
-    // Clears the current album session
-    void RecordingWidget::onClearAlbumClicked()
-    {
-        m_albumSession.reset();
-        updateAlbumState();
+        appendSelectedFramesToGallery();
     }
 
     // Updates widget enabled state from recording settings
@@ -727,7 +665,7 @@ namespace scopeone::ui
         m_browseButton->setEnabled(editingEnabled);
         m_fileNameLineEdit->setEnabled(editingEnabled);
         m_autoNameButton->setEnabled(editingEnabled);
-        m_toAlbumButton->setEnabled(hasSelectedCameras);
+        m_toGalleryButton->setEnabled(hasSelectedCameras);
         m_formatCombo->setEnabled(editingEnabled);
         const bool binaryFormat =
             m_formatCombo->currentData().toInt() == static_cast<int>(scopeone::core::RecordingFormat::Binary);
@@ -739,8 +677,7 @@ namespace scopeone::ui
         m_burstIntervalSpin->setEnabled(editingEnabled && burstEnabled);
         m_burstIntervalUnitCombo->setEnabled(editingEnabled && burstEnabled);
 
-        const bool mdaCapable = m_scopeonecore->hasCore();
-        const bool mdaEnabled = editingEnabled && mdaCapable;
+        const bool mdaEnabled = editingEnabled;
         m_mdaIntervalSpin->setEnabled(mdaEnabled);
         m_mdaOrderList->setEnabled(mdaEnabled);
         m_mdaEnableZCheck->setEnabled(mdaEnabled);
@@ -759,12 +696,11 @@ namespace scopeone::ui
         m_mdaOrderUpButton->setEnabled(mdaEnabled && orderRow > 0);
         m_mdaOrderDownButton->setEnabled(mdaEnabled && orderRow >= 0 && orderRow < orderCount - 1);
 
-        const bool hasCameras = hasSelectedCameras || mdaCapable;
+        const bool hasCameras = hasSelectedCameras;
         const bool hasDir = !m_saveDirLineEdit->text().trimmed().isEmpty();
         const bool hasName = !normalizedBaseName().isEmpty();
         const bool canStart = !m_isRecording && hasCameras && hasDir && hasName;
         m_startStopButton->setEnabled(m_isRecording || canStart);
-        updateAlbumState();
     }
 
     // Reads the last save directory from settings
@@ -881,7 +817,7 @@ namespace scopeone::ui
         }
 
         QString errorMessage;
-        if (m_scopeonecore->hasCore() && m_mdaEnableZCheck->isChecked())
+        if (m_mdaEnableZCheck->isChecked())
         {
             const int count = qMax(1, m_mdaZCountSpin->value());
             settings.zPositions.reserve(count);
@@ -892,7 +828,7 @@ namespace scopeone::ui
             }
         }
 
-        if (m_scopeonecore->hasCore() && m_mdaEnableXYCheck->isChecked())
+        if (m_mdaEnableXYCheck->isChecked())
         {
             const int xCount = qMax(1, m_mdaXCountSpin->value());
             const int yCount = qMax(1, m_mdaYCountSpin->value());
@@ -921,43 +857,30 @@ namespace scopeone::ui
         return true;
     }
 
-    // Updates album controls from current album state
-    void RecordingWidget::updateAlbumState()
-    {
-        const int frameCount = albumFrameCount();
-        const bool hasAlbumFrames = frameCount > 0;
-        if (m_albumCountLabel)
-        {
-            m_albumCountLabel->setText(formatAlbumCountText(frameCount));
-        }
-        if (m_albumButton)
-        {
-            m_albumButton->setEnabled(hasAlbumFrames);
-        }
-        if (m_clearAlbumButton)
-        {
-            m_clearAlbumButton->setEnabled(hasAlbumFrames);
-        }
-    }
-
-    // Captures latest selected frames into the album
-    bool RecordingWidget::appendSelectedFramesToAlbum()
+    // Captures latest selected frames into the gallery
+    bool RecordingWidget::appendSelectedFramesToGallery()
     {
         const QStringList cameraIds = selectedCameraIds();
         if (cameraIds.isEmpty())
         {
-            qWarning().noquote() << "No camera available for album capture";
+            qWarning().noquote() << "No camera available for gallery capture";
             return false;
         }
 
-        if (!m_albumSession)
-        {
-            m_albumSession = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>();
-            auto capturePlan = m_albumSession->capturePlan();
-            capturePlan.captureAll =
-                m_detectorCombo->currentText().trimmed().compare("All", Qt::CaseInsensitive) == 0;
-            m_albumSession->setCapturePlan(capturePlan);
-        }
+        auto capturedSession = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>();
+        auto capturedPlan = capturedSession->capturePlan();
+        capturedPlan.captureAll =
+            m_detectorCombo->currentText().trimmed().compare("All", Qt::CaseInsensitive) == 0;
+        capturedPlan.streamToDisk = false;
+        capturedPlan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
+        capturedPlan.enableCompression =
+            capturedPlan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
+        capturedPlan.compressionLevel = m_compressionLevelSpin->value();
+        capturedPlan.saveDir = m_saveDirLineEdit->text().trimmed();
+        const QString captureBase = normalizedBaseName().isEmpty() ? buildTimestampBaseName() : normalizedBaseName();
+        capturedPlan.baseName = captureBase + QStringLiteral("_capture_")
+            + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
+        capturedSession->setCapturePlan(capturedPlan);
 
         int appended = 0;
         for (const QString& cameraId : cameraIds)
@@ -981,62 +904,20 @@ namespace scopeone::ui
             frame.width = latestFrame.width;
             frame.height = latestFrame.height;
             frame.bits = latestFrame.bitsPerSample;
-            m_albumSession->appendFrame(cameraId, std::move(frame));
+            capturedSession->appendFrame(cameraId, std::move(frame));
             ++appended;
         }
 
         if (appended <= 0)
         {
-            qWarning().noquote() << "No current frame available to append to album";
+            qWarning().noquote() << "No current frame available to append to gallery";
             return false;
         }
 
-        qInfo().noquote() << QStringLiteral("Album appended with %1 frame set(s)").arg(appended);
+        capturedSession->prepareForSave(false);
+        emit gallerySessionCaptured(capturedSession);
+        qInfo().noquote() << QStringLiteral("Gallery appended with %1 frame set(s)").arg(appended);
         return true;
-    }
-
-    // Returns total frame count in the album
-    int RecordingWidget::albumFrameCount() const
-    {
-        if (!m_albumSession)
-        {
-            return 0;
-        }
-
-        return m_albumSession->frameCount();
-    }
-
-    // Builds the output base name for album save
-    QString RecordingWidget::albumBaseName() const
-    {
-        const QString base = normalizedBaseName();
-        if (base.isEmpty())
-        {
-            return buildTimestampBaseName() + QStringLiteral("_album");
-        }
-        return base + QStringLiteral("_album");
-    }
-
-    // Builds a saveable session from album frames
-    std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> RecordingWidget::buildAlbumSaveSession() const
-    {
-        if (!m_albumSession || albumFrameCount() <= 0)
-        {
-            return {};
-        }
-
-        auto session = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>(*m_albumSession);
-
-        auto capturePlan = session->capturePlan();
-        capturePlan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
-        capturePlan.enableCompression =
-            capturePlan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
-        capturePlan.compressionLevel = m_compressionLevelSpin->value();
-        capturePlan.saveDir = m_saveDirLineEdit->text().trimmed();
-        capturePlan.baseName = albumBaseName();
-        session->setCapturePlan(capturePlan);
-        session->prepareForSave(false);
-        return session;
     }
 
     // Moves one MDA order item in the visible list
@@ -1104,11 +985,11 @@ namespace scopeone::ui
 
         QSet<int> allowed;
         allowed.insert(static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time));
-        if (m_mdaEnableZCheck && m_mdaEnableZCheck->isChecked())
+        if (m_mdaEnableZCheck->isChecked())
         {
             allowed.insert(static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z));
         }
-        if (m_mdaEnableXYCheck && m_mdaEnableXYCheck->isChecked())
+        if (m_mdaEnableXYCheck->isChecked())
         {
             allowed.insert(static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY));
         }

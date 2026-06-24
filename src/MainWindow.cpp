@@ -8,13 +8,16 @@
 #include "DevicePropertyWidget.h"
 #include "ConfigPresetWidget.h"
 #include "PreviewWidget.h"
+#include "ImageGalleryWidget.h"
 #include "ImageProcessingWidget.h"
+#include "ImageSessionDialog.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
@@ -28,6 +31,7 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <memory>
 
 namespace scopeone::ui
 {
@@ -87,228 +91,287 @@ namespace scopeone::ui
         resize(1600, 900);
     }
 
+    // Confirm what to do with unsaved gallery sessions
+    void MainWindow::closeEvent(QCloseEvent* event)
+    {
+        const auto unsavedSessions = m_imageGalleryWidget->unsavedSessions();
+        if (unsavedSessions.isEmpty())
+        {
+            QMainWindow::closeEvent(event);
+            return;
+        }
+
+        const QMessageBox::StandardButton reply = QMessageBox::warning(
+            this,
+            tr("Unsaved Gallery Images"),
+            tr("There are %1 unsaved gallery item(s). Save them before closing?")
+            .arg(unsavedSessions.size()),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+
+        if (reply == QMessageBox::Cancel)
+        {
+            event->ignore();
+            return;
+        }
+
+        if (reply == QMessageBox::Save)
+        {
+            for (const auto& session : unsavedSessions)
+            {
+                const QString result = m_scopeonecore->saveRecordingSession(session);
+                if (!session || !session->isSaved())
+                {
+                    QMessageBox::critical(
+                        this,
+                        tr("Save Failed"),
+                        result.isEmpty() ? tr("Failed to save gallery images") : result);
+                    event->ignore();
+                    return;
+                }
+                m_imageGalleryWidget->markSessionSaved(session);
+            }
+        }
+
+        QMainWindow::closeEvent(event);
+    }
+
     // Connect core events and panel actions into one UI flow
     void MainWindow::setupSignalWiring()
     {
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewStateChanged,
                 this, [this](bool running)
                 {
-                    if (!m_deviceControlWidget)
-                    {
-                        return;
-                    }
                     m_deviceControlWidget->setPreviewRunning(running);
                     m_deviceControlWidget->setControlTargetEnabled(!running);
                 });
 
-        if (m_previewWidget)
-        {
-            connect(m_previewWidget, &PreviewWidget::mousePositionChanged,
-                    this, &MainWindow::handlePreviewMousePosition);
-            connect(m_previewWidget, &PreviewWidget::roiDrawn,
-                    this, &MainWindow::handleRoiDrawn);
-            connect(m_previewWidget, &PreviewWidget::lineDrawn,
-                    this, [this](const QString& cameraId,
-                                 int startX,
-                                 int startY,
-                                 int endX,
-                                 int endY,
-                                 bool processed)
-                    {
-                        m_scopeonecore->setLineProfile(cameraId,
-                                                       QPoint(startX, startY),
-                                                       QPoint(endX, endY),
-                                                       processed);
-                    });
+        connect(m_previewWidget, &PreviewWidget::mousePositionChanged,
+                this, &MainWindow::handlePreviewMousePosition);
+        connect(m_previewWidget, &PreviewWidget::roiDrawn,
+                this, &MainWindow::handleRoiDrawn);
+        connect(m_previewWidget, &PreviewWidget::lineDrawn,
+                this, [this](const QString& cameraId,
+                             int startX,
+                             int startY,
+                             int endX,
+                             int endY,
+                             bool processed)
+                {
+                    m_scopeonecore->setLineProfile(cameraId,
+                                                   QPoint(startX, startY),
+                                                   QPoint(endX, endY),
+                                                   processed);
+                });
 
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::newRawFrameReady,
-                    this, [this](const scopeone::core::ImageFrame& frame)
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::newRawFrameReady,
+                this, [this](const scopeone::core::ImageFrame& frame)
+                {
+                    if (!frame.isValid()
+                        || !m_deviceControlWidget->acceptsCameraStream(frame.cameraId))
                     {
-                        const bool allow = (!m_deviceControlWidget)
-                                               || m_deviceControlWidget->acceptsCameraStream(frame.cameraId);
-                        if (!allow || !frame.isValid())
+                        return;
+                    }
+                    m_previewWidget->setRawFrame(frame);
+                }, Qt::QueuedConnection);
+
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
+                this, [this](const QString& cameraId, const scopeone::core::ImageFrame& frame)
+                {
+                    m_previewWidget->setProcessedFrame(cameraId, frame);
+                });
+
+        connect(m_deviceControlWidget, &DeviceControlWidget::startPreviewRequested,
+                this, [this]()
+                {
+                    m_scopeonecore->startPreview(m_currentControlTarget);
+                });
+
+        connect(m_deviceControlWidget, &DeviceControlWidget::stopPreviewRequested,
+                this, [this]()
+                {
+                    m_scopeonecore->stopPreview(m_currentControlTarget);
+                });
+
+        connect(m_deviceControlWidget, &DeviceControlWidget::requestDrawROI,
+                this, [this](const QString& cameraId)
+                {
+                    m_previewWidget->startROIDrawing(cameraId);
+                });
+
+        connect(m_deviceControlWidget, &DeviceControlWidget::requestClearROI,
+                this, [this](const QString& cameraId)
+                {
+                    const QString target = cameraId.trimmed();
+                    if (target.isEmpty())
+                    {
+                        return;
+                    }
+                    QStringList cameraIds;
+                    if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+                    {
+                        cameraIds = m_scopeonecore->cameraIds();
+                    }
+                    else
+                    {
+                        cameraIds << target;
+                    }
+
+                    for (const QString& id : cameraIds)
+                    {
+                        const bool success = m_scopeonecore->clearROI(id);
+
+                        if (success)
                         {
-                            return;
-                        }
-                        m_previewWidget->setRawFrame(frame);
-                    }, Qt::QueuedConnection);
-
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
-                    m_previewWidget, &PreviewWidget::setProcessedFrame);
-        }
-
-        if (m_deviceControlWidget)
-        {
-            connect(m_deviceControlWidget, &DeviceControlWidget::startPreviewRequested,
-                    this, [this]()
-                    {
-                        m_scopeonecore->startPreview(m_currentControlTarget);
-                    });
-
-            connect(m_deviceControlWidget, &DeviceControlWidget::stopPreviewRequested,
-                    this, [this]()
-                    {
-                        m_scopeonecore->stopPreview(m_currentControlTarget);
-                    });
-
-            connect(m_deviceControlWidget, &DeviceControlWidget::requestDrawROI,
-                    this, [this](const QString& cameraId)
-                    {
-                        if (m_previewWidget)
-                        {
-                            m_previewWidget->startROIDrawing(cameraId);
-                        }
-                    });
-
-            connect(m_deviceControlWidget, &DeviceControlWidget::requestClearROI,
-                    this, [this](const QString& cameraId)
-                    {
-                        const QString target = cameraId.trimmed();
-                        if (target.isEmpty())
-                        {
-                            return;
-                        }
-                        QStringList cameraIds;
-                        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-                        {
-                            cameraIds = m_scopeonecore->cameraIds();
+                            qInfo().noquote() << QString("ROI cleared for %1").arg(id);
                         }
                         else
                         {
-                            cameraIds << target;
+                            qWarning().noquote() << QString("Failed to clear ROI for %1").arg(id);
                         }
+                    }
+                });
 
-                        for (const QString& id : cameraIds)
-                        {
-                            const bool success = m_scopeonecore->clearROI(id);
+        connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
+                this, &MainWindow::updateControlTarget);
+        connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
+                this, [this](const QString& target)
+                {
+                    m_inspectWidget->setCurrentTarget(target);
+                });
 
-                            if (success)
-                            {
-                                qInfo().noquote() << QString("ROI cleared for %1").arg(id);
-                            }
-                            else
-                            {
-                                qWarning().noquote() << QString("Failed to clear ROI for %1").arg(id);
-                            }
-                        }
-                    });
-
-            connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
-                    this, &MainWindow::updateControlTarget);
-            connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
-                    this, [this](const QString& target)
+        connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
+                this, [this](double ms)
+                {
+                    if (!m_scopeonecore->setExposure(m_currentControlTarget, ms))
                     {
-                        if (m_inspectWidget)
-                        {
-                            m_inspectWidget->setCurrentTarget(target);
-                        }
-                    });
+                        qWarning().noquote() << QString("Failed to set exposure: %1 ms").arg(ms);
+                    }
+                    m_deviceControlWidget->refreshCameraParameters();
+                    m_propertyBrowser->refresh(false);
+                });
 
-            connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
-                    this, [this](double ms)
+        connect(m_inspectWidget, &InspectWidget::requestDrawCrossSection,
+                this, [this](const QString& cameraId)
+                {
+                    m_previewWidget->startLineDrawing(cameraId);
+                    statusBar()->showMessage(QStringLiteral("Drag a line on the preview"));
+                });
+
+        connect(m_inspectWidget, &InspectWidget::requestClearCrossSection,
+                this, [this]()
+                {
+                    m_previewWidget->clearLine();
+                    m_scopeonecore->clearLineProfile();
+                });
+
+        connect(m_inspectWidget, &InspectWidget::displayRangeChanged,
+                m_previewWidget, &PreviewWidget::setStreamDisplayLevels);
+
+        connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStarted,
+                this, [this]()
+                {
+                    QStringList selectedStreams = m_previewWidget->selectedStreams();
+                    const QStringList availableCameraIds = m_previewWidget->availableCameraIds();
+
+                    for (const QString& streamKey : std::as_const(selectedStreams))
                     {
-                        if (!m_scopeonecore->setExposure(m_currentControlTarget, ms))
+                        if (!streamKey.startsWith(QStringLiteral("raw:")))
                         {
-                            qWarning().noquote() << QString("Failed to set exposure: %1 ms").arg(ms);
+                            continue;
                         }
-                        m_deviceControlWidget->refreshCameraParameters();
-                        m_propertyBrowser->refresh(false);
-                    });
-        }
+                        const QString cameraId = streamKey.mid(4);
+                        if (cameraId.isEmpty() || !availableCameraIds.contains(cameraId))
+                        {
+                            continue;
+                        }
+                        const QString processedStream = QStringLiteral("proc:%1").arg(cameraId);
+                        if (!selectedStreams.contains(processedStream))
+                        {
+                            selectedStreams.append(processedStream);
+                        }
+                    }
 
-        if (m_inspectWidget)
-        {
-            connect(m_inspectWidget, &InspectWidget::requestDrawCrossSection,
-                    this, [this](const QString& cameraId)
+                    if (selectedStreams.isEmpty())
                     {
-                        if (m_previewWidget)
+                        for (const QString& cameraId : availableCameraIds)
                         {
-                            m_previewWidget->startLineDrawing(cameraId);
+                            selectedStreams.append(QStringLiteral("proc:%1").arg(cameraId));
                         }
-                        statusBar()->showMessage(QStringLiteral("Drag a line on the preview"));
-                    });
+                    }
 
-            connect(m_inspectWidget, &InspectWidget::requestClearCrossSection,
-                    this, [this]()
+                    m_previewWidget->setSelectedStreams(selectedStreams);
+                    m_previewWidget->setStreamLayoutMode(PreviewWidget::StreamLayoutMode::SideBySide);
+                });
+        connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStopped,
+                this, [this]()
+                {
+                    QStringList selectedStreams = rawOnlyStreamKeys(m_previewWidget->selectedStreams());
+                    if (selectedStreams.isEmpty())
                     {
-                        if (m_previewWidget)
-                        {
-                            m_previewWidget->clearLine();
-                        }
-                        m_scopeonecore->clearLineProfile();
-                    });
+                        selectedStreams = rawStreamKeys(m_previewWidget->availableCameraIds());
+                    }
+                    m_previewWidget->setSelectedStreams(selectedStreams);
+                });
 
-            if (m_previewWidget)
-            {
-                connect(m_inspectWidget, &InspectWidget::displayRangeChanged,
-                        m_previewWidget, &PreviewWidget::setStreamDisplayLevels);
-            }
-        }
+        connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
+        connect(m_fullScreenAction, &QAction::toggled,
+                this, &MainWindow::setFullScreenEnabled);
+        connect(m_aboutAction, &QAction::triggered,
+                this, [this]() { AboutDialog::showAbout(this); });
+        connect(m_aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
+        connect(m_loadConfigurationAction, &QAction::triggered,
+                this, &MainWindow::loadConfigurationFromDialog);
+        connect(m_unloadConfigurationAction, &QAction::triggered,
+                this, &MainWindow::unloadConfigurationWithConfirmation);
+        connect(m_settingsAction, &QAction::triggered,
+                this, &MainWindow::openSettingsDialog);
 
-        if (m_imageProcessingWidget && m_previewWidget)
-        {
-            connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStarted,
-                    this, [this]()
+        connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    m_imageGalleryWidget->addSession(session);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    m_imageGalleryWidget->addSession(session);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    if (session && session->isSaved())
                     {
-                        QStringList selectedStreams = m_previewWidget->selectedStreams();
-                        const QStringList availableCameraIds = m_previewWidget->availableCameraIds();
-
-                        for (const QString& streamKey : std::as_const(selectedStreams))
-                        {
-                            if (!streamKey.startsWith(QStringLiteral("raw:")))
-                            {
-                                continue;
-                            }
-                            const QString cameraId = streamKey.mid(4);
-                            if (cameraId.isEmpty() || !availableCameraIds.contains(cameraId))
-                            {
-                                continue;
-                            }
-                            const QString processedStream = QStringLiteral("proc:%1").arg(cameraId);
-                            if (!selectedStreams.contains(processedStream))
-                            {
-                                selectedStreams.append(processedStream);
-                            }
-                        }
-
-                        if (selectedStreams.isEmpty())
-                        {
-                            for (const QString& cameraId : availableCameraIds)
-                            {
-                                selectedStreams.append(QStringLiteral("proc:%1").arg(cameraId));
-                            }
-                        }
-
-                        m_previewWidget->setSelectedStreams(selectedStreams);
-                        m_previewWidget->setStreamLayoutMode(PreviewWidget::StreamLayoutMode::SideBySide);
-                    });
-            connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStopped,
-                    this, [this]()
+                        m_imageGalleryWidget->markSessionSaved(session);
+                    }
+                });
+        connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionOpenRequested,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    if (!session)
                     {
-                        QStringList selectedStreams = rawOnlyStreamKeys(m_previewWidget->selectedStreams());
-                        if (selectedStreams.isEmpty())
+                        return;
+                    }
+                    ImageSessionDialog dialog(session, this);
+                    dialog.setSaveEnabled(false);
+                    dialog.exec();
+                });
+        connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionsRequested,
+                this,
+                [this](const QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>>& sessions)
+                {
+                    for (const auto& session : sessions)
+                    {
+                        if (session)
                         {
-                            selectedStreams = rawStreamKeys(m_previewWidget->availableCameraIds());
+                            m_scopeonecore->saveRecordingSessionAsync(session);
                         }
-                        m_previewWidget->setSelectedStreams(selectedStreams);
-                    });
-        }
-
-        if (m_exitAction)
-        {
-            connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
-            connect(m_fullScreenAction, &QAction::toggled,
-                    this, &MainWindow::setFullScreenEnabled);
-            connect(m_aboutAction, &QAction::triggered,
-                    this, [this]() { AboutDialog::showAbout(this); });
-            connect(m_aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
-            connect(m_loadConfigurationAction, &QAction::triggered,
-                    this, &MainWindow::loadConfigurationFromDialog);
-            connect(m_unloadConfigurationAction, &QAction::triggered,
-                    this, &MainWindow::unloadConfigurationWithConfirmation);
-            connect(m_settingsAction, &QAction::triggered,
-                    this, &MainWindow::openSettingsDialog);
-        }
+                    }
+                });
 
         connectPropertyPanels();
     }
@@ -328,19 +391,16 @@ namespace scopeone::ui
                 {
                     qCritical().noquote() << message;
                 });
-        if (m_configPresetWidget)
-        {
-            connect(m_configPresetWidget, &ConfigPresetWidget::configChanged,
-                    this, [](const QString& group, const QString& preset)
-                    {
-                        qInfo().noquote() << QString("Config changed: %1 = %2").arg(group, preset);
-                    });
-            connect(m_configPresetWidget, &ConfigPresetWidget::errorOccurred,
-                    this, [](const QString& message)
-                    {
-                        qCritical().noquote() << message;
-                    });
-        }
+        connect(m_configPresetWidget, &ConfigPresetWidget::configChanged,
+                this, [](const QString& group, const QString& preset)
+                {
+                    qInfo().noquote() << QString("Config changed: %1 = %2").arg(group, preset);
+                });
+        connect(m_configPresetWidget, &ConfigPresetWidget::errorOccurred,
+                this, [](const QString& message)
+                {
+                    qCritical().noquote() << message;
+                });
     }
 
     // Create the preview area and all docked tool panels
@@ -356,6 +416,7 @@ namespace scopeone::ui
         setupMenuBar();
         setupPropertyBrowser();
         setupRecording();
+        setupImageGallery();
         updateDockWidgetMenu();
     }
 
@@ -405,10 +466,7 @@ namespace scopeone::ui
         m_inspectDockWidget->setWidget(m_inspectWidget);
 
         addDockWidget(Qt::RightDockWidgetArea, m_inspectDockWidget);
-        if (m_deviceControlDockWidget)
-        {
-            tabifyDockWidget(m_deviceControlDockWidget, m_inspectDockWidget);
-        }
+        tabifyDockWidget(m_deviceControlDockWidget, m_inspectDockWidget);
     }
 
     // Create the processing module dock
@@ -423,14 +481,7 @@ namespace scopeone::ui
         m_imageProcessingDockWidget->setWidget(m_imageProcessingWidget);
 
         addDockWidget(Qt::RightDockWidgetArea, m_imageProcessingDockWidget);
-        if (m_inspectDockWidget)
-        {
-            tabifyDockWidget(m_inspectDockWidget, m_imageProcessingDockWidget);
-        }
-        else
-        {
-            tabifyDockWidget(m_deviceControlDockWidget, m_imageProcessingDockWidget);
-        }
+        tabifyDockWidget(m_inspectDockWidget, m_imageProcessingDockWidget);
         m_deviceControlDockWidget->raise();
     }
 
@@ -474,10 +525,24 @@ namespace scopeone::ui
         m_recordingDockWidget->setWidget(m_recordingWidget);
 
         addDockWidget(Qt::LeftDockWidgetArea, m_recordingDockWidget);
-        if (m_propertyDockWidget)
-        {
-            splitDockWidget(m_propertyDockWidget, m_recordingDockWidget, Qt::Vertical);
-        }
+        splitDockWidget(m_propertyDockWidget, m_recordingDockWidget, Qt::Vertical);
+    }
+
+    // Create the image gallery dock
+    void MainWindow::setupImageGallery()
+    {
+        m_imageGalleryDockWidget = new QDockWidget(tr("Image Gallery"), this);
+        m_imageGalleryDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        m_imageGalleryDockWidget->setFeatures(QDockWidget::DockWidgetMovable |
+            QDockWidget::DockWidgetFloatable |
+            QDockWidget::DockWidgetClosable);
+
+        m_imageGalleryWidget = new ImageGalleryWidget(this);
+        m_imageGalleryDockWidget->setWidget(m_imageGalleryWidget);
+
+        addDockWidget(Qt::LeftDockWidgetArea, m_imageGalleryDockWidget);
+        tabifyDockWidget(m_recordingDockWidget, m_imageGalleryDockWidget);
+        m_recordingDockWidget->raise();
     }
 
     // Close the modal configuration progress dialog if present
@@ -504,11 +569,6 @@ namespace scopeone::ui
         }
         m_currentControlTarget = normalizedTarget;
 
-        if (!m_previewWidget)
-        {
-            return;
-        }
-
         const QStringList cameraIds = m_scopeonecore->cameraIds();
         if (normalizedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
@@ -534,18 +594,9 @@ namespace scopeone::ui
     // Rebuild the view menu from current dock widgets
     void MainWindow::updateDockWidgetMenu()
     {
-        if (!m_dockWidgetsMenu)
-        {
-            return;
-        }
-
         m_dockWidgetsMenu->clear();
         const auto addDock = [this](QDockWidget* dockWidget, const QString& label)
         {
-            if (!dockWidget || !m_dockWidgetsMenu)
-            {
-                return;
-            }
             QAction* action = dockWidget->toggleViewAction();
             action->setText(label);
             m_dockWidgetsMenu->addAction(action);
@@ -553,6 +604,7 @@ namespace scopeone::ui
 
         addDock(m_propertyDockWidget, QStringLiteral("Device Properties"));
         addDock(m_recordingDockWidget, QStringLiteral("Recording"));
+        addDock(m_imageGalleryDockWidget, QStringLiteral("Image Gallery"));
         addDock(m_consoleDockWidget, QStringLiteral("Console"));
         addDock(m_deviceControlDockWidget, QStringLiteral("Control"));
         addDock(m_inspectDockWidget, QStringLiteral("Inspect"));
@@ -562,78 +614,45 @@ namespace scopeone::ui
     // Push loaded camera ids into every dependent panel
     void MainWindow::applyLoadedCameraState(const QStringList& cameraIds)
     {
-        if (m_deviceControlWidget)
-        {
-            m_deviceControlWidget->onCameraInitialized(true);
-            m_deviceControlWidget->setControlTargets(cameraIds);
-        }
-        if (m_inspectWidget)
-        {
-            m_inspectWidget->onCameraInitialized(true);
-            m_inspectWidget->setAvailableCameras(cameraIds);
-        }
+        m_deviceControlWidget->onCameraInitialized(true);
+        m_deviceControlWidget->setControlTargets(cameraIds);
+        m_inspectWidget->onCameraInitialized(true);
+        m_inspectWidget->setAvailableCameras(cameraIds);
 
-        if (m_previewWidget)
-        {
-            m_previewWidget->setAvailableCameraIds(cameraIds);
-        }
+        m_previewWidget->setAvailableCameraIds(cameraIds);
 
-        if (m_previewWidget && !cameraIds.isEmpty())
+        if (!cameraIds.isEmpty())
         {
             m_previewWidget->setSelectedStreams({rawStreamKey(cameraIds.first())});
         }
 
-        if (m_recordingWidget)
-        {
-            m_recordingWidget->setAvailableCameras(cameraIds);
-        }
+        m_recordingWidget->setAvailableCameras(cameraIds);
     }
 
     // Clear preview and panel state after devices unload
     void MainWindow::applyUnloadedCameraState(const QStringList& cameraIds)
     {
-        if (m_previewWidget)
+        for (const QString& id : cameraIds)
         {
-            for (const QString& id : cameraIds)
-            {
-                m_previewWidget->clearCameraFrames(id);
-            }
-            m_previewWidget->setAvailableCameraIds({});
-            m_previewWidget->clearLine();
+            m_previewWidget->clearCameraFrames(id);
         }
-        if (m_deviceControlWidget)
-        {
-            m_deviceControlWidget->setControlTargets({});
-            m_deviceControlWidget->onCameraInitialized(false);
-        }
-        if (m_inspectWidget)
-        {
-            m_inspectWidget->setAvailableCameras({});
-            m_inspectWidget->onCameraInitialized(false);
-            m_inspectWidget->clearCrossSectionProfile();
-        }
+        m_previewWidget->setAvailableCameraIds({});
+        m_previewWidget->clearLine();
+        m_deviceControlWidget->setControlTargets({});
+        m_deviceControlWidget->onCameraInitialized(false);
+        m_inspectWidget->setAvailableCameras({});
+        m_inspectWidget->onCameraInitialized(false);
+        m_inspectWidget->clearCrossSectionProfile();
 
-        if (m_recordingWidget)
-        {
-            m_recordingWidget->setAvailableCameras({});
-        }
+        m_recordingWidget->setAvailableCameras({});
     }
 
     // Refresh panels that mirror device state
     void MainWindow::refreshDevicePanels(bool fromCache)
     {
-        if (m_propertyBrowser)
-        {
-            m_propertyBrowser->refresh(fromCache);
-        }
-        if (m_configPresetWidget)
-        {
-            m_configPresetWidget->refresh();
-        }
-        if (m_deviceControlWidget)
-        {
-            m_deviceControlWidget->refreshStageDevices();
-        }
+        m_propertyBrowser->refresh(fromCache);
+        m_configPresetWidget->refresh();
+        m_deviceControlWidget->refreshStageDevices();
     }
 
     // Restore persistent settings that affect core behavior
@@ -672,10 +691,6 @@ namespace scopeone::ui
     // Display image coordinates and pixel value under the cursor
     void MainWindow::handlePreviewMousePosition(const QPoint& pos)
     {
-        if (!m_previewWidget)
-        {
-            return;
-        }
         if (pos.x() < 0 || pos.y() < 0)
         {
             statusBar()->clearMessage();
