@@ -318,8 +318,9 @@ namespace scopeone::core::internal
         public:
             struct TiffOptions
             {
-                bool useDeflate{true};
-                int zipQuality{6};
+                bool useDeflate;
+                int zipQuality;
+                TiffOptions() : useDeflate(true), zipQuality(6) {}
             };
 
             enum class Format { None, TiffStack, BinaryStream };
@@ -332,7 +333,7 @@ namespace scopeone::core::internal
                                int width,
                                int height,
                                int bitsPerSample,
-                               const TiffOptions& tiff = {})
+                               const TiffOptions& tiff = TiffOptions{})
             {
                 stopStack();
                 if (!ensureDir(filePath)) return false;

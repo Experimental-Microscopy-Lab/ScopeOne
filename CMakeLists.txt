@@ -12,10 +12,10 @@ set(ScopeOneCore_ROOT
         "${CMAKE_SOURCE_DIR}/ScopeOneCore/install"
         CACHE PATH "ScopeOneCore install prefix"
 )
-list(PREPEND CMAKE_PREFIX_PATH
-        "C:/Qt/6.11.0/msvc2022_64"
-        "${ScopeOneCore_ROOT}"
-)
+if (WIN32)
+    list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
+endif ()
+list(PREPEND CMAKE_PREFIX_PATH "${ScopeOneCore_ROOT}")
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include")
 configure_file(

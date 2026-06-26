@@ -10,51 +10,77 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install")
-set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
+if (WIN32)
+    set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
+endif ()
 
 set(MMCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/mmCoreAndDevices")
 set(MMCORE_INCLUDE_DIR "${MMCORE_DIR}/MMCore")
 set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
-set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
-
-set(OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0")
-set(OpenCV_DIR "${OPENCV_DIR}/build")
-set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
-set(ZLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib-1.3.1")
-set(ZLIB_BIN_DIR "${ZLIB_DIR}/build/Release")
-set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}")
-set(ZLIB_LIB "${ZLIB_BIN_DIR}/zlib.lib")
-
-set(TIFF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiff-4.7.1")
-set(TIFF_BIN_DIR "${TIFF_DIR}/build/libtiff/Release")
-set(TIFF_INCLUDE_DIRS "${TIFF_DIR}/libtiff;${TIFF_DIR}/build/libtiff")
-set(TIFF_LIB "${TIFF_BIN_DIR}/tiff.lib")
 
 find_package(Qt6 COMPONENTS Core Gui Network Concurrent REQUIRED)
-find_package(OpenCV REQUIRED)
-
-file(GLOB OPENCV_RUNTIME_DLLS
-        "${OPENCV_BIN_DIR}/opencv_world[0-9]*[0-9].dll"
-        "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
-)
-file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
-set(TIFF_RUNTIME_DLL "${TIFF_BIN_DIR}/tiff.dll")
-set(ZLIB_RUNTIME_DLL "${ZLIB_BIN_DIR}/zlib.dll")
-
-set(SCOPEONE_RUNTIME_DLLS
-        ${OPENCV_RUNTIME_DLLS}
-        "${TIFF_RUNTIME_DLL}"
-        "${ZLIB_RUNTIME_DLL}"
-        ${MMCORE_RUNTIME_DLLS}
-)
 
 if (WIN32)
+    set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
+
+    set(OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0")
+    set(OpenCV_DIR "${OPENCV_DIR}/build")
+    set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
+    set(ZLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib-1.3.1")
+    set(ZLIB_BIN_DIR "${ZLIB_DIR}/build/Release")
+    set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}")
+    set(ZLIB_LIB "${ZLIB_BIN_DIR}/zlib.lib")
+
+    set(TIFF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiff-4.7.1")
+    set(TIFF_BIN_DIR "${TIFF_DIR}/build/libtiff/Release")
+    set(TIFF_INCLUDE_DIRS "${TIFF_DIR}/libtiff;${TIFF_DIR}/build/libtiff")
+    set(TIFF_LIB "${TIFF_BIN_DIR}/tiff.lib")
+
+    find_package(OpenCV REQUIRED)
+
+    file(GLOB OPENCV_RUNTIME_DLLS
+            "${OPENCV_BIN_DIR}/opencv_world[0-9]*[0-9].dll"
+            "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
+    )
+    file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
+    set(TIFF_RUNTIME_DLL "${TIFF_BIN_DIR}/tiff.dll")
+    set(ZLIB_RUNTIME_DLL "${ZLIB_BIN_DIR}/zlib.dll")
+
+    set(SCOPEONE_RUNTIME_DLLS
+            ${OPENCV_RUNTIME_DLLS}
+            "${TIFF_RUNTIME_DLL}"
+            "${ZLIB_RUNTIME_DLL}"
+            ${MMCORE_RUNTIME_DLLS}
+    )
+
     foreach (_qt_target IN ITEMS Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent)
         get_target_property(_qt_runtime_dll ${_qt_target} IMPORTED_LOCATION_RELEASE)
         if (_qt_runtime_dll)
             list(APPEND SCOPEONE_RUNTIME_DLLS "${_qt_runtime_dll}")
         endif ()
     endforeach ()
+else ()
+    # Linux/Unix: use system OpenCV/TIFF/ZLIB, and link the MMCore static libraries
+    # built from the sibling micro-manager checkout (symlinked into
+    # external/mmCoreAndDevices). No runtime DLLs to stage.
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    find_package(TIFF REQUIRED)
+    find_package(ZLIB REQUIRED)
+
+    set(TIFF_LIB TIFF::TIFF)
+    set(TIFF_INCLUDE_DIRS "")
+    set(ZLIB_LIB ZLIB::ZLIB)
+    set(ZLIB_INCLUDE_DIR "")
+    set(MMCORE_BIN_DIR "")
+
+    add_library(MMCore STATIC IMPORTED GLOBAL)
+    set_target_properties(MMCore PROPERTIES
+            IMPORTED_LOCATION "${MMCORE_DIR}/MMCore/.libs/libMMCore.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${MMCORE_INCLUDE_DIR};${MMDEVICE_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS};pthread"
+    )
+
+    set(SCOPEONE_RUNTIME_DLLS "")
 endif ()
 
 function(scopeone_add_runtime_copy_commands target destination)
@@ -224,6 +250,8 @@ install(FILES
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ScopeOneCore"
 )
 
-install(FILES ${SCOPEONE_RUNTIME_DLLS}
-        DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
+if (SCOPEONE_RUNTIME_DLLS)
+    install(FILES ${SCOPEONE_RUNTIME_DLLS}
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+endif ()

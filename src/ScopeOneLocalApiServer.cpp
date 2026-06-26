@@ -16,7 +16,9 @@
 #include <QtEndian>
 #include <cstring>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 namespace scopeone::ui
 {
@@ -220,6 +222,7 @@ namespace scopeone::ui
                 .arg(m_server->fullServerName());
         }
 
+#if defined(_WIN32)
         const DWORD mappingSize = static_cast<DWORD>(
             scopeone::core::kSharedFrameHeaderSize + scopeone::core::kSharedFrameMaxBytes);
         m_frameMappingHandle = CreateFileMappingW(INVALID_HANDLE_VALUE,
@@ -241,11 +244,13 @@ namespace scopeone::ui
             CloseHandle(m_frameMappingHandle);
             m_frameMappingHandle = nullptr;
         }
+#endif
     }
 
     // Releases local API shared frame resources
     ScopeOneLocalApiServer::~ScopeOneLocalApiServer()
     {
+#if defined(_WIN32)
         if (m_frameMappingView)
         {
             UnmapViewOfFile(m_frameMappingView);
@@ -256,6 +261,7 @@ namespace scopeone::ui
             CloseHandle(m_frameMappingHandle);
             m_frameMappingHandle = nullptr;
         }
+#endif
     }
 
     // Accepts pending local API socket connections
