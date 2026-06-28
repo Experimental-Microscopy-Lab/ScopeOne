@@ -6,8 +6,6 @@ namespace scopeone::core::internal
 {
     class TemplateModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
         explicit TemplateModule(QObject* parent = nullptr);
 
@@ -16,8 +14,5 @@ namespace scopeone::core::internal
 
         QVariantMap getParameters() const override;
         void setParameters(const QVariantMap& params) override;
-
-    private:
-        int m_exampleParameter{10};
     };
 }

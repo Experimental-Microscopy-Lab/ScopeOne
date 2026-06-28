@@ -3,13 +3,13 @@
 
 namespace scopeone::core::internal
 {
-    // Create the example processing module
+    // Creates a pass through processing module template
     TemplateModule::TemplateModule(QObject* parent)
         : ProcessingModule(parent)
     {
     }
 
-    // Forward frames after converting them to the requested processing format
+    // Converts the input to the selected processing bit depth
     bool TemplateModule::process(const ModuleInput& in, ModuleOutput& out)
     {
         if (!in.frame.isValid())
@@ -19,48 +19,26 @@ namespace scopeone::core::internal
             return false;
         }
 
-        try
-        {
-            ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
-            {
-                out.frame = in.frame;
-                out.error = "Failed to convert frame to processing format";
-                return false;
-            }
-
-            out.frame = workingFrame;
-            return true;
-        }
-        catch (const std::exception& e)
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
         {
             out.frame = in.frame;
-            out.error = QString("Template processing failed: %1").arg(e.what());
+            out.error = "Unsupported input frame";
             return false;
         }
+
+        out.frame = workingFrame;
+        return true;
     }
 
-    // Return the example module parameter map
+    // Returns the template parameter map
     QVariantMap TemplateModule::getParameters() const
     {
-        QVariantMap params;
-        params["example_parameter"] = m_exampleParameter;
-        return params;
+        return {};
     }
 
-    // Apply the example parameter with a lower bound
-    void TemplateModule::setParameters(const QVariantMap& params)
+    // Accepts template parameters for future derived examples
+    void TemplateModule::setParameters(const QVariantMap&)
     {
-        if (!params.contains("example_parameter"))
-        {
-            return;
-        }
-
-        int value = params.value("example_parameter").toInt();
-        if (value < 1)
-        {
-            value = 1;
-        }
-        m_exampleParameter = value;
     }
 } // namespace scopeone::core::internal
