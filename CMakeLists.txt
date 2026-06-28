@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.622 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.624 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -13,6 +13,9 @@ set(ScopeOneCore_ROOT
         CACHE PATH "ScopeOneCore install prefix"
 )
 if (WIN32)
+    set(OPENCV_DIR "${CMAKE_SOURCE_DIR}/ScopeOneCore/external/opencv-4.12.0")
+    set(OpenCV_DIR "${OPENCV_DIR}/build")
+    set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
     list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
 endif ()
 list(PREPEND CMAKE_PREFIX_PATH "${ScopeOneCore_ROOT}")
@@ -36,6 +39,13 @@ find_package(Qt6 COMPONENTS
 )
 
 find_package(ScopeOneCore CONFIG REQUIRED)
+find_package(OpenCV REQUIRED)
+
+file(GLOB OPENCV_RUNTIME_DLLS
+        LIST_DIRECTORIES false
+        "${OPENCV_BIN_DIR}/opencv_world*.dll"
+        "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
+)
 
 if (WIN32 AND TARGET Qt6::qmake)
     get_target_property(qmake_executable Qt6::qmake IMPORTED_LOCATION)
@@ -55,13 +65,13 @@ set(SCOPEONE_UI_SOURCES
         src/MainWindow.cpp
         src/ImageProcessingWidget.cpp
         src/ImageGalleryWidget.cpp
+        src/ImageToolsDialog.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
         src/SettingsDialog.cpp
         src/DeviceControlWidget.cpp
         src/RecordingWidget.cpp
-        src/ImageSessionDialog.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
@@ -73,13 +83,13 @@ set(SCOPEONE_UI_HEADERS
         src/MainWindow.h
         src/ImageProcessingWidget.h
         src/ImageGalleryWidget.h
+        src/ImageToolsDialog.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
         src/AboutDialog.h
         src/SettingsDialog.h
         src/DeviceControlWidget.h
         src/RecordingWidget.h
-        src/ImageSessionDialog.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
@@ -97,10 +107,12 @@ target_link_libraries(ScopeOne PRIVATE
         Qt::OpenGLWidgets
         Qt::Network
         Qt::Concurrent
+        ${OpenCV_LIBS}
 )
 target_include_directories(ScopeOne PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_BINARY_DIR}/include
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 install(TARGETS ScopeOne
@@ -112,6 +124,7 @@ file(GLOB SCOPEONE_CORE_RUNTIME_FILES
         "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/*.dll"
         "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_Agent.exe"
 )
+list(APPEND SCOPEONE_CORE_RUNTIME_FILES ${OPENCV_RUNTIME_DLLS})
 
 if (SCOPEONE_CORE_RUNTIME_FILES)
     add_custom_command(TARGET ScopeOne POST_BUILD
@@ -179,6 +192,8 @@ if (WIN32)
             D3Dcompiler_47.dll
             dxcompiler.dll
             dxil.dll
+            opencv_world*.dll
+            opencv_videoio_ffmpeg*_64.dll
         )
             file(GLOB _qt_files \"\${_runtime_dir}/\${_pattern}\")
             if (_qt_files)
