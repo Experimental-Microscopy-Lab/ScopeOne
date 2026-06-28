@@ -2,7 +2,6 @@
 #include "AppVersion.h"
 #include "scopeone/ScopeOneCore.h"
 
-#include <QApplication>
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QHBoxLayout>

@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QTextEdit>
+#include <QtLogging>
 
 namespace scopeone::ui
 {
@@ -16,9 +17,8 @@ namespace scopeone::ui
         static ConsoleWidget* g_consoleSink = nullptr;
 
         // Forward Qt messages into the active console widget
-        static void qtMessageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
+        static void qtMessageHandler(QtMsgType type, const QMessageLogContext&, const QString& msg)
         {
-            Q_UNUSED(ctx);
             if (!g_consoleSink) return;
             QString t = "INFO";
             switch (type)
@@ -40,8 +40,6 @@ namespace scopeone::ui
             }, Qt::QueuedConnection);
         }
     }
-
-#include <QDebug>
 
     // Create the live log console and its filters
     ConsoleWidget::ConsoleWidget(QWidget* parent)

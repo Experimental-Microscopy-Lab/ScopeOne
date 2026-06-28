@@ -13,6 +13,7 @@
 #include <QLocale>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
@@ -81,7 +82,7 @@ namespace scopeone::ui
           , m_autoRefresh(false)
           , m_updating(false)
     {
-        if (!m_scopeonecore)
+        if (!core)
         {
             qFatal("DevicePropertyWidget requires ScopeOneCore");
         }
@@ -169,8 +170,7 @@ namespace scopeone::ui
             return;
         }
 
-        const int oldScrollValue =
-            m_propertyTree->verticalScrollBar() ? m_propertyTree->verticalScrollBar()->value() : 0;
+        const int oldScrollValue = m_propertyTree->verticalScrollBar()->value();
 
         m_updating = true;
         m_propertyTree->clear();
@@ -182,15 +182,12 @@ namespace scopeone::ui
         catch (const std::exception& e)
         {
             emit errorOccurred(QString("Error refreshing properties: %1").arg(e.what()));
-            qDebug() << "Error refreshing properties:" << e.what();
+            qWarning() << "Error refreshing properties:" << e.what();
         }
 
         QTimer::singleShot(0, this, [this, oldScrollValue]()
         {
-            if (auto* sb = m_propertyTree->verticalScrollBar())
-            {
-                sb->setValue(oldScrollValue);
-            }
+            m_propertyTree->verticalScrollBar()->setValue(oldScrollValue);
         });
 
         m_updating = false;
@@ -223,10 +220,6 @@ namespace scopeone::ui
         }
 
         actualValue = m_scopeonecore->getPropertyValue(deviceLabel, propertyName, false);
-        if (actualValue.isEmpty())
-        {
-            actualValue = requestedValue;
-        }
         return true;
     }
 
@@ -323,9 +316,10 @@ namespace scopeone::ui
                                 {
                                     return;
                                 }
-                                combo->blockSignals(true);
-                                combo->setCurrentText(actualValue);
-                                combo->blockSignals(false);
+                                {
+                                    QSignalBlocker blocker(combo);
+                                    combo->setCurrentText(actualValue);
+                                }
                                 emit propertyChanged(deviceLabel, propertyName, actualValue);
                             });
 
@@ -385,9 +379,10 @@ namespace scopeone::ui
                                     return;
                                 }
                                 actualValue = formatPropertyDisplayValue(actualValue, isInteger, isFloat);
-                                lineEdit->blockSignals(true);
-                                lineEdit->setText(actualValue);
-                                lineEdit->blockSignals(false);
+                                {
+                                    QSignalBlocker blocker(lineEdit);
+                                    lineEdit->setText(actualValue);
+                                }
                                 emit propertyChanged(deviceLabel, propertyName, actualValue);
                             });
 

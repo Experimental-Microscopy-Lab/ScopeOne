@@ -13,10 +13,12 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+#include <QtGlobal>
 
 namespace scopeone::ui
 {
@@ -35,7 +37,7 @@ namespace scopeone::ui
                   , m_scopeonecore(core)
                   , m_moduleIndex(moduleIndex)
             {
-                if (!m_scopeonecore)
+                if (!core)
                 {
                     qFatal("ProcessingModuleConfigWidgetBase requires ScopeOneCore");
                 }
@@ -98,18 +100,12 @@ namespace scopeone::ui
                 layout->addStretch();
 
                 const QVariantMap params = info.parameters();
-                const int outputModeIndex = m_outputModeCombo->findData(params.value("output_mode", 2).toInt());
-                if (outputModeIndex >= 0)
-                {
-                    m_outputModeCombo->setCurrentIndex(outputModeIndex);
-                }
-                m_minFeatureSizeSpin->setValue(params.value("min_feature_size", 2.0).toDouble());
-                m_maxFeatureSizeSpin->setValue(params.value("max_feature_size", 10.0).toDouble());
-                const int filterIndex = m_filterKindCombo->findData(params.value("filter_kind", 0).toInt());
-                if (filterIndex >= 0)
-                {
-                    m_filterKindCombo->setCurrentIndex(filterIndex);
-                }
+                const int outputModeIndex = m_outputModeCombo->findData(params.value("output_mode").toInt());
+                m_outputModeCombo->setCurrentIndex(outputModeIndex);
+                m_minFeatureSizeSpin->setValue(params.value("min_feature_size").toDouble());
+                m_maxFeatureSizeSpin->setValue(params.value("max_feature_size").toDouble());
+                const int filterIndex = m_filterKindCombo->findData(params.value("filter_kind").toInt());
+                m_filterKindCombo->setCurrentIndex(filterIndex);
 
                 connect(m_outputModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                         this, [this]() { apply(); });
@@ -198,20 +194,14 @@ namespace scopeone::ui
                 layout->addStretch();
 
                 const QVariantMap params = info.parameters();
-                m_spatialBinXSpin->setValue(params.value("spatial_bin_x", 1).toInt());
-                m_spatialBinYSpin->setValue(params.value("spatial_bin_y", 1).toInt());
-                m_temporalBinSpin->setValue(params.value("temporal_bin", 1).toInt());
+                m_spatialBinXSpin->setValue(params.value("spatial_bin_x").toInt());
+                m_spatialBinYSpin->setValue(params.value("spatial_bin_y").toInt());
+                m_temporalBinSpin->setValue(params.value("temporal_bin").toInt());
 
-                const int spatialModeIndex = m_spatialModeCombo->findData(params.value("spatial_mode", 0).toInt());
-                if (spatialModeIndex >= 0)
-                {
-                    m_spatialModeCombo->setCurrentIndex(spatialModeIndex);
-                }
-                const int temporalModeIndex = m_temporalModeCombo->findData(params.value("temporal_mode", 0).toInt());
-                if (temporalModeIndex >= 0)
-                {
-                    m_temporalModeCombo->setCurrentIndex(temporalModeIndex);
-                }
+                const int spatialModeIndex = m_spatialModeCombo->findData(params.value("spatial_mode").toInt());
+                m_spatialModeCombo->setCurrentIndex(spatialModeIndex);
+                const int temporalModeIndex = m_temporalModeCombo->findData(params.value("temporal_mode").toInt());
+                m_temporalModeCombo->setCurrentIndex(temporalModeIndex);
 
                 connect(m_spatialBinXSpin, QOverload<int>::of(&QSpinBox::valueChanged),
                         this, [this]() { apply(); });
@@ -273,8 +263,8 @@ namespace scopeone::ui
                 layout->addStretch();
 
                 const QVariantMap params = info.parameters();
-                m_kernelSizeSpin->setValue(params.value("kernel_size", 3).toInt());
-                m_sigmaSpin->setValue(params.value("sigma", 0.0).toDouble());
+                m_kernelSizeSpin->setValue(params.value("kernel_size").toInt());
+                m_sigmaSpin->setValue(params.value("sigma").toDouble());
 
                 connect(m_kernelSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
                         this, [this]() { apply(); });
@@ -311,11 +301,12 @@ namespace scopeone::ui
 
                 m_batchSizeSpin = new QSpinBox(group);
                 m_batchSizeSpin->setRange(1, 256);
-                m_batchSizeSpin->setValue(info.parameters().value("batch_size", 16).toInt());
+                const QVariantMap params = info.parameters();
+                m_batchSizeSpin->setValue(params.value("batch_size").toInt());
                 groupLayout->addWidget(m_batchSizeSpin, 0, 1);
 
                 m_normalizeCheck = new QCheckBox("Normalize by batch_1", group);
-                m_normalizeCheck->setChecked(info.parameters().value("normalize", true).toBool());
+                m_normalizeCheck->setChecked(params.value("normalize").toBool());
                 groupLayout->addWidget(m_normalizeCheck, 1, 0, 1, 2);
 
                 layout->addWidget(group);
@@ -400,7 +391,7 @@ namespace scopeone::ui
                 layout->addStretch();
 
                 const QVariantMap params = info.parameters();
-                int frames = params.value("calibration_frames", 101).toInt();
+                int frames = params.value("calibration_frames").toInt();
                 if (frames < 3)
                 {
                     frames = 3;
@@ -410,21 +401,12 @@ namespace scopeone::ui
                     ++frames;
                 }
                 m_calibrationFramesSpin->setValue(frames);
-                const int modeIndex = m_modeCombo->findData(params.value("mode", 0).toInt());
-                if (modeIndex >= 0)
-                {
-                    m_modeCombo->setCurrentIndex(modeIndex);
-                }
-                const int methodIndex = m_methodCombo->findData(params.value("method", 0).toInt());
-                if (methodIndex >= 0)
-                {
-                    m_methodCombo->setCurrentIndex(methodIndex);
-                }
-                const int operationIndex = m_operationCombo->findData(params.value("operation", 0).toInt());
-                if (operationIndex >= 0)
-                {
-                    m_operationCombo->setCurrentIndex(operationIndex);
-                }
+                const int modeIndex = m_modeCombo->findData(params.value("mode").toInt());
+                m_modeCombo->setCurrentIndex(modeIndex);
+                const int methodIndex = m_methodCombo->findData(params.value("method").toInt());
+                m_methodCombo->setCurrentIndex(methodIndex);
+                const int operationIndex = m_operationCombo->findData(params.value("operation").toInt());
+                m_operationCombo->setCurrentIndex(operationIndex);
 
                 connect(m_calibrationFramesSpin, QOverload<int>::of(&QSpinBox::valueChanged),
                         this, [this]() { apply(); });
@@ -478,6 +460,7 @@ namespace scopeone::ui
             case ProcessingModuleKind::Unknown:
                 break;
             }
+            qFatal("ImageProcessingWidget received an unsupported processing module kind");
             return nullptr;
         }
     } // namespace
@@ -486,7 +469,7 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_scopeonecore(core)
     {
-        if (!m_scopeonecore)
+        if (!core)
         {
             qFatal("ImageProcessingWidget requires ScopeOneCore");
         }
@@ -615,7 +598,7 @@ namespace scopeone::ui
         const int currentRow = m_moduleList->currentRow();
         const QList<ProcessingModuleInfo> modules = m_scopeonecore->processingModules();
 
-        m_moduleList->blockSignals(true);
+        const QSignalBlocker moduleListBlocker(m_moduleList);
         m_moduleList->clear();
         for (const ProcessingModuleInfo& info : modules)
         {
@@ -626,7 +609,6 @@ namespace scopeone::ui
             const int nextRow = qBound(0, currentRow, m_moduleList->count() - 1);
             m_moduleList->setCurrentRow(nextRow);
         }
-        m_moduleList->blockSignals(false);
     }
 
     // Rebuilds the editor for the selected module
@@ -648,10 +630,6 @@ namespace scopeone::ui
         }
 
         QWidget* configWidget = createConfigWidget(m_scopeonecore, currentRow, modules.at(currentRow), m_configStack);
-        if (!configWidget)
-        {
-            return;
-        }
         m_configStack->addWidget(configWidget);
         m_configStack->setCurrentWidget(configWidget);
     }
@@ -673,11 +651,10 @@ namespace scopeone::ui
     {
         const auto currentBitDepth = static_cast<int>(m_scopeonecore->processingBitDepth());
         const int index = m_processingBitDepthCombo->findData(currentBitDepth);
-        if (index >= 0 && index != m_processingBitDepthCombo->currentIndex())
+        if (index != m_processingBitDepthCombo->currentIndex())
         {
-            m_processingBitDepthCombo->blockSignals(true);
+            const QSignalBlocker bitDepthBlocker(m_processingBitDepthCombo);
             m_processingBitDepthCombo->setCurrentIndex(index);
-            m_processingBitDepthCombo->blockSignals(false);
         }
     }
 
@@ -692,10 +669,7 @@ namespace scopeone::ui
         }
 
         updateModuleList();
-        if (m_moduleList->count() > 0)
-        {
-            m_moduleList->setCurrentRow(m_moduleList->count() - 1);
-        }
+        m_moduleList->setCurrentRow(m_moduleList->count() - 1);
         updateRunButtons();
     }
 

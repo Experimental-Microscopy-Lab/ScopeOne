@@ -37,7 +37,7 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_scopeonecore(core)
     {
-        if (!m_scopeonecore)
+        if (!core)
         {
             qFatal("ConfigPresetWidget requires ScopeOneCore");
         }
@@ -89,8 +89,7 @@ namespace scopeone::ui
             return;
         }
 
-        const int oldScrollValue =
-            m_configTree->verticalScrollBar() ? m_configTree->verticalScrollBar()->value() : 0;
+        const int oldScrollValue = m_configTree->verticalScrollBar()->value();
 
         m_updating = true;
         m_configTree->clear();
@@ -106,10 +105,7 @@ namespace scopeone::ui
 
         QTimer::singleShot(0, this, [this, oldScrollValue]()
         {
-            if (auto* sb = m_configTree->verticalScrollBar())
-            {
-                sb->setValue(oldScrollValue);
-            }
+            m_configTree->verticalScrollBar()->setValue(oldScrollValue);
         });
 
         m_updating = false;
