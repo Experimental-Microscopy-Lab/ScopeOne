@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.619 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.624 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -39,7 +39,7 @@ if (WIN32)
     find_package(OpenCV REQUIRED)
 
     file(GLOB OPENCV_RUNTIME_DLLS
-            "${OPENCV_BIN_DIR}/opencv_world[0-9]*[0-9].dll"
+            "${OPENCV_BIN_DIR}/opencv_world*.dll"
             "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
     )
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
@@ -98,12 +98,12 @@ set(CORE_SOURCES
         src/FrameBufferUtils.cpp
         src/ImageProcessingFramework.cpp
         src/ProcessingModule.cpp
+        src/ProcessingModuleTemplate.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
         src/BackgroundCalibrationModule.cpp
         src/DifferentialRollingModule.cpp
-        src/ProcessingModuleTemplate.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
         src/MultiProcessCameraManager.cpp
