@@ -20,6 +20,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -216,7 +217,7 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_scopeonecore(core)
     {
-        if (!m_scopeonecore)
+        if (!core)
         {
             qFatal("RecordingWidget requires ScopeOneCore");
         }
@@ -227,7 +228,7 @@ namespace scopeone::ui
         connect(m_startStopButton, &QPushButton::clicked, this, &RecordingWidget::onStartStopClicked);
         connect(m_burstModeCheck, &QCheckBox::toggled, this, &RecordingWidget::onBurstModeToggled);
         connect(m_detectorCombo, &QComboBox::currentTextChanged, this, &RecordingWidget::onDetectorChanged);
-        connect(m_toGalleryButton, &QPushButton::clicked, this, &RecordingWidget::onToGalleryClicked);
+        connect(m_snapToGalleryButton, &QPushButton::clicked, this, &RecordingWidget::onSnapToGalleryClicked);
         connect(m_saveDirLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_fileNameLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -297,11 +298,12 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     const QString result = recordingResultMessage(session);
+                    const bool saved = recordingResultSuccess(session);
                     if (result.isEmpty())
                     {
                         return;
                     }
-                    if (recordingResultSuccess(session))
+                    if (saved)
                     {
                         qInfo().noquote() << result;
                     }
@@ -314,11 +316,12 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     const QString result = recordingResultMessage(session);
-                    if (session && recordingResultSuccess(session))
+                    const bool saved = recordingResultSuccess(session);
+                    if (saved)
                     {
                         m_writerStatusLabel->setText(QStringLiteral("Writer: Completed"));
                     }
-                    else if (session && !result.isEmpty())
+                    else if (!result.isEmpty())
                     {
                         m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - %1").arg(result));
                     }
@@ -331,7 +334,7 @@ namespace scopeone::ui
                         qWarning().noquote() << "Error: no session data";
                         return;
                     }
-                    if (recordingResultSuccess(session))
+                    if (saved)
                     {
                         qInfo().noquote() << result;
                     }
@@ -401,8 +404,8 @@ namespace scopeone::ui
 
         auto* galleryRow = new QHBoxLayout();
         galleryRow->setSpacing(6);
-        m_toGalleryButton = new QPushButton("Snap to Gallery", this);
-        galleryRow->addWidget(m_toGalleryButton);
+        m_snapToGalleryButton = new QPushButton("Snap to Gallery", this);
+        galleryRow->addWidget(m_snapToGalleryButton);
         captureLayout->addWidget(new QLabel("Gallery:", this), 3, 0);
         captureLayout->addLayout(galleryRow, 3, 1, 1, 2);
 
@@ -592,16 +595,17 @@ namespace scopeone::ui
         m_availableCameraIds = cameraIds;
 
         QString current = m_detectorCombo->currentText();
-        m_detectorCombo->blockSignals(true);
-        m_detectorCombo->clear();
-        m_detectorCombo->addItem("All");
-        m_detectorCombo->addItems(cameraIds);
-        int idx = m_detectorCombo->findText(current);
-        if (idx >= 0)
         {
-            m_detectorCombo->setCurrentIndex(idx);
+            QSignalBlocker blocker(m_detectorCombo);
+            m_detectorCombo->clear();
+            m_detectorCombo->addItem("All");
+            m_detectorCombo->addItems(cameraIds);
+            int idx = m_detectorCombo->findText(current);
+            if (idx >= 0)
+            {
+                m_detectorCombo->setCurrentIndex(idx);
+            }
         }
-        m_detectorCombo->blockSignals(false);
 
         updateUiState();
     }
@@ -648,7 +652,7 @@ namespace scopeone::ui
     }
 
     // Appends current frames to the gallery
-    void RecordingWidget::onToGalleryClicked()
+    void RecordingWidget::onSnapToGalleryClicked()
     {
         appendSelectedFramesToGallery();
     }
@@ -665,7 +669,7 @@ namespace scopeone::ui
         m_browseButton->setEnabled(editingEnabled);
         m_fileNameLineEdit->setEnabled(editingEnabled);
         m_autoNameButton->setEnabled(editingEnabled);
-        m_toGalleryButton->setEnabled(hasSelectedCameras);
+        m_snapToGalleryButton->setEnabled(hasSelectedCameras);
         m_formatCombo->setEnabled(editingEnabled);
         const bool binaryFormat =
             m_formatCombo->currentData().toInt() == static_cast<int>(scopeone::core::RecordingFormat::Binary);
@@ -787,10 +791,6 @@ namespace scopeone::ui
         for (int i = 0; i < m_mdaOrderList->count(); ++i)
         {
             auto* item = m_mdaOrderList->item(i);
-            if (!item)
-            {
-                continue;
-            }
             switch (item->data(Qt::UserRole).toInt())
             {
             case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time):
@@ -816,7 +816,6 @@ namespace scopeone::ui
             };
         }
 
-        QString errorMessage;
         if (m_mdaEnableZCheck->isChecked())
         {
             const int count = qMax(1, m_mdaZCountSpin->value());
@@ -848,10 +847,7 @@ namespace scopeone::ui
 
         if (!m_scopeonecore->startRecording(settings, selectedCameraIds()))
         {
-            errorMessage = QStringLiteral("Failed to start recording");
-            qWarning().noquote() << (errorMessage.isEmpty()
-                                         ? QStringLiteral("Failed to start recording")
-                                         : errorMessage);
+            qWarning().noquote() << QStringLiteral("Failed to start recording");
             return false;
         }
         return true;
@@ -930,10 +926,6 @@ namespace scopeone::ui
             return;
         }
         QListWidgetItem* item = m_mdaOrderList->takeItem(row);
-        if (!item)
-        {
-            return;
-        }
         m_mdaOrderList->insertItem(newRow, item);
         m_mdaOrderList->setCurrentRow(newRow);
         if (!m_orderPreference.empty())
@@ -943,10 +935,7 @@ namespace scopeone::ui
             for (int i = 0; i < m_mdaOrderList->count(); ++i)
             {
                 auto* it = m_mdaOrderList->item(i);
-                if (it)
-                {
-                    visibleDisplay.push_back(it->data(Qt::UserRole).toInt());
-                }
+                visibleDisplay.push_back(it->data(Qt::UserRole).toInt());
             }
             std::vector<int> internalVisible;
             internalVisible.reserve(visibleDisplay.size());
@@ -1009,7 +998,7 @@ namespace scopeone::ui
                                    static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time));
         }
 
-        m_mdaOrderList->blockSignals(true);
+        QSignalBlocker blocker(m_mdaOrderList);
         m_mdaOrderList->clear();
         std::vector<int> visibleDisplay;
         visibleDisplay.reserve(visibleInternal.size());
@@ -1040,14 +1029,13 @@ namespace scopeone::ui
         for (int i = 0; i < m_mdaOrderList->count(); ++i)
         {
             auto* item = m_mdaOrderList->item(i);
-            if (item && item->data(Qt::UserRole).toInt() == currentAxis)
+            if (item->data(Qt::UserRole).toInt() == currentAxis)
             {
                 selectRow = i;
                 break;
             }
         }
         m_mdaOrderList->setCurrentRow(selectRow);
-        m_mdaOrderList->blockSignals(false);
     }
 
     // Stops the active recording through core

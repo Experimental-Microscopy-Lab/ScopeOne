@@ -26,7 +26,9 @@ namespace scopeone::ui
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> unsavedSessions() const;
 
     signals:
+        void livePreviewRequested();
         void sessionOpenRequested(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
+        void sessionRemoved(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void saveSessionsRequested(
             const QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>>& sessions);
 
@@ -35,14 +37,14 @@ namespace scopeone::ui
         void updateButtons();
         void updateEmptyState();
         QString sessionId();
-        QString displayTitle(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-                             const QString& title);
-        QString itemSubtitle(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session) const;
+        QString displayTitle(const scopeone::core::ScopeOneCore::RecordingSessionData& session, const QString& title);
+        QString itemSubtitle(const scopeone::core::ScopeOneCore::RecordingSessionData& session) const;
         std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> currentSession() const;
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> checkedSessions() const;
 
         QListWidget* m_sessionList{nullptr};
         QLabel* m_emptyLabel{nullptr};
+        QPushButton* m_liveButton{nullptr};
         QPushButton* m_openButton{nullptr};
         QPushButton* m_saveCheckedButton{nullptr};
         QPushButton* m_removeButton{nullptr};

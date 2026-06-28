@@ -38,7 +38,7 @@ namespace scopeone::ui
         void onStartStopClicked();
         void onBurstModeToggled(bool enabled);
         void onDetectorChanged(const QString& text);
-        void onToGalleryClicked();
+        void onSnapToGalleryClicked();
 
         void setupUI();
         void updateUiState();
@@ -61,7 +61,7 @@ namespace scopeone::ui
         QPushButton* m_browseButton{nullptr};
         QLineEdit* m_fileNameLineEdit{nullptr};
         QPushButton* m_autoNameButton{nullptr};
-        QPushButton* m_toGalleryButton{nullptr};
+        QPushButton* m_snapToGalleryButton{nullptr};
 
         QCheckBox* m_compressionCheck{nullptr};
         QSpinBox* m_compressionLevelSpin{nullptr};

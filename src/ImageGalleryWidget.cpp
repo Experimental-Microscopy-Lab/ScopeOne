@@ -13,6 +13,8 @@ namespace scopeone::ui
 {
     namespace
     {
+        using RecordingSessionData = scopeone::core::ScopeOneCore::RecordingSessionData;
+
         constexpr int kSessionIdRole = Qt::UserRole + 1;
 
         // Return the generated snapshot suffix index
@@ -21,23 +23,16 @@ namespace scopeone::ui
             return baseName.lastIndexOf(QStringLiteral("_capture_"));
         }
 
-        // Return true for sessions created by Snap to Gallery
-        bool isSnapshotSession(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        // Return true for captures created by Snap to Gallery
+        bool isSnapshotSession(const RecordingSessionData& session)
         {
-            return session && snapshotSuffixIndex(session->capturePlan().baseName) > 0;
+            return snapshotSuffixIndex(session.capturePlan().baseName) > 0;
         }
 
         // Return the user visible source name without generated capture suffix
-        QString displaySourceName(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        QString displaySourceName(const RecordingSessionData& session)
         {
-            if (!session)
-            {
-                return {};
-            }
-
-            const QString baseName = session->capturePlan().baseName.trimmed();
+            const QString baseName = session.capturePlan().baseName.trimmed();
             const qsizetype suffixIndex = snapshotSuffixIndex(baseName);
             if (suffixIndex > 0)
             {
@@ -48,30 +43,25 @@ namespace scopeone::ui
 
         // Return true when a session should appear in the gallery
         bool isGallerySession(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+            const std::shared_ptr<RecordingSessionData>& session)
         {
             return session && (session->hasAnyFrames() || session->isSaved());
         }
 
         // Return true when a session can be opened in the image viewer
         bool canPreviewSession(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+            const std::shared_ptr<RecordingSessionData>& session)
         {
             return session && session->hasAnyFrames();
         }
 
         // Count cameras that have at least one stored frame
-        int sessionCameraCount(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        int sessionCameraCount(const RecordingSessionData& session)
         {
-            if (!session)
-            {
-                return 0;
-            }
-
             int count = 0;
-            for (const QString& cameraId : session->recordedCameraIds())
+            for (const QString& cameraId : session.recordedCameraIds())
             {
-                const auto* frames = session->framesForCamera(cameraId);
+                const auto* frames = session.framesForCamera(cameraId);
                 if (frames && !frames->empty())
                 {
                     ++count;
@@ -81,28 +71,24 @@ namespace scopeone::ui
             {
                 return count;
             }
-            const int outputCount = session->outputFiles().size();
+            const int outputCount = session.outputFiles().size();
             if (outputCount > 0)
             {
                 return outputCount;
             }
-            return session->capturePlan().cameraIds.size();
+            return session.capturePlan().cameraIds.size();
         }
 
         // Count buffered frames or streamed frames written to disk
-        qint64 sessionFrameCount(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        qint64 sessionFrameCount(const RecordingSessionData& session)
         {
-            if (!session)
+            if (session.hasAnyFrames())
             {
-                return 0;
-            }
-            if (session->hasAnyFrames())
-            {
-                return session->frameCount();
+                return session.frameCount();
             }
 
             qint64 count = 0;
-            const auto& outputFiles = session->outputFiles();
+            const auto& outputFiles = session.outputFiles();
             for (auto it = outputFiles.constBegin(); it != outputFiles.constEnd(); ++it)
             {
                 count += it.value().framesWritten;
@@ -134,7 +120,7 @@ namespace scopeone::ui
         m_sessions.insert(id, session);
 
         auto* item = new QListWidgetItem(m_sessionList);
-        item->setText(displayTitle(session, title) + QLatin1Char('\n') + itemSubtitle(session));
+        item->setText(displayTitle(*session, title) + QLatin1Char('\n') + itemSubtitle(*session));
         item->setData(kSessionIdRole, id);
         if (!session->isSaved())
         {
@@ -151,11 +137,6 @@ namespace scopeone::ui
     void ImageGalleryWidget::markSessionSaved(
         const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
     {
-        if (!session)
-        {
-            return;
-        }
-
         for (int row = 0; row < m_sessionList->count(); ++row)
         {
             QListWidgetItem* item = m_sessionList->item(row);
@@ -165,7 +146,7 @@ namespace scopeone::ui
                 continue;
             }
             const QString firstLine = item->text().section(QLatin1Char('\n'), 0, 0);
-            item->setText(firstLine + QLatin1Char('\n') + itemSubtitle(session));
+            item->setText(firstLine + QLatin1Char('\n') + itemSubtitle(*session));
             item->setFlags(item->flags() & ~Qt::ItemIsUserCheckable);
             item->setData(Qt::CheckStateRole, QVariant());
             return;
@@ -179,7 +160,7 @@ namespace scopeone::ui
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> sessions;
         for (const auto& session : m_sessions)
         {
-            if (session && !session->isSaved())
+            if (!session->isSaved())
             {
                 sessions.append(session);
             }
@@ -203,9 +184,11 @@ namespace scopeone::ui
         layout->addWidget(m_sessionList, 1);
 
         auto* buttonLayout = new QHBoxLayout();
-        m_openButton = new QPushButton(QStringLiteral("Open"), this);
+        m_liveButton = new QPushButton(QStringLiteral("Live"), this);
+        m_openButton = new QPushButton(QStringLiteral("Preview"), this);
         m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
         m_removeButton = new QPushButton(QStringLiteral("Remove"), this);
+        buttonLayout->addWidget(m_liveButton);
         buttonLayout->addWidget(m_openButton);
         buttonLayout->addWidget(m_saveCheckedButton);
         buttonLayout->addWidget(m_removeButton);
@@ -226,6 +209,7 @@ namespace scopeone::ui
                     }
                 });
         connect(m_sessionList, &QListWidget::itemChanged, this, [this](QListWidgetItem*) { updateButtons(); });
+        connect(m_liveButton, &QPushButton::clicked, this, &ImageGalleryWidget::livePreviewRequested);
         connect(m_openButton, &QPushButton::clicked, this,
                 [this]()
                 {
@@ -248,12 +232,9 @@ namespace scopeone::ui
                 [this]()
                 {
                     QListWidgetItem* item = m_sessionList->currentItem();
-                    if (!item)
-                    {
-                        return;
-                    }
-                    m_sessions.remove(item->data(kSessionIdRole).toString());
+                    auto session = m_sessions.take(item->data(kSessionIdRole).toString());
                     delete m_sessionList->takeItem(m_sessionList->row(item));
+                    emit sessionRemoved(session);
                     updateButtons();
                     updateEmptyState();
                 });
@@ -285,7 +266,7 @@ namespace scopeone::ui
 
     // Build the visible title for one gallery item
     QString ImageGalleryWidget::displayTitle(
-        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+        const RecordingSessionData& session,
         const QString& title)
     {
         const QString trimmedTitle = title.trimmed();
@@ -311,17 +292,11 @@ namespace scopeone::ui
     }
 
     // Build the secondary text for one gallery item
-    QString ImageGalleryWidget::itemSubtitle(
-        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session) const
+    QString ImageGalleryWidget::itemSubtitle(const RecordingSessionData& session) const
     {
-        if (!session)
-        {
-            return QStringLiteral("Invalid session");
-        }
-
-        const QString saveState = session->isSaved()
-                                      ? (session->streamedToDisk() ? QStringLiteral("saved to disk")
-                                                                  : QStringLiteral("saved"))
+        const QString saveState = session.isSaved()
+                                      ? (session.streamedToDisk() ? QStringLiteral("saved to disk")
+                                                                 : QStringLiteral("saved"))
                                       : QStringLiteral("unsaved");
         QStringList details;
         const QString sourceName = displaySourceName(session);
@@ -359,7 +334,7 @@ namespace scopeone::ui
                 continue;
             }
             auto session = m_sessions.value(item->data(kSessionIdRole).toString());
-            if (session && !session->isSaved())
+            if (!session->isSaved())
             {
                 sessions.append(session);
             }
