@@ -499,6 +499,7 @@ namespace scopeone::core
         bool setExposure(const QString& cameraIdOrAll, double exposureMs);
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
         bool clearROI(const QString& cameraId);
+        bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
         void setLineProfile(const QString& cameraId, const QPoint& start, const QPoint& end, bool processed);
         void clearLineProfile();
         bool getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const;
@@ -612,8 +613,8 @@ namespace scopeone::core
         std::shared_ptr<CMMCore> core() const;
         bool isAgentCamera(const QString& deviceLabel) const;
         bool isNativeCamera(const QString& deviceLabel) const;
-        bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         QStringList runningPreviewCameraIds() const;
+        bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         bool getLatestRawTransport(const QString& cameraId,
                                    SharedFrameHeader& header,
                                    QByteArray& data) const;

@@ -124,8 +124,8 @@ namespace
         return out;
     }
 
-    // Build the cache key for raw and processed histogram streams
-    QString histogramStreamKey(const QString& cameraId, bool processed)
+    // Build the cache key for raw and processed histogram layers
+    QString histogramLayerKey(const QString& cameraId, bool processed)
     {
         return QStringLiteral("%1:%2")
             .arg(processed ? QStringLiteral("proc") : QStringLiteral("raw"),
@@ -164,7 +164,7 @@ namespace
     }
 
     template <typename Operation>
-    // Apply camera changes while preview streams are temporarily stopped
+    // Apply camera changes while active previews are temporarily stopped
     bool withSuspendedPreviews(scopeone::core::ScopeOneCore* core, const QStringList& cameraIds, Operation&& operation)
     {
         for (const QString& cameraId : cameraIds)
@@ -585,7 +585,7 @@ namespace scopeone::core
         }
     }
 
-    // Collect camera ids that currently have active preview streams
+    // Collect camera ids that currently have active previews
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
         QStringList running;
@@ -705,23 +705,36 @@ namespace scopeone::core
         return m_managers->mpcm->setExposure(target, exposureMs);
     }
 
-    // Apply an ROI rectangle to a camera stream
+    // Apply an ROI rectangle to a camera
     bool ScopeOneCore::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
-        if (cameraId.trimmed().isEmpty())
+        const QString target = cameraId.trimmed();
+        if (target.isEmpty())
         {
             return false;
         }
-        return m_managers->mpcm->setROI(cameraId, x, y, width, height);
+        return m_managers->mpcm->setROI(target, x, y, width, height);
     }
 
     bool ScopeOneCore::clearROI(const QString& cameraId)
     {
-        if (cameraId.trimmed().isEmpty())
+        const QString target = cameraId.trimmed();
+        if (target.isEmpty())
         {
             return false;
         }
-        return m_managers->mpcm->clearROI(cameraId);
+        return m_managers->mpcm->clearROI(target);
+    }
+
+    // Read the active hardware ROI rectangle from a camera
+    bool ScopeOneCore::getROI(const QString& cameraId, int& x, int& y, int& width, int& height)
+    {
+        const QString target = cameraId.trimmed();
+        if (target.isEmpty())
+        {
+            return false;
+        }
+        return m_managers->mpcm->getROI(target, x, y, width, height);
     }
 
     // Track the active line profile request for future frames
@@ -853,7 +866,7 @@ namespace scopeone::core
     // Return cached raw statistics or compute them from the latest frame
     bool ScopeOneCore::getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const
     {
-        const auto cached = m_latestHistogramStats.constFind(histogramStreamKey(cameraId, false));
+        const auto cached = m_latestHistogramStats.constFind(histogramLayerKey(cameraId, false));
         if (cached != m_latestHistogramStats.constEnd() && cached.value().hasData())
         {
             stats = cached.value();
@@ -868,19 +881,19 @@ namespace scopeone::core
         return computeHistogramStats(frame, stats);
     }
 
-    // Schedule throttled histogram work for a stream
+    // Schedule throttled histogram work for a layer
     void ScopeOneCore::scheduleHistogramStats(const QString& cameraId,
                                               bool processed,
                                               const ImageFrame& frame)
     {
-        // Throttle histogram work per stream
+        // Throttle histogram work per layer
         const QString trimmedCameraId = cameraId.trimmed();
         if (trimmedCameraId.isEmpty() || !frame.isValid())
         {
             return;
         }
 
-        const QString cacheKey = histogramStreamKey(trimmedCameraId, processed);
+        const QString cacheKey = histogramLayerKey(trimmedCameraId, processed);
         HistogramJobState& state = m_histogramJobStates[cacheKey];
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (state.inFlight)
