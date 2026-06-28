@@ -2,19 +2,22 @@
 #include "internal/FrameBufferUtils.h"
 
 #include <algorithm>
+#include <QtGlobal>
 
 namespace scopeone::core::internal
 {
     namespace
     {
+        // Check whether a serialized binning mode maps to a supported enum value
+        bool isValidBinningMode(int mode)
+        {
+            return mode >= static_cast<int>(SpatiotemporalBinningModule::BinningMode::Mean)
+                && mode <= static_cast<int>(SpatiotemporalBinningModule::BinningMode::Skip);
+        }
+
         // Reduces a set of pixel values using the selected binning mode
         int modeValue(SpatiotemporalBinningModule::BinningMode mode, const std::vector<int>& values)
         {
-            if (values.empty())
-            {
-                return 0;
-            }
-
             switch (mode)
             {
             case SpatiotemporalBinningModule::BinningMode::Mean:
@@ -51,7 +54,7 @@ namespace scopeone::core::internal
         {
             if (buffer.empty())
             {
-                return {};
+                qFatal("Temporal binning requires at least one frame");
             }
             if (buffer.size() == 1 || mode == SpatiotemporalBinningModule::BinningMode::Skip)
             {
@@ -222,15 +225,23 @@ namespace scopeone::core::internal
         }
         if (params.contains("spatial_mode"))
         {
-            m_spatialMode = static_cast<BinningMode>(params.value("spatial_mode").toInt());
+            const int spatialMode = params.value("spatial_mode").toInt();
+            if (isValidBinningMode(spatialMode))
+            {
+                m_spatialMode = static_cast<BinningMode>(spatialMode);
+            }
         }
         if (params.contains("temporal_mode"))
         {
-            const BinningMode temporalMode = static_cast<BinningMode>(params.value("temporal_mode").toInt());
-            if (temporalMode != m_temporalMode)
+            const int temporalModeValue = params.value("temporal_mode").toInt();
+            if (isValidBinningMode(temporalModeValue))
             {
-                m_temporalMode = temporalMode;
-                resetBuffer = true;
+                const BinningMode temporalMode = static_cast<BinningMode>(temporalModeValue);
+                if (temporalMode != m_temporalMode)
+                {
+                    m_temporalMode = temporalMode;
+                    resetBuffer = true;
+                }
             }
         }
 

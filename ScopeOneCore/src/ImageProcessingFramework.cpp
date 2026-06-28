@@ -1,6 +1,7 @@
 #include "internal/ImageProcessingFramework.h"
 #include <QDebug>
 #include <QMutexLocker>
+#include <QtGlobal>
 #include <algorithm>
 
 namespace scopeone::core::internal
@@ -31,11 +32,12 @@ namespace scopeone::core::internal
             {
                 module = std::make_unique<DifferentialRollingModule>(parent);
             }
-
-            if (module)
+            else
             {
-                module->setParameters(source->getParameters());
+                qFatal("Unsupported processing module type");
             }
+
+            module->setParameters(source->getParameters());
             return module;
         }
     } // namespace
@@ -49,11 +51,12 @@ namespace scopeone::core::internal
     // Adds one module to the shared configuration pipeline
     void ProcessingPipeline::addModule(std::unique_ptr<ProcessingModule> module)
     {
-        if (module)
+        if (!module)
         {
-            QMutexLocker locker(&m_modulesMutex);
-            m_modules.push_back(std::move(module));
+            qFatal("ProcessingPipeline requires a valid module");
         }
+        QMutexLocker locker(&m_modulesMutex);
+        m_modules.push_back(std::move(module));
     }
 
     // Removes one module from the shared configuration pipeline
@@ -242,7 +245,7 @@ namespace scopeone::core::internal
         }
     }
 
-    // Returns the runtime pipeline owned by one camera stream
+    // Returns the runtime pipeline owned by one camera processing state
     std::shared_ptr<ProcessingPipeline> ImageProcessingManager::pipelineForCamera(const QString& cameraKey)
     {
         QMutexLocker locker(&m_frameMutex);
@@ -257,7 +260,7 @@ namespace scopeone::core::internal
         return pipeline;
     }
 
-    // Drains the newest frame queue for one camera stream
+    // Drains the newest frame queue for one camera processing state
     void ImageProcessingManager::processCameraQueue(const QString& cameraKey)
     {
         while (true)
