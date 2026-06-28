@@ -13,6 +13,7 @@
 #include <QPoint>
 #include <QRect>
 #include <QSize>
+#include <QVector>
 #include <vector>
 #include "scopeone/ImageFrame.h"
 
@@ -28,63 +29,108 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        enum class StreamLayoutMode { SideBySide, Overlay };
+        enum class LayerLayoutMode { SideBySide, Overlay };
+
+        struct PreviewInteractionTarget
+        {
+            QString layerKey;
+            QString cameraId;
+            QPoint imagePos;
+            QSize imageSize;
+            QRect itemArea;
+            QRect displayRect;
+            bool processed{false};
+        };
 
         explicit PreviewWidget(QWidget* parent = nullptr);
         ~PreviewWidget() override;
 
         void setProcessedFrame(const QString& cameraId, const scopeone::core::ImageFrame& frame);
         void setRawFrame(const scopeone::core::ImageFrame& frame);
-        void setStreamLayoutMode(StreamLayoutMode mode);
-        void setOverlayAlphaPercent(int percent);
-        int overlayAlphaPercent() const;
-        StreamLayoutMode streamLayoutMode() const;
+        void setLayerLayoutMode(LayerLayoutMode mode);
+        LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
-        void setSelectedStreams(const QStringList& streamKeys);
+        void setSelectedLayerKeys(const QStringList& layerKeys);
+        void setLayerVisible(const QString& layerKey, bool visible);
+        void setLayerOpacityPercent(const QString& layerKey, int percent);
+        void setLayerGamma(const QString& layerKey, double gamma);
+        void setLayerColormap(const QString& layerKey, const QString& colormap);
+        void setLayerBlending(const QString& layerKey, const QString& blending);
+        void setLayerDisplayLevels(const QString& layerKey,
+                                   int minLevel,
+                                   int maxLevel,
+                                   int maxPossible);
+        void moveLayer(const QString& layerKey, int offset);
+        QString setStaticLayerFrame(const QString& layerId,
+                                    const QString& displayName,
+                                    const scopeone::core::ImageFrame& frame);
+        bool removeStaticLayer(const QString& layerKey);
+        void clearStaticLayers();
         QStringList availableCameraIds() const;
-        QStringList selectedStreams() const;
-        QString cameraInfoText() const;
+        QStringList availableLayerKeys() const;
+        QStringList selectedLayerKeys() const;
+        int layerOpacityPercent(const QString& layerKey) const;
+        double layerGamma(const QString& layerKey) const;
+        QString layerColormap(const QString& layerKey) const;
+        QStringList supportedLayerColormaps() const;
+        QString layerBlending(const QString& layerKey) const;
+        QStringList supportedLayerBlendingModes() const;
+        QString layerName(const QString& layerKey) const;
+        QString layerInfoText(const QString& layerKey) const;
+        QString layerInfoSummaryText() const;
         void clearCameraFrames(const QString& cameraId);
+        void clearProcessedFrames();
         void setZoomPercent(int percent);
         int zoomPercent() const;
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
-        void setStreamDisplayLevels(const QString& cameraId,
-                                    bool processed,
-                                    int minLevel,
-                                    int maxLevel,
-                                    int maxPossible);
+        bool cameraDisplayTransform(const QString& cameraId,
+                                    int& offsetX,
+                                    int& offsetY,
+                                    int& zoomPercent,
+                                    bool& flipX,
+                                    bool& flipY) const;
         void setCameraOffset(const QString& cameraId, int offsetX, int offsetY);
         void setCameraFlip(const QString& cameraId, bool flipX, bool flipY);
         void setCameraZoomPercent(const QString& cameraId, int percent);
 
         void startROIDrawing(const QString& cameraId);
-        void startLineDrawing(const QString& cameraId = QString());
+        void startLineDrawingForLayer(const QString& layerKey);
         void clearLine();
 
-        bool widgetToImageCoords(const QPoint& widgetPos,
-                                 QString& outCameraId,
-                                 QPoint& outImagePos,
-                                 bool& outProcessed) const;
-        bool widgetToImageCoordsForCamera(const QString& cameraId,
-                                          const QPoint& widgetPos,
-                                          QPoint& outImagePos,
-                                          bool& outProcessed) const;
+        bool interactionTargetAt(const QPoint& widgetPos,
+                                 PreviewInteractionTarget& outTarget,
+                                 const QString& cameraId = QString(),
+                                 bool rawOnly = false) const;
         bool getPixelValue(const QString& cameraId,
                            const QPoint& imagePos,
                            bool processed,
                            int& outValue) const;
+        bool lineProfile(const QString& cameraId,
+                         const QPoint& start,
+                         const QPoint& end,
+                         bool processed,
+                         QVector<int>& outValues) const;
 
     signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
-        void selectedStreamsChanged(const QStringList& streamKeys);
-        void streamLayoutModeChanged(StreamLayoutMode mode);
-        void cameraInfoTextChanged(const QString& text);
+        void availableLayerKeysChanged(const QStringList& layerKeys);
+        void selectedLayerKeysChanged(const QStringList& layerKeys);
+        void layerLayoutModeChanged(LayerLayoutMode mode);
+        void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
+        void staticLayerFrameChanged(const QString& layerKey, const scopeone::core::ImageFrame& frame);
         void mousePositionChanged(const QPoint& widgetPos);
-        void roiDrawn(const QString& cameraId, int x, int y, int width, int height);
-        void lineDrawn(const QString& cameraId,
+        void roiDrawn(const QString& cameraId,
+                      int x,
+                      int y,
+                      int width,
+                      int height,
+                      int sourceRoiX,
+                      int sourceRoiY);
+        void lineDrawn(const QString& layerKey,
+                       const QString& cameraId,
                        int startX,
                        int startY,
                        int endX,
@@ -93,7 +139,7 @@ namespace scopeone::ui
 
     protected:
         void initializeGL() override;
-        void resizeGL(int w, int h) override;
+        void resizeGL(int, int) override;
         void paintGL() override;
         void mousePressEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
@@ -102,7 +148,7 @@ namespace scopeone::ui
         void keyPressEvent(QKeyEvent* event) override;
 
     private:
-        struct CameraInfo
+        struct LayerInfo
         {
             int width{0};
             int height{0};
@@ -122,16 +168,25 @@ namespace scopeone::ui
             bool changed{false};
         };
 
+        enum class Colormap { Gray = 0, Green, Magenta, Cyan, Red, Blue, Yellow, Fire };
+        enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
+
+        struct LayerDisplaySettings
+        {
+            bool visible{false};
+            int opacityPercent{100};
+            double gamma{1.0};
+            Colormap colormap{Colormap::Gray};
+            Blending blending{Blending::Translucent};
+            int levelMin{0};
+            int levelMax{255};
+            int levelDomainMax{255};
+        };
+
         struct CameraFrameState
         {
             scopeone::core::ImageFrame processedFrame;
             scopeone::core::ImageFrame rawFrame;
-            int rawLevelMin{0};
-            int rawLevelMax{255};
-            int rawLevelDomainMax{255};
-            int processedLevelMin{0};
-            int processedLevelMax{255};
-            int processedLevelDomainMax{255};
             int offsetX{0};
             int offsetY{0};
             bool flipX{false};
@@ -147,7 +202,7 @@ namespace scopeone::ui
             bool hasRawFrame{false};
         };
 
-        struct StreamItem
+        struct LayerRenderItem
         {
             const CameraRenderInfo* info{nullptr};
             bool processed{false};
@@ -157,17 +212,21 @@ namespace scopeone::ui
         {
             const CameraRenderInfo* info{nullptr};
             bool processed{false};
+            QString layerKey;
             QRect area;
-            float alpha{1.0f};
+            LayerDisplaySettings display;
+            bool firstVisibleInArea{false};
         };
 
     private:
         QStringList m_availableCameraIds;
-        QSet<QString> m_selectedStreams;
-        int m_overlayAlphaPercent{50};
-        StreamLayoutMode m_streamLayoutMode{StreamLayoutMode::SideBySide};
-        QMap<QString, CameraInfo> m_cameraInfos;
-        QString m_cameraInfoText{QStringLiteral("No image loaded")};
+        QMap<QString, LayerDisplaySettings> m_layers;
+        QStringList m_layerOrder;
+        QSet<QString> m_staticCameraIds;
+        QMap<QString, QString> m_layerNames;
+        LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
+        QMap<QString, LayerInfo> m_layerInfos;
+        QString m_layerInfoText{QStringLiteral("No image loaded")};
         QMap<QString, FpsState> m_fpsStates;
 
         mutable QMutex m_mutex;
@@ -182,6 +241,7 @@ namespace scopeone::ui
         GLuint m_vbo{0};
         QOpenGLShaderProgram m_prog;
         GLint m_uTex{-1}, m_uMinNorm{-1}, m_uMaxNorm{-1}, m_uTexNormScale{-1}, m_uAlpha{-1};
+        GLint m_uGamma{-1}, m_uColormap{-1};
         GLint m_uUvScale{-1}, m_uUvOffset{-1};
 
         struct CachedTexture
@@ -197,20 +257,35 @@ namespace scopeone::ui
 
         bool m_roiDrawingMode{false};
         QString m_roiTargetCameraId;
+        QString m_roiTargetLayerKey;
         QPoint m_roiStart;
         QPoint m_roiEnd;
         bool m_roiDragging{false};
         bool m_lineDrawingMode{false};
         QString m_lineTargetCameraId;
+        QString m_lineTargetLayerKey;
         QPoint m_lineStart;
         QPoint m_lineEnd;
+        QPoint m_lineStartImage;
+        QPoint m_lineEndImage;
         bool m_lineDragging{false};
         bool m_lineProcessed{false};
         bool m_lineVisible{false};
         void updateImageDisplay();
-        FpsUpdate updateFpsOnFrame(const QString& streamKey);
-        void updateCameraInfoDisplay();
+        FpsUpdate updateFpsOnFrame(const QString& layerKey);
+        void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
+        LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
+        LayerDisplaySettings layerDisplaySettings(const QString& layerKey) const;
+        Colormap colormapFromName(const QString& name) const;
+        QString colormapName(Colormap colormap) const;
+        Blending blendingFromName(const QString& name) const;
+        QString blendingName(Blending blending) const;
+        void ensureLayer(const QString& layerKey);
+        void ensureLayersForCamera(const QString& cameraId);
+        void removeStaticLayerData(const QString& cameraId);
+        void removeInvalidLayers(const QSet<QString>& validKeys);
+        QSet<QString> validLayerKeys() const;
         bool hasRawFrame(const CameraFrameState& frameState) const;
         QMap<QString, CameraFrameState> snapshotCameraFrames() const;
         std::vector<CameraRenderInfo> buildCameraRenderInfos(const QMap<QString, CameraFrameState>& cameraFrames) const;
@@ -222,23 +297,42 @@ namespace scopeone::ui
                                     const QRect& area,
                                     QRect& displayRect,
                                     QSize& imageSize) const;
+        bool resolveLayerDisplayGeometry(const QString& layerKey,
+                                         CameraFrameState& frameState,
+                                         bool& processed,
+                                         QRect& itemArea,
+                                         QRect& displayRect,
+                                         QSize& imageSize) const;
+        bool resolveInteractionTarget(const QPoint& widgetPos,
+                                      PreviewInteractionTarget& outTarget,
+                                      const QString& cameraId,
+                                      bool rawOnly,
+                                      const QString& layerKey) const;
         bool mapWidgetPositionToImage(const CameraFrameState& frameState,
                                       bool processed,
                                       const QRect& area,
                                       const QPoint& widgetPos,
                                       QPoint& imagePos) const;
+        bool mapWidgetRectToImage(const CameraFrameState& frameState,
+                                  bool processed,
+                                  const QRect& area,
+                                  const QRect& widgetRect,
+                                  QRect& imageRect) const;
+        bool mapImagePositionToWidget(const CameraFrameState& frameState,
+                                      bool processed,
+                                      const QRect& area,
+                                      const QPoint& imagePos,
+                                      QPoint& widgetPos) const;
         void paintPlaceholder(const QString& text);
         void drawRenderItem(const RenderItem& item);
         void ensureGlPipeline();
         void drawFrameInRect(const QString& textureKey,
                              const scopeone::core::ImageFrame& frame,
                              const QRect& r,
-                             float alpha,
                              bool flipX,
                              bool flipY,
-                             int levelMin,
-                             int levelMax,
-                             int levelDomainMax);
+                             const LayerDisplaySettings& display,
+                             bool firstVisibleInArea);
         QRect targetRectForImageSize(const QSize& imageSize,
                                      const CameraFrameState& frameState,
                                      const QRect& avail) const;
@@ -246,11 +340,6 @@ namespace scopeone::ui
         void applyViewportForRect(const QRect& logicalRect);
         std::vector<QRect> computeLayout(int count) const;
         std::vector<RenderItem> buildRenderItems(const std::vector<CameraRenderInfo>& cameraRenderInfos) const;
-        bool locateRenderTarget(const QPoint& widgetPos,
-                                QString& cameraId,
-                                bool& processed,
-                                QRect& itemArea,
-                                QPointF& relativePos) const;
 
         GLuint getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat);
         void cleanupTextureCache();

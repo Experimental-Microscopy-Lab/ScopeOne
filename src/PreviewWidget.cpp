@@ -3,6 +3,8 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QtGlobal>
+#include <QtMath>
 #include <algorithm>
 #include <vector>
 
@@ -12,35 +14,35 @@ namespace scopeone::ui
 
     namespace
     {
-        // Builds a stable stream key for raw or processed preview
-        QString streamSelectionKey(const QString& cameraId, bool processed)
+        // Builds a stable layer key for raw or processed preview
+        QString previewLayerKey(const QString& cameraId, bool processed)
         {
             return processed
                        ? QStringLiteral("proc:%1").arg(cameraId)
                        : QStringLiteral("raw:%1").arg(cameraId);
         }
 
-        // Extracts the camera id from a stream key
-        QString cameraIdFromStreamKey(const QString& key)
+        // Extracts the camera id from a layer key
+        QString cameraIdFromLayerKey(const QString& key)
         {
             const int separator = key.indexOf(QLatin1Char(':'));
             return separator >= 0 ? key.mid(separator + 1) : key;
         }
 
-        // Checks whether a stream key points to processed preview
-        bool isProcessedStreamKey(const QString& key)
+        // Checks whether a layer key points to processed preview
+        bool isProcessedLayerKey(const QString& key)
         {
             return key.startsWith(QStringLiteral("proc:"));
         }
 
-        // Builds all valid stream selection keys for available cameras
-        QSet<QString> validStreamSelectionKeys(const QStringList& cameraIds)
+        // Builds all valid layer keys for available cameras
+        QSet<QString> validPreviewLayerKeys(const QStringList& cameraIds)
         {
             QSet<QString> keys;
             for (const QString& cameraId : cameraIds)
             {
-                keys.insert(streamSelectionKey(cameraId, false));
-                keys.insert(streamSelectionKey(cameraId, true));
+                keys.insert(previewLayerKey(cameraId, false));
+                keys.insert(previewLayerKey(cameraId, true));
             }
             return keys;
         }
@@ -70,6 +72,99 @@ namespace scopeone::ui
             }
             return false;
         }
+
+        // Sample a straight line through one frame
+        bool sampleLineValues(const ImageFrame& frame,
+                              const QPoint& start,
+                              const QPoint& end,
+                              QVector<int>& outValues)
+        {
+            const int dx = end.x() - start.x();
+            const int dy = end.y() - start.y();
+            const int steps = qMax(qAbs(dx), qAbs(dy));
+            outValues.clear();
+            outValues.reserve(steps + 1);
+            for (int i = 0; i <= steps; ++i)
+            {
+                const double t = (steps == 0) ? 0.0 : static_cast<double>(i) / static_cast<double>(steps);
+                const QPoint point(qRound(start.x() + dx * t), qRound(start.y() + dy * t));
+                int value = 0;
+                if (sampleFrameValue(frame, point, value))
+                {
+                    outValues.push_back(value);
+                }
+            }
+            return !outValues.isEmpty();
+        }
+
+        // Clips one widget line to a display rectangle
+        bool clipLineToRect(const QPoint& start,
+                            const QPoint& end,
+                            const QRect& rect,
+                            QPoint& clippedStart,
+                            QPoint& clippedEnd)
+        {
+            if (rect.isEmpty())
+            {
+                return false;
+            }
+
+            const double left = rect.left();
+            const double right = rect.right();
+            const double top = rect.top();
+            const double bottom = rect.bottom();
+            const double x0 = start.x();
+            const double y0 = start.y();
+            const double dx = end.x() - start.x();
+            const double dy = end.y() - start.y();
+            double u1 = 0.0;
+            double u2 = 1.0;
+
+            const auto clipBoundary = [&u1, &u2](double p, double q)
+            {
+                if (qFuzzyIsNull(p))
+                {
+                    return q >= 0.0;
+                }
+                const double r = q / p;
+                if (p < 0.0)
+                {
+                    if (r > u2)
+                    {
+                        return false;
+                    }
+                    if (r > u1)
+                    {
+                        u1 = r;
+                    }
+                    return true;
+                }
+                if (r < u1)
+                {
+                    return false;
+                }
+                if (r < u2)
+                {
+                    u2 = r;
+                }
+                return true;
+            };
+
+            if (!clipBoundary(-dx, x0 - left)
+                || !clipBoundary(dx, right - x0)
+                || !clipBoundary(-dy, y0 - top)
+                || !clipBoundary(dy, bottom - y0)
+                || u1 > u2)
+            {
+                return false;
+            }
+
+            clippedStart = QPoint(qBound(rect.left(), qRound(x0 + u1 * dx), rect.right()),
+                                  qBound(rect.top(), qRound(y0 + u1 * dy), rect.bottom()));
+            clippedEnd = QPoint(qBound(rect.left(), qRound(x0 + u2 * dx), rect.right()),
+                                qBound(rect.top(), qRound(y0 + u2 * dy), rect.bottom()));
+            return clippedStart != clippedEnd;
+        }
     } // namespace
 
     // Creates the OpenGL preview widget
@@ -94,40 +189,49 @@ namespace scopeone::ui
         cleanupTextureCache();
     }
 
-    // Stores one processed frame and updates stream statistics
+    // Stores one processed frame and updates layer statistics
     void PreviewWidget::setProcessedFrame(const QString& cameraId, const ImageFrame& frame)
     {
+        ensureLayersForCamera(cameraId);
         QMutexLocker lock(&m_mutex);
         CameraFrameState& frameState = m_cameraFrames[cameraId];
+        const bool hadProcessedFrame = frameState.processedFrame.isValid();
         frameState.processedFrame = frame;
         lock.unlock();
 
         if (frame.isValid())
         {
-            const QString streamKey = streamSelectionKey(cameraId, true);
-            const FpsUpdate fps = updateFpsOnFrame(streamKey);
+            const QString layerKey = previewLayerKey(cameraId, true);
+            const FpsUpdate fps = updateFpsOnFrame(layerKey);
 
-            CameraInfo& info = m_cameraInfos[streamKey];
+            LayerInfo& info = m_layerInfos[layerKey];
             const bool sizeChanged = info.width != frame.width || info.height != frame.height;
             info.width = frame.width;
             info.height = frame.height;
             info.fps = fps.fps;
             if (sizeChanged || fps.changed)
             {
-                updateCameraInfoDisplay();
+                updateLayerInfoDisplay();
             }
         }
 
-        if (frame.isValid() && registerAvailableCamera(cameraId))
+        const bool registeredCamera = frame.isValid() && registerAvailableCamera(cameraId);
+        if (frame.isValid() && !hadProcessedFrame)
+        {
+            emit availableLayerKeysChanged(availableLayerKeys());
+        }
+
+        if (registeredCamera)
         {
             return;
         }
         updateImageDisplay();
     }
 
-    // Stores one raw frame and updates stream statistics
+    // Stores one raw frame and updates layer statistics
     void PreviewWidget::setRawFrame(const ImageFrame& frame)
     {
+        ensureLayersForCamera(frame.cameraId);
         {
             QMutexLocker lock(&m_mutex);
             CameraFrameState& frameState = m_cameraFrames[frame.cameraId];
@@ -135,17 +239,17 @@ namespace scopeone::ui
         }
         if (frame.isValid())
         {
-            const QString streamKey = streamSelectionKey(frame.cameraId, false);
-            const FpsUpdate fps = updateFpsOnFrame(streamKey);
+            const QString layerKey = previewLayerKey(frame.cameraId, false);
+            const FpsUpdate fps = updateFpsOnFrame(layerKey);
 
-            CameraInfo& info = m_cameraInfos[streamKey];
+            LayerInfo& info = m_layerInfos[layerKey];
             const bool sizeChanged = info.width != frame.width || info.height != frame.height;
             info.width = frame.width;
             info.height = frame.height;
             info.fps = fps.fps;
             if (sizeChanged || fps.changed)
             {
-                updateCameraInfoDisplay();
+                updateLayerInfoDisplay();
             }
         }
         if (registerAvailableCamera(frame.cameraId))
@@ -155,75 +259,317 @@ namespace scopeone::ui
         update();
     }
 
-    // Changes how multiple preview streams are laid out
-    void PreviewWidget::setStreamLayoutMode(StreamLayoutMode mode)
+    // Changes how multiple preview layers are laid out
+    void PreviewWidget::setLayerLayoutMode(LayerLayoutMode mode)
     {
-        if (m_streamLayoutMode == mode)
+        if (m_layerLayoutMode == mode)
         {
             return;
         }
-        m_streamLayoutMode = mode;
+        m_layerLayoutMode = mode;
         updateImageDisplay();
-        emit streamLayoutModeChanged(m_streamLayoutMode);
+        emit layerLayoutModeChanged(m_layerLayoutMode);
     }
 
-    // Sets overlay opacity for merged preview streams
-    void PreviewWidget::setOverlayAlphaPercent(int percent)
+    PreviewWidget::LayerLayoutMode PreviewWidget::layerLayoutMode() const
     {
-        percent = std::clamp(percent, 0, 100);
-        if (m_overlayAlphaPercent == percent)
-        {
-            return;
-        }
-        m_overlayAlphaPercent = percent;
-        updateImageDisplay();
+        return m_layerLayoutMode;
     }
 
-    int PreviewWidget::overlayAlphaPercent() const
-    {
-        return m_overlayAlphaPercent;
-    }
-
-    PreviewWidget::StreamLayoutMode PreviewWidget::streamLayoutMode() const
-    {
-        return m_streamLayoutMode;
-    }
-
-    // Replaces the available camera list and keeps valid stream selections
+    // Replaces the available camera list and keeps valid layer selections
     void PreviewWidget::setAvailableCameraIds(const QStringList& cameraIds)
     {
-        const QStringList previousSelection = selectedStreams();
+        const QStringList previousSelection = selectedLayerKeys();
         m_availableCameraIds = cameraIds;
         emit availableCameraIdsChanged(m_availableCameraIds);
 
-        const QSet<QString> validKeys = validStreamSelectionKeys(m_availableCameraIds);
-        QSet<QString> nextSelection;
-        for (const QString& streamKey : previousSelection)
+        const QSet<QString> validKeys = validLayerKeys();
+        removeInvalidLayers(validKeys);
+        for (const QString& cameraId : m_availableCameraIds)
         {
-            if (validKeys.contains(streamKey))
+            ensureLayersForCamera(cameraId);
+        }
+
+        QSet<QString> nextSelection;
+        for (const QString& layerKey : previousSelection)
+        {
+            if (validKeys.contains(layerKey))
             {
-                nextSelection.insert(streamKey);
+                nextSelection.insert(layerKey);
             }
         }
-        m_selectedStreams = std::move(nextSelection);
-        emit selectedStreamsChanged(selectedStreams());
+        for (auto it = m_layers.begin(); it != m_layers.end(); ++it)
+        {
+            it->visible = validKeys.contains(it.key()) && nextSelection.contains(it.key());
+        }
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
     }
 
-    // Sets the visible raw and processed preview streams
-    void PreviewWidget::setSelectedStreams(const QStringList& streamKeys)
+    // Sets the visible preview layers
+    void PreviewWidget::setSelectedLayerKeys(const QStringList& layerKeys)
     {
-        const QSet<QString> validKeys = validStreamSelectionKeys(m_availableCameraIds);
+        const QSet<QString> validKeys = validLayerKeys();
         QSet<QString> nextSelection;
-        for (const QString& streamKey : streamKeys)
+        for (const QString& layerKey : layerKeys)
         {
-            if (validKeys.contains(streamKey))
+            if (validKeys.contains(layerKey))
             {
-                nextSelection.insert(streamKey);
+                nextSelection.insert(layerKey);
             }
         }
-        m_selectedStreams = std::move(nextSelection);
-        emit selectedStreamsChanged(selectedStreams());
+        removeInvalidLayers(validKeys);
+        for (const QString& cameraId : m_availableCameraIds)
+        {
+            ensureLayersForCamera(cameraId);
+        }
+        for (auto it = m_layers.begin(); it != m_layers.end(); ++it)
+        {
+            it->visible = validKeys.contains(it.key()) && nextSelection.contains(it.key());
+        }
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        updateImageDisplay();
+    }
+
+    // Sets visibility for one preview layer
+    void PreviewWidget::setLayerVisible(const QString& layerKey, bool visible)
+    {
+        const QSet<QString> validKeys = validLayerKeys();
+        if (!validKeys.contains(layerKey))
+        {
+            return;
+        }
+
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        if (display.visible == visible)
+        {
+            return;
+        }
+
+        display.visible = visible;
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        updateImageDisplay();
+    }
+
+    // Sets opacity for one preview layer
+    void PreviewWidget::setLayerOpacityPercent(const QString& layerKey, int percent)
+    {
+        if (!validLayerKeys().contains(layerKey))
+        {
+            return;
+        }
+
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        const int nextPercent = qBound(0, percent, 100);
+        if (display.opacityPercent == nextPercent)
+        {
+            return;
+        }
+
+        display.opacityPercent = nextPercent;
+        update();
+    }
+
+    // Sets gamma for one preview layer
+    void PreviewWidget::setLayerGamma(const QString& layerKey, double gamma)
+    {
+        if (!validLayerKeys().contains(layerKey))
+        {
+            return;
+        }
+
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        const double nextGamma = std::clamp(gamma, 0.2, 2.0);
+        if (qFuzzyCompare(display.gamma, nextGamma))
+        {
+            return;
+        }
+
+        display.gamma = nextGamma;
+        update();
+    }
+
+    // Sets colormap for one preview layer
+    void PreviewWidget::setLayerColormap(const QString& layerKey, const QString& colormap)
+    {
+        if (!validLayerKeys().contains(layerKey)
+            || !supportedLayerColormaps().contains(colormap, Qt::CaseInsensitive))
+        {
+            return;
+        }
+
+        const Colormap nextColormap = colormapFromName(colormap);
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        if (display.colormap == nextColormap)
+        {
+            return;
+        }
+
+        display.colormap = nextColormap;
+        update();
+    }
+
+    // Sets blending for one preview layer
+    void PreviewWidget::setLayerBlending(const QString& layerKey, const QString& blending)
+    {
+        const QString normalized = blending.trimmed().toLower().replace(QStringLiteral("_"), QStringLiteral(" "));
+        const bool supported = normalized == QStringLiteral("translucent")
+                               || normalized == QStringLiteral("additive")
+                               || normalized == QStringLiteral("minimum")
+                               || normalized == QStringLiteral("opaque")
+                               || normalized == QStringLiteral("multiplicative");
+        if (!validLayerKeys().contains(layerKey) || !supported)
+        {
+            return;
+        }
+
+        const Blending nextBlending = blendingFromName(blending);
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        if (display.blending == nextBlending)
+        {
+            return;
+        }
+
+        display.blending = nextBlending;
+        update();
+    }
+
+    // Sets display intensity levels for one preview layer
+    void PreviewWidget::setLayerDisplayLevels(const QString& layerKey,
+                                              int minLevel,
+                                              int maxLevel,
+                                              int maxPossible)
+    {
+        if (!validLayerKeys().contains(layerKey))
+        {
+            return;
+        }
+
+        ensureLayer(layerKey);
+        LayerDisplaySettings& display = m_layers[layerKey];
+        display.levelDomainMax = qMax(1, maxPossible);
+        display.levelMin = qBound(0, minLevel, display.levelDomainMax);
+        display.levelMax = qBound(display.levelMin + 1, maxLevel, display.levelDomainMax);
+        update();
+    }
+
+    // Moves one layer in draw order
+    void PreviewWidget::moveLayer(const QString& layerKey, int offset)
+    {
+        if (offset == 0 || !validLayerKeys().contains(layerKey))
+        {
+            return;
+        }
+
+        ensureLayer(layerKey);
+        const int currentIndex = static_cast<int>(m_layerOrder.indexOf(layerKey));
+        const int maxIndex = static_cast<int>(m_layerOrder.size()) - 1;
+        const int nextIndex = qBound(0, currentIndex + offset, maxIndex);
+        if (currentIndex == nextIndex)
+        {
+            return;
+        }
+
+        m_layerOrder.move(currentIndex, nextIndex);
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        emit availableLayerKeysChanged(availableLayerKeys());
+        updateImageDisplay();
+    }
+
+    // Adds a static image frame as a preview layer
+    QString PreviewWidget::setStaticLayerFrame(const QString& layerId,
+                                               const QString& displayName,
+                                               const ImageFrame& frame)
+    {
+        const QString normalizedId = layerId.trimmed();
+        if (normalizedId.isEmpty() || !frame.isValid())
+        {
+            return {};
+        }
+
+        const QString cameraId = QStringLiteral("static:%1").arg(normalizedId);
+        const QString layerKey = previewLayerKey(cameraId, false);
+        ImageFrame staticFrame = frame;
+        staticFrame.cameraId = cameraId;
+        const bool hadStaticLayer = m_staticCameraIds.contains(cameraId);
+        const bool wasVisible = m_layers.value(layerKey).visible;
+
+        m_staticCameraIds.insert(cameraId);
+        m_layerNames.insert(layerKey,
+                            displayName.trimmed().isEmpty() ? frame.cameraId : displayName.trimmed());
+        ensureLayer(layerKey);
+        m_layers[layerKey].visible = true;
+
+        {
+            QMutexLocker lock(&m_mutex);
+            CameraFrameState& frameState = m_cameraFrames[cameraId];
+            frameState.rawFrame = staticFrame;
+        }
+
+        LayerInfo& info = m_layerInfos[layerKey];
+        info.width = staticFrame.width;
+        info.height = staticFrame.height;
+        info.fps = 0.0;
+
+        updateLayerInfoDisplay();
+        if (!hadStaticLayer)
+        {
+            emit availableLayerKeysChanged(availableLayerKeys());
+        }
+        if (!wasVisible)
+        {
+            emit selectedLayerKeysChanged(selectedLayerKeys());
+        }
+        emit staticLayerFrameChanged(layerKey, staticFrame);
+        updateImageDisplay();
+        return layerKey;
+    }
+
+    // Removes one static image layer from the preview
+    bool PreviewWidget::removeStaticLayer(const QString& layerKey)
+    {
+        const QString cameraId = cameraIdFromLayerKey(layerKey);
+        if (layerKey != previewLayerKey(cameraId, false) || !m_staticCameraIds.contains(cameraId))
+        {
+            return false;
+        }
+
+        removeStaticLayerData(cameraId);
+        updateLayerInfoDisplay();
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        emit availableLayerKeysChanged(availableLayerKeys());
+        updateImageDisplay();
+        return true;
+    }
+
+    // Removes all static image layers from the preview
+    void PreviewWidget::clearStaticLayers()
+    {
+        if (m_staticCameraIds.isEmpty())
+        {
+            return;
+        }
+
+        QStringList cameraIds;
+        cameraIds.reserve(m_staticCameraIds.size());
+        for (const QString& cameraId : m_staticCameraIds)
+        {
+            cameraIds.append(cameraId);
+        }
+        for (const QString& cameraId : cameraIds)
+        {
+            removeStaticLayerData(cameraId);
+        }
+
+        updateLayerInfoDisplay();
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
     }
 
@@ -232,46 +578,174 @@ namespace scopeone::ui
         return m_availableCameraIds;
     }
 
-    QStringList PreviewWidget::selectedStreams() const
+    QStringList PreviewWidget::availableLayerKeys() const
     {
-        QStringList orderedSelection;
-        orderedSelection.reserve(m_selectedStreams.size());
+        QStringList availableKeys;
+        QSet<QString> availableSet;
+
+        QMap<QString, CameraFrameState> cameraFrames = snapshotCameraFrames();
         for (const QString& cameraId : m_availableCameraIds)
         {
-            const QString rawKey = streamSelectionKey(cameraId, false);
-            if (m_selectedStreams.contains(rawKey))
+            const QString rawKey = previewLayerKey(cameraId, false);
+            availableKeys.append(rawKey);
+            availableSet.insert(rawKey);
+
+            const auto it = cameraFrames.constFind(cameraId);
+            if (it != cameraFrames.constEnd() && it.value().processedFrame.isValid())
             {
-                orderedSelection.append(rawKey);
-            }
-            const QString procKey = streamSelectionKey(cameraId, true);
-            if (m_selectedStreams.contains(procKey))
-            {
-                orderedSelection.append(procKey);
+                const QString processedKey = previewLayerKey(cameraId, true);
+                availableKeys.append(processedKey);
+                availableSet.insert(processedKey);
             }
         }
-        for (const QString& streamKey : m_selectedStreams)
+        for (const QString& cameraId : m_staticCameraIds)
         {
-            if (!orderedSelection.contains(streamKey))
+            const QString layerKey = previewLayerKey(cameraId, false);
+            availableKeys.append(layerKey);
+            availableSet.insert(layerKey);
+        }
+
+        QStringList layerKeys;
+        layerKeys.reserve(availableKeys.size());
+        for (const QString& layerKey : m_layerOrder)
+        {
+            if (availableSet.contains(layerKey))
             {
-                orderedSelection.append(streamKey);
+                layerKeys.append(layerKey);
+            }
+        }
+        for (const QString& layerKey : availableKeys)
+        {
+            if (!layerKeys.contains(layerKey))
+            {
+                layerKeys.append(layerKey);
+            }
+        }
+        return layerKeys;
+    }
+
+    QStringList PreviewWidget::selectedLayerKeys() const
+    {
+        QStringList orderedSelection;
+        orderedSelection.reserve(m_layers.size());
+        const QSet<QString> validKeys = validLayerKeys();
+        for (const QString& layerKey : m_layerOrder)
+        {
+            if (validKeys.contains(layerKey) && m_layers.value(layerKey).visible)
+            {
+                orderedSelection.append(layerKey);
+            }
+        }
+        for (auto it = m_layers.constBegin(); it != m_layers.constEnd(); ++it)
+        {
+            if (validKeys.contains(it.key()) && it.value().visible && !orderedSelection.contains(it.key()))
+            {
+                orderedSelection.append(it.key());
             }
         }
         return orderedSelection;
     }
 
-    QString PreviewWidget::cameraInfoText() const
+    int PreviewWidget::layerOpacityPercent(const QString& layerKey) const
     {
-        return m_cameraInfoText;
+        return layerDisplaySettings(layerKey).opacityPercent;
+    }
+
+    double PreviewWidget::layerGamma(const QString& layerKey) const
+    {
+        return layerDisplaySettings(layerKey).gamma;
+    }
+
+    QString PreviewWidget::layerColormap(const QString& layerKey) const
+    {
+        return colormapName(layerDisplaySettings(layerKey).colormap);
+    }
+
+    QStringList PreviewWidget::supportedLayerColormaps() const
+    {
+        return {
+            QStringLiteral("Gray"),
+            QStringLiteral("Green"),
+            QStringLiteral("Magenta"),
+            QStringLiteral("Cyan"),
+            QStringLiteral("Red"),
+            QStringLiteral("Blue"),
+            QStringLiteral("Yellow"),
+            QStringLiteral("Fire"),
+        };
+    }
+
+    QString PreviewWidget::layerBlending(const QString& layerKey) const
+    {
+        return blendingName(layerDisplaySettings(layerKey).blending);
+    }
+
+    QStringList PreviewWidget::supportedLayerBlendingModes() const
+    {
+        return {
+            QStringLiteral("Translucent"),
+            QStringLiteral("Additive"),
+            QStringLiteral("Minimum"),
+            QStringLiteral("Opaque"),
+            QStringLiteral("Multiplicative"),
+        };
+    }
+
+    QString PreviewWidget::layerName(const QString& layerKey) const
+    {
+        const auto nameIt = m_layerNames.constFind(layerKey);
+        if (nameIt != m_layerNames.constEnd())
+        {
+            return nameIt.value();
+        }
+
+        const QString cameraId = cameraIdFromLayerKey(layerKey);
+        return isProcessedLayerKey(layerKey)
+                   ? QStringLiteral("%1 Processed").arg(cameraId)
+                   : QStringLiteral("%1 Raw").arg(cameraId);
+    }
+
+    QString PreviewWidget::layerInfoText(const QString& layerKey) const
+    {
+        const auto it = m_layerInfos.constFind(layerKey);
+        if (it == m_layerInfos.constEnd())
+        {
+            return {};
+        }
+
+        const LayerInfo& info = it.value();
+        if (info.width <= 0 || info.height <= 0)
+        {
+            return {};
+        }
+
+        const QString cameraId = cameraIdFromLayerKey(layerKey);
+        if (m_staticCameraIds.contains(cameraId))
+        {
+            return QStringLiteral("%1x%2")
+                .arg(info.width)
+                .arg(info.height);
+        }
+
+        return QStringLiteral("%1x%2 @ %3 FPS")
+            .arg(info.width)
+            .arg(info.height)
+            .arg(info.fps, 0, 'f', 1);
+    }
+
+    QString PreviewWidget::layerInfoSummaryText() const
+    {
+        return m_layerInfoText;
     }
 
     // Clears preview state for one camera
     void PreviewWidget::clearCameraFrames(const QString& cameraId)
     {
-        m_cameraInfos.remove(streamSelectionKey(cameraId, false));
-        m_cameraInfos.remove(streamSelectionKey(cameraId, true));
-        m_fpsStates.remove(streamSelectionKey(cameraId, false));
-        m_fpsStates.remove(streamSelectionKey(cameraId, true));
-        updateCameraInfoDisplay();
+        m_layerInfos.remove(previewLayerKey(cameraId, false));
+        m_layerInfos.remove(previewLayerKey(cameraId, true));
+        m_fpsStates.remove(previewLayerKey(cameraId, false));
+        m_fpsStates.remove(previewLayerKey(cameraId, true));
+        updateLayerInfoDisplay();
 
         QMutexLocker lock(&m_mutex);
         if (m_cameraFrames.contains(cameraId))
@@ -282,8 +756,8 @@ namespace scopeone::ui
         lock.unlock();
 
         makeCurrent();
-        const QString rawKey = streamSelectionKey(cameraId, false);
-        const QString procKey = streamSelectionKey(cameraId, true);
+        const QString rawKey = previewLayerKey(cameraId, false);
+        const QString procKey = previewLayerKey(cameraId, true);
         if (m_textureCache.contains(rawKey))
         {
             glDeleteTextures(1, &m_textureCache[rawKey].texId);
@@ -295,6 +769,43 @@ namespace scopeone::ui
             m_textureCache.remove(procKey);
         }
         doneCurrent();
+        emit availableLayerKeysChanged(availableLayerKeys());
+    }
+
+    // Clears all processed preview frames and removes their layers
+    void PreviewWidget::clearProcessedFrames()
+    {
+        for (const QString& cameraId : m_availableCameraIds)
+        {
+            m_layerInfos.remove(previewLayerKey(cameraId, true));
+            m_fpsStates.remove(previewLayerKey(cameraId, true));
+            m_layers.remove(previewLayerKey(cameraId, true));
+        }
+        updateLayerInfoDisplay();
+
+        {
+            QMutexLocker lock(&m_mutex);
+            for (auto it = m_cameraFrames.begin(); it != m_cameraFrames.end(); ++it)
+            {
+                it->processedFrame = ImageFrame();
+            }
+        }
+
+        makeCurrent();
+        for (const QString& cameraId : m_availableCameraIds)
+        {
+            const QString procKey = previewLayerKey(cameraId, true);
+            if (m_textureCache.contains(procKey))
+            {
+                glDeleteTextures(1, &m_textureCache[procKey].texId);
+                m_textureCache.remove(procKey);
+            }
+        }
+        doneCurrent();
+
+        emit selectedLayerKeysChanged(selectedLayerKeys());
+        emit availableLayerKeysChanged(availableLayerKeys());
+        updateImageDisplay();
     }
 
     // Registers a camera when its first frame arrives
@@ -308,6 +819,182 @@ namespace scopeone::ui
         m_availableCameraIds.append(cameraId);
         setAvailableCameraIds(m_availableCameraIds);
         return true;
+    }
+
+    // Builds default display settings for a raw or processed layer
+    PreviewWidget::LayerDisplaySettings PreviewWidget::defaultLayerDisplaySettings(bool processed) const
+    {
+        LayerDisplaySettings settings;
+        settings.visible = false;
+        settings.opacityPercent = 100;
+        settings.gamma = 1.0;
+        settings.colormap = processed ? Colormap::Green : Colormap::Gray;
+        settings.blending = Blending::Translucent;
+        settings.levelMin = 0;
+        settings.levelMax = 255;
+        settings.levelDomainMax = 255;
+        return settings;
+    }
+
+    // Returns display settings for one layer id
+    PreviewWidget::LayerDisplaySettings PreviewWidget::layerDisplaySettings(const QString& layerKey) const
+    {
+        const auto it = m_layers.constFind(layerKey);
+        if (it != m_layers.constEnd())
+        {
+            return it.value();
+        }
+        return defaultLayerDisplaySettings(isProcessedLayerKey(layerKey));
+    }
+
+    PreviewWidget::Colormap PreviewWidget::colormapFromName(const QString& name) const
+    {
+        const QString normalized = name.trimmed().toLower();
+        if (normalized == QStringLiteral("green")) return Colormap::Green;
+        if (normalized == QStringLiteral("magenta")) return Colormap::Magenta;
+        if (normalized == QStringLiteral("cyan")) return Colormap::Cyan;
+        if (normalized == QStringLiteral("red")) return Colormap::Red;
+        if (normalized == QStringLiteral("blue")) return Colormap::Blue;
+        if (normalized == QStringLiteral("yellow")) return Colormap::Yellow;
+        if (normalized == QStringLiteral("fire")) return Colormap::Fire;
+        return Colormap::Gray;
+    }
+
+    QString PreviewWidget::colormapName(Colormap colormap) const
+    {
+        switch (colormap)
+        {
+        case Colormap::Green:
+            return QStringLiteral("Green");
+        case Colormap::Magenta:
+            return QStringLiteral("Magenta");
+        case Colormap::Cyan:
+            return QStringLiteral("Cyan");
+        case Colormap::Red:
+            return QStringLiteral("Red");
+        case Colormap::Blue:
+            return QStringLiteral("Blue");
+        case Colormap::Yellow:
+            return QStringLiteral("Yellow");
+        case Colormap::Fire:
+            return QStringLiteral("Fire");
+        case Colormap::Gray:
+            return QStringLiteral("Gray");
+        }
+        return QStringLiteral("Gray");
+    }
+
+    PreviewWidget::Blending PreviewWidget::blendingFromName(const QString& name) const
+    {
+        const QString normalized = name.trimmed().toLower().replace(QStringLiteral("_"), QStringLiteral(" "));
+        if (normalized == QStringLiteral("additive")) return Blending::Additive;
+        if (normalized == QStringLiteral("minimum")) return Blending::Minimum;
+        if (normalized == QStringLiteral("opaque")) return Blending::Opaque;
+        if (normalized == QStringLiteral("multiplicative")) return Blending::Multiplicative;
+        return Blending::Translucent;
+    }
+
+    QString PreviewWidget::blendingName(Blending blending) const
+    {
+        switch (blending)
+        {
+        case Blending::Additive:
+            return QStringLiteral("Additive");
+        case Blending::Minimum:
+            return QStringLiteral("Minimum");
+        case Blending::Opaque:
+            return QStringLiteral("Opaque");
+        case Blending::Multiplicative:
+            return QStringLiteral("Multiplicative");
+        case Blending::Translucent:
+            return QStringLiteral("Translucent");
+        }
+        return QStringLiteral("Translucent");
+    }
+
+    // Ensures one layer id has display settings
+    void PreviewWidget::ensureLayer(const QString& layerKey)
+    {
+        if (layerKey.isEmpty())
+        {
+            return;
+        }
+        if (!m_layers.contains(layerKey))
+        {
+            m_layers.insert(layerKey, defaultLayerDisplaySettings(isProcessedLayerKey(layerKey)));
+        }
+        if (!m_layerOrder.contains(layerKey))
+        {
+            m_layerOrder.append(layerKey);
+        }
+    }
+
+    // Ensures raw and processed layers exist for one camera
+    void PreviewWidget::ensureLayersForCamera(const QString& cameraId)
+    {
+        if (cameraId.isEmpty())
+        {
+            return;
+        }
+        ensureLayer(previewLayerKey(cameraId, false));
+        ensureLayer(previewLayerKey(cameraId, true));
+    }
+
+    // Removes stored state for one static image camera
+    void PreviewWidget::removeStaticLayerData(const QString& cameraId)
+    {
+        const QString layerKey = previewLayerKey(cameraId, false);
+        m_staticCameraIds.remove(cameraId);
+        m_layerInfos.remove(layerKey);
+        m_fpsStates.remove(layerKey);
+        m_layers.remove(layerKey);
+        m_layerNames.remove(layerKey);
+        m_layerOrder.removeAll(layerKey);
+
+        {
+            QMutexLocker lock(&m_mutex);
+            m_cameraFrames.remove(cameraId);
+        }
+
+        auto textureIt = m_textureCache.find(layerKey);
+        if (textureIt != m_textureCache.end())
+        {
+            GLuint texId = textureIt.value().texId;
+            makeCurrent();
+            glDeleteTextures(1, &texId);
+            doneCurrent();
+            m_textureCache.erase(textureIt);
+        }
+    }
+
+    // Removes layers that are no longer valid for the current camera list
+    void PreviewWidget::removeInvalidLayers(const QSet<QString>& validKeys)
+    {
+        const QStringList layerIds = m_layers.keys();
+        for (const QString& layerId : layerIds)
+        {
+            if (!validKeys.contains(layerId))
+            {
+                m_layers.remove(layerId);
+            }
+        }
+        for (int i = static_cast<int>(m_layerOrder.size()) - 1; i >= 0; --i)
+        {
+            if (!validKeys.contains(m_layerOrder.at(i)))
+            {
+                m_layerOrder.removeAt(i);
+            }
+        }
+    }
+
+    QSet<QString> PreviewWidget::validLayerKeys() const
+    {
+        QSet<QString> keys = validPreviewLayerKeys(m_availableCameraIds);
+        for (const QString& cameraId : m_staticCameraIds)
+        {
+            keys.insert(previewLayerKey(cameraId, false));
+        }
+        return keys;
     }
 
     // Sets the global preview zoom percentage
@@ -349,7 +1036,7 @@ namespace scopeone::ui
         return m_fitToWindow;
     }
 
-    // Sets manual pixel offset for one camera stream
+    // Sets manual pixel offset for one camera layer source
     void PreviewWidget::setCameraOffset(const QString& cameraId, int offsetX, int offsetY)
     {
         QMutexLocker lock(&m_mutex);
@@ -359,7 +1046,36 @@ namespace scopeone::ui
         update();
     }
 
-    // Sets preview flips for one camera stream
+    // Reads the display transform stored for one source camera
+    bool PreviewWidget::cameraDisplayTransform(const QString& cameraId,
+                                               int& offsetX,
+                                               int& offsetY,
+                                               int& zoomPercent,
+                                               bool& flipX,
+                                               bool& flipY) const
+    {
+        QMutexLocker lock(&m_mutex);
+        auto it = m_cameraFrames.constFind(cameraId);
+        if (it == m_cameraFrames.constEnd())
+        {
+            offsetX = 0;
+            offsetY = 0;
+            zoomPercent = 100;
+            flipX = false;
+            flipY = false;
+            return false;
+        }
+
+        const CameraFrameState& frameState = it.value();
+        offsetX = frameState.offsetX;
+        offsetY = frameState.offsetY;
+        zoomPercent = frameState.zoomPercent;
+        flipX = frameState.flipX;
+        flipY = frameState.flipY;
+        return true;
+    }
+
+    // Sets preview flips for one camera layer source
     void PreviewWidget::setCameraFlip(const QString& cameraId, bool flipX, bool flipY)
     {
         QMutexLocker lock(&m_mutex);
@@ -395,23 +1111,18 @@ namespace scopeone::ui
             }
         }
 
-        if (hasDisplayableFrame)
-        {
-            m_placeholderText = m_selectedStreams.isEmpty()
-                                    ? QStringLiteral("No stream selected")
-                                    : QStringLiteral("No image loaded\nClick 'Start Preview' to view the camera feed");
-            update();
-            return;
-        }
-
         m_placeholderText = QStringLiteral("No image loaded\nClick 'Start Preview' to view the camera feed");
+        if (hasDisplayableFrame && selectedLayerKeys().isEmpty())
+        {
+            m_placeholderText = QStringLiteral("No layer selected");
+        }
         update();
     }
 
-    // Updates rolling FPS statistics for one stream
-    PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& streamKey)
+    // Updates rolling FPS statistics for one layer
+    PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& layerKey)
     {
-        FpsState& state = m_fpsStates[streamKey];
+        FpsState& state = m_fpsStates[layerKey];
         if (!state.timer.isValid())
         {
             state.timer.start();
@@ -473,7 +1184,7 @@ namespace scopeone::ui
         renderItems = buildRenderItems(cameraRenderInfos);
     }
 
-    // Resolves the displayed image rectangle for one stream
+    // Resolves the displayed image rectangle for one layer
     bool PreviewWidget::resolveDisplayGeometry(const CameraFrameState& frameState,
                                                bool processed,
                                                const QRect& area,
@@ -503,6 +1214,35 @@ namespace scopeone::ui
             && imageSize.height() > 0
             && displayRect.width() > 0
             && displayRect.height() > 0;
+    }
+
+    // Resolves the displayed geometry for one active layer
+    bool PreviewWidget::resolveLayerDisplayGeometry(const QString& layerKey,
+                                                    CameraFrameState& frameState,
+                                                    bool& processed,
+                                                    QRect& itemArea,
+                                                    QRect& displayRect,
+                                                    QSize& imageSize) const
+    {
+        QMap<QString, CameraFrameState> cameraFrames;
+        std::vector<CameraRenderInfo> cameraRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
+
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.layerKey != layerKey || !item.info || !item.info->frameState)
+            {
+                continue;
+            }
+
+            frameState = *item.info->frameState;
+            processed = item.processed;
+            itemArea = item.area;
+            return resolveDisplayGeometry(frameState, processed, itemArea, displayRect, imageSize);
+        }
+
+        return false;
     }
 
     // Maps one widget position into image coordinates
@@ -540,6 +1280,105 @@ namespace scopeone::ui
         return true;
     }
 
+    // Maps one widget rectangle into image rectangle bounds
+    bool PreviewWidget::mapWidgetRectToImage(const CameraFrameState& frameState,
+                                             bool processed,
+                                             const QRect& area,
+                                             const QRect& widgetRect,
+                                             QRect& imageRect) const
+    {
+        QRect displayRect;
+        QSize imageSize;
+        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        {
+            return false;
+        }
+
+        const QRect clippedRect = widgetRect.normalized().intersected(displayRect);
+        if (clippedRect.isEmpty())
+        {
+            return false;
+        }
+
+        const int imgW = imageSize.width();
+        const int imgH = imageSize.height();
+        const double scaleX = imgW / static_cast<double>(displayRect.width());
+        const double scaleY = imgH / static_cast<double>(displayRect.height());
+
+        int x0 = qFloor((clippedRect.left() - displayRect.left()) * scaleX);
+        int y0 = qFloor((clippedRect.top() - displayRect.top()) * scaleY);
+        int x1 = qCeil((clippedRect.right() + 1 - displayRect.left()) * scaleX);
+        int y1 = qCeil((clippedRect.bottom() + 1 - displayRect.top()) * scaleY);
+        x0 = qBound(0, x0, imgW);
+        y0 = qBound(0, y0, imgH);
+        x1 = qBound(0, x1, imgW);
+        y1 = qBound(0, y1, imgH);
+
+        if (frameState.flipX)
+        {
+            const int flippedX0 = imgW - x1;
+            const int flippedX1 = imgW - x0;
+            x0 = flippedX0;
+            x1 = flippedX1;
+        }
+        if (frameState.flipY)
+        {
+            const int flippedY0 = imgH - y1;
+            const int flippedY1 = imgH - y0;
+            y0 = flippedY0;
+            y1 = flippedY1;
+        }
+
+        const int width = x1 - x0;
+        const int height = y1 - y0;
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        imageRect = QRect(x0, y0, width, height);
+        return true;
+    }
+
+    // Maps one image coordinate into widget coordinates
+    bool PreviewWidget::mapImagePositionToWidget(const CameraFrameState& frameState,
+                                                 bool processed,
+                                                 const QRect& area,
+                                                 const QPoint& imagePos,
+                                                 QPoint& widgetPos) const
+    {
+        QRect displayRect;
+        QSize imageSize;
+        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        {
+            return false;
+        }
+
+        const int imgW = imageSize.width();
+        const int imgH = imageSize.height();
+        if (imagePos.x() < 0 || imagePos.y() < 0 || imagePos.x() >= imgW || imagePos.y() >= imgH)
+        {
+            return false;
+        }
+
+        int x = imagePos.x();
+        int y = imagePos.y();
+        if (frameState.flipX)
+        {
+            x = (imgW - 1) - x;
+        }
+        if (frameState.flipY)
+        {
+            y = (imgH - 1) - y;
+        }
+
+        const double scaleX = displayRect.width() / static_cast<double>(imgW);
+        const double scaleY = displayRect.height() / static_cast<double>(imgH);
+        widgetPos = QPoint(qRound(displayRect.x() + (x + 0.5) * scaleX),
+                           qRound(displayRect.y() + (y + 0.5) * scaleY));
+        return true;
+    }
+
     // Paints the placeholder text when no frame is available
     void PreviewWidget::paintPlaceholder(const QString& text)
     {
@@ -571,40 +1410,36 @@ namespace scopeone::ui
 
         if (item.processed)
         {
-            drawFrameInRect(QStringLiteral("proc:%1").arg(item.info->cameraId),
+            drawFrameInRect(item.layerKey,
                             frameState.processedFrame,
                             displayRect,
-                            item.alpha,
                             frameState.flipX,
                             frameState.flipY,
-                            frameState.processedLevelMin,
-                            frameState.processedLevelMax,
-                            frameState.processedLevelDomainMax);
+                            item.display,
+                            item.firstVisibleInArea);
             return;
         }
 
         if (frameState.rawFrame.isValid())
         {
-            drawFrameInRect(QStringLiteral("raw:%1").arg(item.info->cameraId),
+            drawFrameInRect(item.layerKey,
                             frameState.rawFrame,
                             displayRect,
-                            item.alpha,
                             frameState.flipX,
                             frameState.flipY,
-                            frameState.rawLevelMin,
-                            frameState.rawLevelMax,
-                            frameState.rawLevelDomainMax);
+                            item.display,
+                            item.firstVisibleInArea);
             return;
         }
     }
 
-    // Updates the camera info overlay text
-    void PreviewWidget::updateCameraInfoDisplay()
+    // Updates the layer info summary text
+    void PreviewWidget::updateLayerInfoDisplay()
     {
-        if (m_cameraInfos.isEmpty())
+        if (m_layerInfos.isEmpty())
         {
-            m_cameraInfoText = QStringLiteral("No image loaded");
-            emit cameraInfoTextChanged(m_cameraInfoText);
+            m_layerInfoText = QStringLiteral("No image loaded");
+            emit layerInfoTextChanged(m_layerInfoText);
             return;
         }
 
@@ -616,16 +1451,25 @@ namespace scopeone::ui
             {
                 return;
             }
-            const auto it = m_cameraInfos.constFind(key);
-            if (it == m_cameraInfos.constEnd())
+            const auto it = m_layerInfos.constFind(key);
+            if (it == m_layerInfos.constEnd())
             {
                 return;
             }
             appendedKeys.insert(key);
-            const CameraInfo& info = it.value();
-            lines.append(QString("%1 %2: %3×%4 @ %5 FPS")
-                         .arg(cameraIdFromStreamKey(key),
-                              isProcessedStreamKey(key) ? QStringLiteral("Processed") : QStringLiteral("Raw"))
+            const LayerInfo& info = it.value();
+            const QString cameraId = cameraIdFromLayerKey(key);
+            if (m_staticCameraIds.contains(cameraId))
+            {
+                lines.append(QString("%1: %2×%3")
+                             .arg(layerName(key))
+                             .arg(info.width)
+                             .arg(info.height));
+                return;
+            }
+
+            lines.append(QString("%1: %2×%3 @ %4 FPS")
+                         .arg(layerName(key))
                          .arg(info.width)
                          .arg(info.height)
                          .arg(info.fps, 0, 'f', 1));
@@ -633,148 +1477,99 @@ namespace scopeone::ui
 
         for (const QString& cameraId : m_availableCameraIds)
         {
-            appendInfoLine(streamSelectionKey(cameraId, false));
-            appendInfoLine(streamSelectionKey(cameraId, true));
+            appendInfoLine(previewLayerKey(cameraId, false));
+            appendInfoLine(previewLayerKey(cameraId, true));
         }
-        for (auto it = m_cameraInfos.constBegin(); it != m_cameraInfos.constEnd(); ++it)
+        for (auto it = m_layerInfos.constBegin(); it != m_layerInfos.constEnd(); ++it)
         {
             appendInfoLine(it.key());
         }
 
-        m_cameraInfoText = lines.join(QStringLiteral("\n"));
-        emit cameraInfoTextChanged(m_cameraInfoText);
+        m_layerInfoText = lines.join(QStringLiteral("\n"));
+        emit layerInfoTextChanged(m_layerInfoText);
     }
 
-    // Resolves one widget point against active render items
-    bool PreviewWidget::widgetToImageCoords(const QPoint& widgetPos,
-                                            QString& outCameraId,
-                                            QPoint& outImagePos,
-                                            bool& outProcessed) const
+    // Resolves one widget point to the topmost matching preview item
+    bool PreviewWidget::resolveInteractionTarget(const QPoint& widgetPos,
+                                                 PreviewInteractionTarget& outTarget,
+                                                 const QString& cameraId,
+                                                 bool rawOnly,
+                                                 const QString& layerKey) const
     {
         QMap<QString, CameraFrameState> cameraFrames;
         std::vector<CameraRenderInfo> cameraRenderInfos;
         std::vector<RenderItem> renderItems;
         buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
-        if (cameraRenderInfos.empty())
+        const QString cameraFilter = cameraId.trimmed();
+        const QString layerFilter = layerKey.trimmed();
+        if (renderItems.empty())
         {
             return false;
         }
 
-        for (const auto& item : renderItems)
+        for (auto it = renderItems.crbegin(); it != renderItems.crend(); ++it)
         {
+            const RenderItem& item = *it;
             if (!item.info || !item.info->frameState)
             {
                 continue;
             }
+            if (!layerFilter.isEmpty() && item.layerKey != layerFilter)
+            {
+                continue;
+            }
+            if (!cameraFilter.isEmpty() && item.info->cameraId != cameraFilter)
+            {
+                continue;
+            }
+            if (rawOnly && item.processed)
+            {
+                continue;
+            }
+            if (item.display.blending != Blending::Opaque && item.display.opacityPercent <= 0)
+            {
+                continue;
+            }
             if (!item.area.contains(widgetPos))
             {
                 continue;
             }
 
             const CameraFrameState& frameState = *item.info->frameState;
-            QPoint imagePos;
-            if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos))
-            {
-                continue;
-            }
-
-            outCameraId = item.info->cameraId;
-            outImagePos = imagePos;
-            outProcessed = item.processed;
-            return true;
-        }
-
-        return false;
-    }
-
-    // Finds the render target under a widget position
-    bool PreviewWidget::locateRenderTarget(const QPoint& widgetPos,
-                                           QString& cameraId,
-                                           bool& processed,
-                                           QRect& itemArea,
-                                           QPointF& relativePos) const
-    {
-        QMap<QString, CameraFrameState> cameraFrames;
-        std::vector<CameraRenderInfo> cameraRenderInfos;
-        std::vector<RenderItem> renderItems;
-        buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
-        if (cameraRenderInfos.empty())
-        {
-            return false;
-        }
-
-        for (const auto& item : renderItems)
-        {
-            if (!item.info || !item.info->frameState || !item.area.contains(widgetPos))
-            {
-                continue;
-            }
-
-            const CameraFrameState& frameState = *item.info->frameState;
-            QRect rect;
+            QRect displayRect;
             QSize imageSize;
-            if (!resolveDisplayGeometry(frameState, item.processed, item.area, rect, imageSize)
-                || !rect.contains(widgetPos))
+            if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize)
+                || !displayRect.contains(widgetPos))
             {
                 continue;
             }
 
-            cameraId = item.info->cameraId;
-            processed = item.processed;
-            itemArea = item.area;
-            relativePos = QPointF(
-                static_cast<double>(widgetPos.x() - rect.x()) / static_cast<double>(rect.width()),
-                static_cast<double>(widgetPos.y() - rect.y()) / static_cast<double>(rect.height()));
-            return true;
-        }
-
-        return false;
-    }
-
-    // Maps one widget point into image coordinates for a chosen camera
-    bool PreviewWidget::widgetToImageCoordsForCamera(const QString& cameraId,
-                                                     const QPoint& widgetPos,
-                                                     QPoint& outImagePos,
-                                                     bool& outProcessed) const
-    {
-        if (cameraId.isEmpty())
-        {
-            return false;
-        }
-
-        QMap<QString, CameraFrameState> cameraFrames;
-        std::vector<CameraRenderInfo> cameraRenderInfos;
-        std::vector<RenderItem> renderItems;
-        buildRenderSnapshot(cameraFrames, cameraRenderInfos, renderItems);
-        if (cameraRenderInfos.empty())
-        {
-            return false;
-        }
-
-        for (const auto& item : renderItems)
-        {
-            if (!item.info || !item.info->frameState || item.info->cameraId != cameraId)
-            {
-                continue;
-            }
-            if (!item.area.contains(widgetPos))
-            {
-                continue;
-            }
-
-            const CameraFrameState& frameState = *item.info->frameState;
             QPoint imagePos;
             if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos))
             {
                 continue;
             }
 
-            outImagePos = imagePos;
-            outProcessed = item.processed;
+            outTarget.layerKey = item.layerKey;
+            outTarget.cameraId = item.info->cameraId;
+            outTarget.imagePos = imagePos;
+            outTarget.imageSize = imageSize;
+            outTarget.itemArea = item.area;
+            outTarget.displayRect = displayRect;
+            outTarget.processed = item.processed;
             return true;
         }
 
         return false;
+    }
+
+    // Resolves one widget point to the topmost matching preview layer
+    bool PreviewWidget::interactionTargetAt(const QPoint& widgetPos,
+                                            PreviewInteractionTarget& outTarget,
+                                            const QString& cameraId,
+                                            bool rawOnly) const
+    {
+        return resolveInteractionTarget(widgetPos, outTarget, cameraId, rawOnly, QString());
     }
 
     // Reads one raw or processed pixel value
@@ -805,6 +1600,35 @@ namespace scopeone::ui
         return false;
     }
 
+    // Returns a sampled line profile from one preview layer
+    bool PreviewWidget::lineProfile(const QString& cameraId,
+                                    const QPoint& start,
+                                    const QPoint& end,
+                                    bool processed,
+                                    QVector<int>& outValues) const
+    {
+        const QString trimmedCameraId = cameraId.trimmed();
+        if (trimmedCameraId.isEmpty())
+        {
+            outValues.clear();
+            return false;
+        }
+
+        ImageFrame frame;
+        {
+            QMutexLocker lock(&m_mutex);
+            const auto it = m_cameraFrames.constFind(trimmedCameraId);
+            if (it == m_cameraFrames.constEnd())
+            {
+                outValues.clear();
+                return false;
+            }
+            frame = processed ? it.value().processedFrame : it.value().rawFrame;
+        }
+
+        return sampleLineValues(frame, start, end, outValues);
+    }
+
     // Initializes OpenGL state for preview rendering
     void PreviewWidget::initializeGL()
     {
@@ -815,14 +1639,12 @@ namespace scopeone::ui
     }
 
     // Updates the OpenGL viewport after resize
-    void PreviewWidget::resizeGL(int w, int h)
+    void PreviewWidget::resizeGL(int, int)
     {
-        Q_UNUSED(w);
-        Q_UNUSED(h);
         applyViewportForRect(rect());
     }
 
-    // Computes tiled preview rectangles for visible streams
+    // Computes tiled preview rectangles for visible layers
     std::vector<QRect> PreviewWidget::computeLayout(int count) const
     {
         std::vector<QRect> areas;
@@ -872,8 +1694,13 @@ namespace scopeone::ui
         }
 
         const QRect full(0, 0, width(), height());
+        QMap<QString, const CameraRenderInfo*> renderInfoByCameraId;
+        for (const auto& info : cameraRenderInfos)
+        {
+            renderInfoByCameraId.insert(info.cameraId, &info);
+        }
 
-        auto addItem = [&](const CameraRenderInfo* info, bool processed, const QRect& area, float alpha)
+        auto addItem = [&](const CameraRenderInfo* info, bool processed, const QRect& area)
         {
             if (!info || !info->frameState)
             {
@@ -887,177 +1714,74 @@ namespace scopeone::ui
             {
                 return;
             }
-            items.push_back({info, processed, area, alpha});
+            const QString key = previewLayerKey(info->cameraId, processed);
+            LayerDisplaySettings display = layerDisplaySettings(key);
+            if (!display.visible)
+            {
+                return;
+            }
+            const bool firstVisibleInArea = std::none_of(items.cbegin(), items.cend(),
+                                                         [&area](const RenderItem& item)
+                                                         {
+                                                             return item.area == area;
+                                                         });
+            items.push_back({info, processed, key, area, display, firstVisibleInArea});
         };
 
-        auto isSelected = [&](const QString& cameraId, bool processed)
+        std::vector<LayerRenderItem> layers;
+        layers.reserve(cameraRenderInfos.size() * 2);
+
+        for (const QString& layerKey : m_layerOrder)
         {
-            return m_selectedStreams.contains(streamSelectionKey(cameraId, processed));
-        };
+            if (m_layerLayoutMode == LayerLayoutMode::SideBySide && layers.size() >= 4)
+            {
+                break;
+            }
+            if (!layerDisplaySettings(layerKey).visible)
+            {
+                continue;
+            }
 
-        auto buildSelectedStreams = [&](size_t maxCount)
+            const QString cameraId = cameraIdFromLayerKey(layerKey);
+            const auto it = renderInfoByCameraId.constFind(cameraId);
+            if (it == renderInfoByCameraId.constEnd())
+            {
+                continue;
+            }
+
+            const CameraRenderInfo* info = it.value();
+            const bool processed = isProcessedLayerKey(layerKey);
+            if (processed && !info->hasProcessedFrame)
+            {
+                continue;
+            }
+            if (!processed && !info->hasRawFrame)
+            {
+                continue;
+            }
+
+            layers.push_back({info, processed});
+        }
+
+        if (layers.empty())
         {
-            std::vector<StreamItem> out;
-            out.reserve(maxCount);
+            return items;
+        }
 
-            // Raw streams get priority in the list
-            for (const auto& info : cameraRenderInfos)
-            {
-                if (info.hasRawFrame && isSelected(info.cameraId, false))
-                {
-                    out.push_back({&info, false});
-                }
-                if (out.size() >= maxCount)
-                {
-                    break;
-                }
-            }
-            for (const auto& info : cameraRenderInfos)
-            {
-                if (info.hasProcessedFrame && isSelected(info.cameraId, true))
-                {
-                    out.push_back({&info, true});
-                }
-                if (out.size() >= maxCount)
-                {
-                    break;
-                }
-            }
-            return out;
-        };
-
-        if (cameraRenderInfos.size() > 1)
+        if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
         {
-            if (m_streamLayoutMode == StreamLayoutMode::SideBySide)
+            const auto areas = computeLayout(static_cast<int>(layers.size()));
+            const size_t limit = std::min<size_t>(layers.size(), areas.size());
+            for (size_t i = 0; i < limit; ++i)
             {
-                QMap<QString, const CameraRenderInfo*> renderInfoByCameraId;
-                for (const auto& info : cameraRenderInfos)
-                {
-                    renderInfoByCameraId.insert(info.cameraId, &info);
-                }
-
-                std::vector<StreamItem> streamItems;
-                streamItems.reserve(4);
-                QSet<QString> addedKeys;
-
-                auto tryAdd = [&](const QString& cameraId, bool processed)
-                {
-                    const QString key = streamSelectionKey(cameraId, processed);
-                    if (!m_selectedStreams.contains(key) || addedKeys.contains(key))
-                    {
-                        return;
-                    }
-
-                    const auto it = renderInfoByCameraId.constFind(cameraId);
-                    if (it == renderInfoByCameraId.constEnd() || it.value() == nullptr)
-                    {
-                        return;
-                    }
-
-                    const CameraRenderInfo* info = it.value();
-                    if (processed && !info->hasProcessedFrame)
-                    {
-                        return;
-                    }
-                    if (!processed && !info->hasRawFrame)
-                    {
-                        return;
-                    }
-
-                    streamItems.push_back({info, processed});
-                    addedKeys.insert(key);
-                };
-
-                for (const QString& cameraId : m_availableCameraIds)
-                {
-                    tryAdd(cameraId, false);
-                }
-                for (const QString& cameraId : m_availableCameraIds)
-                {
-                    tryAdd(cameraId, true);
-                }
-
-                for (const auto& info : cameraRenderInfos)
-                {
-                    if (!m_availableCameraIds.contains(info.cameraId))
-                    {
-                        tryAdd(info.cameraId, false);
-                    }
-                }
-                for (const auto& info : cameraRenderInfos)
-                {
-                    if (!m_availableCameraIds.contains(info.cameraId))
-                    {
-                        tryAdd(info.cameraId, true);
-                    }
-                }
-
-                const int count = static_cast<int>(std::min<size_t>(4, streamItems.size()));
-                const auto areas = computeLayout(count);
-                const size_t limit = std::min<size_t>(streamItems.size(), areas.size());
-                for (size_t i = 0; i < limit; ++i)
-                {
-                    addItem(streamItems[i].info, streamItems[i].processed, areas[i], 1.0f);
-                }
-                return items;
-            }
-
-            const auto streams = buildSelectedStreams(2);
-            if (streams.empty())
-            {
-                return items;
-            }
-            addItem(streams[0].info, streams[0].processed, full, 1.0f);
-            if (streams.size() > 1)
-            {
-                addItem(streams[1].info, streams[1].processed, full,
-                        qBound(0.0f, static_cast<float>(m_overlayAlphaPercent) / 100.0f, 1.0f));
+                addItem(layers[i].info, layers[i].processed, areas[i]);
             }
             return items;
         }
 
-        const CameraRenderInfo& info = cameraRenderInfos.front();
-        if (info.hasRawFrame && info.hasProcessedFrame)
+        for (const LayerRenderItem& layer : layers)
         {
-            if (m_streamLayoutMode == StreamLayoutMode::SideBySide)
-            {
-                std::vector<StreamItem> streamItems;
-                if (isSelected(info.cameraId, false))
-                {
-                    streamItems.push_back({&info, false});
-                }
-                if (isSelected(info.cameraId, true))
-                {
-                    streamItems.push_back({&info, true});
-                }
-
-                const auto areas = computeLayout(static_cast<int>(streamItems.size()));
-                const size_t limit = std::min<size_t>(streamItems.size(), areas.size());
-                for (size_t i = 0; i < limit; ++i)
-                {
-                    addItem(streamItems[i].info, streamItems[i].processed, areas[i], 1.0f);
-                }
-            }
-            else
-            {
-                if (isSelected(info.cameraId, false))
-                {
-                    addItem(&info, false, full, 1.0f);
-                }
-                if (isSelected(info.cameraId, true))
-                {
-                    addItem(&info, true, full,
-                            qBound(0.0f, static_cast<float>(m_overlayAlphaPercent) / 100.0f, 1.0f));
-                }
-            }
-        }
-        else if (info.hasRawFrame && isSelected(info.cameraId, false))
-        {
-            addItem(&info, false, full, 1.0f);
-        }
-        else if (info.hasProcessedFrame && isSelected(info.cameraId, true))
-        {
-            addItem(&info, true, full, 1.0f);
+            addItem(layer.info, layer.processed, full);
         }
         return items;
     }
@@ -1119,7 +1843,37 @@ namespace scopeone::ui
                     pen.setStyle(Qt::DashLine);
                 }
                 p.setPen(pen);
-                p.drawLine(m_lineStart, m_lineEnd);
+
+                QPoint lineStart = m_lineStart;
+                QPoint lineEnd = m_lineEnd;
+                if (m_lineVisible)
+                {
+                    for (const auto& item : renderItems)
+                    {
+                        if (item.layerKey != m_lineTargetLayerKey || !item.info || !item.info->frameState)
+                        {
+                            continue;
+                        }
+                        QPoint startWidget;
+                        QPoint endWidget;
+                        if (mapImagePositionToWidget(*item.info->frameState,
+                                                     item.processed,
+                                                     item.area,
+                                                     m_lineStartImage,
+                                                     startWidget)
+                            && mapImagePositionToWidget(*item.info->frameState,
+                                                        item.processed,
+                                                        item.area,
+                                                        m_lineEndImage,
+                                                        endWidget))
+                        {
+                            lineStart = startWidget;
+                            lineEnd = endWidget;
+                        }
+                        break;
+                    }
+                }
+                p.drawLine(lineStart, lineEnd);
             }
             return;
         }
@@ -1133,26 +1887,6 @@ namespace scopeone::ui
         paintPlaceholder(QStringLiteral(
             "Preview unavailable\nOpenGL initialization failed on this system"));
         return;
-    }
-
-    // Sets display intensity levels for one stream
-    void PreviewWidget::setStreamDisplayLevels(const QString& cameraId,
-                                               bool processed,
-                                               int minLevel,
-                                               int maxLevel,
-                                               int maxPossible)
-    {
-        QMutexLocker lock(&m_mutex);
-        CameraFrameState& frameState = m_cameraFrames[cameraId];
-        int& levelDomainMax = processed ? frameState.processedLevelDomainMax : frameState.rawLevelDomainMax;
-        int& levelMinRef = processed ? frameState.processedLevelMin : frameState.rawLevelMin;
-        int& levelMaxRef = processed ? frameState.processedLevelMax : frameState.rawLevelMax;
-        levelDomainMax = qMax(1, maxPossible);
-        levelMinRef = qBound(0, minLevel, levelDomainMax);
-        levelMaxRef = qBound(levelMinRef + 1, maxLevel, levelDomainMax);
-
-        lock.unlock();
-        update();
     }
 
     // Creates shaders buffers and uniforms for preview rendering
@@ -1188,11 +1922,29 @@ namespace scopeone::ui
         uniform float uMaxNorm;
         uniform float uTexNormScale;
         uniform float uAlpha;
+        uniform float uGamma;
+        uniform int uColormap;
+        vec3 applyColormap(float t, int map){
+            if (map == 1) return vec3(0.0, t, 0.0);
+            if (map == 2) return vec3(t, 0.0, t);
+            if (map == 3) return vec3(0.0, t, t);
+            if (map == 4) return vec3(t, 0.0, 0.0);
+            if (map == 5) return vec3(0.0, 0.0, t);
+            if (map == 6) return vec3(t, t, 0.0);
+            if (map == 7) {
+                float r = smoothstep(0.0, 0.45, t);
+                float g = smoothstep(0.25, 0.80, t);
+                float b = smoothstep(0.70, 1.0, t);
+                return vec3(r, g, b);
+            }
+            return vec3(t, t, t);
+        }
         void main(){
             vec4 s = texture(uTex, vUV);
             float t0 = s.r * uTexNormScale;
             float t = clamp((t0 - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
-            FragColor = vec4(t, t, t, 1.0) * uAlpha;
+            t = pow(t, 1.0 / max(uGamma, 1e-3));
+            FragColor = vec4(applyColormap(t, uColormap), uAlpha);
         }
     )";
         if (!m_prog.addShaderFromSourceCode(QOpenGLShader::Vertex, vs))
@@ -1223,6 +1975,8 @@ namespace scopeone::ui
         m_uMaxNorm = m_prog.uniformLocation("uMaxNorm");
         m_uTexNormScale = m_prog.uniformLocation("uTexNormScale");
         m_uAlpha = m_prog.uniformLocation("uAlpha");
+        m_uGamma = m_prog.uniformLocation("uGamma");
+        m_uColormap = m_prog.uniformLocation("uColormap");
         m_uUvScale = m_prog.uniformLocation("uUvScale");
         m_uUvOffset = m_prog.uniformLocation("uUvOffset");
         m_prog.release();
@@ -1235,9 +1989,9 @@ namespace scopeone::ui
     void PreviewWidget::setUvTransform(bool flipX, bool flipY)
     {
         const float sx = flipX ? -1.0f : 1.0f;
-        const float sy = flipY ? -1.0f : 1.0f;
+        const float sy = flipY ? 1.0f : -1.0f;
         const float ox = flipX ? 1.0f : 0.0f;
-        const float oy = flipY ? 1.0f : 0.0f;
+        const float oy = flipY ? 0.0f : 1.0f;
 
         if (m_uUvScale >= 0) m_prog.setUniformValue(m_uUvScale, sx, sy);
         if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
@@ -1247,25 +2001,21 @@ namespace scopeone::ui
     void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                         const ImageFrame& frame,
                                         const QRect& r,
-                                        float alpha,
                                         bool flipX,
                                         bool flipY,
-                                        int levelMin,
-                                        int levelMax,
-                                        int levelDomainMax)
+                                        const LayerDisplaySettings& display,
+                                        bool firstVisibleInArea)
     {
         if (!frame.isValid() || r.width() <= 0 || r.height() <= 0) return;
 
         ensureGlPipeline();
 
-        GLenum uploadFormat = GL_RED;
         GLenum uploadType = GL_UNSIGNED_BYTE;
         GLint internalFormat = GL_R8;
         int unpackAlign = 1;
 
         if (frame.isMono16())
         {
-            uploadFormat = GL_RED;
             uploadType = GL_UNSIGNED_SHORT;
             internalFormat = GL_R16;
             unpackAlign = 2;
@@ -1281,7 +2031,7 @@ namespace scopeone::ui
 
         glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
         const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
-        if (bytesPerPixel > 0 && frame.stride > 0)
+        if (frame.stride > 0)
         {
             const int rowPixels = frame.stride / bytesPerPixel;
             if (rowPixels != frame.width)
@@ -1291,35 +2041,71 @@ namespace scopeone::ui
         }
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                         frame.width, frame.height,
-                        uploadFormat, uploadType, frame.bytes.constData());
-        if (bytesPerPixel > 0)
-        {
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        }
+                        GL_RED, uploadType, frame.bytes.constData());
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
         m_prog.bind();
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texId);
         m_prog.setUniformValue(m_uTex, 0);
-        const int levelDomain = qMax(1, levelDomainMax);
-        m_prog.setUniformValue(m_uMinNorm, static_cast<float>(levelMin) / static_cast<float>(levelDomain));
-        m_prog.setUniformValue(m_uMaxNorm, static_cast<float>(levelMax) / static_cast<float>(levelDomain));
+        const int levelDomain = qMax(1, display.levelDomainMax);
+        m_prog.setUniformValue(m_uMinNorm, static_cast<float>(display.levelMin) / static_cast<float>(levelDomain));
+        m_prog.setUniformValue(m_uMaxNorm, static_cast<float>(display.levelMax) / static_cast<float>(levelDomain));
         const int bitDepth = qBound(8, frame.bitsPerSample, 16);
         const float bitMax = static_cast<float>((1u << bitDepth) - 1u);
         const float sampleMax = (internalFormat == GL_R16) ? 65535.0f : 255.0f;
         const float texNormScale = sampleMax / bitMax;
         m_prog.setUniformValue(m_uTexNormScale, texNormScale);
-        m_prog.setUniformValue(m_uAlpha, alpha);
+        const float opacity = display.blending == Blending::Opaque
+                                  ? 1.0f
+                                  : qBound(0.0f, static_cast<float>(display.opacityPercent) / 100.0f, 1.0f);
+        m_prog.setUniformValue(m_uAlpha, opacity);
+        m_prog.setUniformValue(m_uGamma, static_cast<float>(std::clamp(display.gamma, 0.2, 2.0)));
+        m_prog.setUniformValue(m_uColormap, static_cast<int>(display.colormap));
         setUvTransform(flipX, flipY);
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        if (display.blending == Blending::Opaque)
+        {
+            glDisable(GL_BLEND);
+        }
+        else
+        {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE);
+
+            if (firstVisibleInArea)
+            {
+                if (display.blending == Blending::Minimum)
+                {
+                    glBlendFuncSeparate(GL_ONE, GL_ZERO, GL_ONE, GL_ONE);
+                }
+                else if (display.blending == Blending::Additive)
+                {
+                    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ZERO, GL_ONE, GL_ONE);
+                }
+            }
+            else if (display.blending == Blending::Additive)
+            {
+                glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE);
+            }
+            else if (display.blending == Blending::Minimum)
+            {
+                glBlendEquation(GL_MIN);
+                glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+            }
+            else if (display.blending == Blending::Multiplicative)
+            {
+                glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ONE, GL_ONE);
+            }
+        }
 
         applyViewportForRect(r);
 
         m_vao.bind();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         m_vao.release();
+        glBlendEquation(GL_FUNC_ADD);
         glDisable(GL_BLEND);
         m_prog.release();
     }
@@ -1395,9 +2181,8 @@ namespace scopeone::ui
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        const GLenum uploadFormat = GL_RED;
         const GLenum uploadType = (internalFormat == GL_R16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE;
-        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, uploadFormat, uploadType, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, GL_RED, uploadType, nullptr);
 
         CachedTexture cached;
         cached.texId = texId;
@@ -1430,6 +2215,7 @@ namespace scopeone::ui
         }
         m_roiDrawingMode = true;
         m_roiTargetCameraId = cameraId;
+        m_roiTargetLayerKey.clear();
         m_roiDragging = false;
         setFocus();
         setCursor(Qt::CrossCursor);
@@ -1446,19 +2232,21 @@ namespace scopeone::ui
         m_roiDrawingMode = false;
         m_roiDragging = false;
         m_roiTargetCameraId.clear();
+        m_roiTargetLayerKey.clear();
         unsetCursor();
         update();
     }
 
-    // Starts line drawing for one camera
-    void PreviewWidget::startLineDrawing(const QString& cameraId)
+    // Starts line drawing for one exact preview layer
+    void PreviewWidget::startLineDrawingForLayer(const QString& layerKey)
     {
         if (m_roiDrawingMode)
         {
             cancelROIDrawing();
         }
         m_lineDrawingMode = true;
-        m_lineTargetCameraId = cameraId;
+        m_lineTargetLayerKey = layerKey.trimmed();
+        m_lineTargetCameraId = cameraIdFromLayerKey(m_lineTargetLayerKey);
         m_lineDragging = false;
         setFocus();
         setCursor(Qt::CrossCursor);
@@ -1475,6 +2263,7 @@ namespace scopeone::ui
         m_lineDrawingMode = false;
         m_lineDragging = false;
         m_lineTargetCameraId.clear();
+        m_lineTargetLayerKey.clear();
         unsetCursor();
         update();
     }
@@ -1487,6 +2276,7 @@ namespace scopeone::ui
         m_lineDrawingMode = false;
         m_lineProcessed = false;
         m_lineTargetCameraId.clear();
+        m_lineTargetLayerKey.clear();
         unsetCursor();
         update();
     }
@@ -1498,20 +2288,24 @@ namespace scopeone::ui
         if (m_lineDrawingMode && event->button() == Qt::LeftButton)
         {
             QString cameraId = m_lineTargetCameraId;
-            QPoint imagePos;
-            bool processed = false;
-            const bool ok = cameraId.isEmpty()
-                                ? widgetToImageCoords(event->pos(), cameraId, imagePos, processed)
-                                : widgetToImageCoordsForCamera(cameraId, event->pos(), imagePos, processed);
+            PreviewInteractionTarget target;
+            const bool ok = resolveInteractionTarget(event->pos(),
+                                                     target,
+                                                     cameraId,
+                                                     false,
+                                                     m_lineTargetLayerKey);
             if (!ok)
             {
                 return;
             }
 
-            m_lineTargetCameraId = cameraId;
+            m_lineTargetCameraId = target.cameraId;
+            m_lineTargetLayerKey = target.layerKey;
             m_lineStart = event->pos();
             m_lineEnd = event->pos();
-            m_lineProcessed = processed;
+            m_lineStartImage = target.imagePos;
+            m_lineEndImage = target.imagePos;
+            m_lineProcessed = target.processed;
             m_lineDragging = true;
             update();
             return;
@@ -1519,6 +2313,18 @@ namespace scopeone::ui
 
         if (m_roiDrawingMode && event->button() == Qt::LeftButton)
         {
+            PreviewInteractionTarget target;
+            if (!interactionTargetAt(event->pos(), target, m_roiTargetCameraId, true))
+            {
+                return;
+            }
+            if (m_staticCameraIds.contains(target.cameraId))
+            {
+                return;
+            }
+
+            m_roiTargetCameraId = target.cameraId;
+            m_roiTargetLayerKey = target.layerKey;
             m_roiStart = event->pos();
             m_roiEnd = event->pos();
             m_roiDragging = true;
@@ -1536,6 +2342,15 @@ namespace scopeone::ui
         if (m_lineDrawingMode && m_lineDragging)
         {
             m_lineEnd = event->pos();
+            PreviewInteractionTarget target;
+            if (resolveInteractionTarget(event->pos(),
+                                         target,
+                                         m_lineTargetCameraId,
+                                         false,
+                                         m_lineTargetLayerKey))
+            {
+                m_lineEndImage = target.imagePos;
+            }
             update();
             return;
         }
@@ -1559,27 +2374,52 @@ namespace scopeone::ui
             m_lineDragging = false;
             m_lineEnd = event->pos();
 
+            PreviewInteractionTarget startTarget;
+            const bool okStart = resolveInteractionTarget(m_lineStart,
+                                                          startTarget,
+                                                          m_lineTargetCameraId,
+                                                          false,
+                                                          m_lineTargetLayerKey);
+            CameraFrameState frameState;
+            bool processed = false;
+            QRect itemArea;
+            QRect displayRect;
+            QSize imageSize;
+            QPoint clippedStart;
+            QPoint clippedEnd;
             QPoint imgStart;
             QPoint imgEnd;
-            bool procStart = false;
-            bool procEnd = false;
-            const bool okStart = widgetToImageCoordsForCamera(m_lineTargetCameraId, m_lineStart, imgStart, procStart);
-            const bool okEnd = widgetToImageCoordsForCamera(m_lineTargetCameraId, m_lineEnd, imgEnd, procEnd);
-            if (!okStart || !okEnd || procStart != procEnd)
+            if (!okStart
+                || !resolveLayerDisplayGeometry(startTarget.layerKey,
+                                                frameState,
+                                                processed,
+                                                itemArea,
+                                                displayRect,
+                                                imageSize)
+                || !clipLineToRect(m_lineStart, m_lineEnd, displayRect, clippedStart, clippedEnd)
+                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedStart, imgStart)
+                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedEnd, imgEnd))
             {
                 cancelLineDrawing();
                 return;
             }
 
-            m_lineProcessed = procStart;
+            m_lineTargetLayerKey = startTarget.layerKey;
+            m_lineTargetCameraId = startTarget.cameraId;
+            m_lineStart = clippedStart;
+            m_lineEnd = clippedEnd;
+            m_lineStartImage = imgStart;
+            m_lineEndImage = imgEnd;
+            m_lineProcessed = processed;
             m_lineVisible = true;
             m_lineDrawingMode = false;
             m_lineDragging = false;
             unsetCursor();
-            emit lineDrawn(m_lineTargetCameraId,
-                           imgStart.x(), imgStart.y(),
-                           imgEnd.x(), imgEnd.y(),
-                           procStart);
+            emit lineDrawn(m_lineTargetLayerKey,
+                           m_lineTargetCameraId,
+                           m_lineStartImage.x(), m_lineStartImage.y(),
+                           m_lineEndImage.x(), m_lineEndImage.y(),
+                           m_lineProcessed);
             update();
             return;
         }
@@ -1595,25 +2435,59 @@ namespace scopeone::ui
                 return;
             }
 
-            QPoint imgStart;
-            QPoint imgEnd;
-            bool procStart = false;
-            bool procEnd = false;
-            const bool okStart = widgetToImageCoordsForCamera(m_roiTargetCameraId, m_roiStart, imgStart, procStart);
-            const bool okEnd = widgetToImageCoordsForCamera(m_roiTargetCameraId, m_roiEnd, imgEnd, procEnd);
-            if (!okStart || !okEnd || procStart != procEnd)
+            PreviewInteractionTarget startTarget;
+            const bool okStart = resolveInteractionTarget(m_roiStart,
+                                                          startTarget,
+                                                          m_roiTargetCameraId,
+                                                          true,
+                                                          m_roiTargetLayerKey);
+            CameraFrameState frameState;
+            bool processed = false;
+            QRect itemArea;
+            QRect displayRect;
+            QSize imageSize;
+            if (!okStart
+                || !resolveLayerDisplayGeometry(startTarget.layerKey,
+                                                frameState,
+                                                processed,
+                                                itemArea,
+                                                displayRect,
+                                                imageSize))
             {
                 cancelROIDrawing();
                 return;
             }
 
-            const int imgX = qMin(imgStart.x(), imgEnd.x());
-            const int imgY = qMin(imgStart.y(), imgEnd.y());
-            const int imgW = qAbs(imgEnd.x() - imgStart.x());
-            const int imgH = qAbs(imgEnd.y() - imgStart.y());
+            const QRect clippedRect = rect.intersected(displayRect);
+            if (clippedRect.width() < 10 || clippedRect.height() < 10)
+            {
+                cancelROIDrawing();
+                return;
+            }
+
+            QRect imageRect;
+            if (!mapWidgetRectToImage(frameState, false, itemArea, clippedRect, imageRect))
+            {
+                cancelROIDrawing();
+                return;
+            }
+
+            const int imgX = imageRect.x();
+            const int imgY = imageRect.y();
+            const int imgW = imageRect.width();
+            const int imgH = imageRect.height();
             if (imgW > 0 && imgH > 0)
             {
-                emit roiDrawn(m_roiTargetCameraId, imgX, imgY, imgW, imgH);
+                const ImageFrame& rawFrame = frameState.rawFrame;
+                const int sourceRoiX = rawFrame.hasSourceRoi() ? rawFrame.sourceRoiX : 0;
+                const int sourceRoiY = rawFrame.hasSourceRoi() ? rawFrame.sourceRoiY : 0;
+                emit roiDrawn(startTarget.cameraId,
+                              imgX,
+                              imgY,
+                              imgW,
+                              imgH,
+                              sourceRoiX,
+                              sourceRoiY);
             }
 
             cancelROIDrawing();
@@ -1640,28 +2514,33 @@ namespace scopeone::ui
         }
 
         const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
-        QString cameraId;
-        bool processed = false;
-        QRect itemArea;
+        PreviewInteractionTarget target;
         QPointF relativePos;
-        const bool hasAnchor = locateRenderTarget(event->position().toPoint(),
-                                                  cameraId,
-                                                  processed,
-                                                  itemArea,
-                                                  relativePos);
+        const bool hasAnchor = interactionTargetAt(event->position().toPoint(), target)
+            && !target.cameraId.isEmpty()
+            && target.displayRect.width() > 0
+            && target.displayRect.height() > 0;
+        if (hasAnchor)
+        {
+            relativePos = QPointF(
+                static_cast<double>(event->position().x() - target.displayRect.x())
+                    / static_cast<double>(target.displayRect.width()),
+                static_cast<double>(event->position().y() - target.displayRect.y())
+                    / static_cast<double>(target.displayRect.height()));
+        }
         if (m_fitToWindow)
         {
             setFitToWindow(false);
         }
         setZoomPercent(m_zoomPercent + steps * 10);
 
-        if (hasAnchor && !cameraId.isEmpty())
+        if (hasAnchor)
         {
             CameraFrameState frameState;
             bool hasFrameState = false;
             {
                 QMutexLocker lock(&m_mutex);
-                const auto it = m_cameraFrames.constFind(cameraId);
+                const auto it = m_cameraFrames.constFind(target.cameraId);
                 if (it != m_cameraFrames.constEnd())
                 {
                     frameState = it.value();
@@ -1673,7 +2552,7 @@ namespace scopeone::ui
             {
                 QRect newRect;
                 QSize imageSize;
-                if (!resolveDisplayGeometry(frameState, processed, itemArea, newRect, imageSize))
+                if (!resolveDisplayGeometry(frameState, target.processed, target.itemArea, newRect, imageSize))
                 {
                     event->accept();
                     return;
