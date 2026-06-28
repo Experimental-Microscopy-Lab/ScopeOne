@@ -28,6 +28,8 @@ namespace scopeone::ui
     class DeviceControlWidget;
     class RecordingWidget;
     class ScopeOneLocalApiServer;
+    class StageMosaicDialog;
+    class ParticleDetectionDialog;
 
     class MainWindow : public QMainWindow
     {
@@ -54,6 +56,7 @@ namespace scopeone::ui
         void setupRecording();
 
         void closeLoadConfigProgress();
+        void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
         void applyLoadedCameraState(const QStringList& cameraIds);
@@ -61,10 +64,18 @@ namespace scopeone::ui
         void refreshDevicePanels(bool fromCache = false);
         void applyStoredApplicationSettings();
         void openSettingsDialog();
+        void openStageMosaicTool();
+        void openParticleDetectionTool();
         void connectPropertyPanels();
 
         void handlePreviewMousePosition(const QPoint& pos);
-        void handleRoiDrawn(const QString& cameraId, int x, int y, int width, int height);
+        void handleRoiDrawn(const QString& cameraId,
+                            int x,
+                            int y,
+                            int width,
+                            int height,
+                            int sourceRoiX,
+                            int sourceRoiY);
         void handleConfigurationLoadFinished(bool success,
                                              const QString& configPath,
                                              const QStringList& cameraIds,
@@ -113,10 +124,14 @@ namespace scopeone::ui
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_settingsAction{nullptr};
+        QAction* m_stageMosaicAction{nullptr};
+        QAction* m_particleDetectionAction{nullptr};
         QAction* m_aboutAction{nullptr};
         QAction* m_aboutQtAction{nullptr};
 
         QPointer<QProgressDialog> m_loadConfigProgress;
+        QPointer<StageMosaicDialog> m_stageMosaicDialog;
+        QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         ScopeOneLocalApiServer* m_apiServer{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
