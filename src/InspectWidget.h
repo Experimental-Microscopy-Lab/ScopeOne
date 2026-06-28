@@ -26,8 +26,9 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        struct CameraDisplayState
+        struct LayerInspectState
         {
+            QString layerKey;
             QString cameraId;
             bool processed{false};
             scopeone::core::ScopeOneCore::HistogramStats stats;
@@ -43,28 +44,29 @@ namespace scopeone::ui
         ~InspectWidget() override = default;
 
         void onCameraInitialized(bool initialized);
-        void setCurrentTarget(const QString& target);
+        void setCurrentLayer(const QString& layerKey);
+        void setAvailableLayers(const QStringList& layerKeys);
         void setAvailableCameras(const QStringList& cameraIds);
         void setCrossSectionVisible(bool visible);
-        void setFrameInspect(const QString& cameraId,
+        void setLayerInspect(const QString& layerKey,
                              const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void clearInspect();
         void clearCrossSectionProfile();
+        void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
         void setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values);
 
     signals:
-        void displayRangeChanged(const QString& cameraId,
-                                 bool processed,
+        void displayRangeChanged(const QString& layerKey,
                                  int minLevel,
                                  int maxLevel,
                                  int maxDisplayValue);
-        void requestDrawCrossSection(const QString& cameraId);
+        void requestDrawCrossSectionLayer(const QString& layerKey);
         void requestClearCrossSection();
 
     private:
-        struct CameraInfoGroup
+        struct LayerInfoGroup
         {
-            QString streamKey;
+            QString layerKey;
             QString cameraId;
             bool processed{false};
             QGroupBox* groupBox{nullptr};
@@ -85,39 +87,40 @@ namespace scopeone::ui
         };
 
         void setupUI();
-        QWidget* createCameraInfoGroup(const QString& cameraId, bool processed);
-        QWidget* createStatisticsGroup(CameraInfoGroup& infoGroup);
-        void addCameraInfo(const QString& cameraId, bool processed);
-        void removeCameraInfo(const QString& streamKey);
-        void updateCameraInspect(const QString& cameraId,
-                                 bool processed,
-                                 const scopeone::core::ScopeOneCore::HistogramStats& stats);
+        QWidget* createLayerInfoGroup(const QString& layerKey);
+        QWidget* createStatisticsGroup(LayerInfoGroup& infoGroup);
+        void addLayerInfo(const QString& layerKey);
+        void removeLayerInfo(const QString& layerKey);
+        void updateLayerInspect(const QString& layerKey,
+                                const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void onImageHistogramReady(const QString& cameraId,
                                    bool processed,
                                    const scopeone::core::ScopeOneCore::HistogramStats& stats);
-        void onAutoButtonClicked(const QString& streamKey);
-        void onFullButtonClicked(const QString& streamKey);
-        void onAutoStretchChanged(const QString& streamKey, bool checked);
-        void onLogScaleChanged(const QString& streamKey, bool checked);
-        void updateStatisticsDisplay(const QString& cameraId,
-                                     bool processed,
+        void onAutoButtonClicked(const QString& layerKey);
+        void onFullButtonClicked(const QString& layerKey);
+        void onAutoStretchChanged(const QString& layerKey, bool checked);
+        void onLogScaleChanged(const QString& layerKey, bool checked);
+        void updateStatisticsDisplay(const QString& layerKey,
                                      const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void updateControlsState();
-        void applyAutoStretch(CameraDisplayState& state, const QString& streamKey);
-        CameraDisplayState& getOrCreateCameraState(const QString& cameraId, bool processed);
-        QColor getCameraColor(const QString& cameraId) const;
-        void onCameraSliderChanged(const QString& streamKey, int minValue, int maxValue);
-        bool isAllTarget(const QString& target) const;
+        void updateLayerVisibility();
+        void applyAutoStretch(LayerInspectState& state);
+        LayerInspectState& getOrCreateLayerState(const QString& layerKey, const QString& cameraId, bool processed);
+        QColor getLayerColor(const QString& layerKey) const;
+        void onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue);
+        QString currentLayerCameraId() const;
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-        QHash<QString, CameraInfoGroup> m_cameraInfoGroups;
-        QHash<QString, CameraDisplayState> m_cameraStates;
+        QHash<QString, LayerInfoGroup> m_layerInfoGroups;
+        QHash<QString, LayerInspectState> m_layerStates;
+        QStringList m_availableLayerKeys;
+        QStringList m_availableCameraIds;
         QVBoxLayout* m_histogramContainerLayout{nullptr};
         InspectCrossSectionWidget* m_crossSectionWidget{nullptr};
         QGroupBox* m_crossSectionGroup{nullptr};
         QPushButton* m_drawCrossSectionButton{nullptr};
         QPushButton* m_clearCrossSectionButton{nullptr};
         bool m_cameraInitialized{false};
-        QString m_currentTarget{QStringLiteral("All")};
+        QString m_currentLayerKey;
     };
 }

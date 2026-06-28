@@ -16,23 +16,49 @@
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QtMath>
+#include <QtGlobal>
 
 namespace scopeone::ui
 {
     namespace
     {
-        // Build the inspect stream key for raw or processed data
-        QString inspectStreamKey(const QString& cameraId, bool processed)
+        // Build the inspect layer key for raw or processed data
+        QString inspectLayerKey(const QString& cameraId, bool processed)
         {
             return QStringLiteral("%1:%2")
                 .arg(processed ? QStringLiteral("proc") : QStringLiteral("raw"),
                      cameraId.trimmed());
         }
 
-        // Return the short label used by inspect groups
-        QString inspectStreamLabel(bool processed)
+        // Return the short source label used by inspect groups
+        QString inspectLayerSourceLabel(bool processed)
         {
             return processed ? QStringLiteral("proc") : QStringLiteral("raw");
+        }
+
+        // Check whether a preview layer key points to processed data
+        bool isProcessedLayerKey(const QString& layerKey)
+        {
+            return layerKey.startsWith(QStringLiteral("proc:"));
+        }
+
+        // Check whether a preview layer key points to static layer data
+        bool isStaticLayerKey(const QString& layerKey)
+        {
+            return layerKey.startsWith(QStringLiteral("raw:static:"));
+        }
+
+        // Check whether a preview layer can use live core inspection
+        bool isLiveLayerKey(const QString& layerKey)
+        {
+            return !isStaticLayerKey(layerKey);
+        }
+
+        // Extract the camera id encoded in a preview layer key
+        QString cameraIdFromLayerKey(const QString& layerKey)
+        {
+            const int separator = layerKey.indexOf(QLatin1Char(':'));
+            return separator >= 0 ? layerKey.mid(separator + 1) : layerKey.trimmed();
         }
     }
 
@@ -54,21 +80,18 @@ namespace scopeone::ui
             update();
         }
 
-        // Store a new cross section profile for painting
-        void setProfile(const QString& cameraId, bool processed, const QVector<int>& values)
+        // Store a new layer cross section profile for painting
+        void setProfile(const QString& layerKey, const QVector<int>& values)
         {
-            m_title = QStringLiteral("%1 [%2]").arg(
-                cameraId, processed ? QStringLiteral("proc") : QStringLiteral("raw"));
+            m_title = layerKey;
             m_values = values;
             update();
         }
 
     protected:
         // Paint the cross section curve and its summary labels
-        void paintEvent(QPaintEvent* event) override
+        void paintEvent(QPaintEvent*) override
         {
-            Q_UNUSED(event);
-
             QPainter painter(this);
             painter.fillRect(rect(), QColor(24, 24, 24));
             painter.setRenderHint(QPainter::Antialiasing, true);
@@ -158,9 +181,9 @@ namespace scopeone::ui
         QVector<int> m_values;
     };
 
-    struct CameraHistogramData
+    struct LayerHistogramData
     {
-        QString cameraId;
+        QString layerKey;
         scopeone::core::ScopeOneCore::HistogramStats stats;
         QColor color{Qt::blue};
     };
@@ -174,16 +197,16 @@ namespace scopeone::ui
             setMinimumHeight(150);
         }
 
-        // Store histogram data for one stream and repaint
-        void updateCameraHistogram(const QString& cameraId,
-                                   const scopeone::core::ScopeOneCore::HistogramStats& stats,
-                                   const QColor& color)
+        // Store histogram data for one layer and repaint
+        void updateLayerHistogram(const QString& layerKey,
+                                  const scopeone::core::ScopeOneCore::HistogramStats& stats,
+                                  const QColor& color)
         {
-            CameraHistogramData data;
-            data.cameraId = cameraId;
+            LayerHistogramData data;
+            data.layerKey = layerKey;
             data.stats = stats;
             data.color = color;
-            m_cameraData[cameraId] = data;
+            m_layerData[layerKey] = data;
             update();
         }
 
@@ -196,10 +219,8 @@ namespace scopeone::ui
 
     protected:
         // Paint all tracked camera histograms in one chart
-        void paintEvent(QPaintEvent* event) override
+        void paintEvent(QPaintEvent*) override
         {
-            Q_UNUSED(event)
-
             QPainter painter(this);
             painter.setRenderHint(QPainter::Antialiasing);
 
@@ -209,22 +230,22 @@ namespace scopeone::ui
             painter.setPen(QPen(Qt::black, 1));
             painter.drawRect(rect);
 
-            if (m_cameraData.isEmpty())
+            if (m_layerData.isEmpty())
             {
-                painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Camera Data"));
+                painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Layer Data"));
                 return;
             }
 
             int globalMaxValue = 255;
             int globalMaxCount = 0;
-            for (const CameraHistogramData& camData : m_cameraData)
+            for (const LayerHistogramData& layerData : m_layerData)
             {
-                if (!camData.stats.hasData() || camData.stats.histogram.empty())
+                if (!layerData.stats.hasData() || layerData.stats.histogram.empty())
                 {
                     continue;
                 }
-                globalMaxValue = qMax(globalMaxValue, camData.stats.maxValue);
-                for (int count : camData.stats.histogram)
+                globalMaxValue = qMax(globalMaxValue, layerData.stats.maxValue);
+                for (int count : layerData.stats.histogram)
                 {
                     globalMaxCount = qMax(globalMaxCount, count);
                 }
@@ -236,22 +257,22 @@ namespace scopeone::ui
                 return;
             }
 
-            for (const CameraHistogramData& camData : m_cameraData)
+            for (const LayerHistogramData& layerData : m_layerData)
             {
-                if (!camData.stats.hasData() || camData.stats.histogram.empty())
+                if (!layerData.stats.hasData() || layerData.stats.histogram.empty())
                 {
                     continue;
                 }
 
-                const int histSize = static_cast<int>(camData.stats.histogram.size());
-                QColor histColor = camData.color;
+                const int histSize = static_cast<int>(layerData.stats.histogram.size());
+                QColor histColor = layerData.color;
                 histColor.setAlpha(180);
                 painter.setPen(QPen(histColor, 1));
 
                 for (int i = 0; i < histSize; ++i)
                 {
                     const int x = rect.left() + (i * rect.width()) / histSize;
-                    const int count = camData.stats.histogram[static_cast<size_t>(i)];
+                    const int count = layerData.stats.histogram[static_cast<size_t>(i)];
 
                     double normalizedCount = 0.0;
                     if (m_logScale && count > 0)
@@ -296,13 +317,13 @@ namespace scopeone::ui
             painter.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom());
 
             int maxCount = 0;
-            for (const CameraHistogramData& camData : m_cameraData)
+            for (const LayerHistogramData& layerData : m_layerData)
             {
-                if (!camData.stats.hasData())
+                if (!layerData.stats.hasData())
                 {
                     continue;
                 }
-                for (int count : camData.stats.histogram)
+                for (int count : layerData.stats.histogram)
                 {
                     maxCount = qMax(maxCount, count);
                 }
@@ -377,7 +398,7 @@ namespace scopeone::ui
             }
         }
 
-        QHash<QString, CameraHistogramData> m_cameraData;
+        QHash<QString, LayerHistogramData> m_layerData;
         bool m_logScale{false};
     };
 
@@ -386,19 +407,21 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_scopeonecore(core)
     {
+        if (!core)
+        {
+            qFatal("InspectWidget requires ScopeOneCore");
+        }
+
         setWindowTitle(QStringLiteral("Inspect"));
         setupUI();
         updateControlsState();
 
-        if (m_scopeonecore)
-        {
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::imageHistogramReady,
-                    this, &InspectWidget::onImageHistogramReady);
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileUpdated,
-                    this, &InspectWidget::setCrossSectionProfile);
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
-                    this, &InspectWidget::clearCrossSectionProfile);
-        }
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::imageHistogramReady,
+                this, &InspectWidget::onImageHistogramReady);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileUpdated,
+                this, &InspectWidget::setCrossSectionProfile);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
+                this, &InspectWidget::clearCrossSectionProfile);
     }
 
     // Enable inspect controls when camera state changes
@@ -413,21 +436,24 @@ namespace scopeone::ui
         }
     }
 
-    // Track the current camera target selected in the control panel
-    void InspectWidget::setCurrentTarget(const QString& target)
+    // Track the currently selected preview layer
+    void InspectWidget::setCurrentLayer(const QString& layerKey)
     {
-        m_currentTarget = target;
+        m_currentLayerKey = layerKey.trimmed();
+        updateLayerVisibility();
         updateControlsState();
     }
 
-    // Remove inspect state for cameras that are no longer available
-    void InspectWidget::setAvailableCameras(const QStringList& cameraIds)
+    // Remove inspect state for layers that are no longer available
+    void InspectWidget::setAvailableLayers(const QStringList& layerKeys)
     {
-        for (auto it = m_cameraStates.begin(); it != m_cameraStates.end();)
+        m_availableLayerKeys = layerKeys;
+
+        for (auto it = m_layerStates.begin(); it != m_layerStates.end();)
         {
-            if (!cameraIds.contains(it.value().cameraId))
+            if (!m_availableLayerKeys.contains(it.key()))
             {
-                it = m_cameraStates.erase(it);
+                it = m_layerStates.erase(it);
             }
             else
             {
@@ -436,50 +462,68 @@ namespace scopeone::ui
         }
 
         QList<QString> keysToRemove;
-        for (auto it = m_cameraInfoGroups.begin(); it != m_cameraInfoGroups.end(); ++it)
+        for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
         {
-            if (!cameraIds.contains(it.value().cameraId))
+            if (!m_availableLayerKeys.contains(it.key()))
             {
                 keysToRemove.append(it.key());
             }
         }
         for (const QString& key : keysToRemove)
         {
-            removeCameraInfo(key);
+            removeLayerInfo(key);
         }
+
+        if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
+        {
+            m_currentLayerKey.clear();
+        }
+        updateLayerVisibility();
+        updateControlsState();
+    }
+
+    // Store live camera availability for core backed tools
+    void InspectWidget::setAvailableCameras(const QStringList& cameraIds)
+    {
+        m_availableCameraIds = cameraIds;
+
+        if (!m_currentLayerKey.isEmpty()
+            && isLiveLayerKey(m_currentLayerKey)
+            && !m_availableCameraIds.contains(currentLayerCameraId()))
+        {
+            m_currentLayerKey.clear();
+        }
+        updateLayerVisibility();
+        updateControlsState();
     }
 
     void InspectWidget::setCrossSectionVisible(bool visible)
     {
-        if (m_crossSectionGroup)
-        {
-            m_crossSectionGroup->setVisible(visible);
-        }
+        m_crossSectionGroup->setVisible(visible);
     }
 
-    // Show inspect data for a single still frame
-    void InspectWidget::setFrameInspect(const QString& cameraId,
-                                        const scopeone::core::ScopeOneCore::HistogramStats& stats)
+    // Show inspect data for an explicit preview layer
+    void InspectWidget::setLayerInspect(
+        const QString& layerKey,
+        const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
-        if (cameraId.isEmpty() || !stats.hasData())
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty() || !stats.hasData())
         {
-            clearInspect();
             return;
         }
 
-        setAvailableCameras({cameraId});
-        const QString streamKey = inspectStreamKey(cameraId, false);
-        if (!m_cameraInfoGroups.contains(streamKey))
+        if (!m_layerInfoGroups.contains(trimmedLayerKey))
         {
-            addCameraInfo(cameraId, false);
+            addLayerInfo(trimmedLayerKey);
         }
-        setCurrentTarget(cameraId);
-        updateCameraInspect(cameraId, false, stats);
+        updateLayerInspect(trimmedLayerKey, stats);
     }
 
-    // Clear all camera inspect groups
+    // Clear all layer inspect groups
     void InspectWidget::clearInspect()
     {
+        setAvailableLayers({});
         setAvailableCameras({});
     }
 
@@ -489,10 +533,22 @@ namespace scopeone::ui
         m_crossSectionWidget->clear();
     }
 
-    // Display a freshly computed cross section profile
+    // Display a freshly computed cross section profile for one layer
+    void InspectWidget::setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty() || trimmedLayerKey != m_currentLayerKey)
+        {
+            return;
+        }
+
+        m_crossSectionWidget->setProfile(trimmedLayerKey, values);
+    }
+
+    // Display a freshly computed live cross section profile
     void InspectWidget::setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values)
     {
-        m_crossSectionWidget->setProfile(cameraId, processed, values);
+        setLayerCrossSectionProfile(inspectLayerKey(cameraId, processed), values);
     }
 
     // Build the scrollable inspect panel
@@ -533,11 +589,11 @@ namespace scopeone::ui
 
         connect(m_drawCrossSectionButton, &QPushButton::clicked, this, [this]()
         {
-            if (isAllTarget(m_currentTarget))
+            if (m_currentLayerKey.isEmpty())
             {
                 return;
             }
-            emit requestDrawCrossSection(m_currentTarget);
+            emit requestDrawCrossSectionLayer(m_currentLayerKey);
         });
         connect(m_clearCrossSectionButton, &QPushButton::clicked, this, [this]()
         {
@@ -549,16 +605,18 @@ namespace scopeone::ui
         mainLayout->addWidget(scrollArea);
     }
 
-    // Create histogram controls for one stream
-    QWidget* InspectWidget::createCameraInfoGroup(const QString& cameraId, bool processed)
+    // Create histogram controls for one layer
+    QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
-        const QString streamKey = inspectStreamKey(cameraId, processed);
+        const QString normalizedLayerKey = layerKey.trimmed();
+        const QString cameraId = cameraIdFromLayerKey(normalizedLayerKey);
+        const bool processed = isProcessedLayerKey(normalizedLayerKey);
         auto* group = new QGroupBox(
-            QStringLiteral("Camera - %1 [%2]").arg(cameraId, inspectStreamLabel(processed)),
+            QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(processed)),
             this);
         auto* layout = new QVBoxLayout(group);
-        CameraInfoGroup infoGroup;
-        infoGroup.streamKey = streamKey;
+        LayerInfoGroup infoGroup;
+        infoGroup.layerKey = normalizedLayerKey;
         infoGroup.cameraId = cameraId;
         infoGroup.processed = processed;
         infoGroup.groupBox = group;
@@ -622,56 +680,54 @@ namespace scopeone::ui
         infoGroup.minSliderValueLabel = minSliderValueLabel;
         infoGroup.maxSliderValueLabel = maxSliderValueLabel;
         layout->addWidget(createStatisticsGroup(infoGroup));
-        m_cameraInfoGroups.insert(streamKey, infoGroup);
+        m_layerInfoGroups.insert(normalizedLayerKey, infoGroup);
 
-        connect(autoButton, &QPushButton::clicked, this, [this, streamKey]()
+        connect(autoButton, &QPushButton::clicked, this, [this, normalizedLayerKey]()
         {
-            onAutoButtonClicked(streamKey);
+            onAutoButtonClicked(normalizedLayerKey);
         });
-        connect(fullButton, &QPushButton::clicked, this, [this, streamKey]()
+        connect(fullButton, &QPushButton::clicked, this, [this, normalizedLayerKey]()
         {
-            onFullButtonClicked(streamKey);
+            onFullButtonClicked(normalizedLayerKey);
         });
-        connect(autoStretchCheckBox, &QCheckBox::toggled, this, [this, streamKey](bool checked)
+        connect(autoStretchCheckBox, &QCheckBox::toggled, this, [this, normalizedLayerKey](bool checked)
         {
-            onAutoStretchChanged(streamKey, checked);
+            onAutoStretchChanged(normalizedLayerKey, checked);
         });
-        connect(logScaleCheckBox, &QCheckBox::toggled, this, [this, streamKey](bool checked)
+        connect(logScaleCheckBox, &QCheckBox::toggled, this, [this, normalizedLayerKey](bool checked)
         {
-            onLogScaleChanged(streamKey, checked);
+            onLogScaleChanged(normalizedLayerKey, checked);
         });
         connect(minSlider, &QSlider::valueChanged, this,
-                [this, streamKey, minSlider, maxSlider, minSliderValueLabel](int value)
+                [this, normalizedLayerKey, minSlider, maxSlider, minSliderValueLabel](int value)
                 {
                     if (value >= maxSlider->value())
                     {
-                        minSlider->blockSignals(true);
+                        QSignalBlocker blocker(minSlider);
                         minSlider->setValue(maxSlider->value() - 1);
-                        minSlider->blockSignals(false);
                         value = maxSlider->value() - 1;
                     }
                     minSliderValueLabel->setText(QString::number(value));
-                    onCameraSliderChanged(streamKey, value, maxSlider->value());
+                    onLayerSliderChanged(normalizedLayerKey, value, maxSlider->value());
                 });
         connect(maxSlider, &QSlider::valueChanged, this,
-                [this, streamKey, minSlider, maxSlider, maxSliderValueLabel](int value)
+                [this, normalizedLayerKey, minSlider, maxSlider, maxSliderValueLabel](int value)
                 {
                     if (value <= minSlider->value())
                     {
-                        maxSlider->blockSignals(true);
+                        QSignalBlocker blocker(maxSlider);
                         maxSlider->setValue(minSlider->value() + 1);
-                        maxSlider->blockSignals(false);
                         value = minSlider->value() + 1;
                     }
                     maxSliderValueLabel->setText(QString::number(value));
-                    onCameraSliderChanged(streamKey, minSlider->value(), value);
+                    onLayerSliderChanged(normalizedLayerKey, minSlider->value(), value);
                 });
 
         return group;
     }
 
-    // Create labels for per stream image statistics
-    QWidget* InspectWidget::createStatisticsGroup(CameraInfoGroup& infoGroup)
+    // Create labels for per layer image statistics
+    QWidget* InspectWidget::createStatisticsGroup(LayerInfoGroup& infoGroup)
     {
         auto* group = new QGroupBox(QStringLiteral("Image Statistics"), this);
         auto* layout = new QGridLayout(group);
@@ -705,57 +761,52 @@ namespace scopeone::ui
         return group;
     }
 
-    // Add a stream group if it is not already visible
-    void InspectWidget::addCameraInfo(const QString& cameraId, bool processed)
+    // Add a layer group if it is not already visible
+    void InspectWidget::addLayerInfo(const QString& layerKey)
     {
-        const QString streamKey = inspectStreamKey(cameraId, processed);
-        if (m_cameraInfoGroups.contains(streamKey))
+        const QString normalizedLayerKey = layerKey.trimmed();
+        if (m_layerInfoGroups.contains(normalizedLayerKey))
         {
             return;
         }
 
-        QWidget* histogramGroup = createCameraInfoGroup(cameraId, processed);
-        if (m_histogramContainerLayout)
-        {
-            m_histogramContainerLayout->addWidget(histogramGroup);
-        }
+        QWidget* histogramGroup = createLayerInfoGroup(normalizedLayerKey);
+        m_histogramContainerLayout->addWidget(histogramGroup);
+        updateLayerVisibility();
         updateControlsState();
     }
 
-    // Remove a stream group and its widgets
-    void InspectWidget::removeCameraInfo(const QString& streamKey)
+    // Remove a layer group and its widgets
+    void InspectWidget::removeLayerInfo(const QString& layerKey)
     {
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
 
-        CameraInfoGroup& infoGroup = it.value();
-        if (infoGroup.groupBox && m_histogramContainerLayout)
-        {
-            m_histogramContainerLayout->removeWidget(infoGroup.groupBox);
-            infoGroup.groupBox->deleteLater();
-        }
-        m_cameraInfoGroups.erase(it);
+        LayerInfoGroup& infoGroup = it.value();
+        m_histogramContainerLayout->removeWidget(infoGroup.groupBox);
+        infoGroup.groupBox->deleteLater();
+        m_layerInfoGroups.erase(it);
     }
 
     // Synchronize histogram controls with fresh statistics
-    void InspectWidget::updateCameraInspect(
-        const QString& cameraId,
-        bool processed,
+    void InspectWidget::updateLayerInspect(
+        const QString& layerKey,
         const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
-        // Sync histogram controls with fresh stats
-        const QString streamKey = inspectStreamKey(cameraId, processed);
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        const QString normalizedLayerKey = layerKey.trimmed();
+        auto it = m_layerInfoGroups.find(normalizedLayerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
-        CameraInfoGroup& infoGroup = it.value();
+        LayerInfoGroup& infoGroup = it.value();
 
-        CameraDisplayState& state = getOrCreateCameraState(cameraId, processed);
+        const QString cameraId = cameraIdFromLayerKey(normalizedLayerKey);
+        const bool processed = isProcessedLayerKey(normalizedLayerKey);
+        LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey, cameraId, processed);
         state.stats = stats;
         state.hasStats = stats.hasData();
         if (state.hasStats && !state.displayRangeValid)
@@ -768,7 +819,7 @@ namespace scopeone::ui
 
         if (state.hasStats && state.autoStretchEnabled)
         {
-            applyAutoStretch(state, streamKey);
+            applyAutoStretch(state);
         }
         else if (state.hasStats)
         {
@@ -780,22 +831,23 @@ namespace scopeone::ui
             return;
         }
 
-        const QColor cameraColor = getCameraColor(streamKey);
-        infoGroup.histogramWidget->updateCameraHistogram(streamKey, stats, cameraColor);
+        const QColor layerColor = getLayerColor(normalizedLayerKey);
+        infoGroup.histogramWidget->updateLayerHistogram(normalizedLayerKey, stats, layerColor);
 
         const int maxValue = state.maxDisplayValue > 0 ? state.maxDisplayValue : 255;
         infoGroup.minSlider->setRange(0, maxValue);
         infoGroup.maxSlider->setRange(0, maxValue);
-        infoGroup.minSlider->blockSignals(true);
-        infoGroup.maxSlider->blockSignals(true);
-        infoGroup.minSlider->setValue(state.displayMin);
-        infoGroup.maxSlider->setValue(state.displayMax);
-        infoGroup.minSlider->blockSignals(false);
-        infoGroup.maxSlider->blockSignals(false);
+        {
+            QSignalBlocker minBlocker(infoGroup.minSlider);
+            QSignalBlocker maxBlocker(infoGroup.maxSlider);
+            infoGroup.minSlider->setValue(state.displayMin);
+            infoGroup.maxSlider->setValue(state.displayMax);
+        }
         infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
         infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
 
-        updateStatisticsDisplay(cameraId, processed, stats);
+        updateStatisticsDisplay(normalizedLayerKey, stats);
+        updateControlsState();
     }
 
     // Create UI state on first histogram update
@@ -808,76 +860,75 @@ namespace scopeone::ui
         {
             return;
         }
-        const QString streamKey = inspectStreamKey(cameraId, processed);
-        if (!m_cameraInfoGroups.contains(streamKey))
+        const QString layerKey = inspectLayerKey(cameraId, processed);
+        if (!m_layerInfoGroups.contains(layerKey))
         {
-            addCameraInfo(cameraId, processed);
+            addLayerInfo(layerKey);
         }
-        updateCameraInspect(cameraId, processed, stats);
+        updateLayerInspect(layerKey, stats);
     }
 
     // Apply the computed auto display range once
-    void InspectWidget::onAutoButtonClicked(const QString& streamKey)
+    void InspectWidget::onAutoButtonClicked(const QString& layerKey)
     {
-        auto stateIt = m_cameraStates.find(streamKey);
-        if (stateIt == m_cameraStates.end())
+        auto stateIt = m_layerStates.find(layerKey);
+        if (stateIt == m_layerStates.end())
         {
             return;
         }
-        CameraDisplayState& state = stateIt.value();
+        LayerInspectState& state = stateIt.value();
         if (!state.hasStats)
         {
             return;
         }
 
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
-        CameraInfoGroup& infoGroup = it.value();
+        LayerInfoGroup& infoGroup = it.value();
 
         state.displayMin = state.stats.autoMinLevel;
         state.displayMax = state.stats.autoMaxLevel;
         state.maxDisplayValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
         state.displayRangeValid = true;
 
-        infoGroup.minSlider->blockSignals(true);
-        infoGroup.maxSlider->blockSignals(true);
-        infoGroup.minSlider->setValue(state.displayMin);
-        infoGroup.maxSlider->setValue(state.displayMax);
-        infoGroup.minSlider->blockSignals(false);
-        infoGroup.maxSlider->blockSignals(false);
+        {
+            QSignalBlocker minBlocker(infoGroup.minSlider);
+            QSignalBlocker maxBlocker(infoGroup.maxSlider);
+            infoGroup.minSlider->setValue(state.displayMin);
+            infoGroup.maxSlider->setValue(state.displayMax);
+        }
         infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
         infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
 
-        emit displayRangeChanged(state.cameraId,
-                                 state.processed,
+        emit displayRangeChanged(state.layerKey,
                                  state.displayMin,
                                  state.displayMax,
                                  state.maxDisplayValue);
     }
 
     // Expand the display range to the full pixel range
-    void InspectWidget::onFullButtonClicked(const QString& streamKey)
+    void InspectWidget::onFullButtonClicked(const QString& layerKey)
     {
-        auto stateIt = m_cameraStates.find(streamKey);
-        if (stateIt == m_cameraStates.end())
+        auto stateIt = m_layerStates.find(layerKey);
+        if (stateIt == m_layerStates.end())
         {
             return;
         }
-        CameraDisplayState& state = stateIt.value();
+        LayerInspectState& state = stateIt.value();
         if (!state.hasStats)
         {
             return;
         }
 
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
-        CameraInfoGroup& infoGroup = it.value();
+        LayerInfoGroup& infoGroup = it.value();
 
         const int maxValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
         state.displayMin = 0;
@@ -885,27 +936,27 @@ namespace scopeone::ui
         state.maxDisplayValue = maxValue;
         state.displayRangeValid = true;
 
-        infoGroup.minSlider->blockSignals(true);
-        infoGroup.maxSlider->blockSignals(true);
-        infoGroup.minSlider->setValue(0);
-        infoGroup.maxSlider->setValue(maxValue);
-        infoGroup.minSlider->blockSignals(false);
-        infoGroup.maxSlider->blockSignals(false);
+        {
+            QSignalBlocker minBlocker(infoGroup.minSlider);
+            QSignalBlocker maxBlocker(infoGroup.maxSlider);
+            infoGroup.minSlider->setValue(0);
+            infoGroup.maxSlider->setValue(maxValue);
+        }
         infoGroup.minSliderValueLabel->setText(QString::number(0));
         infoGroup.maxSliderValueLabel->setText(QString::number(maxValue));
 
-        onCameraSliderChanged(streamKey, 0, maxValue);
+        onLayerSliderChanged(layerKey, 0, maxValue);
     }
 
-    // Toggle continuous auto stretch for one stream
-    void InspectWidget::onAutoStretchChanged(const QString& streamKey, bool checked)
+    // Toggle continuous auto stretch for one layer
+    void InspectWidget::onAutoStretchChanged(const QString& layerKey, bool checked)
     {
-        auto stateIt = m_cameraStates.find(streamKey);
-        if (stateIt == m_cameraStates.end())
+        auto stateIt = m_layerStates.find(layerKey);
+        if (stateIt == m_layerStates.end())
         {
             return;
         }
-        CameraDisplayState& state = stateIt.value();
+        LayerInspectState& state = stateIt.value();
         state.autoStretchEnabled = checked;
 
         if (!checked || !state.hasStats)
@@ -913,52 +964,48 @@ namespace scopeone::ui
             return;
         }
 
-        applyAutoStretch(state, streamKey);
+        applyAutoStretch(state);
 
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it != m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it != m_layerInfoGroups.end())
         {
-            CameraInfoGroup& infoGroup = it.value();
-            infoGroup.minSlider->blockSignals(true);
-            infoGroup.maxSlider->blockSignals(true);
+            LayerInfoGroup& infoGroup = it.value();
+            QSignalBlocker minBlocker(infoGroup.minSlider);
+            QSignalBlocker maxBlocker(infoGroup.maxSlider);
             infoGroup.minSlider->setValue(state.displayMin);
             infoGroup.maxSlider->setValue(state.displayMax);
-            infoGroup.minSlider->blockSignals(false);
-            infoGroup.maxSlider->blockSignals(false);
             infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
             infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
         }
 
-        emit displayRangeChanged(state.cameraId,
-                                 state.processed,
+        emit displayRangeChanged(state.layerKey,
                                  state.displayMin,
                                  state.displayMax,
                                  state.maxDisplayValue);
     }
 
-    // Toggle logarithmic histogram scaling for one stream
-    void InspectWidget::onLogScaleChanged(const QString& streamKey, bool checked)
+    // Toggle logarithmic histogram scaling for one layer
+    void InspectWidget::onLogScaleChanged(const QString& layerKey, bool checked)
     {
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
         it.value().histogramWidget->setLogScale(checked);
     }
 
-    // Update numeric statistics labels for one stream
+    // Update numeric statistics labels for one layer
     void InspectWidget::updateStatisticsDisplay(
-        const QString& cameraId,
-        bool processed,
+        const QString& layerKey,
         const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
-        auto it = m_cameraInfoGroups.find(inspectStreamKey(cameraId, processed));
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
-        CameraInfoGroup& infoGroup = it.value();
+        LayerInfoGroup& infoGroup = it.value();
 
         if (stats.bitDepth > 8)
         {
@@ -978,32 +1025,45 @@ namespace scopeone::ui
         infoGroup.pixelCountLabel->setText(QString::number(stats.totalPixels));
     }
 
-    // Enable controls according to camera and target state
+    // Enable controls according to live camera and selected layer state
     void InspectWidget::updateControlsState()
     {
-        // Keep cross section controls tied to target state
-        const bool crossSectionEnabled = m_cameraInitialized && !isAllTarget(m_currentTarget);
-        if (m_drawCrossSectionButton)
-        {
-            m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
-        }
-        if (m_clearCrossSectionButton)
-        {
-            m_clearCrossSectionButton->setEnabled(m_cameraInitialized);
-        }
+        const auto currentState = m_layerStates.constFind(m_currentLayerKey);
+        const bool currentLayerHasStats = currentState != m_layerStates.constEnd() && currentState.value().hasStats;
+        const bool liveCrossSectionEnabled = m_cameraInitialized
+                                             && isLiveLayerKey(m_currentLayerKey)
+                                             && m_availableCameraIds.contains(currentLayerCameraId());
+        const bool staticCrossSectionEnabled = isStaticLayerKey(m_currentLayerKey) && currentLayerHasStats;
+        const bool crossSectionEnabled = !m_currentLayerKey.isEmpty()
+                                         && (liveCrossSectionEnabled || staticCrossSectionEnabled);
+        m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
+        m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !m_currentLayerKey.isEmpty());
 
-        for (auto it = m_cameraInfoGroups.begin(); it != m_cameraInfoGroups.end(); ++it)
+        for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
         {
-            CameraInfoGroup& infoGroup = it.value();
-            infoGroup.autoButton->setEnabled(m_cameraInitialized);
-            infoGroup.fullButton->setEnabled(m_cameraInitialized);
-            infoGroup.autoStretchCheckBox->setEnabled(m_cameraInitialized);
-            infoGroup.logScaleCheckBox->setEnabled(m_cameraInitialized);
+            LayerInfoGroup& infoGroup = it.value();
+            const auto stateIt = m_layerStates.constFind(infoGroup.layerKey);
+            const bool hasStats = stateIt != m_layerStates.constEnd() && stateIt.value().hasStats;
+            infoGroup.autoButton->setEnabled(hasStats);
+            infoGroup.fullButton->setEnabled(hasStats);
+            infoGroup.autoStretchCheckBox->setEnabled(hasStats);
+            infoGroup.logScaleCheckBox->setEnabled(hasStats);
+        }
+    }
+
+    // Shows inspect controls for the selected preview layer
+    void InspectWidget::updateLayerVisibility()
+    {
+        for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
+        {
+            LayerInfoGroup& infoGroup = it.value();
+            infoGroup.groupBox->setVisible(!m_currentLayerKey.isEmpty()
+                                           && infoGroup.layerKey == m_currentLayerKey);
         }
     }
 
     // Push auto range back into sliders and preview
-    void InspectWidget::applyAutoStretch(CameraDisplayState& state, const QString& streamKey)
+    void InspectWidget::applyAutoStretch(LayerInspectState& state)
     {
         if (!state.hasStats)
         {
@@ -1026,76 +1086,76 @@ namespace scopeone::ui
         state.maxDisplayValue = maxDisplayValue;
         state.displayRangeValid = true;
 
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it != m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(state.layerKey);
+        if (it != m_layerInfoGroups.end())
         {
-            CameraInfoGroup& infoGroup = it.value();
-            infoGroup.minSlider->blockSignals(true);
-            infoGroup.maxSlider->blockSignals(true);
+            LayerInfoGroup& infoGroup = it.value();
+            QSignalBlocker minBlocker(infoGroup.minSlider);
+            QSignalBlocker maxBlocker(infoGroup.maxSlider);
             infoGroup.minSlider->setValue(minLevel);
             infoGroup.maxSlider->setValue(maxLevel);
-            infoGroup.minSlider->blockSignals(false);
-            infoGroup.maxSlider->blockSignals(false);
             infoGroup.minSliderValueLabel->setText(QString::number(minLevel));
             infoGroup.maxSliderValueLabel->setText(QString::number(maxLevel));
         }
 
-        emit displayRangeChanged(state.cameraId,
-                                 state.processed,
+        emit displayRangeChanged(state.layerKey,
                                  minLevel,
                                  maxLevel,
                                  state.maxDisplayValue);
     }
 
-    // Return persistent display state for one stream
-    InspectWidget::CameraDisplayState& InspectWidget::getOrCreateCameraState(const QString& cameraId, bool processed)
+    // Return persistent inspect state for one preview layer
+    InspectWidget::LayerInspectState& InspectWidget::getOrCreateLayerState(
+        const QString& layerKey,
+        const QString& cameraId,
+        bool processed)
     {
-        const QString streamKey = inspectStreamKey(cameraId, processed);
-        auto it = m_cameraStates.find(streamKey);
-        if (it == m_cameraStates.end())
+        auto it = m_layerStates.find(layerKey);
+        if (it == m_layerStates.end())
         {
-            CameraDisplayState state;
+            LayerInspectState state;
+            state.layerKey = layerKey;
             state.cameraId = cameraId;
             state.processed = processed;
-            it = m_cameraStates.insert(streamKey, state);
+            it = m_layerStates.insert(layerKey, state);
         }
         return it.value();
     }
 
-    // Pick a stable display color from the stream key
-    QColor InspectWidget::getCameraColor(const QString& cameraId) const
+    // Pick a stable display color from the layer key
+    QColor InspectWidget::getLayerColor(const QString& layerKey) const
     {
-        static const QList<QColor> cameraColors = {
+        static const QList<QColor> layerColors = {
             QColor(0, 120, 215),
             QColor(232, 17, 35),
             QColor(16, 124, 16),
             QColor(247, 99, 12)
         };
 
-        const int index = qHash(cameraId) % cameraColors.size();
-        return cameraColors[index];
+        const int index = qHash(layerKey) % layerColors.size();
+        return layerColors[index];
     }
 
-    // Apply manual display range changes from the sliders
-    void InspectWidget::onCameraSliderChanged(const QString& streamKey, int minValue, int maxValue)
+    // Apply manual display range changes from layer sliders
+    void InspectWidget::onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue)
     {
-        auto stateIt = m_cameraStates.find(streamKey);
-        if (stateIt == m_cameraStates.end())
+        auto stateIt = m_layerStates.find(layerKey);
+        if (stateIt == m_layerStates.end())
         {
             return;
         }
-        CameraDisplayState& state = stateIt.value();
+        LayerInspectState& state = stateIt.value();
         state.displayMin = minValue;
         state.displayMax = maxValue;
         state.displayRangeValid = true;
         state.autoStretchEnabled = false;
 
-        auto it = m_cameraInfoGroups.find(streamKey);
-        if (it == m_cameraInfoGroups.end())
+        auto it = m_layerInfoGroups.find(layerKey);
+        if (it == m_layerInfoGroups.end())
         {
             return;
         }
-        CameraInfoGroup& infoGroup = it.value();
+        LayerInfoGroup& infoGroup = it.value();
 
         if (infoGroup.autoStretchCheckBox)
         {
@@ -1103,15 +1163,14 @@ namespace scopeone::ui
             infoGroup.autoStretchCheckBox->setChecked(false);
         }
 
-        emit displayRangeChanged(state.cameraId,
-                                 state.processed,
+        emit displayRangeChanged(state.layerKey,
                                  minValue,
                                  maxValue,
                                  state.maxDisplayValue);
     }
 
-    bool InspectWidget::isAllTarget(const QString& target) const
+    QString InspectWidget::currentLayerCameraId() const
     {
-        return target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
+        return cameraIdFromLayerKey(m_currentLayerKey);
     }
 } // namespace scopeone::ui
