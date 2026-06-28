@@ -24,6 +24,10 @@ namespace scopeone::core
         int stride{0};
         int bitsPerSample{0};
         ImagePixelFormat pixelFormat{ImagePixelFormat::Invalid};
+        int sourceRoiX{0};
+        int sourceRoiY{0};
+        int sourceRoiWidth{0};
+        int sourceRoiHeight{0};
         QByteArray bytes;
 
         bool isValid() const
@@ -70,6 +74,11 @@ namespace scopeone::core
             return QSize(width, height);
         }
 
+        bool hasSourceRoi() const
+        {
+            return sourceRoiWidth > 0 && sourceRoiHeight > 0;
+        }
+
         bool isCompatibleWith(const ImageFrame& other) const
         {
             return width == other.width
@@ -114,6 +123,20 @@ namespace scopeone::core
                 frame.stride = frame.width * bytesPerPixel;
             }
             frame.bytes = rawData;
+            if (sharedFrameHasSourceRoi(header))
+            {
+                frame.sourceRoiX = static_cast<int>(header.sourceRoiX);
+                frame.sourceRoiY = static_cast<int>(header.sourceRoiY);
+                frame.sourceRoiWidth = static_cast<int>(header.sourceRoiWidth);
+                frame.sourceRoiHeight = static_cast<int>(header.sourceRoiHeight);
+            }
+            else
+            {
+                frame.sourceRoiX = 0;
+                frame.sourceRoiY = 0;
+                frame.sourceRoiWidth = frame.width;
+                frame.sourceRoiHeight = frame.height;
+            }
             return frame.isValid() ? frame : ImageFrame{};
         }
     };
