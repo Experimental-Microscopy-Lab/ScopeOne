@@ -31,10 +31,41 @@ namespace scopeone::core
         quint16 channels;
         quint64 frameIndex;
         quint64 timestampNs;
-        quint8 reserved[64 - (4 + 4 + 4 + 4 + 4 + 2 + 2 + 8 + 8)];
+        qint32 sourceRoiX;
+        qint32 sourceRoiY;
+        qint32 sourceRoiWidth;
+        qint32 sourceRoiHeight;
+        quint32 sourceRoiValid;
+        quint8 reserved[64 - (4 + 4 + 4 + 4 + 4 + 2 + 2 + 8 + 8 + 4 + 4 + 4 + 4 + 4)];
     };
 
     static_assert(sizeof(SharedFrameHeader) == 64, "SharedFrameHeader must be 64 bytes");
+
+    inline bool sharedFrameHasSourceRoi(const SharedFrameHeader& header)
+    {
+        return header.sourceRoiValid != 0
+            && header.sourceRoiWidth > 0
+            && header.sourceRoiHeight > 0;
+    }
+
+    inline void setSharedFrameSourceRoi(SharedFrameHeader& header, int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            header.sourceRoiX = 0;
+            header.sourceRoiY = 0;
+            header.sourceRoiWidth = 0;
+            header.sourceRoiHeight = 0;
+            header.sourceRoiValid = 0;
+            return;
+        }
+
+        header.sourceRoiX = static_cast<qint32>(x);
+        header.sourceRoiY = static_cast<qint32>(y);
+        header.sourceRoiWidth = static_cast<qint32>(width);
+        header.sourceRoiHeight = static_cast<qint32>(height);
+        header.sourceRoiValid = 1;
+    }
 
     inline quint64 computeMaxFrameBytes(quint32 width, quint32 height, SharedPixelFormat fmt)
     {
