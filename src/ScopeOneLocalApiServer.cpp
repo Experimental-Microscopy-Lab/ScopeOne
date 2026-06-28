@@ -202,7 +202,10 @@ namespace scopeone::ui
           , m_scopeonecore(core)
           , m_server(new QLocalServer(this))
     {
-        Q_ASSERT(m_scopeonecore);
+        if (!core)
+        {
+            qFatal("ScopeOneLocalApiServer requires ScopeOneCore");
+        }
 
         QLocalServer::removeServer(kServerName);
         connect(m_server, &QLocalServer::newConnection,
