@@ -10,16 +10,15 @@ namespace scopeone::core
     class ScopeOneCore;
 }
 
-class QAction;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
-class QMenu;
 class QPushButton;
 class QSpinBox;
-class QToolButton;
+class QTableWidget;
 
 namespace scopeone::ui
 {
@@ -35,7 +34,7 @@ namespace scopeone::ui
 
         void setControlTargets(const QStringList& cameraIds);
 
-        bool acceptsCameraStream(const QString& cameraId) const;
+        bool acceptsCameraFrame(const QString& cameraId) const;
 
         void setPreviewWidget(PreviewWidget* previewWidget);
 
@@ -47,6 +46,7 @@ namespace scopeone::ui
         void onCameraInitialized(bool initialized);
 
         void setPreviewRunning(bool running);
+        QString currentLayerKey() const;
 
     signals :
         void startPreviewRequested();
@@ -55,11 +55,18 @@ namespace scopeone::ui
 
         void exposureValueChanged(double exposureMs);
         void controlTargetChanged(const QString& target);
+        void currentLayerChanged(const QString& layerKey);
 
         void requestDrawROI(const QString& cameraId);
+        void requestHalfROI(const QString& cameraId);
         void requestClearROI(const QString& cameraId);
 
     private:
+        struct LayerRowWidgets
+        {
+            QCheckBox* visibleCheckBox{nullptr};
+        };
+
         void onExposureChanged();
         void onPreviewToggleClicked();
 
@@ -67,25 +74,35 @@ namespace scopeone::ui
 
         void onDrawROIClicked();
 
+        void onHalfROIClicked();
+
         void onClearROIClicked();
 
         QWidget* createPreviewControlsGroup();
         void updatePreviewZoomControls();
-        void rebuildPreviewStreamMenu(const QStringList& cameraIds);
-        void populatePreviewStreamMenuHeader();
-        void updatePreviewSelectionFromActions();
-        void applyPreviewSelection(const QStringList& streamKeys, bool notifyPreview);
-        void setPreviewStreamActionStates(const QString& selectedPrefix, bool checkedWhenPrefixEmpty);
+        void rebuildPreviewLayerTable(const QStringList& layerKeys);
+        void applyPreviewSelection(const QStringList& layerKeys, bool notifyPreview);
+        void refreshPreviewLayerSettings();
+        QString selectedLayerCameraId() const;
         void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
-        void syncPreviewStreamLayoutCombo(int index);
-        void onPreviewInfoTextChanged(const QString& text);
+        void onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys);
+        void syncPreviewLayerLayoutCombo(int index);
+        void onPreviewLayerInfoTextChanged(const QString& text);
+        void refreshPreviewLayerInfoText();
 
         void onPreviewZoomSpinBoxChanged(int value);
         void onPreviewFitToWindowToggled(bool enabled);
-        void onPreviewStreamLayoutComboChanged(int index);
-        void onPreviewOverlayAlphaChanged(int value);
-        void onPreviewStreamActionToggled(bool checked);
-        void resetAlignState(const QString& cameraId);
+        void onPreviewLayerLayoutComboChanged(int index);
+        void onPreviewLayerVisibleToggled(bool checked);
+        void onPreviewLayerOpacityChanged(int value);
+        void onPreviewLayerGammaChanged(double value);
+        void onPreviewLayerColormapChanged(int index);
+        void onPreviewLayerBlendingChanged(int index);
+        void onPreviewLayerSelectionChanged(int currentRow, int currentColumn, int previousRow, int previousColumn);
+        void onPreviewLayerMoveUpClicked();
+        void onPreviewLayerMoveDownClicked();
+        void onPreviewLayerRemoveClicked();
+        void resetSelectedLayerTransform();
 
         void setupUI();
 
@@ -95,18 +112,25 @@ namespace scopeone::ui
 
         void updateCameraParametersFromHardware();
         bool isAllTarget(const QString& target) const;
+        QString roiCameraTarget() const;
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QGroupBox* m_previewControlsGroup{nullptr};
         QLabel* m_zoomLabel{nullptr};
         QSpinBox* m_zoomSpinBox{nullptr};
         QCheckBox* m_fitToWindowCheckBox{nullptr};
-        QComboBox* m_streamLayoutCombo{nullptr};
-        QSpinBox* m_overlayAlphaSpinBox{nullptr};
-        QToolButton* m_streamPickerButton{nullptr};
-        QMenu* m_streamMenu{nullptr};
-        QMap<QString, QAction*> m_streamActions;
-        QLabel* m_alignLabel{nullptr};
-        QComboBox* m_alignCameraCombo{nullptr};
+        QComboBox* m_layerLayoutCombo{nullptr};
+        QTableWidget* m_layerTable{nullptr};
+        QMap<QString, LayerRowWidgets> m_layerRows;
+        QGroupBox* m_layerSettingsGroup{nullptr};
+        QLabel* m_selectedLayerLabel{nullptr};
+        QPushButton* m_layerMoveUpButton{nullptr};
+        QPushButton* m_layerMoveDownButton{nullptr};
+        QPushButton* m_layerRemoveButton{nullptr};
+        QSpinBox* m_layerOpacitySpinBox{nullptr};
+        QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
+        QComboBox* m_layerColormapComboBox{nullptr};
+        QComboBox* m_layerBlendingComboBox{nullptr};
+        QString m_selectedLayerKey;
         QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
         QLabel* m_alignYLabel{nullptr};
@@ -116,7 +140,6 @@ namespace scopeone::ui
         QCheckBox* m_alignFlipXCheckBox{nullptr};
         QCheckBox* m_alignFlipYCheckBox{nullptr};
         QPushButton* m_alignResetButton{nullptr};
-        QLabel* m_imageInfoLabel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
 
         QLineEdit* m_exposureLineEdit{nullptr};
@@ -124,6 +147,7 @@ namespace scopeone::ui
         QPushButton* m_previewToggleButton{nullptr};
         QComboBox* m_cameraSelectCombo{nullptr};
         QPushButton* m_drawROIButton{nullptr};
+        QPushButton* m_halfROIButton{nullptr};
         QPushButton* m_clearROIButton{nullptr};
 
         QWidget* createStageGroup();
