@@ -34,7 +34,7 @@ namespace scopeone::core::internal
     {
         constexpr int kAgentControlReadyTimeoutMs = 15000;
 
-        struct PropertySnapshot
+        struct PropertyReadback
         {
             QString value;
             QString type{QStringLiteral("Unknown")};
@@ -384,8 +384,7 @@ namespace scopeone::core::internal
         virtual bool stopPreviewFor(const QString& cameraId) = 0;
         virtual bool setExposure(const QString& cameraIdOrAll, double exposureMs) = 0;
         virtual QStringList listProperties(const QString& cameraId) = 0;
-        virtual bool fetchPropertySnapshot(const QString& cameraId, const QString& name, PropertySnapshot& snapshot) =
-        0;
+        virtual bool readPropertyDetails(const QString& cameraId, const QString& name, PropertyReadback& readback) = 0;
         virtual bool setProperty(const QString& cameraId,
                                  const QString& name,
                                  const QString& value,
@@ -496,14 +495,14 @@ namespace scopeone::core::internal
             return listPropertiesFor(resolvedCameraId);
         }
 
-        bool fetchPropertySnapshot(const QString& cameraId, const QString& name, PropertySnapshot& snapshot) override
+        bool readPropertyDetails(const QString& cameraId, const QString& name, PropertyReadback& readback) override
         {
             QString resolvedCameraId;
             if (!resolvePrimaryCameraId(cameraId, resolvedCameraId))
             {
                 return false;
             }
-            return fetchPropertySnapshotFor(resolvedCameraId, name, snapshot);
+            return readPropertyDetailsFor(resolvedCameraId, name, readback);
         }
 
         bool setProperty(const QString& cameraId,
@@ -577,9 +576,9 @@ namespace scopeone::core::internal
         virtual bool readExposureFor(const QString& cameraId, double& exposureMs) const = 0;
         virtual bool writeExposureFor(const QString& cameraId, double exposureMs) = 0;
         virtual QStringList listPropertiesFor(const QString& cameraId) = 0;
-        virtual bool fetchPropertySnapshotFor(const QString& cameraId,
-                                              const QString& name,
-                                              PropertySnapshot& snapshot) = 0;
+        virtual bool readPropertyDetailsFor(const QString& cameraId,
+                                            const QString& name,
+                                            PropertyReadback& readback) = 0;
         virtual bool setPropertyFor(const QString& cameraId,
                                     const QString& name,
                                     const QString& value,
@@ -778,7 +777,7 @@ namespace scopeone::core::internal
             return out;
         }
 
-        bool fetchPropertySnapshotFor(const QString& cameraId, const QString& name, PropertySnapshot& snapshot) override
+        bool readPropertyDetailsFor(const QString& cameraId, const QString& name, PropertyReadback& readback) override
         {
             if (!owner.isSingleCamera(cameraId) || !owner.m_nativeCore)
             {
@@ -787,7 +786,7 @@ namespace scopeone::core::internal
 
             try
             {
-                snapshot.value = QString::fromStdString(
+                readback.value = QString::fromStdString(
                     owner.m_nativeCore->getProperty(cameraId.toStdString().c_str(), name.toStdString().c_str()));
                 try
                 {
@@ -795,13 +794,13 @@ namespace scopeone::core::internal
                         owner.m_nativeCore->getPropertyType(cameraId.toStdString().c_str(), name.toStdString().c_str());
                     switch (type)
                     {
-                    case MM::String: snapshot.type = QStringLiteral("String");
+                    case MM::String: readback.type = QStringLiteral("String");
                         break;
-                    case MM::Float: snapshot.type = QStringLiteral("Float");
+                    case MM::Float: readback.type = QStringLiteral("Float");
                         break;
-                    case MM::Integer: snapshot.type = QStringLiteral("Integer");
+                    case MM::Integer: readback.type = QStringLiteral("Integer");
                         break;
-                    default: snapshot.type = QStringLiteral("Unknown");
+                    default: readback.type = QStringLiteral("Unknown");
                         break;
                     }
                 }
@@ -810,7 +809,7 @@ namespace scopeone::core::internal
                 }
                 try
                 {
-                    snapshot.readOnly =
+                    readback.readOnly =
                         owner.m_nativeCore->isPropertyReadOnly(cameraId.toStdString().c_str(),
                                                                name.toStdString().c_str());
                 }
@@ -820,10 +819,10 @@ namespace scopeone::core::internal
                 try
                 {
                     const auto allowed = owner.m_nativeCore->getAllowedPropertyValues(cameraId.toStdString().c_str(),
-                        name.toStdString().c_str());
+                                                                                     name.toStdString().c_str());
                     for (const auto& value : allowed)
                     {
-                        snapshot.allowedValues.append(QString::fromStdString(value));
+                        readback.allowedValues.append(QString::fromStdString(value));
                     }
                 }
                 catch (const CMMError&)
@@ -831,14 +830,14 @@ namespace scopeone::core::internal
                 }
                 try
                 {
-                    snapshot.hasLimits =
+                    readback.hasLimits =
                         owner.m_nativeCore->hasPropertyLimits(cameraId.toStdString().c_str(),
                                                               name.toStdString().c_str());
-                    if (snapshot.hasLimits)
+                    if (readback.hasLimits)
                     {
-                        snapshot.lowerLimit = owner.m_nativeCore->getPropertyLowerLimit(cameraId.toStdString().c_str(),
+                        readback.lowerLimit = owner.m_nativeCore->getPropertyLowerLimit(cameraId.toStdString().c_str(),
                             name.toStdString().c_str());
-                        snapshot.upperLimit = owner.m_nativeCore->getPropertyUpperLimit(cameraId.toStdString().c_str(),
+                        readback.upperLimit = owner.m_nativeCore->getPropertyUpperLimit(cameraId.toStdString().c_str(),
                             name.toStdString().c_str());
                     }
                 }
@@ -889,8 +888,7 @@ namespace scopeone::core::internal
             }
             try
             {
-                owner.m_nativeCore->setCameraDevice(cameraId.toStdString().c_str());
-                owner.m_nativeCore->setROI(x, y, width, height);
+                owner.m_nativeCore->setROI(cameraId.toStdString().c_str(), x, y, width, height);
                 owner.m_nativeCore->waitForDevice(cameraId.toStdString().c_str());
                 return true;
             }
@@ -929,8 +927,7 @@ namespace scopeone::core::internal
             }
             try
             {
-                owner.m_nativeCore->setCameraDevice(cameraId.toStdString().c_str());
-                owner.m_nativeCore->getROI(x, y, width, height);
+                owner.m_nativeCore->getROI(cameraId.toStdString().c_str(), x, y, width, height);
                 return true;
             }
             catch (const CMMError& e)
@@ -1157,7 +1154,7 @@ namespace scopeone::core::internal
             return out;
         }
 
-        bool fetchPropertySnapshotFor(const QString& cameraId, const QString& name, PropertySnapshot& snapshot) override
+        bool readPropertyDetailsFor(const QString& cameraId, const QString& name, PropertyReadback& readback) override
         {
             QJsonObject req;
             req.insert(agent::kMessageTypeField, agent::kCommandGetProperty);
@@ -1172,17 +1169,17 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            snapshot.value = resp.value(QStringLiteral("value")).toString();
-            snapshot.type = resp.value(QStringLiteral("propertyType")).toString(QStringLiteral("Unknown"));
-            snapshot.readOnly = resp.value(QStringLiteral("readOnly")).toBool(true);
-            snapshot.hasLimits = resp.value(QStringLiteral("hasLimits")).toBool(false);
-            snapshot.lowerLimit = resp.value(QStringLiteral("lowerLimit")).toDouble(0.0);
-            snapshot.upperLimit = resp.value(QStringLiteral("upperLimit")).toDouble(0.0);
+            readback.value = resp.value(QStringLiteral("value")).toString();
+            readback.type = resp.value(QStringLiteral("propertyType")).toString(QStringLiteral("Unknown"));
+            readback.readOnly = resp.value(QStringLiteral("readOnly")).toBool(true);
+            readback.hasLimits = resp.value(QStringLiteral("hasLimits")).toBool(false);
+            readback.lowerLimit = resp.value(QStringLiteral("lowerLimit")).toDouble(0.0);
+            readback.upperLimit = resp.value(QStringLiteral("upperLimit")).toDouble(0.0);
 
             const QJsonArray allowedValues = resp.value(QStringLiteral("allowedValues")).toArray();
             for (const auto& value : allowedValues)
             {
-                snapshot.allowedValues << value.toString();
+                readback.allowedValues << value.toString();
             }
             return true;
         }
@@ -1511,6 +1508,26 @@ namespace scopeone::core::internal
         const SharedPixelFormat fmt = (bpp == 2) ? SharedPixelFormat::Mono16 : SharedPixelFormat::Mono8;
         const quint64 rawSize = static_cast<quint64>(w) * h * bpp;
 
+        int sourceRoiX = 0;
+        int sourceRoiY = 0;
+        int sourceRoiWidth = static_cast<int>(w);
+        int sourceRoiHeight = static_cast<int>(h);
+        try
+        {
+            m_nativeCore->getROI(slot.cameraId.toStdString().c_str(),
+                                 sourceRoiX,
+                                 sourceRoiY,
+                                 sourceRoiWidth,
+                                 sourceRoiHeight);
+        }
+        catch (const CMMError&)
+        {
+            sourceRoiX = 0;
+            sourceRoiY = 0;
+            sourceRoiWidth = static_cast<int>(w);
+            sourceRoiHeight = static_cast<int>(h);
+        }
+
         quint16 bitDepth = (fmt == SharedPixelFormat::Mono16) ? 16 : 8;
         try
         {
@@ -1547,6 +1564,11 @@ namespace scopeone::core::internal
             header.channels = 1;
             header.frameIndex = ++slot.lastFrameIndex;
             header.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            setSharedFrameSourceRoi(header,
+                                    sourceRoiX,
+                                    sourceRoiY,
+                                    sourceRoiWidth,
+                                    sourceRoiHeight);
 
             emit newRawFrameReady(slot.cameraId, header, *buffer);
             frames.push_back(buffer);
@@ -2305,8 +2327,8 @@ namespace scopeone::core::internal
     QString MultiProcessCameraManager::getProperty(const QString& cameraId, const QString& name)
     {
         QString propKey = QString("%1:%2").arg(cameraId, name);
-        PropertySnapshot snapshot;
-        if (!m_runtime || !m_runtime->fetchPropertySnapshot(cameraId, name, snapshot))
+        PropertyReadback readback;
+        if (!m_runtime || !m_runtime->readPropertyDetails(cameraId, name, readback))
         {
             m_propertyTypeCache.remove(propKey);
             m_propertyReadOnlyCache.remove(propKey);
@@ -2317,21 +2339,21 @@ namespace scopeone::core::internal
             return {};
         }
 
-        m_propertyTypeCache[propKey] = snapshot.type;
-        m_propertyReadOnlyCache[propKey] = snapshot.readOnly;
-        m_propertyAllowedValuesCache[propKey] = snapshot.allowedValues;
-        m_propertyHasLimitsCache[propKey] = snapshot.hasLimits;
-        if (snapshot.hasLimits)
+        m_propertyTypeCache[propKey] = readback.type;
+        m_propertyReadOnlyCache[propKey] = readback.readOnly;
+        m_propertyAllowedValuesCache[propKey] = readback.allowedValues;
+        m_propertyHasLimitsCache[propKey] = readback.hasLimits;
+        if (readback.hasLimits)
         {
-            m_propertyLowerLimitCache[propKey] = snapshot.lowerLimit;
-            m_propertyUpperLimitCache[propKey] = snapshot.upperLimit;
+            m_propertyLowerLimitCache[propKey] = readback.lowerLimit;
+            m_propertyUpperLimitCache[propKey] = readback.upperLimit;
         }
         else
         {
             m_propertyLowerLimitCache.remove(propKey);
             m_propertyUpperLimitCache.remove(propKey);
         }
-        return snapshot.value;
+        return readback.value;
     }
 
     // Reads cached property type after refreshing if needed

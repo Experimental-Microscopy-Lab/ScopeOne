@@ -44,7 +44,10 @@ namespace scopeone::core::internal
               , m_connectionId(connectionId)
               , m_socket(socket)
         {
-            Q_ASSERT(m_socket);
+            if (!socket)
+            {
+                qFatal("ControlConnection requires QLocalSocket");
+            }
             m_socket->setParent(this);
 
             connect(m_socket, &QLocalSocket::readyRead,
@@ -64,7 +67,7 @@ namespace scopeone::core::internal
         // Send one encoded protocol message to the client
         void sendMessage(const QJsonObject& message)
         {
-            if (!m_socket || m_socket->state() != QLocalSocket::ConnectedState)
+            if (m_socket->state() != QLocalSocket::ConnectedState)
             {
                 return;
             }
@@ -83,11 +86,6 @@ namespace scopeone::core::internal
         // Decode queued socket bytes into control requests
         void onReadyRead()
         {
-            if (!m_socket)
-            {
-                return;
-            }
-
             m_readBuffer += m_socket->readAll();
             while (true)
             {
@@ -362,6 +360,7 @@ namespace scopeone::core::internal
         bool writeFrameToSharedMemory(const void* pixels, quint64* frameIndexOut = nullptr);
         void pollAndWrite();
         bool ensureFrameLayout(unsigned width, unsigned height, unsigned bytesPerPixel);
+        void refreshSourceRoi();
 
         QString m_cameraId;
         QString m_adapter;
@@ -383,6 +382,10 @@ namespace scopeone::core::internal
         bool m_frameLayoutValid{false};
         bool m_loggedOversizedFrame{false};
         bool m_loggedUnsupportedFormat{false};
+        int m_sourceRoiX{0};
+        int m_sourceRoiY{0};
+        int m_sourceRoiWidth{0};
+        int m_sourceRoiHeight{0};
 
         quint64 m_frameIndex{0};
         int m_overflowCheckCounter{0};
@@ -708,7 +711,9 @@ namespace scopeone::core::internal
             bool ok = true;
             try
             {
-                m_mmcore->setROI(x, y, width, height);
+                m_mmcore->setROI(m_cameraId.toStdString().c_str(), x, y, width, height);
+                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
+                refreshSourceRoi();
             }
             catch (const CMMError& mmError)
             {
@@ -729,7 +734,10 @@ namespace scopeone::core::internal
             bool ok = true;
             try
             {
+                m_mmcore->setCameraDevice(m_cameraId.toStdString().c_str());
                 m_mmcore->clearROI();
+                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
+                refreshSourceRoi();
             }
             catch (const CMMError& mmError)
             {
@@ -754,7 +762,7 @@ namespace scopeone::core::internal
             bool ok = true;
             try
             {
-                m_mmcore->getROI(x, y, width, height);
+                m_mmcore->getROI(m_cameraId.toStdString().c_str(), x, y, width, height);
             }
             catch (const CMMError& mmError)
             {
@@ -933,6 +941,7 @@ namespace scopeone::core::internal
             {
                 m_mmcore->popNextImage();
             }
+            refreshSourceRoi();
             m_mmcore->startContinuousSequenceAcquisition(0.0);
             if (m_timer && !m_timer->isActive())
             {
@@ -1096,6 +1105,11 @@ namespace scopeone::core::internal
         header->frameIndex = ++m_frameIndex;
         header->timestampNs =
             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+        setSharedFrameSourceRoi(*header,
+                                m_sourceRoiX,
+                                m_sourceRoiY,
+                                m_sourceRoiWidth,
+                                m_sourceRoiHeight);
 
         uchar* dst = ptr + kSharedFrameHeaderSize;
         memcpy(dst, pixels, static_cast<size_t>(m_frameLayout.byteCount));
@@ -1220,6 +1234,10 @@ namespace scopeone::core::internal
                 logOversized(m_frameLayout.byteCount);
                 return false;
             }
+            if (m_sourceRoiWidth <= 0 || m_sourceRoiHeight <= 0)
+            {
+                refreshSourceRoi();
+            }
             m_loggedOversizedFrame = false;
             return true;
         }
@@ -1263,8 +1281,38 @@ namespace scopeone::core::internal
 
         m_frameLayout = updated;
         m_frameLayoutValid = true;
+        refreshSourceRoi();
         m_loggedOversizedFrame = false;
         return true;
+    }
+
+    // Read the active camera ROI used by following frame metadata
+    void AgentRuntime::refreshSourceRoi()
+    {
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+        try
+        {
+            m_mmcore->getROI(m_cameraId.toStdString().c_str(), x, y, width, height);
+        }
+        catch (const CMMError&)
+        {
+            width = static_cast<int>(m_frameLayout.width);
+            height = static_cast<int>(m_frameLayout.height);
+        }
+
+        if (width <= 0 || height <= 0)
+        {
+            width = static_cast<int>(m_frameLayout.width);
+            height = static_cast<int>(m_frameLayout.height);
+        }
+
+        m_sourceRoiX = x;
+        m_sourceRoiY = y;
+        m_sourceRoiWidth = width;
+        m_sourceRoiHeight = height;
     }
 
     class Agent final : public QObject
