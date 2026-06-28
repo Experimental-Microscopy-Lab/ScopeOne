@@ -10,6 +10,14 @@ namespace scopeone::core::internal
 
     namespace
     {
+        void copySourceRoi(const ImageFrame& src, ImageFrame& dst)
+        {
+            dst.sourceRoiX = src.sourceRoiX;
+            dst.sourceRoiY = src.sourceRoiY;
+            dst.sourceRoiWidth = src.sourceRoiWidth;
+            dst.sourceRoiHeight = src.sourceRoiHeight;
+        }
+
         // Converts a sixteen bit sample to an eight bit display value
         int mono8ValueFrom16(int value, int bitsPerSample)
         {
@@ -62,6 +70,7 @@ namespace scopeone::core::internal
         }
 
         dst = makeMono8Frame(src.cameraId, src.width, src.height, std::move(bytes));
+        copySourceRoi(src, dst);
         return dst.isValid();
     }
 
@@ -130,13 +139,17 @@ namespace scopeone::core::internal
     {
         if (reference.isMono16())
         {
-            return makeMono16Frame(reference.cameraId,
-                                   width,
-                                   height,
-                                   std::move(bytes),
-                                   reference.bitsPerSample > 8 ? reference.bitsPerSample : 16);
+            ImageFrame frame = makeMono16Frame(reference.cameraId,
+                                               width,
+                                               height,
+                                               std::move(bytes),
+                                               reference.bitsPerSample > 8 ? reference.bitsPerSample : 16);
+            copySourceRoi(reference, frame);
+            return frame;
         }
-        return makeMono8Frame(reference.cameraId, width, height, std::move(bytes));
+        ImageFrame frame = makeMono8Frame(reference.cameraId, width, height, std::move(bytes));
+        copySourceRoi(reference, frame);
+        return frame;
     }
 
     // Copies contiguous OpenCV matrix rows into a byte array
