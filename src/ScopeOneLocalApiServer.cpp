@@ -18,6 +18,10 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace scopeone::ui
@@ -25,7 +29,14 @@ namespace scopeone::ui
     namespace
     {
         constexpr quint32 kMaxMessageBytes = 256 * 1024;
+#if defined(_WIN32)
         const QString kServerName = QStringLiteral(R"(\\.\pipe\ScopeOne.Api.local)");
+#else
+        // QLocalServer turns this into a unix socket at <tempdir>/ScopeOne.Api.local
+        const QString kServerName = QStringLiteral("ScopeOne.Api.local");
+        // POSIX shared memory object, visible to external clients at /dev/shm/ScopeOne.Api.frame
+        const char* const kPosixFrameShmName = "/ScopeOne.Api.frame";
+#endif
         const QString kFrameMappingName = QStringLiteral("ScopeOne.Api.frame");
 
         // Encodes one JSON object with a little endian size prefix
@@ -247,6 +258,33 @@ namespace scopeone::ui
             CloseHandle(m_frameMappingHandle);
             m_frameMappingHandle = nullptr;
         }
+#else
+        const size_t mappingSize = static_cast<size_t>(
+            scopeone::core::kSharedFrameHeaderSize + scopeone::core::kSharedFrameMaxBytes);
+        m_frameShmFd = ::shm_open(kPosixFrameShmName, O_CREAT | O_RDWR, 0600);
+        if (m_frameShmFd < 0)
+        {
+            qWarning().noquote() << QStringLiteral("ScopeOne API frame shm create failed");
+            return;
+        }
+        if (::ftruncate(m_frameShmFd, static_cast<off_t>(mappingSize)) != 0)
+        {
+            qWarning().noquote() << QStringLiteral("ScopeOne API frame shm resize failed");
+            ::close(m_frameShmFd);
+            m_frameShmFd = -1;
+            ::shm_unlink(kPosixFrameShmName);
+            return;
+        }
+        void* view = ::mmap(nullptr, mappingSize, PROT_READ | PROT_WRITE, MAP_SHARED, m_frameShmFd, 0);
+        if (view == MAP_FAILED)
+        {
+            qWarning().noquote() << QStringLiteral("ScopeOne API frame shm map failed");
+            ::close(m_frameShmFd);
+            m_frameShmFd = -1;
+            ::shm_unlink(kPosixFrameShmName);
+            return;
+        }
+        m_frameMappingView = static_cast<uchar*>(view);
 #endif
     }
 
@@ -263,6 +301,20 @@ namespace scopeone::ui
         {
             CloseHandle(m_frameMappingHandle);
             m_frameMappingHandle = nullptr;
+        }
+#else
+        if (m_frameMappingView)
+        {
+            const size_t mappingSize = static_cast<size_t>(
+                scopeone::core::kSharedFrameHeaderSize + scopeone::core::kSharedFrameMaxBytes);
+            ::munmap(m_frameMappingView, mappingSize);
+            m_frameMappingView = nullptr;
+        }
+        if (m_frameShmFd >= 0)
+        {
+            ::close(m_frameShmFd);
+            m_frameShmFd = -1;
+            ::shm_unlink(kPosixFrameShmName);
         }
 #endif
     }
@@ -858,7 +910,11 @@ namespace scopeone::ui
         const scopeone::core::ScopeOneCore::RecordingFrame& frame,
         QString& errorMessage)
     {
+#if defined(_WIN32)
         if (!m_frameMappingHandle || !m_frameMappingView)
+#else
+        if (!m_frameMappingView)
+#endif
         {
             errorMessage = QStringLiteral("Frame mapping is not available");
             return false;
