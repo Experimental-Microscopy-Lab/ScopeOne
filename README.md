@@ -57,7 +57,7 @@ ScopeOne/
 
 <!-- Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes third-party libraries (OpenCV, MMCore, libtiff, zlib and pybind11) except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases). -->
 
-**Build Steps:**
+**Windows Build Steps:**
 
 1. Build and install `ScopeOneCore`:
 ```powershell
@@ -77,6 +77,64 @@ cmake --build build --config Release --parallel
 .\build\Release\ScopeOne.exe
 ```
 
+**Linux Build Steps (experimental):**
+
+On Linux, build Micro-Manager from the top-level `micro-manager` repository, then create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
+
+1. Install common build dependencies:
+```bash
+sudo apt install \
+  git subversion build-essential cmake autoconf automake libtool autoconf-archive \
+  pkg-config swig libboost-all-dev qt6-base-dev libopencv-dev libtiff-dev zlib1g-dev
+```
+
+2. Clone Micro-Manager and create the `mmCoreAndDevices` symlink:
+```bash
+cd /path/to/ScopeOne/ScopeOneCore
+mkdir -p external
+cd external
+
+git clone --recurse-submodules https://github.com/micro-manager/micro-manager.git micro-manager
+ln -s micro-manager/mmCoreAndDevices mmCoreAndDevices
+
+cd micro-manager
+git submodule update --init --recursive
+```
+
+3. Build Micro-Manager without the Java application layer:
+```bash
+./autogen.sh
+./configure --without-java --enable-static
+make fetchdeps
+make -j"$(nproc)"
+```
+
+ScopeOne currently links Linux MMCore from:
+
+```text
+ScopeOneCore/external/mmCoreAndDevices/MMCore/.libs/libMMCore.a
+```
+
+4. Build and install `ScopeOneCore`:
+```bash
+cd /path/to/ScopeOne
+cmake -S ScopeOneCore -B ScopeOneCore/build -DCMAKE_BUILD_TYPE=Release
+cmake --build ScopeOneCore/build --parallel
+cmake --install ScopeOneCore/build
+```
+
+5. Build the GUI application:
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+The Linux executable is expected at:
+
+```text
+build/ScopeOne
+```
+
 ## Tested Devices
 - Yokogawa CSU X1
 - Hamamatsu C13440
@@ -89,4 +147,3 @@ The current validation list is still short, but the codebase has been cleaned to
 - Windows 11, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
 
 Although these machines are older and weaker than many typical lab computers, ScopeOne still provides smooth real-time preview and processing on them.
-
