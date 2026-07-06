@@ -2,6 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
+#include <QAbstractSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
@@ -26,6 +27,12 @@ namespace scopeone::ui
     {
         using ProcessingModuleInfo = scopeone::core::ScopeOneCore::ProcessingModuleInfo;
         using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
+
+        void configureParameterSpinBox(QAbstractSpinBox* spinBox)
+        {
+            spinBox->setKeyboardTracking(false);
+            spinBox->setCorrectionMode(QAbstractSpinBox::CorrectToNearestValue);
+        }
 
         class ProcessingModuleConfigWidgetBase : public QWidget
         {
@@ -82,12 +89,14 @@ namespace scopeone::ui
                 m_minFeatureSizeSpin = new QDoubleSpinBox(group);
                 m_minFeatureSizeSpin->setRange(0.0, 1000.0);
                 m_minFeatureSizeSpin->setDecimals(2);
+                configureParameterSpinBox(m_minFeatureSizeSpin);
                 groupLayout->addWidget(m_minFeatureSizeSpin, 1, 1);
 
                 groupLayout->addWidget(new QLabel("Max feature size:", group), 2, 0);
                 m_maxFeatureSizeSpin = new QDoubleSpinBox(group);
                 m_maxFeatureSizeSpin->setRange(0.0, 1000.0);
                 m_maxFeatureSizeSpin->setDecimals(2);
+                configureParameterSpinBox(m_maxFeatureSizeSpin);
                 groupLayout->addWidget(m_maxFeatureSizeSpin, 2, 1);
 
                 groupLayout->addWidget(new QLabel("Filter kind:", group), 3, 0);
@@ -160,16 +169,19 @@ namespace scopeone::ui
                 groupLayout->addWidget(new QLabel("Spatial X:", group), 0, 0);
                 m_spatialBinXSpin = new QSpinBox(group);
                 m_spatialBinXSpin->setRange(1, 64);
+                configureParameterSpinBox(m_spatialBinXSpin);
                 groupLayout->addWidget(m_spatialBinXSpin, 0, 1);
 
                 groupLayout->addWidget(new QLabel("Spatial Y:", group), 1, 0);
                 m_spatialBinYSpin = new QSpinBox(group);
                 m_spatialBinYSpin->setRange(1, 64);
+                configureParameterSpinBox(m_spatialBinYSpin);
                 groupLayout->addWidget(m_spatialBinYSpin, 1, 1);
 
                 groupLayout->addWidget(new QLabel("Temporal:", group), 2, 0);
                 m_temporalBinSpin = new QSpinBox(group);
                 m_temporalBinSpin->setRange(1, 256);
+                configureParameterSpinBox(m_temporalBinSpin);
                 groupLayout->addWidget(m_temporalBinSpin, 2, 1);
 
                 groupLayout->addWidget(new QLabel("Spatial mode:", group), 3, 0);
@@ -251,12 +263,14 @@ namespace scopeone::ui
                 m_kernelSizeSpin = new QSpinBox(group);
                 m_kernelSizeSpin->setRange(1, 99);
                 m_kernelSizeSpin->setSingleStep(2);
+                configureParameterSpinBox(m_kernelSizeSpin);
                 groupLayout->addWidget(m_kernelSizeSpin, 0, 1);
 
                 groupLayout->addWidget(new QLabel("Sigma:", group), 1, 0);
                 m_sigmaSpin = new QDoubleSpinBox(group);
                 m_sigmaSpin->setRange(0.0, 100.0);
                 m_sigmaSpin->setDecimals(2);
+                configureParameterSpinBox(m_sigmaSpin);
                 groupLayout->addWidget(m_sigmaSpin, 1, 1);
 
                 layout->addWidget(group);
@@ -301,6 +315,7 @@ namespace scopeone::ui
 
                 m_batchSizeSpin = new QSpinBox(group);
                 m_batchSizeSpin->setRange(1, 256);
+                configureParameterSpinBox(m_batchSizeSpin);
                 const QVariantMap params = info.parameters();
                 m_batchSizeSpin->setValue(params.value("batch_size").toInt());
                 groupLayout->addWidget(m_batchSizeSpin, 0, 1);
@@ -360,6 +375,7 @@ namespace scopeone::ui
                 m_calibrationFramesSpin = new QSpinBox(group);
                 m_calibrationFramesSpin->setRange(3, 1001);
                 m_calibrationFramesSpin->setSingleStep(2);
+                configureParameterSpinBox(m_calibrationFramesSpin);
                 groupLayout->addWidget(m_calibrationFramesSpin, 0, 1);
 
                 groupLayout->addWidget(new QLabel("Mode:", group), 1, 0);
