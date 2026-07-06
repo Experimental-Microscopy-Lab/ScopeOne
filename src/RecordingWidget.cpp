@@ -887,21 +887,10 @@ namespace scopeone::ui
                 continue;
             }
 
-            scopeone::core::ScopeOneCore::RecordingFrame frame;
-            frame.header.width = static_cast<quint32>(latestFrame.width);
-            frame.header.height = static_cast<quint32>(latestFrame.height);
-            frame.header.stride = static_cast<quint32>(latestFrame.stride);
-            frame.header.bitsPerSample = static_cast<quint16>(latestFrame.bitsPerSample);
-            frame.header.pixelFormat =
-                (latestFrame.pixelFormat == scopeone::core::ImagePixelFormat::Mono16)
-                    ? static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono16)
-                    : static_cast<quint32>(scopeone::core::SharedPixelFormat::Mono8);
-            frame.rawData = latestFrame.bytes;
-            frame.width = latestFrame.width;
-            frame.height = latestFrame.height;
-            frame.bits = latestFrame.bitsPerSample;
-            capturedSession->appendFrame(cameraId, std::move(frame));
-            ++appended;
+            if (capturedSession->appendImageFrame(latestFrame))
+            {
+                ++appended;
+            }
         }
 
         if (appended <= 0)

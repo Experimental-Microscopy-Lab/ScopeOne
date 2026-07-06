@@ -26,8 +26,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace scopeone::ui
 {
@@ -37,7 +39,6 @@ namespace scopeone::ui
         using scopeone::core::ImagePixelFormat;
         using scopeone::core::RecordingFormat;
         using scopeone::core::ScopeOneCore;
-        using scopeone::core::SharedPixelFormat;
 
         // Exposes an ImageFrame as a single channel OpenCV view
         cv::Mat frameMatView(const ImageFrame& frame)
@@ -48,7 +49,8 @@ namespace scopeone::ui
             }
 
             const int bytesPerPixel = frame.bytesPerPixel();
-            if (frame.stride < frame.width * bytesPerPixel)
+            const qint64 rowBytes = static_cast<qint64>(frame.width) * bytesPerPixel;
+            if (rowBytes <= 0 || frame.stride < rowBytes)
             {
                 return {};
             }
@@ -61,8 +63,8 @@ namespace scopeone::ui
                            static_cast<size_t>(frame.stride));
         }
 
-        // Copies a single channel OpenCV image into an ImageFrame
-        ImageFrame frameFromMat(const cv::Mat& mat, const QString& cameraId)
+        // Copies a single channel OpenCV image into a frame derived from a reference frame
+        ImageFrame frameFromMat(const cv::Mat& mat, const ImageFrame& reference)
         {
             if (mat.empty()
                 || mat.channels() != 1
@@ -71,49 +73,54 @@ namespace scopeone::ui
                 return {};
             }
 
-            cv::Mat packed = mat.isContinuous() ? mat : mat.clone();
-            const size_t byteCount = packed.step * static_cast<size_t>(packed.rows);
-            if (byteCount > static_cast<size_t>(std::numeric_limits<qsizetype>::max()))
+            const qint64 rowBytes = static_cast<qint64>(mat.cols) * static_cast<qint64>(mat.elemSize());
+            const qint64 byteCount = rowBytes * static_cast<qint64>(mat.rows);
+            if (rowBytes <= 0
+                || rowBytes > (std::numeric_limits<int>::max)()
+                || byteCount <= 0
+                || byteCount > (std::numeric_limits<qsizetype>::max)())
             {
                 return {};
             }
-            if (packed.step > static_cast<size_t>(std::numeric_limits<int>::max()))
+
+            QByteArray bytes;
+            bytes.resize(static_cast<qsizetype>(byteCount));
+            char* dst = bytes.data();
+            for (int y = 0; y < mat.rows; ++y)
             {
-                return {};
+                std::memcpy(dst + static_cast<qint64>(y) * rowBytes,
+                            mat.ptr(y),
+                            static_cast<size_t>(rowBytes));
             }
 
             ImageFrame frame;
-            frame.cameraId = cameraId;
-            frame.width = packed.cols;
-            frame.height = packed.rows;
-            frame.stride = static_cast<int>(packed.step);
-            frame.bitsPerSample = packed.depth() == CV_16U ? 16 : 8;
-            frame.pixelFormat = packed.depth() == CV_16U ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
-            frame.bytes = QByteArray(reinterpret_cast<const char*>(packed.data),
-                                     static_cast<qsizetype>(byteCount));
-            return frame;
-        }
-
-        // Converts an ImageFrame into a one frame recording payload
-        ScopeOneCore::RecordingFrame recordingFrameFromImageFrame(const ImageFrame& imageFrame)
-        {
-            ScopeOneCore::RecordingFrame frame;
-            frame.header.width = static_cast<quint32>(imageFrame.width);
-            frame.header.height = static_cast<quint32>(imageFrame.height);
-            frame.header.stride = static_cast<quint32>(imageFrame.stride);
-            frame.header.bitsPerSample = static_cast<quint16>(imageFrame.bitsPerSample);
-            frame.header.channels = 1;
-            frame.header.frameIndex = 0;
-            frame.header.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-            frame.header.pixelFormat =
-                imageFrame.pixelFormat == ImagePixelFormat::Mono16
-                    ? static_cast<quint32>(SharedPixelFormat::Mono16)
-                    : static_cast<quint32>(SharedPixelFormat::Mono8);
-            frame.rawData = imageFrame.bytes;
-            frame.width = imageFrame.width;
-            frame.height = imageFrame.height;
-            frame.bits = imageFrame.bitsPerSample;
-            return frame;
+            frame.cameraId = reference.cameraId.trimmed();
+            frame.width = mat.cols;
+            frame.height = mat.rows;
+            frame.stride = static_cast<int>(rowBytes);
+            frame.pixelFormat = mat.depth() == CV_16U ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
+            const int referenceBits = reference.pixelFormat == frame.pixelFormat
+                                          ? reference.bitsPerSample
+                                          : (mat.depth() == CV_16U ? 16 : 8);
+            frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(frame.pixelFormat, referenceBits);
+            frame.frameIndex = reference.frameIndex;
+            frame.timestampNs = reference.timestampNs;
+            if (reference.hasSourceRoi() && frame.width == reference.width && frame.height == reference.height)
+            {
+                frame.sourceRoiX = reference.sourceRoiX;
+                frame.sourceRoiY = reference.sourceRoiY;
+                frame.sourceRoiWidth = reference.sourceRoiWidth;
+                frame.sourceRoiHeight = reference.sourceRoiHeight;
+            }
+            else
+            {
+                frame.sourceRoiX = 0;
+                frame.sourceRoiY = 0;
+                frame.sourceRoiWidth = frame.width;
+                frame.sourceRoiHeight = frame.height;
+            }
+            frame.bytes = std::move(bytes);
+            return frame.isValid() ? frame : ImageFrame{};
         }
 
         // Returns the save directory shared with the recording panel
@@ -139,15 +146,9 @@ namespace scopeone::ui
                 + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
             plan.metadataFileName = plan.baseName + QStringLiteral("_metadata.json");
             session->setCapturePlan(plan);
-            session->appendFrame(imageFrame.cameraId, recordingFrameFromImageFrame(imageFrame));
+            session->appendImageFrame(imageFrame);
             session->prepareForSave(false);
             return session;
-        }
-
-        // Returns the raw preview layer key for one camera
-        QString rawLayerKey(const QString& cameraId)
-        {
-            return QStringLiteral("raw:%1").arg(cameraId.trimmed());
         }
 
         // Adds one tile into an accumulation mosaic
@@ -396,6 +397,7 @@ namespace scopeone::ui
         m_mosaic->sum.release();
         m_mosaic->count.release();
         m_mosaicError.clear();
+        m_mosaicReferenceFrame = ImageFrame{};
         m_latestMosaicFrame = ImageFrame{};
         m_gallerySessionPublished = false;
         m_running = true;
@@ -411,7 +413,7 @@ namespace scopeone::ui
         m_settleMsSpinBox->setEnabled(false);
         m_returnToStartCheckBox->setEnabled(false);
         m_statusLabel->setText(tr("Starting mosaic capture"));
-        m_previewWidget->setSelectedLayerKeys({rawLayerKey(m_activeCameraId)});
+        m_previewWidget->setSelectedLayerKeys({PreviewWidget::rawLayerKey(m_activeCameraId)});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         QTimer::singleShot(qMax(50, m_settleMsSpinBox->value()), this, &StageMosaicDialog::captureNextTile);
     }
@@ -582,8 +584,8 @@ namespace scopeone::ui
         const double mosaicHeightValue = tile.rows + maxOffsetYPxValue;
         if (!std::isfinite(mosaicWidthValue)
             || !std::isfinite(mosaicHeightValue)
-            || mosaicWidthValue > std::numeric_limits<int>::max()
-            || mosaicHeightValue > std::numeric_limits<int>::max()
+            || mosaicWidthValue > (std::numeric_limits<int>::max)()
+            || mosaicHeightValue > (std::numeric_limits<int>::max)()
             || mosaicWidthValue * mosaicHeightValue > kMaxMosaicPixels)
         {
             m_mosaicError = tr("Mosaic output is too large");
@@ -623,7 +625,12 @@ namespace scopeone::ui
                              / m_mosaic->pixelSizeUm);
         const int y = qRound((row * m_stepYSpinBox->value() - m_mosaic->minOffsetYUm)
                              / m_mosaic->pixelSizeUm);
-        return accumulateTileAt(m_mosaic->sum, m_mosaic->count, frame, x, y);
+        if (!accumulateTileAt(m_mosaic->sum, m_mosaic->count, frame, x, y))
+        {
+            return false;
+        }
+        m_mosaicReferenceFrame = frame;
+        return true;
     }
 
     // Push the mosaic image into the shared preview engine
@@ -632,7 +639,7 @@ namespace scopeone::ui
         const cv::Mat mosaicPreview = accumulatedPreviewMat(m_mosaic->sum,
                                                             m_mosaic->count,
                                                             m_mosaic->outputType);
-        const ImageFrame mosaicFrame = frameFromMat(mosaicPreview, m_activeCameraId);
+        const ImageFrame mosaicFrame = frameFromMat(mosaicPreview, m_mosaicReferenceFrame);
         m_latestMosaicFrame = mosaicFrame;
         const QString layerKey = m_previewWidget->setStaticLayerFrame(QStringLiteral("stage_mosaic"),
                                                                       tr("Stage Mosaic %1").arg(m_activeCameraId),
@@ -806,7 +813,7 @@ namespace scopeone::ui
         const int maxParticleArea = static_cast<int>(
             qBound<qint64>(1,
                            framePixelCount,
-                           static_cast<qint64>(std::numeric_limits<int>::max())));
+                           static_cast<qint64>((std::numeric_limits<int>::max)())));
         if (m_minAreaSpinBox->maximum() != maxParticleArea)
         {
             QSignalBlocker minBlocker(m_minAreaSpinBox);
@@ -852,7 +859,7 @@ namespace scopeone::ui
             ++acceptedCount;
         }
 
-        ImageFrame maskFrame = frameFromMat(filtered, cameraId);
+        ImageFrame maskFrame = frameFromMat(filtered, frame);
         const QString maskLayer = m_previewWidget->setStaticLayerFrame(QStringLiteral("particle_mask"),
                                                                        tr("Particles %1").arg(cameraId),
                                                                        maskFrame);
@@ -865,8 +872,8 @@ namespace scopeone::ui
         m_previewWidget->setLayerColormap(maskLayer, QStringLiteral("Magenta"));
         m_previewWidget->setLayerOpacityPercent(maskLayer, 70);
         m_previewWidget->setLayerBlending(maskLayer, QStringLiteral("Additive"));
-        m_previewWidget->setLayerVisible(rawLayerKey(cameraId), true);
-        m_previewWidget->setSelectedLayerKeys({rawLayerKey(cameraId), maskLayer});
+        m_previewWidget->setLayerVisible(PreviewWidget::rawLayerKey(cameraId), true);
+        m_previewWidget->setSelectedLayerKeys({PreviewWidget::rawLayerKey(cameraId), maskLayer});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         m_statusLabel->setText(tr("Detected %1 particle(s)").arg(acceptedCount));
     }

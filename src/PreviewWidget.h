@@ -34,7 +34,7 @@ namespace scopeone::ui
         struct PreviewInteractionTarget
         {
             QString layerKey;
-            QString cameraId;
+            QString sourceId;
             QPoint imagePos;
             QSize imageSize;
             QRect itemArea;
@@ -45,7 +45,15 @@ namespace scopeone::ui
         explicit PreviewWidget(QWidget* parent = nullptr);
         ~PreviewWidget() override;
 
-        void setProcessedFrame(const QString& cameraId, const scopeone::core::ImageFrame& frame);
+        static QString rawLayerKey(const QString& cameraId);
+        static QString processedLayerKey(const QString& cameraId);
+        static QString staticLayerKey(const QString& layerId);
+        static QString sourceIdFromLayerKey(const QString& layerKey);
+        static bool isRawLayerKey(const QString& layerKey);
+        static bool isProcessedLayerKey(const QString& layerKey);
+        static bool isStaticLayerKey(const QString& layerKey);
+
+        void setProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setRawFrame(const scopeone::core::ImageFrame& frame);
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
@@ -78,21 +86,21 @@ namespace scopeone::ui
         QString layerName(const QString& layerKey) const;
         QString layerInfoText(const QString& layerKey) const;
         QString layerInfoSummaryText() const;
-        void clearCameraFrames(const QString& cameraId);
+        void clearSourceFrames(const QString& sourceId);
         void clearProcessedFrames();
         void setZoomPercent(int percent);
         int zoomPercent() const;
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
-        bool cameraDisplayTransform(const QString& cameraId,
+        bool sourceDisplayTransform(const QString& sourceId,
                                     int& offsetX,
                                     int& offsetY,
                                     int& zoomPercent,
                                     bool& flipX,
                                     bool& flipY) const;
-        void setCameraOffset(const QString& cameraId, int offsetX, int offsetY);
-        void setCameraFlip(const QString& cameraId, bool flipX, bool flipY);
-        void setCameraZoomPercent(const QString& cameraId, int percent);
+        void setSourceOffset(const QString& sourceId, int offsetX, int offsetY);
+        void setSourceFlip(const QString& sourceId, bool flipX, bool flipY);
+        void setSourceZoomPercent(const QString& sourceId, int percent);
 
         void startROIDrawing(const QString& cameraId);
         void startLineDrawingForLayer(const QString& layerKey);
@@ -100,13 +108,13 @@ namespace scopeone::ui
 
         bool interactionTargetAt(const QPoint& widgetPos,
                                  PreviewInteractionTarget& outTarget,
-                                 const QString& cameraId = QString(),
+                                 const QString& sourceId = QString(),
                                  bool rawOnly = false) const;
-        bool getPixelValue(const QString& cameraId,
+        bool getPixelValue(const QString& sourceId,
                            const QPoint& imagePos,
                            bool processed,
                            int& outValue) const;
-        bool lineProfile(const QString& cameraId,
+        bool lineProfile(const QString& sourceId,
                          const QPoint& start,
                          const QPoint& end,
                          bool processed,
@@ -130,7 +138,7 @@ namespace scopeone::ui
                       int sourceRoiX,
                       int sourceRoiY);
         void lineDrawn(const QString& layerKey,
-                       const QString& cameraId,
+                       const QString& sourceId,
                        int startX,
                        int startY,
                        int endX,
@@ -183,7 +191,7 @@ namespace scopeone::ui
             int levelDomainMax{255};
         };
 
-        struct CameraFrameState
+        struct FrameSourceState
         {
             scopeone::core::ImageFrame processedFrame;
             scopeone::core::ImageFrame rawFrame;
@@ -194,23 +202,24 @@ namespace scopeone::ui
             int zoomPercent{100};
         };
 
-        struct CameraRenderInfo
+        struct FrameSourceRenderInfo
         {
-            QString cameraId;
-            const CameraFrameState* frameState{nullptr};
+            QString sourceId;
+            const FrameSourceState* frameState{nullptr};
             bool hasProcessedFrame{false};
             bool hasRawFrame{false};
         };
 
         struct LayerRenderItem
         {
-            const CameraRenderInfo* info{nullptr};
+            const FrameSourceRenderInfo* info{nullptr};
             bool processed{false};
+            QString layerKey;
         };
 
         struct RenderItem
         {
-            const CameraRenderInfo* info{nullptr};
+            const FrameSourceRenderInfo* info{nullptr};
             bool processed{false};
             QString layerKey;
             QRect area;
@@ -222,7 +231,7 @@ namespace scopeone::ui
         QStringList m_availableCameraIds;
         QMap<QString, LayerDisplaySettings> m_layers;
         QStringList m_layerOrder;
-        QSet<QString> m_staticCameraIds;
+        QSet<QString> m_staticSourceIds;
         QMap<QString, QString> m_layerNames;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
         QMap<QString, LayerInfo> m_layerInfos;
@@ -230,7 +239,7 @@ namespace scopeone::ui
         QMap<QString, FpsState> m_fpsStates;
 
         mutable QMutex m_mutex;
-        QMap<QString, CameraFrameState> m_cameraFrames;
+        QMap<QString, FrameSourceState> m_frameSources;
         int m_zoomPercent{100};
         bool m_fitToWindow{true};
         QPoint m_viewOffset;
@@ -262,7 +271,7 @@ namespace scopeone::ui
         QPoint m_roiEnd;
         bool m_roiDragging{false};
         bool m_lineDrawingMode{false};
-        QString m_lineTargetCameraId;
+        QString m_lineTargetSourceId;
         QString m_lineTargetLayerKey;
         QPoint m_lineStart;
         QPoint m_lineEnd;
@@ -283,42 +292,42 @@ namespace scopeone::ui
         QString blendingName(Blending blending) const;
         void ensureLayer(const QString& layerKey);
         void ensureLayersForCamera(const QString& cameraId);
-        void removeStaticLayerData(const QString& cameraId);
+        void removeStaticLayerData(const QString& sourceId);
         void removeInvalidLayers(const QSet<QString>& validKeys);
         QSet<QString> validLayerKeys() const;
-        bool hasRawFrame(const CameraFrameState& frameState) const;
-        QMap<QString, CameraFrameState> snapshotCameraFrames() const;
-        std::vector<CameraRenderInfo> buildCameraRenderInfos(const QMap<QString, CameraFrameState>& cameraFrames) const;
-        void buildRenderSnapshot(QMap<QString, CameraFrameState>& cameraFrames,
-                                 std::vector<CameraRenderInfo>& cameraRenderInfos,
+        bool hasRawFrame(const FrameSourceState& frameState) const;
+        QMap<QString, FrameSourceState> snapshotFrameSources() const;
+        std::vector<FrameSourceRenderInfo> buildFrameSourceRenderInfos(const QMap<QString, FrameSourceState>& frameSources) const;
+        void buildRenderSnapshot(QMap<QString, FrameSourceState>& frameSources,
+                                 std::vector<FrameSourceRenderInfo>& frameSourceRenderInfos,
                                  std::vector<RenderItem>& renderItems) const;
-        bool resolveDisplayGeometry(const CameraFrameState& frameState,
+        bool resolveDisplayGeometry(const FrameSourceState& frameState,
                                     bool processed,
                                     const QRect& area,
                                     QRect& displayRect,
                                     QSize& imageSize) const;
         bool resolveLayerDisplayGeometry(const QString& layerKey,
-                                         CameraFrameState& frameState,
+                                         FrameSourceState& frameState,
                                          bool& processed,
                                          QRect& itemArea,
                                          QRect& displayRect,
                                          QSize& imageSize) const;
         bool resolveInteractionTarget(const QPoint& widgetPos,
                                       PreviewInteractionTarget& outTarget,
-                                      const QString& cameraId,
+                                      const QString& sourceId,
                                       bool rawOnly,
                                       const QString& layerKey) const;
-        bool mapWidgetPositionToImage(const CameraFrameState& frameState,
+        bool mapWidgetPositionToImage(const FrameSourceState& frameState,
                                       bool processed,
                                       const QRect& area,
                                       const QPoint& widgetPos,
                                       QPoint& imagePos) const;
-        bool mapWidgetRectToImage(const CameraFrameState& frameState,
+        bool mapWidgetRectToImage(const FrameSourceState& frameState,
                                   bool processed,
                                   const QRect& area,
                                   const QRect& widgetRect,
                                   QRect& imageRect) const;
-        bool mapImagePositionToWidget(const CameraFrameState& frameState,
+        bool mapImagePositionToWidget(const FrameSourceState& frameState,
                                       bool processed,
                                       const QRect& area,
                                       const QPoint& imagePos,
@@ -334,12 +343,12 @@ namespace scopeone::ui
                              const LayerDisplaySettings& display,
                              bool firstVisibleInArea);
         QRect targetRectForImageSize(const QSize& imageSize,
-                                     const CameraFrameState& frameState,
+                                     const FrameSourceState& frameState,
                                      const QRect& avail) const;
         void setUvTransform(bool flipX, bool flipY);
         void applyViewportForRect(const QRect& logicalRect);
         std::vector<QRect> computeLayout(int count) const;
-        std::vector<RenderItem> buildRenderItems(const std::vector<CameraRenderInfo>& cameraRenderInfos) const;
+        std::vector<RenderItem> buildRenderItems(const std::vector<FrameSourceRenderInfo>& frameSourceRenderInfos) const;
 
         GLuint getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat);
         void cleanupTextureCache();

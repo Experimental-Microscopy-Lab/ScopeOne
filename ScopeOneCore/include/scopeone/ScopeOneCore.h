@@ -15,7 +15,6 @@
 #include <vector>
 
 #include "scopeone/ImageFrame.h"
-#include "scopeone/SharedFrame.h"
 #include "scopeone/scopeone_core_export.h"
 
 class CMMCore;
@@ -107,15 +106,6 @@ namespace scopeone::core
             int autoMaxLevel{255};
 
             bool hasData() const { return totalPixels > 0; }
-        };
-
-        struct RecordingFrame
-        {
-            SharedFrameHeader header{};
-            QByteArray rawData;
-            int width{0};
-            int height{0};
-            int bits{0};
         };
 
         struct RecordingFileManifest
@@ -285,10 +275,23 @@ namespace scopeone::core
             QString m_errorMessage;
         };
 
-        class RecordingSessionData
+        class SCOPEONE_CORE_EXPORT RecordingSessionData
         {
         public:
-            void setCapturePlan(const RecordingCapturePlanData& planData) { m_manifest.plan = planData; }
+            void setCapturePlan(const RecordingCapturePlanData& planData)
+            {
+                m_manifest.plan = planData;
+                QStringList cameraIds;
+                for (const QString& cameraId : m_manifest.plan.cameraIds)
+                {
+                    const QString trimmedCameraId = cameraId.trimmed();
+                    if (!trimmedCameraId.isEmpty() && !cameraIds.contains(trimmedCameraId))
+                    {
+                        cameraIds.append(trimmedCameraId);
+                    }
+                }
+                m_manifest.plan.cameraIds = cameraIds;
+            }
             const QStringList& cameraIds() const { return m_manifest.plan.cameraIds; }
             const RecordingCapturePlanData& capturePlan() const { return m_manifest.plan; }
             void setStreamedToDisk(bool streamedToDisk) { m_manifest.output.streamedToDisk = streamedToDisk; }
@@ -296,7 +299,7 @@ namespace scopeone::core
 
             bool hasFrames(const QString& cameraId) const
             {
-                const auto it = m_frames.constFind(cameraId);
+                const auto it = m_frames.constFind(cameraId.trimmed());
                 return it != m_frames.constEnd() && !it.value().empty();
             }
 
@@ -308,6 +311,12 @@ namespace scopeone::core
                     total += static_cast<int>(it.value().size());
                 }
                 return total;
+            }
+
+            int frameCount(const QString& cameraId) const
+            {
+                const auto it = m_frames.constFind(cameraId.trimmed());
+                return it == m_frames.constEnd() ? 0 : static_cast<int>(it.value().size());
             }
 
             bool hasAnyFrames() const
@@ -324,7 +333,15 @@ namespace scopeone::core
 
             QStringList recordedCameraIds() const
             {
-                QStringList ids = m_manifest.plan.cameraIds;
+                QStringList ids;
+                for (const QString& cameraId : m_manifest.plan.cameraIds)
+                {
+                    const QString trimmedCameraId = cameraId.trimmed();
+                    if (!trimmedCameraId.isEmpty() && !ids.contains(trimmedCameraId))
+                    {
+                        ids.append(trimmedCameraId);
+                    }
+                }
                 for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
                 {
                     if (!it.value().empty() && !ids.contains(it.key()))
@@ -332,32 +349,81 @@ namespace scopeone::core
                         ids.append(it.key());
                     }
                 }
+                for (auto it = m_manifest.output.files.constBegin(); it != m_manifest.output.files.constEnd(); ++it)
+                {
+                    const QString trimmedCameraId = it.key().trimmed();
+                    if (!trimmedCameraId.isEmpty() && !ids.contains(trimmedCameraId))
+                    {
+                        ids.append(trimmedCameraId);
+                    }
+                }
                 return ids;
             }
 
-            const std::vector<RecordingFrame>* framesForCamera(const QString& cameraId) const
-            {
-                const auto it = m_frames.constFind(cameraId);
-                return it == m_frames.constEnd() ? nullptr : &it.value();
-            }
+            ImageFrame imageFrameAt(const QString& cameraId, int index) const;
 
             const QHash<QString, RecordingFileManifest>& outputFiles() const
             {
                 return m_manifest.output.files;
             }
 
-            std::vector<RecordingFrame>& ensureFramesForCamera(const QString& cameraId)
+            qint64 outputFrameCount(const QString& cameraId) const
             {
-                return m_frames[cameraId];
+                const auto it = m_manifest.output.files.constFind(cameraId.trimmed());
+                return it == m_manifest.output.files.constEnd() ? 0 : it.value().framesWritten;
             }
 
-            void appendFrame(const QString& cameraId, RecordingFrame frame)
+            qint64 outputFrameCount() const
             {
-                ensureFramesForCamera(cameraId).push_back(std::move(frame));
+                qint64 total = 0;
+                for (auto it = m_manifest.output.files.constBegin(); it != m_manifest.output.files.constEnd(); ++it)
+                {
+                    total += it.value().framesWritten;
+                }
+                return total;
+            }
+
+            qint64 recordedFrameCount(const QString& cameraId) const
+            {
+                const int bufferedFrames = frameCount(cameraId);
+                return bufferedFrames > 0 ? bufferedFrames : outputFrameCount(cameraId);
+            }
+
+            qint64 recordedFrameCount() const
+            {
+                qint64 total = 0;
+                for (const QString& cameraId : recordedCameraIds())
+                {
+                    total += recordedFrameCount(cameraId);
+                }
+                return total;
+            }
+
+            bool hasRecordedOutput() const
+            {
+                return recordedFrameCount() > 0;
+            }
+
+            bool appendImageFrame(const ImageFrame& frame)
+            {
+                const QString cameraId = frame.cameraId.trimmed();
+                if (!frame.isValid() || cameraId.isEmpty())
+                {
+                    return false;
+                }
+                ImageFrame storedFrame(frame);
+                storedFrame.cameraId = cameraId;
+                m_frames[cameraId].push_back(std::move(storedFrame));
                 if (!m_manifest.plan.cameraIds.contains(cameraId))
                 {
                     m_manifest.plan.cameraIds.append(cameraId);
                 }
+                return true;
+            }
+
+            ImageFrame firstImageFrame(const QString& cameraId) const
+            {
+                return imageFrameAt(cameraId, 0);
             }
 
             void clearFrames() { m_frames.clear(); }
@@ -365,7 +431,7 @@ namespace scopeone::core
 
             RecordingFileManifest& ensureFileManifest(const QString& cameraId)
             {
-                return m_manifest.ensureFile(cameraId);
+                return m_manifest.ensureFile(cameraId.trimmed());
             }
 
             void setOutputFilePaths(const QString& cameraId, const QString& rawPath, const QString& frameInfoPath)
@@ -422,8 +488,11 @@ namespace scopeone::core
             }
 
         private:
+            ImageFrame outputImageFrameAt(const QString& cameraId, int index) const;
+            const ImageFrame* frameAt(const QString& cameraId, int index) const;
+
             RecordingManifest m_manifest;
-            QHash<QString, std::vector<RecordingFrame>> m_frames;
+            QHash<QString, std::vector<ImageFrame>> m_frames;
             RecordingSaveResult m_saveResult;
             RecordingWriterStatus m_writerStatus;
         };
@@ -547,6 +616,9 @@ namespace scopeone::core
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         void processFrameAsync(const ImageFrame& frame);
+        ImageFrame processFrame(const ImageFrame& frame) const;
+        ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
+        ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleInfo> processingModules() const;
         bool addProcessingModule(ProcessingModuleKind kind);
         bool removeProcessingModule(int index);
@@ -566,7 +638,7 @@ namespace scopeone::core
         void newRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
-        void processedFrameReady(const QString& cameraId, const ImageFrame& frame);
+        void processedFrameReady(const ImageFrame& frame);
         void imageHistogramReady(const QString& cameraId, bool processed, const HistogramStats& stats);
         void lineProfileUpdated(const QString& cameraId, bool processed, const QVector<int>& values);
         void lineProfileCleared();
@@ -604,7 +676,7 @@ namespace scopeone::core
             bool inFlight{false};
             qint64 lastScheduledMs{0};
             quint64 activeSequence{0};
-            ImageFrame pendingFrame;
+            ImageFrame queuedFrame;
         };
 
         bool loadConfigurationInternal(const QString& configPath,
@@ -615,11 +687,7 @@ namespace scopeone::core
         bool isNativeCamera(const QString& deviceLabel) const;
         QStringList runningPreviewCameraIds() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
-        bool getLatestRawTransport(const QString& cameraId,
-                                   SharedFrameHeader& header,
-                                   QByteArray& data) const;
-        void handleIncomingRawFrame(const ImageFrame& frame,
-                                    const SharedFrameHeader& header);
+        void handleIncomingRawFrame(const ImageFrame& frame);
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);
@@ -639,7 +707,6 @@ namespace scopeone::core
         std::unique_ptr<Managers> m_managers;
         QStringList m_cameraIds;
         ActiveLineProfile m_activeLineProfile;
-        QHash<QString, SharedFrameHeader> m_latestRawHeaders;
         QHash<QString, ImageFrame> m_latestRawFrames;
         QHash<QString, ImageFrame> m_latestProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;

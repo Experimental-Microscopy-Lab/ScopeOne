@@ -31,6 +31,10 @@ namespace scopeone::core::internal
         QByteArray bgBytes = dispatchFrameType(m_buffer.front(), [&]<typename Pixel>()
         {
             QByteArray outBytes = allocatePixelBytes<Pixel>(w, h);
+            if (outBytes.isEmpty())
+            {
+                return outBytes;
+            }
             switch (m_method)
             {
             case BackgroundMethod::Median:
@@ -178,6 +182,10 @@ namespace scopeone::core::internal
                 QByteArray outBytes = dispatchFrameType(workingFrame, [&]<typename Pixel>()
                 {
                     QByteArray bytes = allocatePixelBytes<Pixel>(workingFrame.width, workingFrame.height);
+                    if (bytes.isEmpty())
+                    {
+                        return bytes;
+                    }
                     for (int y = 0; y < workingFrame.height; ++y)
                     {
                         const Pixel* s = frameRowData<Pixel>(workingFrame, y);

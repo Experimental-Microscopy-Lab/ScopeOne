@@ -12,6 +12,8 @@
 #include <memory>
 #include <vector>
 
+#include "scopeone/ImageFrame.h"
+
 class CMMCore;
 
 namespace scopeone::core::internal
@@ -32,25 +34,10 @@ namespace scopeone::core::internal
         qint64 minStartTimeMs{0};
     };
 
-    struct CameraFrame
-    {
-        QString cameraId;
-        QByteArray raw;
-        int width{0};
-        int height{0};
-        int bytesPerPixel{0};
-        int bitsPerSample{0};
-    };
-
     struct MDAOutput
     {
         MDAEvent event;
-        QMap<QString, CameraFrame> frames;
-        QByteArray raw;
-        int width{0};
-        int height{0};
-        int bytesPerPixel{0};
-        int bitsPerSample{0};
+        QMap<QString, scopeone::core::ImageFrame> frames;
         qint64 timestampMs{0};
     };
 
@@ -114,7 +101,5 @@ namespace scopeone::core::internal
 }
 
 Q_DECLARE_METATYPE(scopeone::core::internal::MDAEvent)
-
-Q_DECLARE_METATYPE(scopeone::core::internal::CameraFrame)
 
 Q_DECLARE_METATYPE(scopeone::core::internal::MDAOutput)

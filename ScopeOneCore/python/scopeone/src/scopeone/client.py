@@ -13,6 +13,7 @@ import mmap
 import os
 import struct
 import time
+from dataclasses import dataclass
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -89,8 +90,9 @@ class _WindowsPipeTransport:
             chunks.extend(data)
         return bytes(chunks)
 
-    def open_frame(self, mapping_name: str, mapping_size: int):
-        return mmap.mmap(-1, mapping_size, tagname=mapping_name, access=mmap.ACCESS_READ)
+    def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
+        access = mmap.ACCESS_WRITE if write else mmap.ACCESS_READ
+        return mmap.mmap(-1, mapping_size, tagname=mapping_name, access=access)
 
     def close(self) -> None:
         if self._handle is not None:
@@ -148,13 +150,14 @@ class _UnixSocketTransport:
             chunks.extend(data)
         return bytes(chunks)
 
-    def open_frame(self, mapping_name: str, mapping_size: int):
+    def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
         # The server publishes the frame as a POSIX shm object; it appears at
         # /dev/shm/<name>. mapping_name is the bare object name.
         path = mapping_name if os.path.isabs(mapping_name) else f"/dev/shm/{mapping_name}"
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDWR if write else os.O_RDONLY)
         try:
-            return mmap.mmap(fd, mapping_size, prot=mmap.PROT_READ)
+            prot = mmap.PROT_READ | (mmap.PROT_WRITE if write else 0)
+            return mmap.mmap(fd, mapping_size, prot=prot)
         finally:
             os.close(fd)
 
@@ -171,6 +174,100 @@ def _make_transport(server_name: str):
     if _IS_WINDOWS:
         return _WindowsPipeTransport(server_name)
     return _UnixSocketTransport(server_name)
+
+
+
+def _metadata_int(metadata: dict, key: str) -> int:
+    return int(metadata[key])
+
+
+def _metadata_bool(metadata: dict, key: str) -> bool:
+    return bool(metadata[key])
+
+
+@dataclass(frozen=True)
+class FrameResult:
+    image: object
+    metadata: dict
+    _transport: object
+
+    def write(self, image: object | None = None) -> None:
+        from .shm import MONO8, MONO16, SHARED_FRAME_HEADER_SIZE, parse_frame_header
+
+        try:
+            import numpy as np
+        except ImportError as exc:
+            raise RuntimeError("numpy is required to write ScopeOne frames") from exc
+
+        mapping_name = str(self.metadata["mappingName"])
+        mapping_size = int(self.metadata["mappingSize"])
+        with self._transport.open_frame(mapping_name, mapping_size, write=True) as view:
+            header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
+            if header.state != 2:
+                raise RuntimeError("Shared frame mapping no longer contains a ready FrameResult")
+            if header.pixel_format not in (MONO8, MONO16):
+                raise ValueError(f"Unsupported pixel format: {header.pixel_format}")
+            if header.channels != 1:
+                raise ValueError("ScopeOne frames must use one channel")
+            if self.metadata["pixelFormat"] == "Mono16":
+                expected_pixel_format = MONO16
+            elif self.metadata["pixelFormat"] == "Mono8":
+                expected_pixel_format = MONO8
+            else:
+                raise ValueError(f"Unsupported metadata pixel format: {self.metadata['pixelFormat']}")
+            if (
+                header.width != _metadata_int(self.metadata, "width")
+                or header.height != _metadata_int(self.metadata, "height")
+                or header.stride != _metadata_int(self.metadata, "stride")
+                or header.pixel_format != expected_pixel_format
+                or header.bits_per_sample != _metadata_int(self.metadata, "bitsPerSample")
+                or header.frame_index != _metadata_int(self.metadata, "frameIndex")
+                or header.timestamp_ns != _metadata_int(self.metadata, "timestampNs")
+                or header.payload_nbytes != _metadata_int(self.metadata, "payloadBytes")
+                or header.source_roi_x != _metadata_int(self.metadata, "sourceRoiX")
+                or header.source_roi_y != _metadata_int(self.metadata, "sourceRoiY")
+                or header.source_roi_width != _metadata_int(self.metadata, "sourceRoiWidth")
+                or header.source_roi_height != _metadata_int(self.metadata, "sourceRoiHeight")
+                or bool(header.source_roi_valid) != _metadata_bool(self.metadata, "sourceRoiValid")
+            ):
+                raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
+            dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
+            array = np.asarray(self.image if image is None else image)
+            if array.shape != (header.height, header.width):
+                raise ValueError("Edited frame shape does not match the shared frame")
+
+            max_value = (1 << header.bits_per_sample) - 1
+            contiguous = np.ascontiguousarray(np.clip(array, 0, max_value).astype(dtype, copy=False))
+            row_bytes = header.width * contiguous.dtype.itemsize
+            if row_bytes > header.stride:
+                raise ValueError("Shared frame stride is smaller than one image row")
+            if header.payload_nbytes > mapping_size - SHARED_FRAME_HEADER_SIZE:
+                raise ValueError("Shared frame payload exceeds the mapping size")
+            row_padding = b"\x00" * (header.stride - row_bytes)
+            struct.pack_into("<I", view, 0, 1)
+            payload = memoryview(view)[SHARED_FRAME_HEADER_SIZE:]
+            try:
+                for row in range(header.height):
+                    begin = row * header.stride
+                    payload[begin:begin + row_bytes] = contiguous[row].tobytes(order="C")
+                    if row_padding:
+                        payload[begin + row_bytes:begin + header.stride] = row_padding
+            finally:
+                payload.release()
+            struct.pack_into("<I", view, 0, 2)
+
+
+def _add_stage_fields(
+    request: dict,
+    start_module_index: int | None = None,
+    end_module_index: int | None = None,
+) -> None:
+    if start_module_index is not None and end_module_index is not None:
+        raise ValueError("Use either start_module_index or end_module_index")
+    if start_module_index is not None:
+        request["startModuleIndex"] = int(start_module_index)
+    if end_module_index is not None:
+        request["endModuleIndex"] = int(end_module_index)
 
 
 class ExternalClient:
@@ -328,6 +425,44 @@ class ExternalClient:
         response = self._request(request)
         return ExternalRecordingSession(self, str(response["sessionId"]))
 
+    def process_frame_mapping(
+        self,
+        camera: str | None = None,
+        start_module_index: int | None = None,
+        end_module_index: int | None = None,
+    ) -> FrameResult:
+        request = {"type": "process_frame_mapping"}
+        if camera:
+            request["camera"] = camera
+        _add_stage_fields(request, start_module_index, end_module_index)
+        response = self._request(request)
+        return self._frame_result_from_mapping_response(response)
+
+    def latest_raw_frame(self, camera: str) -> FrameResult:
+        response = self._request(
+            {
+                "type": "latest_raw_frame",
+                "camera": camera,
+            }
+        )
+        return self._frame_result_from_mapping_response(response)
+
+    def show_frame_mapping_as_layer(
+        self,
+        layer_id: str = "python_result",
+        name: str = "Python Result",
+        camera: str | None = None,
+    ) -> str:
+        request = {
+            "type": "show_frame_mapping_as_layer",
+            "layerId": layer_id,
+            "name": name,
+        }
+        if camera:
+            request["camera"] = camera
+        response = self._request(request)
+        return str(response["layerKey"])
+
     def close(self) -> None:
         self._transport.close()
 
@@ -350,6 +485,15 @@ class ExternalClient:
             raise RuntimeError(error)
         return response
 
+    def _frame_result_from_mapping_response(self, response: dict) -> FrameResult:
+        from .shm import SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header
+
+        mapping_name = str(response["mappingName"])
+        mapping_size = int(response["mappingSize"])
+        with self._transport.open_frame(mapping_name, mapping_size) as view:
+            header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
+            image = frame_to_ndarray(header, view[SHARED_FRAME_HEADER_SIZE:])
+        return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
 
 class ExternalRecordingSession:
     def __init__(self, client: ExternalClient, session_id: str) -> None:
@@ -373,9 +517,7 @@ class ExternalRecordingSession:
             return int(info.get("frameCounts", {}).get(camera, 0))
         return int(info.get("frameCount", 0))
 
-    def frame(self, camera: str, index: int):
-        from .shm import SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header
-
+    def frame(self, camera: str, index: int) -> FrameResult:
         response = self._client._request(
             {
                 "type": "session_frame",
@@ -384,13 +526,26 @@ class ExternalRecordingSession:
                 "index": index,
             }
         )
-        mapping_name = str(response["mappingName"])
-        mapping_size = int(response["mappingSize"])
-        with self._client._transport.open_frame(mapping_name, mapping_size) as view:
-            header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
-            return frame_to_ndarray(header, view[SHARED_FRAME_HEADER_SIZE:])
+        return self._client._frame_result_from_mapping_response(response)
 
-    def frames(self, camera: str):
+    def process_frame(
+        self,
+        camera: str,
+        index: int,
+        start_module_index: int | None = None,
+        end_module_index: int | None = None,
+    ) -> FrameResult:
+        request = {
+            "type": "session_process_frame",
+            "sessionId": self._session_id,
+            "camera": camera,
+            "index": index,
+        }
+        _add_stage_fields(request, start_module_index, end_module_index)
+        response = self._client._request(request)
+        return self._client._frame_result_from_mapping_response(response)
+
+    def frames(self, camera: str) -> list[FrameResult]:
         return [self.frame(camera, index) for index in range(self.frame_count(camera))]
 
     def save(

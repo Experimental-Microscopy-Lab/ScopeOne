@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QHash>
+#include <QString>
 #include <memory>
 
 #include "scopeone/ScopeOneCore.h"
@@ -13,12 +14,16 @@ class QLocalSocket;
 
 namespace scopeone::ui
 {
+    class PreviewWidget;
+
     class ScopeOneLocalApiServer : public QObject
     {
         Q_OBJECT
 
     public:
-        explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core, QObject* parent = nullptr);
+        explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
+                                        PreviewWidget* previewWidget,
+                                        QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
 
     private:
@@ -32,13 +37,19 @@ namespace scopeone::ui
             const QString& cameraIdOrAll,
             int timeoutMs,
             QString& errorMessage);
-        bool exportFrameToSharedMemory(const scopeone::core::ScopeOneCore::RecordingFrame& frame,
+        bool exportFrameToSharedMemory(const scopeone::core::ImageFrame& frame,
+                                       scopeone::core::ImageFrame& exportedFrame,
                                        QString& errorMessage);
+        bool importFrameFromSharedMemory(const QString& cameraId,
+                                         scopeone::core::ImageFrame& frame,
+                                         QString& errorMessage) const;
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        PreviewWidget* m_previewWidget{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;
         QHash<QString, std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_sessions;
+        QString m_frameMappingCameraId;
 
         void* m_frameMappingHandle{nullptr};
         uchar* m_frameMappingView{nullptr};

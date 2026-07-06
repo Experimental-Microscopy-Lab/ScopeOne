@@ -20,6 +20,10 @@ scopeone = ScopeOne()
 scopeone.load_config(r"C:\path\to\MMConfig.cfg")
 print(scopeone.camera_ids())
 scopeone.start_preview("Camera")
+live = scopeone.latest_raw_frame("Camera")
+# edit live.image here
+live.write()
+scopeone.show_frame_mapping_as_layer(layer_id="python_live", name="Python Live")
 
 property_names = scopeone.device_property_names("Camera")
 print(property_names[:10])
@@ -32,7 +36,12 @@ if "Exposure" in property_names:
     # scopeone.set_property("Camera", "Exposure", "10")
 
 session = scopeone.record(frames=10, camera="Camera")
-image = session.frame("Camera", 0)
+frame = session.frame("Camera", 0)
+stage = session.process_frame("Camera", 0, end_module_index=0)
+# edit stage.image here
+stage.write()
+scopeone.process_frame_mapping(start_module_index=stage.metadata["nextModuleIndex"])
+scopeone.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result")
 paths = session.save(r"C:\data", base_name="test", format="tiff")
 
 scopeone.stop_preview("Camera")
@@ -60,12 +69,17 @@ scopeone.unload_config()
 - `ScopeOne.move_z_relative(dz, device=None)`
 - `ScopeOne.move_xy_to(x, y, device=None)`
 - `ScopeOne.move_z_to(z, device=None)`
+- `ScopeOne.process_frame_mapping(camera=None, start_module_index=None, end_module_index=None)`
+- `ScopeOne.latest_raw_frame(camera)`
+- `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
 - `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
 - `RecordingSession.frame(camera, index)`
+- `RecordingSession.process_frame(camera, index, start_module_index=None, end_module_index=None)`
 - `RecordingSession.frames(camera)`
 - `RecordingSession.save(save_dir, base_name, format="tiff", compression=False, compression_level=6)`
+- `FrameResult.write(image=None)`
 
 ## Local API Protocol
 
@@ -100,7 +114,11 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `move_xy_to`: fields `device`, `x`, `y`.
 - `move_z_to`: fields `device`, `z`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
-- `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`.
+- `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
+- `latest_raw_frame`: fields `camera`; response `mappingName`, `mappingSize`, and frame metadata.
+- `session_process_frame`: fields `sessionId`, `camera`, `index`, optional `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
+- `process_frame_mapping`: optional fields `camera`, `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
+- `show_frame_mapping_as_layer`: optional fields `camera`, `layerId`, `name`; imports the current shared memory frame as a preview layer and returns `layerKey`.
 - `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`; response `paths`.
 
 ### Record request
@@ -128,6 +146,11 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Header layout: `scopeone::core::SharedFrameHeader`
 - Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
 - Python reads this through `scopeone.shm.frame_to_ndarray()`
+- Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
+- Session frames can come from memory, saved TIFF stacks, or saved binary streams.
+- `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
+
+`latest_raw_frame` exports the current live raw frame for Python processing. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. After editing `FrameResult.image`, call `FrameResult.write()` and then call `process_frame_mapping` with `startModuleIndex` set to the returned next stage index to continue the pipeline. Call `show_frame_mapping_as_layer` to display the current shared memory frame in the ScopeOne preview as a static layer. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping` and `show_frame_mapping_as_layer` reuse the last exported camera id when `camera` is omitted. Provide `camera` when the mapping was written by an external client.
 
 ### Error policy
 

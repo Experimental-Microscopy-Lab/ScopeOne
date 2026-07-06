@@ -14,11 +14,6 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QTimer;
 
-namespace scopeone::core
-{
-    struct ImageFrame;
-}
-
 namespace scopeone::ui
 {
     class PreviewWidget;
@@ -81,6 +76,7 @@ namespace scopeone::ui
         bool m_waitingForTileFrame{false};
         int m_frameWaitSerial{0};
         QString m_mosaicError;
+        scopeone::core::ImageFrame m_mosaicReferenceFrame;
         scopeone::core::ImageFrame m_latestMosaicFrame;
         bool m_gallerySessionPublished{false};
         class MosaicStorage;

@@ -45,14 +45,25 @@ namespace scopeone::ui
         bool isGallerySession(
             const std::shared_ptr<RecordingSessionData>& session)
         {
-            return session && (session->hasAnyFrames() || session->isSaved());
+            return session && (session->hasRecordedOutput() || session->isSaved());
         }
 
         // Return true when a session can be opened in the image viewer
         bool canPreviewSession(
             const std::shared_ptr<RecordingSessionData>& session)
         {
-            return session && session->hasAnyFrames();
+            if (!session)
+            {
+                return false;
+            }
+            for (const QString& cameraId : session->recordedCameraIds())
+            {
+                if (session->firstImageFrame(cameraId).isValid())
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Count cameras that have at least one stored frame
@@ -61,8 +72,7 @@ namespace scopeone::ui
             int count = 0;
             for (const QString& cameraId : session.recordedCameraIds())
             {
-                const auto* frames = session.framesForCamera(cameraId);
-                if (frames && !frames->empty())
+                if (session.recordedFrameCount(cameraId) > 0)
                 {
                     ++count;
                 }
@@ -82,18 +92,7 @@ namespace scopeone::ui
         // Count buffered frames or streamed frames written to disk
         qint64 sessionFrameCount(const RecordingSessionData& session)
         {
-            if (session.hasAnyFrames())
-            {
-                return session.frameCount();
-            }
-
-            qint64 count = 0;
-            const auto& outputFiles = session.outputFiles();
-            for (auto it = outputFiles.constBegin(); it != outputFiles.constEnd(); ++it)
-            {
-                count += it.value().framesWritten;
-            }
-            return count;
+            return session.recordedFrameCount();
         }
     }
 

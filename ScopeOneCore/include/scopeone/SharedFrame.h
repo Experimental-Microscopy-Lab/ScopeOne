@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QtGlobal>
-#include <QMetaType>
 
 namespace scopeone::core
 {
@@ -83,5 +82,3 @@ namespace scopeone::core
     inline constexpr int kSharedFrameHeaderSize = static_cast<int>(sizeof(SharedFrameHeader));
     inline constexpr int kSharedFrameSlotStride = kSharedFrameHeaderSize + kSharedFrameMaxBytes;
 }
-
-Q_DECLARE_METATYPE(scopeone::core::SharedFrameHeader)

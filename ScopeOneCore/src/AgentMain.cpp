@@ -15,6 +15,7 @@
 #include <QTimer>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 
 #include "MMCore.h"
@@ -32,6 +33,22 @@ namespace scopeone::core::internal
     using scopeone::core::kSharedFrameNumSlots;
     using scopeone::core::kSharedFrameSlotStride;
     using scopeone::core::kSharedMemoryControlSize;
+
+    // Normalize frame bit depth before publishing shared frame metadata
+    static quint16 normalizedSharedBitDepth(SharedPixelFormat format, int bitsPerSample)
+    {
+        if (format == SharedPixelFormat::Mono8)
+        {
+            return 8;
+        }
+        if (format == SharedPixelFormat::Mono16)
+        {
+            return bitsPerSample >= 1 && bitsPerSample <= 16
+                       ? static_cast<quint16>(bitsPerSample)
+                       : 16;
+        }
+        return 0;
+    }
 
     class ControlConnection final : public QObject
     {
@@ -1093,28 +1110,29 @@ namespace scopeone::core::internal
         const int slotIndex = static_cast<int>(m_frameIndex % kSharedFrameNumSlots);
         auto* control = reinterpret_cast<SharedMemoryControl*>(base);
         uchar* ptr = base + kSharedMemoryControlSize + slotIndex * kSharedFrameSlotStride;
-        auto* header = reinterpret_cast<SharedFrameHeader*>(ptr);
-
-        header->state = 1;
-        header->width = m_frameLayout.width;
-        header->height = m_frameLayout.height;
-        header->stride = m_frameLayout.stride;
-        header->pixelFormat = static_cast<quint32>(m_frameLayout.format);
-        header->bitsPerSample = m_frameLayout.bitDepth;
-        header->channels = m_frameLayout.channels;
-        header->frameIndex = ++m_frameIndex;
-        header->timestampNs =
+        SharedFrameHeader header{};
+        header.state = 1;
+        header.width = m_frameLayout.width;
+        header.height = m_frameLayout.height;
+        header.stride = m_frameLayout.stride;
+        header.pixelFormat = static_cast<quint32>(m_frameLayout.format);
+        header.bitsPerSample = m_frameLayout.bitDepth;
+        header.channels = m_frameLayout.channels;
+        header.frameIndex = ++m_frameIndex;
+        header.timestampNs =
             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-        setSharedFrameSourceRoi(*header,
+        setSharedFrameSourceRoi(header,
                                 m_sourceRoiX,
                                 m_sourceRoiY,
                                 m_sourceRoiWidth,
                                 m_sourceRoiHeight);
+        memcpy(ptr, &header, sizeof(header));
 
         uchar* dst = ptr + kSharedFrameHeaderSize;
         memcpy(dst, pixels, static_cast<size_t>(m_frameLayout.byteCount));
 
-        header->state = 2;
+        header.state = 2;
+        memcpy(ptr, &header, sizeof(header));
         control->latestSlotIndex = static_cast<quint32>(slotIndex);
         if (frameIndexOut)
         {
@@ -1251,7 +1269,13 @@ namespace scopeone::core::internal
         updated.format =
             (bytesPerPixel == 2) ? SharedPixelFormat::Mono16 : SharedPixelFormat::Mono8;
         updated.channels = 1;
-        updated.stride = width * bytesPerPixel;
+        const quint64 stride = static_cast<quint64>(width) * bytesPerPixel;
+        if (stride == 0 || stride > (std::numeric_limits<unsigned>::max)())
+        {
+            logOversized(stride);
+            return false;
+        }
+        updated.stride = static_cast<unsigned>(stride);
         updated.byteCount = computeMaxFrameBytes(width, height, updated.format);
 
         if (updated.byteCount == 0
@@ -1265,19 +1289,16 @@ namespace scopeone::core::internal
             (updated.format == SharedPixelFormat::Mono16) ? 16 : 8;
         try
         {
-            bitDepth = static_cast<quint16>(m_mmcore->getImageBitDepth());
+            bitDepth = normalizedSharedBitDepth(
+                updated.format,
+                static_cast<int>(m_mmcore->getImageBitDepth()));
         }
         catch (const CMMError&)
         {
             bitDepth =
                 (updated.format == SharedPixelFormat::Mono16) ? 16 : 8;
         }
-        if (bitDepth < 1 || bitDepth > 16)
-        {
-            bitDepth =
-                (updated.format == SharedPixelFormat::Mono16) ? 16 : 8;
-        }
-        updated.bitDepth = bitDepth;
+        updated.bitDepth = normalizedSharedBitDepth(updated.format, bitDepth);
 
         m_frameLayout = updated;
         m_frameLayoutValid = true;

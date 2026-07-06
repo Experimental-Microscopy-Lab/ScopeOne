@@ -1,6 +1,7 @@
 #include "internal/GaussianBlurModule.h"
 #include "internal/FrameBufferUtils.h"
 
+#include <utility>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 

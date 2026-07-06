@@ -59,19 +59,6 @@ namespace scopeone::ui
             }
             return text;
         }
-
-        // Returns the source camera id encoded in a preview layer key
-        QString cameraIdFromLayerKey(const QString& layerKey)
-        {
-            const int separator = layerKey.indexOf(QLatin1Char(':'));
-            return separator >= 0 ? layerKey.mid(separator + 1) : layerKey;
-        }
-
-        // Check whether a preview layer key points to static layer data
-        bool isStaticLayerKey(const QString& layerKey)
-        {
-            return layerKey.startsWith(QStringLiteral("raw:static:"));
-        }
     } // namespace
 
     // Creates the device control widget and initializes controls
@@ -361,52 +348,52 @@ namespace scopeone::ui
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int x)
                 {
-                    const QString cameraId = selectedLayerCameraId();
-                    if (cameraId.isEmpty())
+                    const QString sourceId = selectedLayerSourceId();
+                    if (sourceId.isEmpty())
                     {
                         return;
                     }
-                    m_previewWidget->setCameraOffset(cameraId, x, m_alignYSpinBox->value());
+                    m_previewWidget->setSourceOffset(sourceId, x, m_alignYSpinBox->value());
                 });
         connect(m_alignYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int y)
                 {
-                    const QString cameraId = selectedLayerCameraId();
-                    if (cameraId.isEmpty())
+                    const QString sourceId = selectedLayerSourceId();
+                    if (sourceId.isEmpty())
                     {
                         return;
                     }
-                    m_previewWidget->setCameraOffset(cameraId, m_alignXSpinBox->value(), y);
+                    m_previewWidget->setSourceOffset(sourceId, m_alignXSpinBox->value(), y);
                 });
         connect(m_alignZoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int percent)
                 {
-                    const QString cameraId = selectedLayerCameraId();
-                    if (cameraId.isEmpty())
+                    const QString sourceId = selectedLayerSourceId();
+                    if (sourceId.isEmpty())
                     {
                         return;
                     }
-                    m_previewWidget->setCameraZoomPercent(cameraId, percent);
+                    m_previewWidget->setSourceZoomPercent(sourceId, percent);
                 });
         connect(m_alignFlipXCheckBox, &QCheckBox::toggled,
                 this, [this](bool enabled)
                 {
-                    const QString cameraId = selectedLayerCameraId();
-                    if (cameraId.isEmpty())
+                    const QString sourceId = selectedLayerSourceId();
+                    if (sourceId.isEmpty())
                     {
                         return;
                     }
-                    m_previewWidget->setCameraFlip(cameraId, enabled, m_alignFlipYCheckBox->isChecked());
+                    m_previewWidget->setSourceFlip(sourceId, enabled, m_alignFlipYCheckBox->isChecked());
                 });
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
                 this, [this](bool enabled)
                 {
-                    const QString cameraId = selectedLayerCameraId();
-                    if (cameraId.isEmpty())
+                    const QString sourceId = selectedLayerSourceId();
+                    if (sourceId.isEmpty())
                     {
                         return;
                     }
-                    m_previewWidget->setCameraFlip(cameraId, m_alignFlipXCheckBox->isChecked(), enabled);
+                    m_previewWidget->setSourceFlip(sourceId, m_alignFlipXCheckBox->isChecked(), enabled);
                 });
         connect(m_alignResetButton, &QPushButton::clicked,
                 this, [this]()
@@ -453,7 +440,7 @@ namespace scopeone::ui
             infoItem->setForeground(QColor(102, 102, 102));
             m_layerTable->setItem(row, 2, infoItem);
 
-            m_layerRows.insert(layerKey, {visibleCheckBox});
+            m_layerRows.insert(layerKey, visibleCheckBox);
             m_layerTable->setRowHeight(row, 26);
             ++row;
         };
@@ -508,8 +495,8 @@ namespace scopeone::ui
 
         for (auto it = m_layerRows.begin(); it != m_layerRows.end(); ++it)
         {
-            QSignalBlocker blocker(it.value().visibleCheckBox);
-            it.value().visibleCheckBox->setChecked(selectedLayerKeySet.contains(it.key()));
+            QSignalBlocker blocker(it.value());
+            it.value()->setChecked(selectedLayerKeySet.contains(it.key()));
         }
 
         if (notifyPreview)
@@ -577,7 +564,7 @@ namespace scopeone::ui
         const int row = m_layerTable->currentRow();
         m_layerMoveUpButton->setEnabled(row > 0);
         m_layerMoveDownButton->setEnabled(row < m_layerTable->rowCount() - 1);
-        m_layerRemoveButton->setEnabled(isStaticLayerKey(m_selectedLayerKey));
+        m_layerRemoveButton->setEnabled(PreviewWidget::isStaticLayerKey(m_selectedLayerKey));
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
 
         int offsetX = 0;
@@ -585,10 +572,10 @@ namespace scopeone::ui
         int zoomPercent = 100;
         bool flipX = false;
         bool flipY = false;
-        const QString cameraId = selectedLayerCameraId();
-        if (!cameraId.isEmpty())
+        const QString sourceId = selectedLayerSourceId();
+        if (!sourceId.isEmpty())
         {
-            m_previewWidget->cameraDisplayTransform(cameraId, offsetX, offsetY, zoomPercent, flipX, flipY);
+            m_previewWidget->sourceDisplayTransform(sourceId, offsetX, offsetY, zoomPercent, flipX, flipY);
         }
         {
             QSignalBlocker blocker(m_alignXSpinBox);
@@ -612,9 +599,9 @@ namespace scopeone::ui
         }
     }
 
-    QString DeviceControlWidget::selectedLayerCameraId() const
+    QString DeviceControlWidget::selectedLayerSourceId() const
     {
-        return cameraIdFromLayerKey(m_selectedLayerKey);
+        return PreviewWidget::sourceIdFromLayerKey(m_selectedLayerKey);
     }
 
     // Refreshes selected layer transform values when live cameras change
@@ -737,12 +724,12 @@ namespace scopeone::ui
         m_alignFlipXCheckBox->setChecked(false);
         m_alignFlipYCheckBox->setChecked(false);
 
-        const QString cameraId = selectedLayerCameraId();
-        if (!cameraId.isEmpty())
+        const QString sourceId = selectedLayerSourceId();
+        if (!sourceId.isEmpty())
         {
-            m_previewWidget->setCameraOffset(cameraId, 0, 0);
-            m_previewWidget->setCameraFlip(cameraId, false, false);
-            m_previewWidget->setCameraZoomPercent(cameraId, 100);
+            m_previewWidget->setSourceOffset(sourceId, 0, 0);
+            m_previewWidget->setSourceFlip(sourceId, false, false);
+            m_previewWidget->setSourceZoomPercent(sourceId, 100);
         }
     }
 
@@ -1336,7 +1323,7 @@ namespace scopeone::ui
             return m_currentTarget;
         }
 
-        const QString cameraId = selectedLayerCameraId();
+        const QString cameraId = selectedLayerSourceId();
         return m_cameraSelectCombo->findText(cameraId) >= 0 ? cameraId : QString();
     }
 
@@ -1384,8 +1371,8 @@ namespace scopeone::ui
         onControlTargetSelectionChanged(m_cameraSelectCombo->currentText());
     }
 
-    // Checks whether a camera frame matches the selected target
-    bool DeviceControlWidget::acceptsCameraFrame(const QString& cameraId) const
+    // Checks whether a frame source matches the selected target
+    bool DeviceControlWidget::acceptsFrameFromCamera(const QString& cameraId) const
     {
         if (cameraId.isEmpty())
         {

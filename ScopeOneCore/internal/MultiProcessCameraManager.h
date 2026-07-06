@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QObject>
-#include <QByteArray>
 #include <QProcess>
 #include <QSharedMemory>
 #include <QTimer>
@@ -10,7 +9,7 @@
 #include <QStringList>
 #include <memory>
 
-#include "scopeone/SharedFrame.h"
+#include "scopeone/ImageFrame.h"
 
 class QJsonObject;
 class CMMCore;
@@ -62,16 +61,13 @@ namespace scopeone::core::internal
         bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
         bool getLatestRaw(const QString& cameraId,
-                          scopeone::core::SharedFrameHeader& header,
-                          QByteArray& data);
+                          scopeone::core::ImageFrame& frame);
         bool captureEventFrame(const QString& cameraId,
-                               scopeone::core::SharedFrameHeader& header,
-                               QByteArray& data,
+                               scopeone::core::ImageFrame& frame,
                                int timeoutMs = 1500);
 
     signals:
-        void newRawFrameReady(const QString& cameraId, const scopeone::core::SharedFrameHeader& header,
-                              const QByteArray& rawData);
+        void newRawFrameReady(const scopeone::core::ImageFrame& frame);
         void previewStateChanged(bool running);
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
 
@@ -99,8 +95,7 @@ namespace scopeone::core::internal
             quint64 lastFrameIndex = 0;
             bool isRunning = false;
             double exposureMs = 10.0;
-            std::shared_ptr<QByteArray> frameBuffer;
-            scopeone::core::SharedFrameHeader cachedHeader{};
+            scopeone::core::ImageFrame latestFrame;
         };
 
         bool ensureSharedMemory(CameraSlot& slot);
