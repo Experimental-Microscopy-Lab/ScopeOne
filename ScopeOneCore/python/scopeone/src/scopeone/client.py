@@ -1,27 +1,181 @@
-"""Backend clients for the public ScopeOne facade."""
+"""Backend clients for the public ScopeOne facade.
+
+The control channel and frame transport are platform-specific: on Windows the
+server exposes a named pipe plus a named file mapping, and on Linux/Unix a
+QLocalServer unix socket plus a POSIX shared-memory object under /dev/shm. The
+JSON request protocol and the shared-frame layout are identical on both.
+"""
 
 from __future__ import annotations
 
 import json
 import mmap
+import os
 import struct
 import time
 
-try:
-    import pywintypes
-    import win32file
-except ImportError:
-    pywintypes = None
-    win32file = None
+_IS_WINDOWS = os.name == "nt"
 
-LOCAL_SERVER_NAME = r"\\.\pipe\ScopeOne.Api.local"
+if _IS_WINDOWS:
+    try:
+        import pywintypes
+        import win32file
+    except ImportError:
+        pywintypes = None
+        win32file = None
+else:
+    import socket
+
+# Windows: named pipe. Unix: QLocalServer turns this name into a socket file
+# under the temp directory (e.g. /tmp/ScopeOne.Api.local).
+WIN_LOCAL_SERVER_NAME = r"\\.\pipe\ScopeOne.Api.local"
+UNIX_LOCAL_SERVER_NAME = "ScopeOne.Api.local"
+LOCAL_SERVER_NAME = WIN_LOCAL_SERVER_NAME if _IS_WINDOWS else UNIX_LOCAL_SERVER_NAME
+
 MAX_MESSAGE_BYTES = 256 * 1024
+_CONNECT_TIMEOUT_S = 5.0
+
+
+class _WindowsPipeTransport:
+    """Control channel + frame mapping over Windows named pipe / file mapping."""
+
+    def __init__(self, server_name: str) -> None:
+        if pywintypes is None or win32file is None:
+            raise RuntimeError("pywin32 is required for ScopeOne external client.")
+        self._handle = self._connect(server_name)
+
+    @staticmethod
+    def _pipe_path(server_name: str) -> str:
+        if server_name.startswith("\\\\.\\pipe\\"):
+            return server_name
+        return rf"\\.\pipe\{server_name}"
+
+    def _connect(self, server_name: str):
+        pipe_path = self._pipe_path(server_name)
+        deadline = time.monotonic() + _CONNECT_TIMEOUT_S
+        while True:
+            try:
+                return win32file.CreateFile(
+                    pipe_path,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None,
+                )
+            except pywintypes.error as exc:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Failed to connect to ScopeOne server '{server_name}': {exc}"
+                    ) from exc
+                time.sleep(0.05)
+
+    def send(self, data: bytes) -> None:
+        try:
+            win32file.WriteFile(self._handle, data)
+        except pywintypes.error as exc:
+            raise RuntimeError(f"ScopeOne control request failed: {exc}") from exc
+
+    def recv_exact(self, size: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < size:
+            try:
+                _, data = win32file.ReadFile(self._handle, size - len(chunks))
+            except pywintypes.error as exc:
+                raise RuntimeError(f"ScopeOne control request failed: {exc}") from exc
+            if not data:
+                raise RuntimeError("ScopeOne control connection closed")
+            chunks.extend(data)
+        return bytes(chunks)
+
+    def open_frame(self, mapping_name: str, mapping_size: int):
+        return mmap.mmap(-1, mapping_size, tagname=mapping_name, access=mmap.ACCESS_READ)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            try:
+                win32file.CloseHandle(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+
+class _UnixSocketTransport:
+    """Control channel over unix socket + frame read from /dev/shm."""
+
+    def __init__(self, server_name: str) -> None:
+        self._sock = self._connect(server_name)
+
+    @staticmethod
+    def _server_path(server_name: str) -> str:
+        if os.path.isabs(server_name):
+            return server_name
+        # Matches Qt's QDir::tempPath() (honors $TMPDIR, else /tmp).
+        return os.path.join(os.environ.get("TMPDIR", "/tmp"), server_name)
+
+    def _connect(self, server_name: str):
+        path = self._server_path(server_name)
+        deadline = time.monotonic() + _CONNECT_TIMEOUT_S
+        while True:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.connect(path)
+                return sock
+            except OSError as exc:
+                sock.close()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Failed to connect to ScopeOne server '{path}': {exc}"
+                    ) from exc
+                time.sleep(0.05)
+
+    def send(self, data: bytes) -> None:
+        try:
+            self._sock.sendall(data)
+        except OSError as exc:
+            raise RuntimeError(f"ScopeOne control request failed: {exc}") from exc
+
+    def recv_exact(self, size: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < size:
+            try:
+                data = self._sock.recv(size - len(chunks))
+            except OSError as exc:
+                raise RuntimeError(f"ScopeOne control request failed: {exc}") from exc
+            if not data:
+                raise RuntimeError("ScopeOne control connection closed")
+            chunks.extend(data)
+        return bytes(chunks)
+
+    def open_frame(self, mapping_name: str, mapping_size: int):
+        # The server publishes the frame as a POSIX shm object; it appears at
+        # /dev/shm/<name>. mapping_name is the bare object name.
+        path = mapping_name if os.path.isabs(mapping_name) else f"/dev/shm/{mapping_name}"
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            return mmap.mmap(fd, mapping_size, prot=mmap.PROT_READ)
+        finally:
+            os.close(fd)
+
+    def close(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+
+def _make_transport(server_name: str):
+    if _IS_WINDOWS:
+        return _WindowsPipeTransport(server_name)
+    return _UnixSocketTransport(server_name)
+
 
 class ExternalClient:
     def __init__(self, server_name: str = LOCAL_SERVER_NAME) -> None:
-        if pywintypes is None or win32file is None:
-            raise RuntimeError("pywin32 is required for ScopeOne external client.")
-        self._handle = self._connect_pipe(server_name)
+        self._transport = _make_transport(server_name)
         self._request({"type": "ping"})
 
     def load_config(self, config_path: str) -> bool:
@@ -174,33 +328,8 @@ class ExternalClient:
         response = self._request(request)
         return ExternalRecordingSession(self, str(response["sessionId"]))
 
-    @staticmethod
-    def _pipe_path(server_name: str) -> str:
-        if server_name.startswith("\\\\.\\pipe\\"):
-            return server_name
-        return rf"\\.\pipe\{server_name}"
-
-    @classmethod
-    def _connect_pipe(cls, server_name: str):
-        pipe_path = cls._pipe_path(server_name)
-        deadline = time.monotonic() + 5.0
-        while True:
-            try:
-                return win32file.CreateFile(
-                    pipe_path,
-                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                    0,
-                    None,
-                    win32file.OPEN_EXISTING,
-                    0,
-                    None,
-                )
-            except pywintypes.error as exc:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        f"Failed to connect to ScopeOne server '{server_name}': {exc}"
-                    ) from exc
-                time.sleep(0.05)
+    def close(self) -> None:
+        self._transport.close()
 
     def _request(self, message: dict):
         payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
@@ -208,29 +337,18 @@ class ExternalClient:
             raise RuntimeError("ScopeOne control message is invalid or too large")
 
         framed = struct.pack("<I", len(payload)) + payload
-        try:
-            win32file.WriteFile(self._handle, framed)
-            response_size = self._read_exact(4)
-            payload_size = struct.unpack("<I", response_size)[0]
-            if payload_size <= 0 or payload_size > MAX_MESSAGE_BYTES:
-                raise RuntimeError("ScopeOne control response has invalid size")
-            response = json.loads(self._read_exact(payload_size).decode("utf-8"))
-        except pywintypes.error as exc:
-            raise RuntimeError(f"ScopeOne control request failed: {exc}") from exc
+        self._transport.send(framed)
+
+        response_size = self._transport.recv_exact(4)
+        payload_size = struct.unpack("<I", response_size)[0]
+        if payload_size <= 0 or payload_size > MAX_MESSAGE_BYTES:
+            raise RuntimeError("ScopeOne control response has invalid size")
+        response = json.loads(self._transport.recv_exact(payload_size).decode("utf-8"))
 
         if not response.get("ok", False):
             error = response.get("error", "ScopeOne request failed")
             raise RuntimeError(error)
         return response
-
-    def _read_exact(self, size: int) -> bytes:
-        chunks = bytearray()
-        while len(chunks) < size:
-            _, data = win32file.ReadFile(self._handle, size - len(chunks))
-            if not data:
-                raise RuntimeError("ScopeOne control connection closed")
-            chunks.extend(data)
-        return bytes(chunks)
 
 
 class ExternalRecordingSession:
@@ -268,7 +386,7 @@ class ExternalRecordingSession:
         )
         mapping_name = str(response["mappingName"])
         mapping_size = int(response["mappingSize"])
-        with mmap.mmap(-1, mapping_size, tagname=mapping_name, access=mmap.ACCESS_READ) as view:
+        with self._client._transport.open_frame(mapping_name, mapping_size) as view:
             header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
             return frame_to_ndarray(header, view[SHARED_FRAME_HEADER_SIZE:])
 

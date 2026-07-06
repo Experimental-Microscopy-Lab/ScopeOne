@@ -18,6 +18,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -30,7 +31,7 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.20.0",
-    "pywin32>=300",
+    "pywin32>=300; platform_system == 'Windows'",
 ]
 
 [tool.setuptools]

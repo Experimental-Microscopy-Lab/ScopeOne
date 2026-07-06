@@ -42,5 +42,6 @@ namespace scopeone::ui
 
         void* m_frameMappingHandle{nullptr};
         uchar* m_frameMappingView{nullptr};
+        int m_frameShmFd{-1};
     };
 } // namespace scopeone::ui
