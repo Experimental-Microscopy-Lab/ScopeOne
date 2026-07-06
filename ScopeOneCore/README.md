@@ -76,6 +76,10 @@ Outputs:
 - `isRealTimeProcessingEnabled()`
 - `setRealTimeProcessingEnabled(...)`
 - `processFrameAsync(...)`
+- `processFrame(...)`
+- `processFrameFrom(...)`
+- `processFrameThrough(...)`
+- `processFrameWithIntermediates(...)`
 - `processingModules()`
 - `addProcessingModule(...)`
 - `removeProcessingModule(...)`
@@ -88,3 +92,7 @@ Outputs:
 - `isRecording()`
 - `saveRecordingSession(...)`
 - `saveRecordingSessionAsync(...)`
+
+## Processing Data Flow
+
+`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Use `processFrameWithIntermediates(...)` to capture each module output. Each `ProcessingStageFrame::nextModuleIndex` can be passed to `processFrameFrom(...)` with an edited frame to continue the same pipeline after that module. Saved TIFF and binary recording outputs are read back through `RecordingSessionData::imageFrameAt(...)` before entering preview or processing again. Live preview processing and synchronous API processing use separate runtime pipeline state so offline frame edits do not change live module buffers.

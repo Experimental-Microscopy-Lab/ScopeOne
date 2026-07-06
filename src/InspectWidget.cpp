@@ -1,5 +1,7 @@
 #include "InspectWidget.h"
 
+#include "PreviewWidget.h"
+
 #include <QCheckBox>
 #include <QColor>
 #include <QFrame>
@@ -25,40 +27,27 @@ namespace scopeone::ui
         // Build the inspect layer key for raw or processed data
         QString inspectLayerKey(const QString& cameraId, bool processed)
         {
-            return QStringLiteral("%1:%2")
-                .arg(processed ? QStringLiteral("proc") : QStringLiteral("raw"),
-                     cameraId.trimmed());
+            return processed
+                       ? PreviewWidget::processedLayerKey(cameraId)
+                       : PreviewWidget::rawLayerKey(cameraId);
         }
 
         // Return the short source label used by inspect groups
-        QString inspectLayerSourceLabel(bool processed)
+        QString inspectLayerSourceLabel(const QString& layerKey)
         {
-            return processed ? QStringLiteral("proc") : QStringLiteral("raw");
-        }
-
-        // Check whether a preview layer key points to processed data
-        bool isProcessedLayerKey(const QString& layerKey)
-        {
-            return layerKey.startsWith(QStringLiteral("proc:"));
-        }
-
-        // Check whether a preview layer key points to static layer data
-        bool isStaticLayerKey(const QString& layerKey)
-        {
-            return layerKey.startsWith(QStringLiteral("raw:static:"));
+            if (PreviewWidget::isStaticLayerKey(layerKey))
+            {
+                return QStringLiteral("static");
+            }
+            return PreviewWidget::isProcessedLayerKey(layerKey)
+                       ? QStringLiteral("proc")
+                       : QStringLiteral("raw");
         }
 
         // Check whether a preview layer can use live core inspection
         bool isLiveLayerKey(const QString& layerKey)
         {
-            return !isStaticLayerKey(layerKey);
-        }
-
-        // Extract the camera id encoded in a preview layer key
-        QString cameraIdFromLayerKey(const QString& layerKey)
-        {
-            const int separator = layerKey.indexOf(QLatin1Char(':'));
-            return separator >= 0 ? layerKey.mid(separator + 1) : layerKey.trimmed();
+            return !PreviewWidget::isStaticLayerKey(layerKey);
         }
     }
 
@@ -609,10 +598,10 @@ namespace scopeone::ui
     QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
-        const QString cameraId = cameraIdFromLayerKey(normalizedLayerKey);
-        const bool processed = isProcessedLayerKey(normalizedLayerKey);
+        const QString cameraId = PreviewWidget::sourceIdFromLayerKey(normalizedLayerKey);
+        const bool processed = PreviewWidget::isProcessedLayerKey(normalizedLayerKey);
         auto* group = new QGroupBox(
-            QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(processed)),
+            QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(normalizedLayerKey)),
             this);
         auto* layout = new QVBoxLayout(group);
         LayerInfoGroup infoGroup;
@@ -804,8 +793,8 @@ namespace scopeone::ui
         }
         LayerInfoGroup& infoGroup = it.value();
 
-        const QString cameraId = cameraIdFromLayerKey(normalizedLayerKey);
-        const bool processed = isProcessedLayerKey(normalizedLayerKey);
+        const QString cameraId = PreviewWidget::sourceIdFromLayerKey(normalizedLayerKey);
+        const bool processed = PreviewWidget::isProcessedLayerKey(normalizedLayerKey);
         LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey, cameraId, processed);
         state.stats = stats;
         state.hasStats = stats.hasData();
@@ -1033,7 +1022,8 @@ namespace scopeone::ui
         const bool liveCrossSectionEnabled = m_cameraInitialized
                                              && isLiveLayerKey(m_currentLayerKey)
                                              && m_availableCameraIds.contains(currentLayerCameraId());
-        const bool staticCrossSectionEnabled = isStaticLayerKey(m_currentLayerKey) && currentLayerHasStats;
+        const bool staticCrossSectionEnabled = PreviewWidget::isStaticLayerKey(m_currentLayerKey)
+                                               && currentLayerHasStats;
         const bool crossSectionEnabled = !m_currentLayerKey.isEmpty()
                                          && (liveCrossSectionEnabled || staticCrossSectionEnabled);
         m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
@@ -1171,6 +1161,6 @@ namespace scopeone::ui
 
     QString InspectWidget::currentLayerCameraId() const
     {
-        return cameraIdFromLayerKey(m_currentLayerKey);
+        return PreviewWidget::sourceIdFromLayerKey(m_currentLayerKey);
     }
 } // namespace scopeone::ui

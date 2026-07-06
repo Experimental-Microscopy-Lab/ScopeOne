@@ -72,6 +72,29 @@ class ScopeOne:
     def move_z_to(self, z: float, device: str | None = None):
         self._client.move_z_to(z, device)
 
+    def process_frame_mapping(
+        self,
+        camera: str | None = None,
+        start_module_index: int | None = None,
+        end_module_index: int | None = None,
+    ):
+        return self._client.process_frame_mapping(
+            camera,
+            start_module_index,
+            end_module_index,
+        )
+
+    def latest_raw_frame(self, camera: str):
+        return self._client.latest_raw_frame(camera)
+
+    def show_frame_mapping_as_layer(
+        self,
+        layer_id: str = "python_result",
+        name: str = "Python Result",
+        camera: str | None = None,
+    ):
+        return self._client.show_frame_mapping_as_layer(layer_id, name, camera)
+
     def record(
         self,
         frames: int,

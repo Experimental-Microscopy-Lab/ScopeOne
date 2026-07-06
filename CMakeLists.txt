@@ -99,7 +99,11 @@ if (WIN32)
     list(APPEND SCOPEONE_UI_SOURCES ${CMAKE_SOURCE_DIR}/resources/app_icon.rc)
 endif ()
 
-add_executable(ScopeOne ${SCOPEONE_UI_SOURCES} ${SCOPEONE_UI_HEADERS})
+qt_add_executable(ScopeOne
+        WIN32
+        ${SCOPEONE_UI_SOURCES}
+        ${SCOPEONE_UI_HEADERS}
+)
 target_link_libraries(ScopeOne PRIVATE
         scopeone::ScopeOneCore
         Qt::Widgets

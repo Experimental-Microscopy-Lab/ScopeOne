@@ -19,9 +19,8 @@ class CMMCore;
 namespace scopeone::core::internal
 {
     using scopeone::core::RecordingFormat;
-    using scopeone::core::SharedFrameHeader;
+    using scopeone::core::ImageFrame;
     using scopeone::core::kRecordingPhaseIdle;
-    using RecordingFrame = scopeone::core::ScopeOneCore::RecordingFrame;
     using RecordingSessionData = scopeone::core::ScopeOneCore::RecordingSessionData;
     using RecordingWriterPhase = scopeone::core::ScopeOneCore::RecordingWriterPhase;
     using RecordingWriterStatus = scopeone::core::ScopeOneCore::RecordingWriterStatus;
@@ -60,7 +59,7 @@ namespace scopeone::core::internal
         void setMultiProcessCameraManager(MultiProcessCameraManager* mpcm) { m_mpcm = mpcm; }
         void setMMCore(const std::shared_ptr<CMMCore>& core) { m_mmcore = core; }
 
-        void setLatestFrameFetcher(std::function<bool(const QString&, SharedFrameHeader&, QByteArray&)> fetcher)
+        void setLatestFrameFetcher(std::function<bool(const QString&, ImageFrame&)> fetcher)
         {
             m_latestFrameFetcher = std::move(fetcher);
         }
@@ -72,15 +71,12 @@ namespace scopeone::core::internal
 
         bool isRecording() const { return m_captureState.isRecording; }
 
-        void onNewRawFrameReady(const QString& cameraId,
-                                const SharedFrameHeader& header,
-                                const QByteArray& rawData);
+        void onNewRawFrameReady(const ImageFrame& frame);
 
         static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
 
     signals:
-        void mdaRawFrameReady(const scopeone::core::ImageFrame& frame,
-                              const SharedFrameHeader& header);
+        void mdaRawFrameReady(const scopeone::core::ImageFrame& frame);
         void progressChanged(int phase,
                              qint64 frameCurrent,
                              qint64 frameTarget,
@@ -136,15 +132,13 @@ namespace scopeone::core::internal
                 Mda
             };
 
-            QString cameraId;
-            SharedFrameHeader header{};
-            QByteArray rawData;
+            ImageFrame frame;
             Source source{Source::PreviewStream};
         };
 
         struct WriteTask
         {
-            RecordingFrame frame;
+            ImageFrame frame;
         };
 
         struct CameraOutput
@@ -158,6 +152,7 @@ namespace scopeone::core::internal
             int width{0};
             int height{0};
             int bits{0};
+            scopeone::core::ImagePixelFormat pixelFormat{scopeone::core::ImagePixelFormat::Invalid};
             std::deque<WriteTask> writeQueue;
             mutable std::mutex queueMutex;
             std::condition_variable writeCondition;
@@ -241,7 +236,7 @@ namespace scopeone::core::internal
         void emitWriterStatus();
         void setWriterStatus(RecordingWriterPhase phase, const QString& errorMessage = QString());
         qint64 totalFramesWritten() const;
-        bool enqueueFrame(const RecordingFrame& frame, const QString& cameraId);
+        bool enqueueFrame(const ImageFrame& frame);
         bool shouldAcceptFrame(const FramePacket& packet) const;
 
         void ingestFrame(const FramePacket& packet);
@@ -255,7 +250,7 @@ namespace scopeone::core::internal
 
         MultiProcessCameraManager* m_mpcm{nullptr};
         std::shared_ptr<CMMCore> m_mmcore;
-        std::function<bool(const QString&, SharedFrameHeader&, QByteArray&)> m_latestFrameFetcher;
+        std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
 
         SessionState m_sessionState;
         WriterState m_writerState;

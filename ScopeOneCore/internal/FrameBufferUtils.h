@@ -2,6 +2,7 @@
 
 #include "scopeone/ImageFrame.h"
 
+#include <limits>
 #include <utility>
 
 namespace cv
@@ -40,20 +41,31 @@ namespace scopeone::core::internal
     inline QByteArray allocatePixelBytes(int width, int height)
     {
         QByteArray bytes;
-        bytes.resize(width * height * static_cast<int>(sizeof(Pixel)));
+        const qint64 byteCount = static_cast<qint64>(width)
+            * static_cast<qint64>(height)
+            * static_cast<qint64>(sizeof(Pixel));
+        if (width <= 0
+            || height <= 0
+            || byteCount <= 0
+            || byteCount > (std::numeric_limits<qsizetype>::max)())
+        {
+            return bytes;
+        }
+        bytes.resize(static_cast<qsizetype>(byteCount));
         return bytes;
     }
 
     template <typename Pixel>
     inline const Pixel* frameRowData(const scopeone::core::ImageFrame& frame, int y)
     {
-        return reinterpret_cast<const Pixel*>(frame.bytes.constData() + y * frame.stride);
+        return reinterpret_cast<const Pixel*>(frame.bytes.constData() + static_cast<qint64>(y) * frame.stride);
     }
 
     template <typename Pixel>
     inline Pixel* mutableRowData(QByteArray& bytes, int width, int y)
     {
-        return reinterpret_cast<Pixel*>(bytes.data()) + y * width;
+        return reinterpret_cast<Pixel*>(
+            bytes.data() + static_cast<qint64>(y) * static_cast<qint64>(width) * static_cast<qint64>(sizeof(Pixel)));
     }
 
     template <typename Pixel>

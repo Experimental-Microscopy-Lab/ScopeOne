@@ -1,11 +1,13 @@
 """scopeone package."""
 
+from .client import FrameResult
 from .core import ScopeOne
 from .session import RecordingSession
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "FrameResult",
     "RecordingSession",
     "ScopeOne",
     "__version__",

@@ -20,7 +20,7 @@ SHARED_FRAME_MAX_BYTES = 16 * 2048 * 2048
 SHARED_FRAME_SLOT_STRIDE = SHARED_FRAME_HEADER_SIZE + SHARED_FRAME_MAX_BYTES
 
 _CONTROL_STRUCT = struct.Struct("<I")
-_HEADER_STRUCT = struct.Struct("<IIIIIHHQQ")
+_HEADER_STRUCT = struct.Struct("<IIIIIHHQQiiiiI4x")
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,11 @@ class SharedFrameHeader:
     channels: int
     frame_index: int
     timestamp_ns: int
+    source_roi_x: int
+    source_roi_y: int
+    source_roi_width: int
+    source_roi_height: int
+    source_roi_valid: int
 
     @property
     def bytes_per_pixel(self) -> int:
@@ -42,6 +47,10 @@ class SharedFrameHeader:
     @property
     def payload_nbytes(self) -> int:
         return self.stride * self.height
+
+    @property
+    def has_source_roi(self) -> bool:
+        return self.source_roi_valid != 0 and self.source_roi_width > 0 and self.source_roi_height > 0
 
 
 def latest_slot_index(control_bytes: bytes | bytearray | memoryview) -> int:
@@ -64,8 +73,16 @@ def frame_to_ndarray(
 ) -> np.ndarray:
     if np is None:
         raise RuntimeError("numpy is required to decode ScopeOne frames")
+    if header.state != 2:
+        raise ValueError("Shared frame is not ready")
     if header.pixel_format not in (MONO8, MONO16):
         raise ValueError(f"Unsupported pixel format: {header.pixel_format}")
+    if header.channels != 1:
+        raise ValueError("ScopeOne frames must use one channel")
+    if header.pixel_format == MONO8 and header.bits_per_sample != 8:
+        raise ValueError("Mono8 frames must use 8 bits per sample")
+    if header.pixel_format == MONO16 and not 1 <= header.bits_per_sample <= 16:
+        raise ValueError("Mono16 frames must use 1 to 16 bits per sample")
     if header.width <= 0 or header.height <= 0 or header.stride <= 0:
         raise ValueError("Invalid frame dimensions")
 

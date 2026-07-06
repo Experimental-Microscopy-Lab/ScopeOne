@@ -1,6 +1,7 @@
 #include "ScopeOneLocalApiServer.h"
 
 #include "scopeone/ScopeOneCore.h"
+#include "PreviewWidget.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -15,6 +16,7 @@
 #include <QUuid>
 #include <QtEndian>
 #include <cstring>
+#include <limits>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -194,17 +196,113 @@ namespace scopeone::ui
             }
             return QStringList{target};
         }
+
+        // Add common frame metadata to a local API response
+        void addFrameMetadata(QJsonObject& response, const scopeone::core::ImageFrame& frame)
+        {
+            response.insert(QStringLiteral("camera"), frame.cameraId);
+            response.insert(QStringLiteral("width"), frame.width);
+            response.insert(QStringLiteral("height"), frame.height);
+            response.insert(QStringLiteral("stride"), frame.stride);
+            response.insert(QStringLiteral("payloadBytes"), QString::number(frame.payloadByteCount()));
+            response.insert(QStringLiteral("bitsPerSample"), frame.bitsPerSample);
+            response.insert(QStringLiteral("pixelFormat"),
+                            frame.isMono16()
+                                ? QStringLiteral("Mono16")
+                                : QStringLiteral("Mono8"));
+            response.insert(QStringLiteral("frameIndex"), QString::number(frame.frameIndex));
+            response.insert(QStringLiteral("timestampNs"), QString::number(frame.timestampNs));
+            response.insert(QStringLiteral("sourceRoiX"), frame.sourceRoiX);
+            response.insert(QStringLiteral("sourceRoiY"), frame.sourceRoiY);
+            response.insert(QStringLiteral("sourceRoiWidth"), frame.sourceRoiWidth);
+            response.insert(QStringLiteral("sourceRoiHeight"), frame.sourceRoiHeight);
+            response.insert(QStringLiteral("sourceRoiValid"), frame.hasSourceRoi());
+        }
+
+        struct ProcessFrameRequestResult
+        {
+            scopeone::core::ImageFrame frame;
+            int moduleIndex{-1};
+            int nextModuleIndex{-1};
+            int startModuleIndex{-1};
+        };
+
+        // Process one frame according to optional local API stage fields
+        ProcessFrameRequestResult processFrameFromRequest(scopeone::core::ScopeOneCore* core,
+                                                          const scopeone::core::ImageFrame& frame,
+                                                          const QJsonObject& request,
+                                                          QString& errorMessage)
+        {
+            const bool hasStart = request.contains(QStringLiteral("startModuleIndex"));
+            const bool hasEnd = request.contains(QStringLiteral("endModuleIndex"));
+            if (hasStart && hasEnd)
+            {
+                errorMessage = QStringLiteral("Use either startModuleIndex or endModuleIndex");
+                return {};
+            }
+
+            const int moduleCount = static_cast<int>(core->processingModules().size());
+            ProcessFrameRequestResult result;
+            if (hasEnd)
+            {
+                const int endModuleIndex = request.value(QStringLiteral("endModuleIndex")).toInt(-1);
+                if (endModuleIndex < 0 || endModuleIndex >= moduleCount)
+                {
+                    errorMessage = QStringLiteral("endModuleIndex is outside the processing pipeline");
+                    return {};
+                }
+                result.frame = core->processFrameThrough(endModuleIndex, frame);
+                result.moduleIndex = endModuleIndex;
+                result.nextModuleIndex = endModuleIndex + 1;
+                return result;
+            }
+            if (hasStart)
+            {
+                const int startModuleIndex = request.value(QStringLiteral("startModuleIndex")).toInt(-1);
+                if (startModuleIndex < 0 || startModuleIndex > moduleCount)
+                {
+                    errorMessage = QStringLiteral("startModuleIndex is outside the processing pipeline");
+                    return {};
+                }
+                result.frame = core->processFrameFrom(startModuleIndex, frame);
+                result.startModuleIndex = startModuleIndex;
+                return result;
+            }
+            result.frame = core->processFrame(frame);
+            return result;
+        }
+
+        // Add actual processing stage fields to a local API response
+        void addProcessingMetadata(QJsonObject& response, const ProcessFrameRequestResult& result)
+        {
+            if (result.moduleIndex >= 0)
+            {
+                response.insert(QStringLiteral("moduleIndex"), result.moduleIndex);
+                response.insert(QStringLiteral("nextModuleIndex"), result.nextModuleIndex);
+            }
+            if (result.startModuleIndex >= 0)
+            {
+                response.insert(QStringLiteral("startModuleIndex"), result.startModuleIndex);
+            }
+        }
     } // namespace
 
     // Starts the local API pipe server and frame mapping
-    ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core, QObject* parent)
+    ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
+                                                   PreviewWidget* previewWidget,
+                                                   QObject* parent)
         : QObject(parent)
           , m_scopeonecore(core)
+          , m_previewWidget(previewWidget)
           , m_server(new QLocalServer(this))
     {
         if (!core)
         {
             qFatal("ScopeOneLocalApiServer requires ScopeOneCore");
+        }
+        if (!previewWidget)
+        {
+            qFatal("ScopeOneLocalApiServer requires PreviewWidget");
         }
 
         QLocalServer::removeServer(kServerName);
@@ -633,12 +731,11 @@ namespace scopeone::ui
             }
 
             response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(session->recordedCameraIds()));
-            response.insert(QStringLiteral("frameCount"), session->frameCount());
+            response.insert(QStringLiteral("frameCount"), session->recordedFrameCount());
             QJsonObject counts;
             for (const QString& cameraId : session->recordedCameraIds())
             {
-                const auto* frames = session->framesForCamera(cameraId);
-                counts.insert(cameraId, frames ? static_cast<int>(frames->size()) : 0);
+                counts.insert(cameraId, session->recordedFrameCount(cameraId));
             }
             response.insert(QStringLiteral("frameCounts"), counts);
             return response;
@@ -656,15 +753,16 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
                 return response;
             }
-            const auto* frames = session->framesForCamera(cameraId);
-            if (!frames || index < 0 || index >= static_cast<int>(frames->size()))
+            const scopeone::core::ImageFrame frame = session->imageFrameAt(cameraId, index);
+            if (!frame.isValid())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Frame index out of range"));
                 return response;
             }
 
             QString errorMessage;
-            if (!exportFrameToSharedMemory(frames->at(static_cast<size_t>(index)), errorMessage))
+            scopeone::core::ImageFrame exportedFrame;
+            if (!exportFrameToSharedMemory(frame, exportedFrame, errorMessage))
             {
                 response.insert(QStringLiteral("error"),
                                 errorMessage.isEmpty()
@@ -678,6 +776,185 @@ namespace scopeone::ui
             response.insert(QStringLiteral("mappingSize"),
                             static_cast<int>(scopeone::core::kSharedFrameHeaderSize
                                 + scopeone::core::kSharedFrameMaxBytes));
+            addFrameMetadata(response, exportedFrame);
+            return response;
+        }
+
+        if (type == QStringLiteral("latest_raw_frame"))
+        {
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (cameraId.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
+                return response;
+            }
+
+            scopeone::core::ImageFrame frame;
+            if (!m_scopeonecore->getLatestRawFrame(cameraId, frame))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("No latest raw frame for camera"));
+                return response;
+            }
+
+            QString errorMessage;
+            scopeone::core::ImageFrame exportedFrame;
+            if (!exportFrameToSharedMemory(frame, exportedFrame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to export latest raw frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+            response.insert(QStringLiteral("mappingSize"),
+                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                + scopeone::core::kSharedFrameMaxBytes));
+            addFrameMetadata(response, exportedFrame);
+            return response;
+        }
+
+        if (type == QStringLiteral("session_process_frame"))
+        {
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            const auto session = m_sessions.value(sessionId);
+            QJsonObject response = makeResponse(type, false);
+            if (!session)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
+                return response;
+            }
+
+            const scopeone::core::ImageFrame frame = session->imageFrameAt(cameraId, index);
+            if (!frame.isValid())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Frame index out of range"));
+                return response;
+            }
+
+            QString errorMessage;
+            const ProcessFrameRequestResult processedResult =
+                processFrameFromRequest(m_scopeonecore, frame, request, errorMessage);
+            const scopeone::core::ImageFrame& processedFrame = processedResult.frame;
+            if (!processedFrame.isValid())
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Processing produced no valid frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            scopeone::core::ImageFrame exportedFrame;
+            if (!exportFrameToSharedMemory(processedFrame, exportedFrame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to export processed frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+            response.insert(QStringLiteral("mappingSize"),
+                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                + scopeone::core::kSharedFrameMaxBytes));
+            addFrameMetadata(response, exportedFrame);
+            addProcessingMetadata(response, processedResult);
+            return response;
+        }
+
+        if (type == QStringLiteral("process_frame_mapping"))
+        {
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+
+            scopeone::core::ImageFrame frame;
+            QString errorMessage;
+            if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to import frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            const ProcessFrameRequestResult processedResult =
+                processFrameFromRequest(m_scopeonecore, frame, request, errorMessage);
+            const scopeone::core::ImageFrame& processedFrame = processedResult.frame;
+            if (!processedFrame.isValid())
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Processing produced no valid frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            scopeone::core::ImageFrame exportedFrame;
+            if (!exportFrameToSharedMemory(processedFrame, exportedFrame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to export processed frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+            response.insert(QStringLiteral("mappingSize"),
+                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                + scopeone::core::kSharedFrameMaxBytes));
+            addFrameMetadata(response, exportedFrame);
+            addProcessingMetadata(response, processedResult);
+            return response;
+        }
+
+        if (type == QStringLiteral("show_frame_mapping_as_layer"))
+        {
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            const QString layerId = request.value(QStringLiteral("layerId"))
+                                        .toString(QStringLiteral("python_result"))
+                                        .trimmed();
+            const QString displayName = request.value(QStringLiteral("name"))
+                                            .toString(QStringLiteral("Python Result"))
+                                            .trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (layerId.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing layerId"));
+                return response;
+            }
+
+            scopeone::core::ImageFrame frame;
+            QString errorMessage;
+            if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to import frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            const QString layerKey = m_previewWidget->setStaticLayerFrame(layerId, displayName, frame);
+            if (layerKey.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to show frame as preview layer"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("layerKey"), layerKey);
+            addFrameMetadata(response, frame);
             return response;
         }
 
@@ -832,7 +1109,14 @@ namespace scopeone::ui
                                : QStringLiteral("Recording finished but no session data was returned");
             return {};
         }
-        if (!recordedSession->hasAnyFrames())
+        if (recordedSession->streamedToDisk() && !recordedSession->isSaved())
+        {
+            errorMessage = recordedSession->saveMessage().isEmpty()
+                               ? QStringLiteral("Recording writer failed")
+                               : recordedSession->saveMessage();
+            return {};
+        }
+        if (!recordedSession->hasRecordedOutput())
         {
             if (timedOut)
             {
@@ -855,25 +1139,90 @@ namespace scopeone::ui
 
     // Exports one captured frame to the shared frame mapping
     bool ScopeOneLocalApiServer::exportFrameToSharedMemory(
-        const scopeone::core::ScopeOneCore::RecordingFrame& frame,
+        const scopeone::core::ImageFrame& frame,
+        scopeone::core::ImageFrame& exportedFrame,
         QString& errorMessage)
     {
+        exportedFrame = {};
         if (!m_frameMappingHandle || !m_frameMappingView)
         {
             errorMessage = QStringLiteral("Frame mapping is not available");
             return false;
         }
-        if (frame.rawData.size() <= 0
-            || frame.rawData.size() > scopeone::core::kSharedFrameMaxBytes)
+        const qint64 payloadBytes = frame.payloadByteCount();
+        if (!frame.isValid()
+            || payloadBytes <= 0
+            || payloadBytes > scopeone::core::kSharedFrameMaxBytes)
         {
             errorMessage = QStringLiteral("Frame payload is invalid");
             return false;
         }
 
-        std::memcpy(m_frameMappingView, &frame.header, sizeof(frame.header));
+        scopeone::core::SharedFrameHeader header = frame.toSharedFrameHeader();
+        exportedFrame = frame;
+        exportedFrame.cameraId = frame.cameraId.trimmed();
+        exportedFrame.timestampNs = header.timestampNs;
+        header.state = 1;
+        std::memcpy(m_frameMappingView, &header, sizeof(header));
         std::memcpy(m_frameMappingView + scopeone::core::kSharedFrameHeaderSize,
-                    frame.rawData.constData(),
-                    static_cast<size_t>(frame.rawData.size()));
+                    frame.bytes.constData(),
+                    static_cast<size_t>(payloadBytes));
+        header.state = 2;
+        std::memcpy(m_frameMappingView, &header, sizeof(header));
+        m_frameMappingCameraId = frame.cameraId.trimmed();
         return true;
+    }
+
+    // Imports the current shared frame mapping as an ImageFrame
+    bool ScopeOneLocalApiServer::importFrameFromSharedMemory(const QString& cameraId,
+                                                             scopeone::core::ImageFrame& frame,
+                                                             QString& errorMessage) const
+    {
+#if defined(_WIN32)
+        if (!m_frameMappingHandle || !m_frameMappingView)
+        {
+            errorMessage = QStringLiteral("Frame mapping is not available");
+            return false;
+        }
+
+        scopeone::core::SharedFrameHeader header{};
+        std::memcpy(&header, m_frameMappingView, sizeof(header));
+        if (header.state != 2)
+        {
+            errorMessage = QStringLiteral("Frame mapping does not contain a ready frame");
+            return false;
+        }
+
+        const quint64 payloadBytes = static_cast<quint64>(header.stride) * header.height;
+        if (payloadBytes == 0
+            || payloadBytes > scopeone::core::kSharedFrameMaxBytes
+            || payloadBytes > static_cast<quint64>((std::numeric_limits<qsizetype>::max)()))
+        {
+            errorMessage = QStringLiteral("Frame mapping payload is invalid");
+            return false;
+        }
+
+        QByteArray payload;
+        payload.resize(static_cast<qsizetype>(payloadBytes));
+        std::memcpy(payload.data(),
+                    m_frameMappingView + scopeone::core::kSharedFrameHeaderSize,
+                    static_cast<size_t>(payloadBytes));
+
+        const QString resolvedCameraId = cameraId.trimmed().isEmpty()
+                                             ? m_frameMappingCameraId
+                                             : cameraId.trimmed();
+        frame = scopeone::core::ImageFrame::fromSharedFrame(resolvedCameraId, header, payload);
+        if (!frame.isValid())
+        {
+            errorMessage = QStringLiteral("Frame mapping metadata is invalid");
+            return false;
+        }
+        return true;
+#else
+        Q_UNUSED(cameraId)
+        Q_UNUSED(frame)
+        errorMessage = QStringLiteral("Frame mapping is not available on this platform");
+        return false;
+#endif
     }
 } // namespace scopeone::ui

@@ -1,8 +1,10 @@
 #include "internal/MultiProcessCameraManager.h"
 #include "internal/AgentProtocol.h"
+#include "scopeone/SharedFrame.h"
 #include "MMCore.h"
 
 #include <QDir>
+#include <QByteArray>
 #include <QFileInfo>
 #include <QDateTime>
 #include <QDebug>
@@ -16,11 +18,14 @@
 #include <memory>
 #include <algorithm>
 #include <functional>
+#include <limits>
+#include <utility>
 #include <vector>
 #include <QLocalSocket>
 
 namespace scopeone::core::internal
 {
+    using scopeone::core::ImageFrame;
     using scopeone::core::SharedFrameHeader;
     using scopeone::core::SharedMemoryControl;
     using scopeone::core::SharedPixelFormat;
@@ -33,6 +38,12 @@ namespace scopeone::core::internal
     namespace
     {
         constexpr int kAgentControlReadyTimeoutMs = 15000;
+
+        // Normalizes camera ids before they become manager keys
+        QString normalizedCameraId(const QString& cameraId)
+        {
+            return cameraId.trimmed();
+        }
 
         struct PropertyReadback
         {
@@ -1298,11 +1309,12 @@ namespace scopeone::core::internal
     // Prepares native single camera preview without launching an agent
     bool MultiProcessCameraManager::startSingleCamera(const QString& cameraId, double exposureMs)
     {
+        const QString normalizedId = normalizedCameraId(cameraId);
         if (!m_nativeCore)
         {
             return false;
         }
-        if (cameraId.trimmed().isEmpty())
+        if (normalizedId.isEmpty())
         {
             return false;
         }
@@ -1319,22 +1331,29 @@ namespace scopeone::core::internal
             m_runtime = std::make_unique<NativeSingleCameraBackend>(*this);
         }
 
-        m_singleCameraId = cameraId;
+        m_singleCameraId = normalizedId;
         clearPropertyCaches();
         m_cameras.clear();
         auto slot = std::make_shared<CameraSlot>();
-        slot->cameraId = cameraId;
+        slot->cameraId = normalizedId;
         slot->exposureMs = exposureMs;
         slot->isRunning = false;
-        m_cameras.insert(cameraId, slot);
+        m_cameras.insert(normalizedId, slot);
 
         return true;
+    }
+
+    // Returns payload byte count from a shared frame header
+    static quint64 sharedFramePayloadSize(const SharedFrameHeader& header)
+    {
+        return static_cast<quint64>(header.stride) * header.height;
     }
 
     // Validates one shared frame header before reading pixels
     static bool headerLooksSane(const SharedFrameHeader& header)
     {
         if (header.state > 2) return false;
+        if (header.channels != 1) return false;
         if (header.width == 0 || header.height == 0) return false;
         if (header.stride == 0) return false;
         if (header.pixelFormat != static_cast<quint32>(SharedPixelFormat::Mono8) &&
@@ -1345,9 +1364,25 @@ namespace scopeone::core::internal
 
         const quint32 bytesPerPixel =
             (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-        if (header.stride < header.width * bytesPerPixel) return false;
+        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8)
+            && header.bitsPerSample != 8)
+        {
+            return false;
+        }
+        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)
+            && (header.bitsPerSample == 0 || header.bitsPerSample > 16))
+        {
+            return false;
+        }
+        const quint64 minimumStride = static_cast<quint64>(header.width) * bytesPerPixel;
+        if (minimumStride > static_cast<quint64>((std::numeric_limits<quint32>::max)())) return false;
+        if (header.width > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
+        if (header.height > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
+        if (header.stride > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
+        if (header.stride < minimumStride) return false;
+        if ((header.stride % bytesPerPixel) != 0) return false;
 
-        const quint64 rawSize = static_cast<quint64>(header.width) * header.height * bytesPerPixel;
+        const quint64 rawSize = sharedFramePayloadSize(header);
         if (rawSize == 0 || rawSize > static_cast<quint64>(kSharedFrameMaxBytes)) return false;
 
         return true;
@@ -1505,8 +1540,16 @@ namespace scopeone::core::internal
         {
             return;
         }
-        const SharedPixelFormat fmt = (bpp == 2) ? SharedPixelFormat::Mono16 : SharedPixelFormat::Mono8;
-        const quint64 rawSize = static_cast<quint64>(w) * h * bpp;
+        const qint64 stride = static_cast<qint64>(w) * bpp;
+        const qint64 rawSize = stride * h;
+        if (w > static_cast<unsigned>((std::numeric_limits<int>::max)())
+            || h > static_cast<unsigned>((std::numeric_limits<int>::max)())
+            || stride > (std::numeric_limits<int>::max)()
+            || rawSize <= 0
+            || rawSize > (std::numeric_limits<qsizetype>::max)())
+        {
+            return;
+        }
 
         int sourceRoiX = 0;
         int sourceRoiY = 0;
@@ -1528,19 +1571,19 @@ namespace scopeone::core::internal
             sourceRoiHeight = static_cast<int>(h);
         }
 
-        quint16 bitDepth = (fmt == SharedPixelFormat::Mono16) ? 16 : 8;
+        quint16 bitDepth = (bpp == 2) ? 16 : 8;
         try
         {
             const int bd = m_nativeCore->getImageBitDepth();
-            if (bd >= 1 && bd <= 16) bitDepth = static_cast<quint16>(bd);
+            const auto pixelFormat = bpp == 2 ? scopeone::core::ImagePixelFormat::Mono16
+                                              : scopeone::core::ImagePixelFormat::Mono8;
+            bitDepth = static_cast<quint16>(ImageFrame::normalizedBitsPerSample(pixelFormat, bd));
         }
         catch (const CMMError&)
         {
         }
 
-        std::vector<std::shared_ptr<QByteArray>> frames;
-        frames.reserve(static_cast<size_t>(remaining));
-        SharedFrameHeader lastHeader{};
+        ImageFrame lastFrame;
 
         while (remaining-- > 0)
         {
@@ -1550,36 +1593,35 @@ namespace scopeone::core::internal
                 break;
             }
 
-            auto buffer = std::make_shared<QByteArray>();
-            buffer->resize(static_cast<int>(rawSize));
-            memcpy(buffer->data(), img, static_cast<size_t>(rawSize));
+            QByteArray payload;
+            payload.resize(static_cast<qsizetype>(rawSize));
+            memcpy(payload.data(), img, static_cast<size_t>(rawSize));
 
-            SharedFrameHeader header{};
-            header.state = 2;
-            header.width = w;
-            header.height = h;
-            header.stride = w * bpp;
-            header.pixelFormat = static_cast<quint32>(fmt);
-            header.bitsPerSample = bitDepth;
-            header.channels = 1;
-            header.frameIndex = ++slot.lastFrameIndex;
-            header.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-            setSharedFrameSourceRoi(header,
-                                    sourceRoiX,
-                                    sourceRoiY,
-                                    sourceRoiWidth,
-                                    sourceRoiHeight);
-
-            emit newRawFrameReady(slot.cameraId, header, *buffer);
-            frames.push_back(buffer);
-            lastHeader = header;
+            ImageFrame frame;
+            frame.cameraId = slot.cameraId;
+            frame.width = static_cast<int>(w);
+            frame.height = static_cast<int>(h);
+            frame.stride = static_cast<int>(stride);
+            frame.pixelFormat = bpp == 2 ? scopeone::core::ImagePixelFormat::Mono16
+                                         : scopeone::core::ImagePixelFormat::Mono8;
+            frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(frame.pixelFormat, bitDepth);
+            frame.frameIndex = ++slot.lastFrameIndex;
+            frame.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            frame.sourceRoiX = sourceRoiX;
+            frame.sourceRoiY = sourceRoiY;
+            frame.sourceRoiWidth = sourceRoiWidth;
+            frame.sourceRoiHeight = sourceRoiHeight;
+            frame.bytes = std::move(payload);
+            if (frame.isValid())
+            {
+                emit newRawFrameReady(frame);
+                lastFrame = std::move(frame);
+            }
         }
 
-        if (!frames.empty())
+        if (lastFrame.isValid())
         {
-            auto lastBuffer = frames.back();
-            slot.cachedHeader = lastHeader;
-            slot.frameBuffer = lastBuffer;
+            slot.latestFrame = std::move(lastFrame);
         }
     }
 
@@ -1589,7 +1631,8 @@ namespace scopeone::core::internal
                                                        QJsonObject* response,
                                                        int timeoutMs)
     {
-        const auto it = m_cameras.constFind(cameraId);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        const auto it = m_cameras.constFind(normalizedId);
         if (it == m_cameras.constEnd() || !it.value() || !it.value()->control)
         {
             return false;
@@ -1672,26 +1715,14 @@ namespace scopeone::core::internal
 
         auto copySlotToImage = [&](const SharedFrameHeader& capturedHeader, const uchar* pixelData) -> bool
         {
-            const quint32 bytesPerPixel =
-                (capturedHeader.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-            const quint64 rawSize = static_cast<quint64>(capturedHeader.width) * capturedHeader.height * bytesPerPixel;
+            const quint64 rawSize = sharedFramePayloadSize(capturedHeader);
 
-            std::shared_ptr<QByteArray> buffer = slot.frameBuffer;
-            const bool bufferBusy = buffer && buffer.use_count() > 1;
-            if (!buffer || bufferBusy || buffer->size() < static_cast<int>(rawSize))
-            {
-                buffer = std::make_shared<QByteArray>();
-                buffer->resize(static_cast<int>(rawSize));
-            }
-            else if (buffer->size() != static_cast<int>(rawSize))
-            {
-                buffer->resize(static_cast<int>(rawSize));
-            }
-            memcpy(buffer->data(), pixelData, static_cast<size_t>(rawSize));
-            slot.cachedHeader = capturedHeader;
-            slot.frameBuffer = buffer;
+            QByteArray payload;
+            payload.resize(static_cast<qsizetype>(rawSize));
+            memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
+            slot.latestFrame = ImageFrame::fromSharedFrame(slot.cameraId, capturedHeader, payload);
             slot.lastFrameIndex = capturedHeader.frameIndex;
-            return true;
+            return slot.latestFrame.isValid();
         };
 
         bool ok = false;
@@ -1776,12 +1807,6 @@ namespace scopeone::core::internal
             int index{-1};
         };
 
-        struct PendingFrame
-        {
-            SharedFrameHeader header{};
-            std::shared_ptr<QByteArray> buffer;
-        };
-
         const int slotStride = kSharedFrameSlotStride;
         const int baseOffset = kSharedMemoryControlSize;
         const quint64 lastIndex = slot.lastFrameIndex;
@@ -1811,7 +1836,7 @@ namespace scopeone::core::internal
             return a.header.frameIndex < b.header.frameIndex;
         });
 
-        std::vector<PendingFrame> frames;
+        std::vector<ImageFrame> frames;
         frames.reserve(pending.size());
         quint64 maxIndex = lastIndex;
 
@@ -1820,14 +1845,15 @@ namespace scopeone::core::internal
             const SharedFrameHeader& header = item.header;
             const uchar* ptr = base + baseOffset + item.index * slotStride;
             const uchar* pixelData = ptr + kSharedFrameHeaderSize;
-            const quint32 bytesPerPixel =
-                (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-            const quint64 rawSize =
-                static_cast<quint64>(header.width) * header.height * bytesPerPixel;
-            auto buffer = std::make_shared<QByteArray>();
-            buffer->resize(static_cast<int>(rawSize));
-            memcpy(buffer->data(), pixelData, static_cast<size_t>(rawSize));
-            frames.push_back(PendingFrame{header, buffer});
+            const quint64 rawSize = sharedFramePayloadSize(header);
+            QByteArray payload;
+            payload.resize(static_cast<qsizetype>(rawSize));
+            memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
+            ImageFrame frame = ImageFrame::fromSharedFrame(slot.cameraId, header, payload);
+            if (frame.isValid())
+            {
+                frames.push_back(frame);
+            }
             if (header.frameIndex > maxIndex)
             {
                 maxIndex = header.frameIndex;
@@ -1844,42 +1870,39 @@ namespace scopeone::core::internal
 
         if (emitFrames)
         {
-            for (const PendingFrame& frame : frames)
+            for (const ImageFrame& frame : frames)
             {
-                if (!frame.buffer)
+                if (!frame.isValid())
                 {
                     continue;
                 }
-                emit newRawFrameReady(slot.cameraId, frame.header, *frame.buffer);
+                emit newRawFrameReady(frame);
             }
         }
 
-        const PendingFrame& last = frames.back();
-        slot.cachedHeader = last.header;
-        slot.frameBuffer = last.buffer;
+        slot.latestFrame = frames.back();
         return true;
     }
 
     // Returns the cached or shared memory latest frame for a camera
     bool MultiProcessCameraManager::getLatestRaw(const QString& cameraId,
-                                                 SharedFrameHeader& header,
-                                                 QByteArray& data)
+                                                 ImageFrame& frame)
     {
-        if (!m_cameras.contains(cameraId))
+        const QString normalizedId = normalizedCameraId(cameraId);
+        if (!m_cameras.contains(normalizedId))
         {
             return false;
         }
-        auto slotPtr = m_cameras.value(cameraId);
+        auto slotPtr = m_cameras.value(normalizedId);
         if (!slotPtr)
         {
             return false;
         }
         CameraSlot& slot = *slotPtr;
 
-        if (slot.frameBuffer && !slot.frameBuffer->isEmpty() && slot.cachedHeader.width > 0)
+        if (slot.latestFrame.isValid())
         {
-            header = slot.cachedHeader;
-            data = *slot.frameBuffer;
+            frame = slot.latestFrame;
             return true;
         }
 
@@ -1894,6 +1917,8 @@ namespace scopeone::core::internal
         }
 
         bool ok = false;
+        SharedFrameHeader header{};
+        QByteArray payload;
         uchar* base = static_cast<uchar*>(slot.shm->data());
         if (base)
         {
@@ -1909,11 +1934,9 @@ namespace scopeone::core::internal
                 if (!headerLooksSane(header)) return false;
                 if (header.state != 2) return false;
                 const uchar* pixelData = ptr + kSharedFrameHeaderSize;
-                const quint32 bytesPerPixel =
-                    (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-                const quint64 rawSize = static_cast<quint64>(header.width) * header.height * bytesPerPixel;
-                data.resize(static_cast<int>(rawSize));
-                memcpy(data.data(), pixelData, static_cast<size_t>(rawSize));
+                const quint64 rawSize = sharedFramePayloadSize(header);
+                payload.resize(static_cast<qsizetype>(rawSize));
+                memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
                 return true;
             };
 
@@ -1943,32 +1966,47 @@ namespace scopeone::core::internal
         }
 
         slot.shm->unlock();
-        return ok;
+        if (!ok)
+        {
+            frame = ImageFrame{};
+            return false;
+        }
+
+        frame = ImageFrame::fromSharedFrame(normalizedId, header, payload);
+        if (!frame.isValid())
+        {
+            return false;
+        }
+        slot.latestFrame = frame;
+        slot.lastFrameIndex = frame.frameIndex;
+        return true;
     }
 
     // Triggers one camera and waits for its event frame
     bool MultiProcessCameraManager::captureEventFrame(const QString& cameraId,
-                                                      SharedFrameHeader& header,
-                                                      QByteArray& data,
+                                                      ImageFrame& frame,
                                                       int timeoutMs)
     {
-        if (!m_cameras.contains(cameraId))
+        const QString normalizedId = normalizedCameraId(cameraId);
+        if (!m_cameras.contains(normalizedId))
         {
             return false;
         }
-        auto slotPtr = m_cameras.value(cameraId);
+        auto slotPtr = m_cameras.value(normalizedId);
         if (!slotPtr)
         {
             return false;
         }
 
-        const quint64 previousFrameIndex = slotPtr->cachedHeader.frameIndex;
+        const quint64 previousFrameIndex = slotPtr->latestFrame.isValid()
+                                               ? slotPtr->latestFrame.frameIndex
+                                               : slotPtr->lastFrameIndex;
 
         QJsonObject req;
         req.insert(agent::kMessageTypeField, agent::kCommandCaptureEvent);
         QJsonObject resp;
         const int waitMs = (timeoutMs > 0) ? timeoutMs : 1500;
-        if (!sendControlCommand(cameraId, req, &resp, waitMs + 1000))
+        if (!sendControlCommand(normalizedId, req, &resp, waitMs + 1000))
         {
             return false;
         }
@@ -1986,16 +2024,14 @@ namespace scopeone::core::internal
 
         const auto hasTargetFrame = [&]() -> bool
         {
-            return slotPtr->cachedHeader.frameIndex > previousFrameIndex
-                && (targetFrameIndex == 0 || slotPtr->cachedHeader.frameIndex >= targetFrameIndex)
-                && slotPtr->frameBuffer
-                && !slotPtr->frameBuffer->isEmpty();
+            return slotPtr->latestFrame.isValid()
+                && slotPtr->latestFrame.frameIndex > previousFrameIndex
+                && (targetFrameIndex == 0 || slotPtr->latestFrame.frameIndex >= targetFrameIndex);
         };
 
         if (hasTargetFrame())
         {
-            header = slotPtr->cachedHeader;
-            data = *slotPtr->frameBuffer;
+            frame = slotPtr->latestFrame;
             return true;
         }
 
@@ -2006,14 +2042,12 @@ namespace scopeone::core::internal
         {
             if (hasTargetFrame())
             {
-                header = slotPtr->cachedHeader;
-                data = *slotPtr->frameBuffer;
+                frame = slotPtr->latestFrame;
                 return true;
             }
             if (readLatestFrame(*slotPtr) && hasTargetFrame())
             {
-                header = slotPtr->cachedHeader;
-                data = *slotPtr->frameBuffer;
+                frame = slotPtr->latestFrame;
                 return true;
             }
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
@@ -2031,10 +2065,7 @@ namespace scopeone::core::internal
             return;
         }
         m_pollingPaused = paused;
-        if (m_runtime&& m_runtime
-        ->
-        isNative()
-        )
+        if (m_runtime && m_runtime->isNative())
         {
             if (m_pollingPaused)
             {
@@ -2086,14 +2117,14 @@ namespace scopeone::core::internal
                                                   const QStringList& properties,
                                                   double exposureMs)
     {
-        if (cameraId.trimmed().isEmpty() || adapter.trimmed().isEmpty() || device.trimmed().isEmpty())
+        const QString normalizedId = normalizedCameraId(cameraId);
+        const QString adapterName = adapter.trimmed();
+        const QString deviceName = device.trimmed();
+        if (normalizedId.isEmpty() || adapterName.isEmpty() || deviceName.isEmpty())
         {
             return false;
         }
-        if (m_runtime&& m_runtime
-        ->
-        isNative()
-        )
+        if (m_runtime && m_runtime->isNative())
         {
             stopAgents();
         }
@@ -2103,18 +2134,18 @@ namespace scopeone::core::internal
             m_singleCameraId.clear();
             clearPropertyCaches();
         }
-        if (m_cameras.contains(cameraId))
+        if (m_cameras.contains(normalizedId))
         {
             return true;
         }
         auto slot = std::make_shared<CameraSlot>();
-        slot->cameraId = cameraId;
-        slot->shmKey = agent::sharedMemoryKey(cameraId);
+        slot->cameraId = normalizedId;
+        slot->shmKey = agent::sharedMemoryKey(normalizedId);
         slot->shm = std::make_shared<QSharedMemory>();
         slot->shm->setNativeKey(slot->shmKey);
         slot->process = std::make_shared<QProcess>(this);
-        slot->control = std::make_shared<ControlSession>(cameraId,
-                                                         agent::controlServerName(cameraId),
+        slot->control = std::make_shared<ControlSession>(normalizedId,
+                                                         agent::controlServerName(normalizedId),
                                                          this);
         slot->exposureMs = exposureMs;
         const QString agentPath =
@@ -2125,9 +2156,9 @@ namespace scopeone::core::internal
             return false;
         }
         QStringList args;
-        args << "--cameraId" << cameraId
-            << "--adapter" << adapter
-            << "--device" << device
+        args << "--cameraId" << normalizedId
+            << "--adapter" << adapterName
+            << "--device" << deviceName
             << "--shm" << slot->shmKey;
         if (exposureMs > 0.0)
         {
@@ -2151,7 +2182,7 @@ namespace scopeone::core::internal
         slot->process->setArguments(args);
         slot->process->setProcessChannelMode(QProcess::MergedChannels);
 
-        connect(slot->process.get(), &QProcess::readyReadStandardOutput, this, [cameraId, slot]()
+        connect(slot->process.get(), &QProcess::readyReadStandardOutput, this, [normalizedId, slot]()
         {
             QByteArray output = slot->process->readAllStandardOutput();
             if (!output.isEmpty())
@@ -2160,7 +2191,7 @@ namespace scopeone::core::internal
                 for (const QString& line : lines)
                 {
                     const QString trimmed = line.trimmed();
-                    qInfo().noquote() << QString("[Agent %1] %2").arg(cameraId, trimmed);
+                    qInfo().noquote() << QString("[Agent %1] %2").arg(normalizedId, trimmed);
                 }
             }
         });
@@ -2176,11 +2207,11 @@ namespace scopeone::core::internal
 
         if (slot->control)
         {
-            slot->control->addReadyHandler([this, cameraId](bool ready)
+            slot->control->addReadyHandler([this, normalizedId](bool ready)
             {
                 if (ready)
                 {
-                    emit agentControlServerListening(cameraId, agent::controlServerName(cameraId));
+                    emit agentControlServerListening(normalizedId, agent::controlServerName(normalizedId));
                 }
             });
             slot->control->addEventHandler([this, slot](const QJsonObject& event)
@@ -2218,10 +2249,10 @@ namespace scopeone::core::internal
         slot->process->start();
         if (!slot->process->waitForStarted(3000))
         {
-            qWarning().noquote() << QString("Failed to start agent for %1").arg(cameraId);
+            qWarning().noquote() << QString("Failed to start agent for %1").arg(normalizedId);
             return false;
         }
-        m_cameras.insert(cameraId, slot);
+        m_cameras.insert(normalizedId, slot);
         if (slot->control)
         {
             slot->control->start();
@@ -2230,9 +2261,9 @@ namespace scopeone::core::internal
         {
             qWarning().noquote()
                 << QString("Agent control session did not become ready for %1 within %2 ms")
-                   .arg(cameraId)
+                   .arg(normalizedId)
                    .arg(kAgentControlReadyTimeoutMs);
-            stopAgentFor(cameraId);
+            stopAgentFor(normalizedId);
             return false;
         }
         return true;
@@ -2241,21 +2272,19 @@ namespace scopeone::core::internal
     // Stops one camera agent process and releases its resources
     bool MultiProcessCameraManager::stopAgentFor(const QString& cameraId)
     {
-        if (m_runtime&& m_runtime
-        ->
-        isNative()
-        )
+        const QString normalizedId = normalizedCameraId(cameraId);
+        if (m_runtime && m_runtime->isNative())
         {
             return false;
         }
-        if (!m_cameras.contains(cameraId)) return true;
-        if (auto existing = m_cameras.value(cameraId); existing && existing->control)
+        if (!m_cameras.contains(normalizedId)) return true;
+        if (auto existing = m_cameras.value(normalizedId); existing && existing->control)
         {
             QJsonObject request;
             request.insert(agent::kMessageTypeField, agent::kCommandShutdown);
-            sendControlCommand(cameraId, request, nullptr, 800);
+            sendControlCommand(normalizedId, request, nullptr, 800);
         }
-        auto slot = m_cameras.take(cameraId);
+        auto slot = m_cameras.take(normalizedId);
         if (slot->control)
         {
             slot->control->stop();
@@ -2320,15 +2349,21 @@ namespace scopeone::core::internal
     // Lists properties for one camera
     QStringList MultiProcessCameraManager::listProperties(const QString& cameraId)
     {
-        return m_runtime ? m_runtime->listProperties(cameraId) : QStringList{};
+        const QString normalizedId = normalizedCameraId(cameraId);
+        if (normalizedId.isEmpty() || !m_runtime)
+        {
+            return {};
+        }
+        return m_runtime->listProperties(normalizedId);
     }
 
     // Reads a property and updates property metadata caches
     QString MultiProcessCameraManager::getProperty(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         PropertyReadback readback;
-        if (!m_runtime || !m_runtime->readPropertyDetails(cameraId, name, readback))
+        if (normalizedId.isEmpty() || !m_runtime || !m_runtime->readPropertyDetails(normalizedId, name, readback))
         {
             m_propertyTypeCache.remove(propKey);
             m_propertyReadOnlyCache.remove(propKey);
@@ -2359,24 +2394,26 @@ namespace scopeone::core::internal
     // Reads cached property type after refreshing if needed
     QString MultiProcessCameraManager::getPropertyType(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyTypeCache.contains(propKey))
         {
             return m_propertyTypeCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyTypeCache.value(propKey, QStringLiteral("Unknown"));
     }
 
     // Reads cached property mutability after refreshing if needed
     bool MultiProcessCameraManager::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyReadOnlyCache.contains(propKey))
         {
             return m_propertyReadOnlyCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyReadOnlyCache.value(propKey, true);
     }
 
@@ -2386,14 +2423,15 @@ namespace scopeone::core::internal
                                                 const QString& value,
                                                 QString* errorMessage)
     {
-        if (!m_runtime)
+        const QString normalizedId = normalizedCameraId(cameraId);
+        if (normalizedId.isEmpty() || !m_runtime)
         {
             return false;
         }
-        const bool ok = m_runtime->setProperty(cameraId, name, value, errorMessage);
+        const bool ok = m_runtime->setProperty(normalizedId, name, value, errorMessage);
         if (ok)
         {
-            const QString propKey = QString("%1:%2").arg(cameraId, name);
+            const QString propKey = QString("%1:%2").arg(normalizedId, name);
             m_propertyTypeCache.remove(propKey);
             m_propertyReadOnlyCache.remove(propKey);
             m_propertyAllowedValuesCache.remove(propKey);
@@ -2407,85 +2445,95 @@ namespace scopeone::core::internal
     // Reports whether one camera preview is running
     bool MultiProcessCameraManager::isPreviewRunning(const QString& cameraId) const
     {
-        const auto it = m_cameras.constFind(cameraId);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        const auto it = m_cameras.constFind(normalizedId);
         return it != m_cameras.constEnd() && it.value() && it.value()->isRunning;
     }
 
     // Starts preview for one camera
     bool MultiProcessCameraManager::startPreviewFor(const QString& cameraId)
     {
-        return m_runtime && m_runtime->startPreviewFor(cameraId);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_runtime && m_runtime->startPreviewFor(normalizedId);
     }
 
     // Stops preview for one camera
     bool MultiProcessCameraManager::stopPreviewFor(const QString& cameraId)
     {
-        return m_runtime && m_runtime->stopPreviewFor(cameraId);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_runtime && m_runtime->stopPreviewFor(normalizedId);
     }
 
     // Reads cached allowed property values after refreshing if needed
     QStringList MultiProcessCameraManager::getAllowedPropertyValues(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyAllowedValuesCache.contains(propKey))
         {
             return m_propertyAllowedValuesCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyAllowedValuesCache.value(propKey, QStringList());
     }
 
     // Reads cached property limit availability after refreshing if needed
     bool MultiProcessCameraManager::hasPropertyLimits(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyHasLimitsCache.contains(propKey))
         {
             return m_propertyHasLimitsCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyHasLimitsCache.value(propKey, false);
     }
 
     // Reads cached lower property limit after refreshing if needed
     double MultiProcessCameraManager::getPropertyLowerLimit(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyLowerLimitCache.contains(propKey))
         {
             return m_propertyLowerLimitCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyLowerLimitCache.value(propKey, 0.0);
     }
 
     // Reads cached upper property limit after refreshing if needed
     double MultiProcessCameraManager::getPropertyUpperLimit(const QString& cameraId, const QString& name)
     {
-        QString propKey = QString("%1:%2").arg(cameraId, name);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        QString propKey = QString("%1:%2").arg(normalizedId, name);
         if (m_propertyUpperLimitCache.contains(propKey))
         {
             return m_propertyUpperLimitCache[propKey];
         }
-        getProperty(cameraId, name);
+        getProperty(normalizedId, name);
         return m_propertyUpperLimitCache.value(propKey, 0.0);
     }
 
     // Sets ROI through the active camera backend
     bool MultiProcessCameraManager::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
-        return m_runtime && m_runtime->setROI(cameraId, x, y, width, height);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_runtime && m_runtime->setROI(normalizedId, x, y, width, height);
     }
 
     // Clears ROI through the active camera backend
     bool MultiProcessCameraManager::clearROI(const QString& cameraId)
     {
-        return m_runtime && m_runtime->clearROI(cameraId);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_runtime && m_runtime->clearROI(normalizedId);
     }
 
     // Reads ROI through the active camera backend
     bool MultiProcessCameraManager::getROI(const QString& cameraId, int& x, int& y, int& width, int& height)
     {
-        return m_runtime && m_runtime->getROI(cameraId, x, y, width, height);
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_runtime && m_runtime->getROI(normalizedId, x, y, width, height);
     }
 } // namespace scopeone::core::internal

@@ -27,7 +27,6 @@ namespace scopeone::ui
     class ConsoleWidget;
     class DeviceControlWidget;
     class RecordingWidget;
-    class ScopeOneLocalApiServer;
     class StageMosaicDialog;
     class ParticleDetectionDialog;
 
@@ -133,7 +132,6 @@ namespace scopeone::ui
         QPointer<StageMosaicDialog> m_stageMosaicDialog;
         QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-        ScopeOneLocalApiServer* m_apiServer{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
     };
 }

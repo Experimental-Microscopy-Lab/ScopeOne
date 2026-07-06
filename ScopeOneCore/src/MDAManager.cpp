@@ -9,27 +9,32 @@
 #include <algorithm>
 #include <functional>
 #include <future>
+#include <limits>
 #include <vector>
 
 namespace scopeone::core::internal
 {
-    using scopeone::core::SharedFrameHeader;
-    using scopeone::core::SharedPixelFormat;
-
     // Creates the MDA manager and registers queued signal types
     MDAManager::MDAManager(std::shared_ptr<CMMCore> core, QObject* parent)
         : QObject(parent)
           , m_mmcore(std::move(core))
     {
         qRegisterMetaType<scopeone::core::internal::MDAEvent>("scopeone::core::internal::MDAEvent");
-        qRegisterMetaType<scopeone::core::internal::CameraFrame>("scopeone::core::internal::CameraFrame");
         qRegisterMetaType<scopeone::core::internal::MDAOutput>("scopeone::core::internal::MDAOutput");
     }
 
     // Sets the camera list used for sequence acquisition
     void MDAManager::setCameras(const QStringList& cameraIds)
     {
-        m_cameraIds = cameraIds;
+        m_cameraIds.clear();
+        for (const QString& cameraId : cameraIds)
+        {
+            const QString trimmedCameraId = cameraId.trimmed();
+            if (!trimmedCameraId.isEmpty() && !m_cameraIds.contains(trimmedCameraId))
+            {
+                m_cameraIds.append(trimmedCameraId);
+            }
+        }
     }
 
     // Connects MDA capture to the active camera backend
@@ -274,7 +279,7 @@ namespace scopeone::core::internal
     // Routes one event to the active capture implementation
     bool MDAManager::execEvent(const MDAEvent& event, MDAOutput& outFrame, QString* errorMessage)
     {
-        if (!m_cameraIds.isEmpty() && m_mpcm)
+        if (m_cameraIds.size() > 1 && m_mpcm)
         {
             return execEventMultiCamera(event, outFrame, errorMessage);
         }
@@ -300,7 +305,23 @@ namespace scopeone::core::internal
             const unsigned width = m_mmcore->getImageWidth();
             const unsigned height = m_mmcore->getImageHeight();
             const unsigned bytesPerPixel = m_mmcore->getBytesPerPixel();
-            const unsigned byteCount = width * height * bytesPerPixel;
+            if (bytesPerPixel != 1 && bytesPerPixel != 2)
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Unsupported pixel format");
+                return false;
+            }
+
+            const qint64 stride = static_cast<qint64>(width) * bytesPerPixel;
+            const qint64 byteCount = stride * height;
+            if (width > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                || stride > (std::numeric_limits<int>::max)()
+                || byteCount <= 0
+                || byteCount > (std::numeric_limits<qsizetype>::max)())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Image frame is too large");
+                return false;
+            }
             const int bitDepth = static_cast<int>(m_mmcore->getImageBitDepth());
 
             const unsigned char* ptr = static_cast<unsigned char*>(m_mmcore->getImage());
@@ -311,12 +332,49 @@ namespace scopeone::core::internal
             }
 
             outFrame.event = event;
-            outFrame.width = static_cast<int>(width);
-            outFrame.height = static_cast<int>(height);
-            outFrame.bytesPerPixel = static_cast<int>(bytesPerPixel);
-            outFrame.bitsPerSample = (bitDepth > 0) ? bitDepth : static_cast<int>(bytesPerPixel * 8);
             outFrame.timestampMs = QDateTime::currentMSecsSinceEpoch();
-            outFrame.raw = QByteArray(reinterpret_cast<const char*>(ptr), static_cast<int>(byteCount));
+            outFrame.frames.clear();
+
+            scopeone::core::ImageFrame imageFrame;
+            imageFrame.cameraId = m_cameraIds.isEmpty() ? QString() : m_cameraIds.first();
+            int sourceRoiX = 0;
+            int sourceRoiY = 0;
+            int sourceRoiWidth = static_cast<int>(width);
+            int sourceRoiHeight = static_cast<int>(height);
+            if (!imageFrame.cameraId.isEmpty())
+            {
+                try
+                {
+                    m_mmcore->getROI(imageFrame.cameraId.toStdString().c_str(),
+                                     sourceRoiX,
+                                     sourceRoiY,
+                                     sourceRoiWidth,
+                                     sourceRoiHeight);
+                }
+                catch (const CMMError&)
+                {
+                    sourceRoiX = 0;
+                    sourceRoiY = 0;
+                    sourceRoiWidth = static_cast<int>(width);
+                    sourceRoiHeight = static_cast<int>(height);
+                }
+            }
+            imageFrame.width = static_cast<int>(width);
+            imageFrame.height = static_cast<int>(height);
+            imageFrame.stride = static_cast<int>(stride);
+            imageFrame.pixelFormat = bytesPerPixel == 2
+                                         ? scopeone::core::ImagePixelFormat::Mono16
+                                         : scopeone::core::ImagePixelFormat::Mono8;
+            imageFrame.bitsPerSample = scopeone::core::ImageFrame::normalizedBitsPerSample(
+                imageFrame.pixelFormat,
+                bitDepth > 0 ? bitDepth : static_cast<int>(bytesPerPixel * 8));
+            imageFrame.timestampNs = static_cast<quint64>(outFrame.timestampMs) * 1000000ull;
+            imageFrame.sourceRoiX = sourceRoiX;
+            imageFrame.sourceRoiY = sourceRoiY;
+            imageFrame.sourceRoiWidth = sourceRoiWidth;
+            imageFrame.sourceRoiHeight = sourceRoiHeight;
+            imageFrame.bytes = QByteArray(reinterpret_cast<const char*>(ptr), static_cast<qsizetype>(byteCount));
+            outFrame.frames.insert(imageFrame.cameraId, imageFrame);
             return true;
         }
         catch (const CMMError& e)
@@ -343,8 +401,7 @@ namespace scopeone::core::internal
         struct CaptureResult
         {
             QString cameraId;
-            SharedFrameHeader header{};
-            QByteArray data;
+            scopeone::core::ImageFrame frame;
             bool ok{false};
             QString error;
         };
@@ -358,12 +415,12 @@ namespace scopeone::core::internal
             {
                 CaptureResult result;
                 result.cameraId = cameraId;
-                if (!m_mpcm->captureEventFrame(cameraId, result.header, result.data, captureTimeoutMs))
+                if (!m_mpcm->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
                 {
                     result.error = QString("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;
                 }
-                if (result.data.isEmpty())
+                if (!result.frame.isValid())
                 {
                     result.error = QString("Empty frame from camera: %1").arg(cameraId);
                     return result;
@@ -382,26 +439,9 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            CameraFrame frame;
+            scopeone::core::ImageFrame frame = result.frame;
             frame.cameraId = result.cameraId;
-            frame.raw = result.data;
-            frame.width = static_cast<int>(result.header.width);
-            frame.height = static_cast<int>(result.header.height);
-            frame.bytesPerPixel = (result.header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16))
-                                      ? 2
-                                      : 1;
-            frame.bitsPerSample = static_cast<int>(result.header.bitsPerSample);
             outFrame.frames.insert(result.cameraId, frame);
-        }
-
-        if (outFrame.frames.size() == 1)
-        {
-            const CameraFrame& frame = outFrame.frames.first();
-            outFrame.raw = frame.raw;
-            outFrame.width = frame.width;
-            outFrame.height = frame.height;
-            outFrame.bytesPerPixel = frame.bytesPerPixel;
-            outFrame.bitsPerSample = frame.bitsPerSample;
         }
 
         return true;

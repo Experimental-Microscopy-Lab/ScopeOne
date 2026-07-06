@@ -68,6 +68,10 @@ namespace scopeone::core::internal
             QByteArray bytes = dispatchFrameType(buffer.front(), [&]<typename Pixel>()
             {
                 QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+                if (outBytes.isEmpty())
+                {
+                    return outBytes;
+                }
                 for (int y = 0; y < height; ++y)
                 {
                     Pixel* dstRow = mutableRowData<Pixel>(outBytes, width, y);
@@ -106,11 +110,15 @@ namespace scopeone::core::internal
             }
 
             std::vector<int> samples;
-            samples.reserve(static_cast<size_t>(binX * binY));
+            samples.reserve(static_cast<size_t>(static_cast<qint64>(binX) * binY));
             const int maxValue = frame.maxValue();
             QByteArray bytes = dispatchFrameType(frame, [&]<typename Pixel>()
             {
                 QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+                if (outBytes.isEmpty())
+                {
+                    return outBytes;
+                }
                 for (int y = 0; y < height; ++y)
                 {
                     Pixel* dst = mutableRowData<Pixel>(outBytes, width, y);

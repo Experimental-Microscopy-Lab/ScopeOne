@@ -3,6 +3,8 @@
 #include <QMutexLocker>
 #include <QtGlobal>
 #include <algorithm>
+#include <limits>
+#include <utility>
 
 namespace scopeone::core::internal
 {
@@ -39,6 +41,39 @@ namespace scopeone::core::internal
 
             module->setParameters(source->getParameters());
             return module;
+        }
+
+        // Carries frame identity through module outputs
+        void inheritFrameMetadata(ImageFrame& nextFrame, const ImageFrame& previousFrame)
+        {
+            nextFrame.cameraId = nextFrame.cameraId.trimmed();
+            if (nextFrame.cameraId.isEmpty())
+            {
+                nextFrame.cameraId = previousFrame.cameraId.trimmed();
+            }
+            if (nextFrame.frameIndex == 0)
+            {
+                nextFrame.frameIndex = previousFrame.frameIndex;
+            }
+            if (nextFrame.timestampNs == 0)
+            {
+                nextFrame.timestampNs = previousFrame.timestampNs;
+            }
+            if (!nextFrame.hasSourceRoi() && previousFrame.hasSourceRoi())
+            {
+                nextFrame.sourceRoiX = previousFrame.sourceRoiX;
+                nextFrame.sourceRoiY = previousFrame.sourceRoiY;
+                nextFrame.sourceRoiWidth = previousFrame.sourceRoiWidth;
+                nextFrame.sourceRoiHeight = previousFrame.sourceRoiHeight;
+            }
+        }
+
+        // Normalizes frame identity before it enters a runtime pipeline
+        ImageFrame normalizedFrameSource(const ImageFrame& frame)
+        {
+            ImageFrame normalizedFrame(frame);
+            normalizedFrame.cameraId = frame.cameraId.trimmed();
+            return normalizedFrame;
         }
     } // namespace
 
@@ -107,43 +142,85 @@ namespace scopeone::core::internal
     // Runs all modules in order for one frame
     ImageFrame ProcessingPipeline::process(const ImageFrame& input, int processingBitDepth)
     {
-        ImageFrame result(input);
+        return processRange(input,
+                            processingBitDepth,
+                            0,
+                            (std::numeric_limits<int>::max)());
+    }
 
+    // Runs modules from a specific pipeline position
+    ImageFrame ProcessingPipeline::processFrom(int startModuleIndex,
+                                               const ImageFrame& input,
+                                               int processingBitDepth)
+    {
+        return processRange(input,
+                            processingBitDepth,
+                            startModuleIndex,
+                            (std::numeric_limits<int>::max)());
+    }
+
+    // Runs modules through a specific pipeline position
+    ImageFrame ProcessingPipeline::processThrough(int endModuleIndex,
+                                                  const ImageFrame& input,
+                                                  int processingBitDepth)
+    {
+        int endModuleIndexExclusive = 0;
+        if (endModuleIndex >= (std::numeric_limits<int>::max)() - 1)
+        {
+            endModuleIndexExclusive = (std::numeric_limits<int>::max)();
+        }
+        else if (endModuleIndex >= 0)
+        {
+            endModuleIndexExclusive = endModuleIndex + 1;
+        }
+        return processRange(input,
+                            processingBitDepth,
+                            0,
+                            endModuleIndexExclusive);
+    }
+
+    // Runs a pipeline segment and returns the final output frame
+    ImageFrame ProcessingPipeline::processRange(const ImageFrame& input,
+                                                int processingBitDepth,
+                                                int startModuleIndex,
+                                                int endModuleIndexExclusive)
+    {
         if (!input.isValid())
         {
-            return result;
+            return input;
         }
 
         ModuleInput currentInput(input, processingBitDepth);
 
         QMutexLocker locker(&m_modulesMutex);
-        for (const auto& module : m_modules)
+        const int startIndex = std::clamp(startModuleIndex, 0, static_cast<int>(m_modules.size()));
+        const int endIndex = std::clamp(endModuleIndexExclusive, startIndex, static_cast<int>(m_modules.size()));
+        for (int moduleIndex = startIndex; moduleIndex < endIndex; ++moduleIndex)
         {
+            ProcessingModule* module = m_modules[static_cast<size_t>(moduleIndex)].get();
             ModuleOutput moduleOutput;
             const bool success = module->process(currentInput, moduleOutput);
             if (success && moduleOutput.isValid())
             {
                 ImageFrame nextFrame = moduleOutput.frame;
-                if (nextFrame.cameraId.isEmpty())
-                {
-                    nextFrame.cameraId = currentInput.frame.cameraId;
-                }
+                inheritFrameMetadata(nextFrame, currentInput.frame);
 
                 currentInput.frame = std::move(nextFrame);
                 currentInput.processingBitDepth = processingBitDepth;
-                result = currentInput.frame;
             }
             else if (moduleOutput.hasError())
             {
                 qWarning() << "Module" << module->getModuleName() << "failed:" << moduleOutput.error;
+                return {};
             }
             else
             {
                 qWarning() << "Module" << module->getModuleName() << "failed";
+                return {};
             }
         }
 
-        return result;
+        return currentInput.frame;
     }
 
     // Returns the current configured module count
@@ -193,7 +270,8 @@ namespace scopeone::core::internal
     void ImageProcessingManager::clearRuntimePipelines()
     {
         QMutexLocker locker(&m_frameMutex);
-        m_cameraPipelines.clear();
+        m_livePipelines.clear();
+        m_offlinePipelines.clear();
     }
 
     // Queues one frame for asynchronous processing
@@ -206,10 +284,51 @@ namespace scopeone::core::internal
         submitFrame(frame);
     }
 
+    // Runs one frame through the runtime pipeline for its source
+    ImageFrame ImageProcessingManager::processFrame(const ImageFrame& frame)
+    {
+        if (!frame.isValid())
+        {
+            return frame;
+        }
+
+        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
+        return offlinePipelineForCamera(getCameraKey(normalizedFrame))->process(normalizedFrame,
+                                                                                m_processingBitDepth.load());
+    }
+
+    // Continues one frame through the runtime pipeline for its source
+    ImageFrame ImageProcessingManager::processFrameFrom(int startModuleIndex, const ImageFrame& frame)
+    {
+        if (!frame.isValid())
+        {
+            return frame;
+        }
+
+        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
+        return offlinePipelineForCamera(getCameraKey(normalizedFrame))->processFrom(startModuleIndex,
+                                                                                    normalizedFrame,
+                                                                                    m_processingBitDepth.load());
+    }
+
+    // Runs one frame through a runtime pipeline stage for its source
+    ImageFrame ImageProcessingManager::processFrameThrough(int endModuleIndex, const ImageFrame& frame)
+    {
+        if (!frame.isValid())
+        {
+            return frame;
+        }
+
+        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
+        return offlinePipelineForCamera(getCameraKey(normalizedFrame))->processThrough(endModuleIndex,
+                                                                                       normalizedFrame,
+                                                                                       m_processingBitDepth.load());
+    }
+
     // Builds a stable key for camera specific processing state
     QString ImageProcessingManager::getCameraKey(const ImageFrame& frame) const
     {
-        const QString key = frame.cameraId;
+        const QString key = frame.cameraId.trimmed();
         return key.isEmpty() ? QStringLiteral("__default__") : key;
     }
 
@@ -221,13 +340,14 @@ namespace scopeone::core::internal
             return;
         }
 
-        const QString cameraKey = getCameraKey(frame);
+        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
+        const QString cameraKey = getCameraKey(normalizedFrame);
         bool shouldStartWorker = false;
 
         {
             QMutexLocker locker(&m_frameMutex);
             CameraSlot& slot = m_cameraSlots[cameraKey];
-            slot.latestFrame = frame;
+            slot.latestFrame = normalizedFrame;
             slot.hasFrame = true;
             if (!slot.processing)
             {
@@ -245,18 +365,32 @@ namespace scopeone::core::internal
         }
     }
 
-    // Returns the runtime pipeline owned by one camera processing state
-    std::shared_ptr<ProcessingPipeline> ImageProcessingManager::pipelineForCamera(const QString& cameraKey)
+    // Returns the live runtime pipeline owned by one camera preview stream
+    std::shared_ptr<ProcessingPipeline> ImageProcessingManager::livePipelineForCamera(const QString& cameraKey)
+    {
+        return pipelineForCamera(m_livePipelines, cameraKey);
+    }
+
+    // Returns the offline runtime pipeline used by synchronous frame processing
+    std::shared_ptr<ProcessingPipeline> ImageProcessingManager::offlinePipelineForCamera(const QString& cameraKey)
+    {
+        return pipelineForCamera(m_offlinePipelines, cameraKey);
+    }
+
+    // Returns a cloned runtime pipeline from the selected state table
+    std::shared_ptr<ProcessingPipeline> ImageProcessingManager::pipelineForCamera(
+        QHash<QString, std::shared_ptr<ProcessingPipeline>>& pipelines,
+        const QString& cameraKey)
     {
         QMutexLocker locker(&m_frameMutex);
-        auto it = m_cameraPipelines.find(cameraKey);
-        if (it != m_cameraPipelines.end())
+        auto it = pipelines.find(cameraKey);
+        if (it != pipelines.end())
         {
             return it.value();
         }
 
         auto pipeline = m_pipeline->clone();
-        m_cameraPipelines.insert(cameraKey, pipeline);
+        pipelines.insert(cameraKey, pipeline);
         return pipeline;
     }
 
@@ -282,7 +416,7 @@ namespace scopeone::core::internal
                 it->hasFrame = false;
             }
 
-            std::shared_ptr<ProcessingPipeline> pipeline = pipelineForCamera(cameraKey);
+            std::shared_ptr<ProcessingPipeline> pipeline = livePipelineForCamera(cameraKey);
 
             try
             {

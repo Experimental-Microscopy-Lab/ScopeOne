@@ -1,6 +1,8 @@
 #include "internal/FrameBufferUtils.h"
 
 #include <cstring>
+#include <limits>
+#include <utility>
 #include <opencv2/core.hpp>
 
 namespace scopeone::core::internal
@@ -10,8 +12,10 @@ namespace scopeone::core::internal
 
     namespace
     {
-        void copySourceRoi(const ImageFrame& src, ImageFrame& dst)
+        void copyFrameMetadata(const ImageFrame& src, ImageFrame& dst)
         {
+            dst.frameIndex = src.frameIndex;
+            dst.timestampNs = src.timestampNs;
             dst.sourceRoiX = src.sourceRoiX;
             dst.sourceRoiY = src.sourceRoiY;
             dst.sourceRoiWidth = src.sourceRoiWidth;
@@ -53,15 +57,18 @@ namespace scopeone::core::internal
             return false;
         }
 
-        QByteArray bytes;
-        bytes.resize(src.width * src.height);
+        QByteArray bytes = allocatePixelBytes<uchar>(src.width, src.height);
+        if (bytes.isEmpty())
+        {
+            return false;
+        }
         uchar* dstData = reinterpret_cast<uchar*>(bytes.data());
         const char* srcData = src.bytes.constData();
 
         for (int y = 0; y < src.height; ++y)
         {
-            const quint16* srcRow = reinterpret_cast<const quint16*>(srcData + y * src.stride);
-            uchar* dstRow = dstData + y * src.width;
+            const quint16* srcRow = reinterpret_cast<const quint16*>(srcData + static_cast<qint64>(y) * src.stride);
+            uchar* dstRow = dstData + static_cast<qint64>(y) * src.width;
             for (int x = 0; x < src.width; ++x)
             {
                 dstRow[x] = static_cast<uchar>(mono8ValueFrom16(static_cast<int>(srcRow[x]),
@@ -70,7 +77,7 @@ namespace scopeone::core::internal
         }
 
         dst = makeMono8Frame(src.cameraId, src.width, src.height, std::move(bytes));
-        copySourceRoi(src, dst);
+        copyFrameMetadata(src, dst);
         return dst.isValid();
     }
 
@@ -124,9 +131,14 @@ namespace scopeone::core::internal
         frame.cameraId = cameraId;
         frame.width = width;
         frame.height = height;
-        frame.stride = width * static_cast<int>(sizeof(quint16));
-        frame.bitsPerSample = qBound(9, bitsPerSample, 16);
+        const qint64 stride = static_cast<qint64>(width) * static_cast<qint64>(sizeof(quint16));
+        if (stride <= 0 || stride > (std::numeric_limits<int>::max)())
+        {
+            return frame;
+        }
+        frame.stride = static_cast<int>(stride);
         frame.pixelFormat = ImagePixelFormat::Mono16;
+        frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(frame.pixelFormat, bitsPerSample);
         frame.bytes = std::move(bytes);
         return frame;
     }
@@ -143,12 +155,12 @@ namespace scopeone::core::internal
                                                width,
                                                height,
                                                std::move(bytes),
-                                               reference.bitsPerSample > 8 ? reference.bitsPerSample : 16);
-            copySourceRoi(reference, frame);
+                                               reference.bitsPerSample);
+            copyFrameMetadata(reference, frame);
             return frame;
         }
         ImageFrame frame = makeMono8Frame(reference.cameraId, width, height, std::move(bytes));
-        copySourceRoi(reference, frame);
+        copyFrameMetadata(reference, frame);
         return frame;
     }
 
@@ -156,11 +168,21 @@ namespace scopeone::core::internal
     QByteArray copyMatBytes(const cv::Mat& mat)
     {
         QByteArray bytes;
-        const int rowBytes = mat.cols * static_cast<int>(mat.elemSize());
-        bytes.resize(rowBytes * mat.rows);
+        const qint64 rowBytes = static_cast<qint64>(mat.cols) * static_cast<qint64>(mat.elemSize());
+        const qint64 byteCount = static_cast<qint64>(rowBytes) * static_cast<qint64>(mat.rows);
+        if (rowBytes <= 0
+            || mat.rows <= 0
+            || byteCount <= 0
+            || byteCount > (std::numeric_limits<qsizetype>::max)())
+        {
+            return bytes;
+        }
+        bytes.resize(static_cast<qsizetype>(byteCount));
         for (int y = 0; y < mat.rows; ++y)
         {
-            std::memcpy(bytes.data() + y * rowBytes, mat.ptr(y), static_cast<size_t>(rowBytes));
+            std::memcpy(bytes.data() + static_cast<qint64>(y) * rowBytes,
+                        mat.ptr(y),
+                        static_cast<size_t>(rowBytes));
         }
         return bytes;
     }

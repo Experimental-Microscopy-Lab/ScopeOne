@@ -9,6 +9,15 @@ namespace scopeone::core::internal
         constexpr double kNormalizedDisplayScale = 4096.0;
         constexpr double kNormalizationEpsilon = 1.0;
 
+        qint64 pixelCountForSize(int width, int height)
+        {
+            if (width <= 0 || height <= 0)
+            {
+                return 0;
+            }
+            return static_cast<qint64>(width) * static_cast<qint64>(height);
+        }
+
         // Adds or removes one frame from a rolling pixel sum
         void accumulateFrameSum(const ImageFrame& frame, std::vector<int>& sum, int sign)
         {
@@ -17,7 +26,7 @@ namespace scopeone::core::internal
                 for (int y = 0; y < frame.height; ++y)
                 {
                     const Pixel* row = frameRowData<Pixel>(frame, y);
-                    const int rowOffset = y * frame.width;
+                    const qint64 rowOffset = static_cast<qint64>(y) * static_cast<qint64>(frame.width);
                     for (int x = 0; x < frame.width; ++x)
                     {
                         sum[static_cast<size_t>(rowOffset + x)] += sign * static_cast<int>(row[x]);
@@ -44,8 +53,9 @@ namespace scopeone::core::internal
             state = DifferentialRollingModule::CameraState{};
             state.width = frame.width;
             state.height = frame.height;
-            state.sumA.assign(static_cast<size_t>(frame.width * frame.height), 0);
-            state.sumB.assign(static_cast<size_t>(frame.width * frame.height), 0);
+            const qint64 pixelCount = pixelCountForSize(frame.width, frame.height);
+            state.sumA.assign(static_cast<size_t>(pixelCount), 0);
+            state.sumB.assign(static_cast<size_t>(pixelCount), 0);
         }
 
         // Builds the differential rolling output frame
@@ -61,12 +71,20 @@ namespace scopeone::core::internal
             const int maxValue = reference.maxValue();
             const double centerValue = reference.isMono16() ? 32768.0 : 128.0;
             const double normalizationScale = reference.isMono16() ? 32767.0 : kNormalizedDisplayScale;
-            const int pixelCount = width * height;
+            const qint64 pixelCount = pixelCountForSize(width, height);
+            if (pixelCount <= 0)
+            {
+                return {};
+            }
             QByteArray bytes = dispatchFrameType(reference, [&]<typename Pixel>()
             {
                 QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+                if (outBytes.isEmpty())
+                {
+                    return outBytes;
+                }
                 auto* outData = reinterpret_cast<Pixel*>(outBytes.data());
-                for (int i = 0; i < pixelCount; ++i)
+                for (qint64 i = 0; i < pixelCount; ++i)
                 {
                     const double sum1 = static_cast<double>(sumA[static_cast<size_t>(i)]);
                     const double sum2 = static_cast<double>(sumB[static_cast<size_t>(i)]);
@@ -123,8 +141,8 @@ namespace scopeone::core::internal
             if (incompatibleBuffers
                 || m_state.width != workingFrame.width
                 || m_state.height != workingFrame.height
-                || m_state.sumA.size() != workingFrame.width * workingFrame.height
-                || m_state.sumB.size() != workingFrame.width * workingFrame.height)
+                || m_state.sumA.size() != static_cast<size_t>(pixelCountForSize(workingFrame.width, workingFrame.height))
+                || m_state.sumB.size() != static_cast<size_t>(pixelCountForSize(workingFrame.width, workingFrame.height)))
             {
                 resetState(m_state, workingFrame);
             }

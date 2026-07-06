@@ -34,7 +34,7 @@ namespace scopeone::ui
 
         void setControlTargets(const QStringList& cameraIds);
 
-        bool acceptsCameraFrame(const QString& cameraId) const;
+        bool acceptsFrameFromCamera(const QString& cameraId) const;
 
         void setPreviewWidget(PreviewWidget* previewWidget);
 
@@ -62,11 +62,6 @@ namespace scopeone::ui
         void requestClearROI(const QString& cameraId);
 
     private:
-        struct LayerRowWidgets
-        {
-            QCheckBox* visibleCheckBox{nullptr};
-        };
-
         void onExposureChanged();
         void onPreviewToggleClicked();
 
@@ -83,7 +78,7 @@ namespace scopeone::ui
         void rebuildPreviewLayerTable(const QStringList& layerKeys);
         void applyPreviewSelection(const QStringList& layerKeys, bool notifyPreview);
         void refreshPreviewLayerSettings();
-        QString selectedLayerCameraId() const;
+        QString selectedLayerSourceId() const;
         void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
         void onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys);
         void syncPreviewLayerLayoutCombo(int index);
@@ -120,7 +115,7 @@ namespace scopeone::ui
         QCheckBox* m_fitToWindowCheckBox{nullptr};
         QComboBox* m_layerLayoutCombo{nullptr};
         QTableWidget* m_layerTable{nullptr};
-        QMap<QString, LayerRowWidgets> m_layerRows;
+        QMap<QString, QCheckBox*> m_layerRows;
         QGroupBox* m_layerSettingsGroup{nullptr};
         QLabel* m_selectedLayerLabel{nullptr};
         QPushButton* m_layerMoveUpButton{nullptr};
