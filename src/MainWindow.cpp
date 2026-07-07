@@ -394,9 +394,7 @@ namespace scopeone::ui
 
                     for (const QString& id : cameraIds)
                     {
-                        const bool success = m_scopeonecore->clearROI(id);
-
-                        if (success)
+                        if (m_scopeonecore->clearROI(id))
                         {
                             m_previewWidget->clearSourceFrames(id);
                             qInfo().noquote() << QString("ROI restored for %1").arg(id);
@@ -1153,8 +1151,7 @@ namespace scopeone::ui
         y += sourceRoiY;
 
         // Backend restarts preview for ROI
-        const bool success = m_scopeonecore->setROI(cameraId, x, y, width, height);
-        if (success)
+        if (m_scopeonecore->setROI(cameraId, x, y, width, height))
         {
             m_previewWidget->clearSourceFrames(cameraId);
             showStatusMessage(tr("ROI applied"), 3000);

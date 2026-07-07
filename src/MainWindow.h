@@ -3,6 +3,7 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QPoint>
+#include <QString>
 #include <QStringList>
 
 class QAction;
