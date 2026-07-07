@@ -48,22 +48,11 @@ namespace scopeone::ui
             return session && (session->hasRecordedOutput() || session->isSaved());
         }
 
-        // Return true when a session can be opened in the image viewer
+        // Return true when a session can be passed to the core frame graph
         bool canPreviewSession(
             const std::shared_ptr<RecordingSessionData>& session)
         {
-            if (!session)
-            {
-                return false;
-            }
-            for (const QString& cameraId : session->recordedCameraIds())
-            {
-                if (session->firstImageFrame(cameraId).isValid())
-                {
-                    return true;
-                }
-            }
-            return false;
+            return session && session->hasRecordedOutput();
         }
 
         // Count cameras that have at least one stored frame

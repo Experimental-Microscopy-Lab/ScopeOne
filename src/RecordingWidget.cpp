@@ -862,8 +862,7 @@ namespace scopeone::ui
             return false;
         }
 
-        auto capturedSession = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>();
-        auto capturedPlan = capturedSession->capturePlan();
+        scopeone::core::ScopeOneCore::RecordingCapturePlanData capturedPlan;
         capturedPlan.captureAll =
             m_detectorCombo->currentText().trimmed().compare("All", Qt::CaseInsensitive) == 0;
         capturedPlan.streamToDisk = false;
@@ -875,32 +874,19 @@ namespace scopeone::ui
         const QString captureBase = normalizedBaseName().isEmpty() ? buildTimestampBaseName() : normalizedBaseName();
         capturedPlan.baseName = captureBase + QStringLiteral("_capture_")
             + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
-        capturedSession->setCapturePlan(capturedPlan);
 
-        int appended = 0;
-        for (const QString& cameraId : cameraIds)
-        {
-            scopeone::core::ImageFrame latestFrame;
-            if (!m_scopeonecore->getLatestRawFrame(cameraId, latestFrame) || !latestFrame.isValid())
-            {
-                continue;
-            }
-
-            if (capturedSession->appendImageFrame(latestFrame))
-            {
-                ++appended;
-            }
-        }
-
-        if (appended <= 0)
+        const QList<scopeone::core::ImageFrame> frames = m_scopeonecore->latestRawFrames(cameraIds);
+        auto capturedSession = m_scopeonecore->createFrameSession(
+            frames,
+            capturedPlan);
+        if (!capturedSession)
         {
             qWarning().noquote() << "No current frame available to append to gallery";
             return false;
         }
 
-        capturedSession->prepareForSave(false);
         emit gallerySessionCaptured(capturedSession);
-        qInfo().noquote() << QStringLiteral("Gallery appended with %1 frame set(s)").arg(appended);
+        qInfo().noquote() << QStringLiteral("Gallery appended with %1 frame set(s)").arg(frames.size());
         return true;
     }
 

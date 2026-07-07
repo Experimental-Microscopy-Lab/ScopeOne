@@ -121,27 +121,30 @@ namespace scopeone::ui
 
         // Push the first frame of each recorded camera into the shared preview engine
         QStringList previewGallerySession(
+            scopeone::core::ScopeOneCore& core,
             PreviewWidget& previewWidget,
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
         {
             QStringList selectedLayerKeys = previewWidget.selectedLayerKeys();
             QStringList openedLayerKeys;
 
-            for (const QString& cameraId : session->recordedCameraIds())
+            for (const scopeone::core::ImageFrame& frame : core.firstSessionFrames(session))
             {
-                const scopeone::core::ImageFrame frame = session->firstImageFrame(cameraId);
-                if (!frame.isValid())
-                {
-                    continue;
-                }
+                const QString cameraId = frame.cameraId;
 
                 const QString displayName = session->recordedFrameCount(cameraId) > 1
                                                 ? QStringLiteral("Gallery %1 Frame 1").arg(cameraId)
                                                 : QStringLiteral("Gallery %1").arg(cameraId);
+                const QString layerId = gallerySessionLayerId(session, cameraId);
+                const scopeone::core::ImageFrame graphFrame = core.publishStaticFrame(layerId, frame);
+                if (!graphFrame.isValid())
+                {
+                    continue;
+                }
                 const QString layerKey = previewWidget.setStaticLayerFrame(
-                    gallerySessionLayerId(session, cameraId),
+                    layerId,
                     displayName,
-                    frame);
+                    graphFrame);
                 if (!layerKey.isEmpty())
                 {
                     openedLayerKeys.append(layerKey);
@@ -359,6 +362,7 @@ namespace scopeone::ui
                     const int y = originY + (sourceHeight - roiHeight) / 2;
                     if (m_scopeonecore->setROI(cameraId, x, y, roiWidth, roiHeight))
                     {
+                        m_scopeonecore->clearLiveFrames(cameraId);
                         m_previewWidget->clearSourceFrames(cameraId);
                         qInfo().noquote() << QString("Half ROI set for %1: %2x%3 at (%4,%5)")
                                              .arg(cameraId)
@@ -396,6 +400,7 @@ namespace scopeone::ui
                     {
                         if (m_scopeonecore->clearROI(id))
                         {
+                            m_scopeonecore->clearLiveFrames(id);
                             m_previewWidget->clearSourceFrames(id);
                             qInfo().noquote() << QString("ROI restored for %1").arg(id);
                         }
@@ -421,6 +426,16 @@ namespace scopeone::ui
                     {
                         m_inspectWidget->setLayerInspect(layerKey, stats);
                     }
+                });
+        connect(m_previewWidget, &PreviewWidget::staticLayerRemoved,
+                this, [this](const QString& layerKey)
+                {
+                    m_scopeonecore->removeStaticFrame(PreviewWidget::sourceIdFromLayerKey(layerKey));
+                });
+        connect(m_previewWidget, &PreviewWidget::staticLayersCleared,
+                this, [this]()
+                {
+                    m_scopeonecore->clearStaticFrames();
                 });
 
         connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
@@ -570,7 +585,10 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QStringList selectedLayerKeys = previewGallerySession(*m_previewWidget, session);
+                    const QStringList selectedLayerKeys = previewGallerySession(
+                        *m_scopeonecore,
+                        *m_previewWidget,
+                        session);
                     if (selectedLayerKeys.isEmpty())
                     {
                         showStatusMessage(tr("No gallery image available for preview"), 5000);
@@ -587,6 +605,7 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     removeGallerySessionPreview(*m_previewWidget, session);
+                    m_scopeonecore->removeSessionFrameSet(session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionsRequested,
                 this,
@@ -897,6 +916,7 @@ namespace scopeone::ui
                 continue;
             }
             m_scopeonecore->stopPreview(id);
+            m_scopeonecore->clearLiveFrames(id);
             m_previewWidget->clearSourceFrames(id);
         }
 
@@ -952,6 +972,7 @@ namespace scopeone::ui
     {
         for (const QString& id : cameraIds)
         {
+            m_scopeonecore->clearLiveFrames(id);
             m_previewWidget->clearSourceFrames(id);
         }
         m_previewWidget->setAvailableCameraIds({});
@@ -1100,7 +1121,7 @@ namespace scopeone::ui
                     {
                         m_imageGalleryWidget->addSession(session, title);
                         m_previewWidget->removeStaticLayer(PreviewWidget::staticLayerKey(QStringLiteral("stage_mosaic")));
-                        previewGallerySession(*m_previewWidget, session);
+                        previewGallerySession(*m_scopeonecore, *m_previewWidget, session);
                         showStatusMessage(tr("Mosaic added to Gallery"), 5000);
                     });
             dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -1153,6 +1174,7 @@ namespace scopeone::ui
         // Backend restarts preview for ROI
         if (m_scopeonecore->setROI(cameraId, x, y, width, height))
         {
+            m_scopeonecore->clearLiveFrames(cameraId);
             m_previewWidget->clearSourceFrames(cameraId);
             showStatusMessage(tr("ROI applied"), 3000);
             qInfo().noquote() << QString("ROI set for %1: %2x%3 at (%4,%5)")

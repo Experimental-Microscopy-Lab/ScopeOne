@@ -133,9 +133,10 @@ namespace scopeone::ui
         }
 
         // Builds a gallery session from a validated mosaic frame
-        std::shared_ptr<ScopeOneCore::RecordingSessionData> mosaicSessionFromFrame(const ImageFrame& imageFrame)
+        std::shared_ptr<ScopeOneCore::RecordingSessionData> mosaicSessionFromFrame(
+            ScopeOneCore& core,
+            const ImageFrame& imageFrame)
         {
-            auto session = std::make_shared<ScopeOneCore::RecordingSessionData>();
             ScopeOneCore::RecordingCapturePlanData plan;
             plan.cameraIds = {imageFrame.cameraId};
             plan.captureAll = false;
@@ -145,10 +146,9 @@ namespace scopeone::ui
             plan.baseName = QStringLiteral("stage_mosaic_")
                 + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
             plan.metadataFileName = plan.baseName + QStringLiteral("_metadata.json");
-            session->setCapturePlan(plan);
-            session->appendImageFrame(imageFrame);
-            session->prepareForSave(false);
-            return session;
+            QList<ImageFrame> frames;
+            frames.append(imageFrame);
+            return core.createFrameSession(frames, plan);
         }
 
         // Adds one tile into an accumulation mosaic
@@ -641,9 +641,10 @@ namespace scopeone::ui
                                                             m_mosaic->outputType);
         const ImageFrame mosaicFrame = frameFromMat(mosaicPreview, m_mosaicReferenceFrame);
         m_latestMosaicFrame = mosaicFrame;
+        const ImageFrame previewFrame = m_core->publishStaticFrame(QStringLiteral("stage_mosaic"), mosaicFrame);
         const QString layerKey = m_previewWidget->setStaticLayerFrame(QStringLiteral("stage_mosaic"),
                                                                       tr("Stage Mosaic %1").arg(m_activeCameraId),
-                                                                      mosaicFrame);
+                                                                      previewFrame);
         if (layerKey.isEmpty())
         {
             return false;
@@ -664,7 +665,7 @@ namespace scopeone::ui
             return;
         }
 
-        auto session = mosaicSessionFromFrame(m_latestMosaicFrame);
+        auto session = mosaicSessionFromFrame(*m_core, m_latestMosaicFrame);
         m_gallerySessionPublished = true;
         emit gallerySessionCreated(session, tr("Stage Mosaic %1").arg(m_activeCameraId));
         m_statusLabel->setText(tr("Mosaic complete and added to Gallery"));
@@ -860,9 +861,10 @@ namespace scopeone::ui
         }
 
         ImageFrame maskFrame = frameFromMat(filtered, frame);
+        const ImageFrame previewMaskFrame = m_core->publishStaticFrame(QStringLiteral("particle_mask"), maskFrame);
         const QString maskLayer = m_previewWidget->setStaticLayerFrame(QStringLiteral("particle_mask"),
                                                                        tr("Particles %1").arg(cameraId),
-                                                                       maskFrame);
+                                                                       previewMaskFrame);
         if (maskLayer.isEmpty())
         {
             m_statusLabel->setText(tr("Failed to display particle mask"));

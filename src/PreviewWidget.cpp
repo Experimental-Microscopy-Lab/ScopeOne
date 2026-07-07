@@ -242,6 +242,63 @@ namespace scopeone::ui
         cleanupTextureCache();
     }
 
+    // Stores one frame in the preview sink cache
+    bool PreviewWidget::storeSourceFrame(const QString& sourceId,
+                                         FrameRole role,
+                                         const ImageFrame& frame,
+                                         bool& hadFrame)
+    {
+        const QString normalizedId = normalizedSourceId(sourceId);
+        if (normalizedId.isEmpty())
+        {
+            hadFrame = false;
+            return false;
+        }
+
+        ImageFrame storedFrame = frame;
+        storedFrame.cameraId = normalizedId;
+        QMutexLocker lock(&m_mutex);
+        FrameSourceState& frameState = m_frameSources[normalizedId];
+        if (role == FrameRole::Processed)
+        {
+            hadFrame = frameState.processedFrame.isValid();
+            frameState.processedFrame = storedFrame;
+        }
+        else
+        {
+            hadFrame = frameState.rawFrame.isValid();
+            frameState.rawFrame = storedFrame;
+        }
+        return storedFrame.isValid();
+    }
+
+    // Updates layer dimensions and optional live FPS metadata
+    void PreviewWidget::updateLayerInfoForFrame(const QString& layerKey,
+                                                const ImageFrame& frame,
+                                                bool updateFps)
+    {
+        if (!frame.isValid())
+        {
+            return;
+        }
+
+        FpsUpdate fps;
+        if (updateFps)
+        {
+            fps = updateFpsOnFrame(layerKey, frame);
+        }
+
+        LayerInfo& info = m_layerInfos[layerKey];
+        const bool sizeChanged = info.width != frame.width || info.height != frame.height;
+        info.width = frame.width;
+        info.height = frame.height;
+        info.fps = updateFps ? fps.fps : 0.0;
+        if (sizeChanged || (updateFps && fps.changed))
+        {
+            updateLayerInfoDisplay();
+        }
+    }
+
     // Stores one processed frame and updates layer statistics
     void PreviewWidget::setProcessedFrame(const ImageFrame& frame)
     {
@@ -250,33 +307,14 @@ namespace scopeone::ui
         {
             return;
         }
-        ImageFrame processedFrame = frame;
-        processedFrame.cameraId = sourceId;
         ensureLayersForCamera(sourceId);
-        QMutexLocker lock(&m_mutex);
-        FrameSourceState& frameState = m_frameSources[sourceId];
-        const bool hadProcessedFrame = frameState.processedFrame.isValid();
-        frameState.processedFrame = processedFrame;
-        lock.unlock();
+        bool hadProcessedFrame = false;
+        const bool stored = storeSourceFrame(sourceId, FrameRole::Processed, frame, hadProcessedFrame);
+        const QString layerKey = previewLayerKey(sourceId, true);
+        updateLayerInfoForFrame(layerKey, frame, true);
 
-        if (processedFrame.isValid())
-        {
-            const QString layerKey = previewLayerKey(sourceId, true);
-            const FpsUpdate fps = updateFpsOnFrame(layerKey, processedFrame);
-
-            LayerInfo& info = m_layerInfos[layerKey];
-            const bool sizeChanged = info.width != processedFrame.width || info.height != processedFrame.height;
-            info.width = processedFrame.width;
-            info.height = processedFrame.height;
-            info.fps = fps.fps;
-            if (sizeChanged || fps.changed)
-            {
-                updateLayerInfoDisplay();
-            }
-        }
-
-        const bool registeredCamera = processedFrame.isValid() && registerAvailableCamera(sourceId);
-        if (processedFrame.isValid() && !hadProcessedFrame)
+        const bool registeredCamera = stored && registerAvailableCamera(sourceId);
+        if (stored && !hadProcessedFrame)
         {
             emit availableLayerKeysChanged(availableLayerKeys());
         }
@@ -296,30 +334,13 @@ namespace scopeone::ui
         {
             return;
         }
-        ImageFrame rawFrame = frame;
-        rawFrame.cameraId = sourceId;
         ensureLayersForCamera(sourceId);
-        {
-            QMutexLocker lock(&m_mutex);
-            FrameSourceState& frameState = m_frameSources[sourceId];
-            frameState.rawFrame = rawFrame;
-        }
-        if (rawFrame.isValid())
-        {
-            const QString layerKey = previewLayerKey(sourceId, false);
-            const FpsUpdate fps = updateFpsOnFrame(layerKey, rawFrame);
-
-            LayerInfo& info = m_layerInfos[layerKey];
-            const bool sizeChanged = info.width != rawFrame.width || info.height != rawFrame.height;
-            info.width = rawFrame.width;
-            info.height = rawFrame.height;
-            info.fps = fps.fps;
-            if (sizeChanged || fps.changed)
-            {
-                updateLayerInfoDisplay();
-            }
-        }
-        if (rawFrame.isValid() && registerAvailableCamera(sourceId))
+        bool hadRawFrame = false;
+        const bool stored = storeSourceFrame(sourceId, FrameRole::Raw, frame, hadRawFrame);
+        (void)hadRawFrame;
+        const QString layerKey = previewLayerKey(sourceId, false);
+        updateLayerInfoForFrame(layerKey, frame, true);
+        if (stored && registerAvailableCamera(sourceId))
         {
             return;
         }
@@ -573,16 +594,13 @@ namespace scopeone::ui
         ensureLayer(layerKey);
         m_layers[layerKey].visible = true;
 
+        bool hadStaticFrame = false;
+        if (!storeSourceFrame(sourceId, FrameRole::Raw, staticFrame, hadStaticFrame))
         {
-            QMutexLocker lock(&m_mutex);
-            FrameSourceState& frameState = m_frameSources[sourceId];
-            frameState.rawFrame = staticFrame;
+            return {};
         }
-
-        LayerInfo& info = m_layerInfos[layerKey];
-        info.width = staticFrame.width;
-        info.height = staticFrame.height;
-        info.fps = 0.0;
+        (void)hadStaticFrame;
+        updateLayerInfoForFrame(layerKey, staticFrame, false);
 
         updateLayerInfoDisplay();
         if (!hadStaticLayer)
@@ -609,6 +627,7 @@ namespace scopeone::ui
 
         removeStaticLayerData(sourceId);
         updateLayerInfoDisplay();
+        emit staticLayerRemoved(layerKey);
         emit selectedLayerKeysChanged(selectedLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
@@ -635,6 +654,7 @@ namespace scopeone::ui
         }
 
         updateLayerInfoDisplay();
+        emit staticLayersCleared();
         emit selectedLayerKeysChanged(selectedLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();

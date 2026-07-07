@@ -361,6 +361,7 @@ namespace scopeone::core
             }
 
             ImageFrame imageFrameAt(const QString& cameraId, int index) const;
+            QList<ImageFrame> firstImageFrames() const;
 
             const QHash<QString, RecordingFileManifest>& outputFiles() const
             {
@@ -420,11 +421,15 @@ namespace scopeone::core
                 }
                 return true;
             }
+            bool appendImageFrames(const QList<ImageFrame>& frames);
 
             ImageFrame firstImageFrame(const QString& cameraId) const
             {
                 return imageFrameAt(cameraId, 0);
             }
+            static std::shared_ptr<RecordingSessionData> fromImageFrames(
+                const QList<ImageFrame>& frames,
+                const RecordingCapturePlanData& capturePlan);
 
             void clearFrames() { m_frames.clear(); }
             void clearOutputFiles() { m_manifest.clearOutput(); }
@@ -572,6 +577,22 @@ namespace scopeone::core
         void setLineProfile(const QString& cameraId, const QPoint& start, const QPoint& end, bool processed);
         void clearLineProfile();
         bool getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const;
+        QList<ImageFrame> latestRawFrames(const QStringList& cameraIds) const;
+        ImageFrame sessionFrameAt(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const QString& cameraId,
+            int index);
+        QList<ImageFrame> firstSessionFrames(
+            const std::shared_ptr<RecordingSessionData>& session);
+        void removeSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session);
+        std::shared_ptr<RecordingSessionData> createFrameSession(
+            const QList<ImageFrame>& frames,
+            const RecordingCapturePlanData& capturePlan);
+        ImageFrame publishStaticFrame(const QString& sourceId, const ImageFrame& frame);
+        ImageFrame publishExternalFrame(const QString& sourceId, const ImageFrame& frame);
+        void removeStaticFrame(const QString& sourceId);
+        void clearStaticFrames();
+        void clearLiveFrames(const QString& cameraId);
         bool getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const;
         static bool computeHistogramStats(const ImageFrame& frame, HistogramStats& stats);
 
@@ -676,6 +697,39 @@ namespace scopeone::core
     private:
         struct Managers;
 
+        enum class FrameGraphStream
+        {
+            Raw,
+            Processed,
+            Static,
+            External
+        };
+
+        class FrameGraph
+        {
+        public:
+            void clear();
+            bool publishLatest(FrameGraphStream stream, const ImageFrame& frame);
+            bool publishLatest(FrameGraphStream stream, const QString& sourceId, const ImageFrame& frame);
+            ImageFrame latest(FrameGraphStream stream, const QString& sourceId) const;
+            QList<ImageFrame> latestFrames(FrameGraphStream stream, const QStringList& sourceIds) const;
+            bool publishFrameSet(const QString& sourceId, const QList<ImageFrame>& frames);
+            QList<ImageFrame> frameSet(const QString& sourceId) const;
+            void removeFrameSet(const QString& sourceId);
+            void remove(FrameGraphStream stream, const QString& sourceId);
+            void clear(FrameGraphStream stream);
+
+        private:
+            QHash<QString, ImageFrame>& latestMap(FrameGraphStream stream);
+            const QHash<QString, ImageFrame>& latestMap(FrameGraphStream stream) const;
+
+            QHash<QString, ImageFrame> m_rawFrames;
+            QHash<QString, ImageFrame> m_processedFrames;
+            QHash<QString, ImageFrame> m_staticFrames;
+            QHash<QString, ImageFrame> m_externalFrames;
+            QHash<QString, QList<ImageFrame>> m_frameSets;
+        };
+
         struct HistogramJobState
         {
             bool inFlight{false};
@@ -697,6 +751,8 @@ namespace scopeone::core
         void queuePreviewProcessedFrame(const ImageFrame& frame);
         void flushPreviewRawFrames();
         void flushPreviewProcessedFrames();
+        QString sessionFrameSetSourceId(const std::shared_ptr<RecordingSessionData>& session) const;
+        void publishSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session);
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);
@@ -716,8 +772,7 @@ namespace scopeone::core
         std::unique_ptr<Managers> m_managers;
         QStringList m_cameraIds;
         ActiveLineProfile m_activeLineProfile;
-        QHash<QString, ImageFrame> m_latestRawFrames;
-        QHash<QString, ImageFrame> m_latestProcessedFrames;
+        FrameGraph m_frameGraph;
         QHash<QString, ImageFrame> m_pendingPreviewRawFrames;
         QHash<QString, ImageFrame> m_pendingPreviewProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;

@@ -670,12 +670,204 @@ namespace scopeone::core
     using scopeone::core::internal::DifferentialRollingModule;
     using scopeone::core::internal::SpatiotemporalBinningModule;
 
+    // Clear all live frame graph state
+    void ScopeOneCore::FrameGraph::clear()
+    {
+        m_rawFrames.clear();
+        m_processedFrames.clear();
+        m_staticFrames.clear();
+        m_externalFrames.clear();
+        m_frameSets.clear();
+    }
+
+    // Store the latest valid frame for one graph stream
+    bool ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream, const ImageFrame& frame)
+    {
+        return publishLatest(stream, frame.cameraId, frame);
+    }
+
+    // Store one frame using an explicit graph source id
+    bool ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream,
+                                                 const QString& sourceId,
+                                                 const ImageFrame& frame)
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (!frame.isValid() || trimmedSourceId.isEmpty())
+        {
+            return false;
+        }
+
+        ImageFrame storedFrame(frame);
+        storedFrame.cameraId = trimmedSourceId;
+        latestMap(stream).insert(trimmedSourceId, std::move(storedFrame));
+        return true;
+    }
+
+    // Return one latest frame from the graph
+    ImageFrame ScopeOneCore::FrameGraph::latest(FrameGraphStream stream, const QString& sourceId) const
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (trimmedSourceId.isEmpty())
+        {
+            return {};
+        }
+
+        const auto it = latestMap(stream).constFind(trimmedSourceId);
+        return it != latestMap(stream).constEnd() && it.value().isValid() ? it.value() : ImageFrame{};
+    }
+
+    // Return latest valid frames for several graph sources
+    QList<ImageFrame> ScopeOneCore::FrameGraph::latestFrames(FrameGraphStream stream, const QStringList& sourceIds) const
+    {
+        QList<ImageFrame> frames;
+        frames.reserve(sourceIds.size());
+        for (const QString& sourceId : sourceIds)
+        {
+            ImageFrame frame = latest(stream, sourceId);
+            if (frame.isValid())
+            {
+                frames.append(std::move(frame));
+            }
+        }
+        return frames;
+    }
+
+    // Store a reusable frame set in the graph
+    bool ScopeOneCore::FrameGraph::publishFrameSet(const QString& sourceId, const QList<ImageFrame>& frames)
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (trimmedSourceId.isEmpty() || frames.isEmpty())
+        {
+            return false;
+        }
+
+        QList<ImageFrame> validFrames;
+        validFrames.reserve(frames.size());
+        for (const ImageFrame& frame : frames)
+        {
+            if (frame.isValid())
+            {
+                validFrames.append(frame);
+            }
+        }
+        if (validFrames.isEmpty())
+        {
+            return false;
+        }
+
+        m_frameSets.insert(trimmedSourceId, std::move(validFrames));
+        return true;
+    }
+
+    // Return a graph frame set
+    QList<ImageFrame> ScopeOneCore::FrameGraph::frameSet(const QString& sourceId) const
+    {
+        return m_frameSets.value(sourceId.trimmed());
+    }
+
+    // Remove one stored frame set
+    void ScopeOneCore::FrameGraph::removeFrameSet(const QString& sourceId)
+    {
+        m_frameSets.remove(sourceId.trimmed());
+    }
+
+    // Remove one graph source
+    void ScopeOneCore::FrameGraph::remove(FrameGraphStream stream, const QString& sourceId)
+    {
+        latestMap(stream).remove(sourceId.trimmed());
+    }
+
+    // Clear one graph stream
+    void ScopeOneCore::FrameGraph::clear(FrameGraphStream stream)
+    {
+        latestMap(stream).clear();
+    }
+
+    QHash<QString, ImageFrame>& ScopeOneCore::FrameGraph::latestMap(FrameGraphStream stream)
+    {
+        if (stream == FrameGraphStream::Processed)
+        {
+            return m_processedFrames;
+        }
+        if (stream == FrameGraphStream::Static)
+        {
+            return m_staticFrames;
+        }
+        if (stream == FrameGraphStream::External)
+        {
+            return m_externalFrames;
+        }
+        return m_rawFrames;
+    }
+
+    const QHash<QString, ImageFrame>& ScopeOneCore::FrameGraph::latestMap(FrameGraphStream stream) const
+    {
+        if (stream == FrameGraphStream::Processed)
+        {
+            return m_processedFrames;
+        }
+        if (stream == FrameGraphStream::Static)
+        {
+            return m_staticFrames;
+        }
+        if (stream == FrameGraphStream::External)
+        {
+            return m_externalFrames;
+        }
+        return m_rawFrames;
+    }
+
     // Return a stored frame from memory or saved disk output
     ImageFrame ScopeOneCore::RecordingSessionData::imageFrameAt(const QString& cameraId, int index) const
     {
         const QString trimmedCameraId = cameraId.trimmed();
         const ImageFrame* frame = frameAt(trimmedCameraId, index);
         return frame ? *frame : outputImageFrameAt(trimmedCameraId, index);
+    }
+
+    // Return the first valid frame from each recorded camera
+    QList<ImageFrame> ScopeOneCore::RecordingSessionData::firstImageFrames() const
+    {
+        QList<ImageFrame> frames;
+        const QStringList cameraIds = recordedCameraIds();
+        frames.reserve(cameraIds.size());
+        for (const QString& cameraId : cameraIds)
+        {
+            ImageFrame frame = firstImageFrame(cameraId);
+            if (frame.isValid())
+            {
+                frames.append(std::move(frame));
+            }
+        }
+        return frames;
+    }
+
+    // Append all valid frames through the same session frame path
+    bool ScopeOneCore::RecordingSessionData::appendImageFrames(const QList<ImageFrame>& frames)
+    {
+        bool appended = false;
+        for (const ImageFrame& frame : frames)
+        {
+            appended = appendImageFrame(frame) || appended;
+        }
+        return appended;
+    }
+
+    // Build a frame-backed recording session for gallery and save sinks
+    std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::RecordingSessionData::fromImageFrames(
+        const QList<ImageFrame>& frames,
+        const RecordingCapturePlanData& capturePlan)
+    {
+        auto session = std::make_shared<RecordingSessionData>();
+        RecordingCapturePlanData framePlan = capturePlan;
+        framePlan.streamToDisk = false;
+        session->setCapturePlan(framePlan);
+        if (!session->appendImageFrames(frames))
+        {
+            return {};
+        }
+        session->prepareForSave(false);
+        return session;
     }
 
     // Return one buffered frame by camera and index
@@ -959,7 +1151,7 @@ namespace scopeone::core
         connect(m_managers->mpcm, &MultiProcessCameraManager::agentControlServerListening,
                 this, &ScopeOneCore::agentControlServerListening);
 
-        connect(m_managers->mpcm, &MultiProcessCameraManager::newRawFrameReady,
+        connect(this, &ScopeOneCore::newRawFrameReady,
                 m_managers->recordingManager, &RecordingManager::onNewRawFrameReady,
                 Qt::QueuedConnection);
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
@@ -972,7 +1164,11 @@ namespace scopeone::core
         connect(m_managers->recordingManager, &RecordingManager::recordingStateChanged,
                 this, &ScopeOneCore::recordingStateChanged);
         connect(m_managers->recordingManager, &RecordingManager::recordingStopped,
-                this, &ScopeOneCore::recordingStopped);
+                this, [this](const std::shared_ptr<RecordingSessionData>& session)
+                {
+                    publishSessionFrameSet(session);
+                    emit recordingStopped(session);
+                });
 
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::imageProcessed,
                 this, [this](const ImageFrame& frame)
@@ -981,7 +1177,7 @@ namespace scopeone::core
                     {
                         return;
                     }
-                    m_latestProcessedFrames.insert(frame.cameraId, frame);
+                    m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
                     emit processedFrameReady(frame);
                     queuePreviewProcessedFrame(frame);
                     scheduleHistogramStats(frame.cameraId, true, frame);
@@ -1093,8 +1289,7 @@ namespace scopeone::core
         {
         }
         m_cameraIds.clear();
-        m_latestRawFrames.clear();
-        m_latestProcessedFrames.clear();
+        m_frameGraph.clear();
         m_pendingPreviewRawFrames.clear();
         m_pendingPreviewProcessedFrames.clear();
         m_previewRawFlushQueued = false;
@@ -1205,7 +1400,7 @@ namespace scopeone::core
 
         if (processed)
         {
-            const ImageFrame frame = m_latestProcessedFrames.value(trimmedCameraId);
+            const ImageFrame frame = m_frameGraph.latest(FrameGraphStream::Processed, trimmedCameraId);
             if (frame.isValid())
             {
                 updateLineProfile(trimmedCameraId, true, frame);
@@ -1245,7 +1440,7 @@ namespace scopeone::core
 
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
-        m_latestRawFrames.insert(cameraId, normalizedFrame);
+        m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
         queuePreviewRawFrame(normalizedFrame);
         scheduleHistogramStats(cameraId, false, normalizedFrame);
@@ -1317,14 +1512,165 @@ namespace scopeone::core
             return false;
         }
 
-        const auto cachedFrame = m_latestRawFrames.constFind(trimmedCameraId);
-        if (cachedFrame != m_latestRawFrames.constEnd() && cachedFrame.value().isValid())
+        const ImageFrame cachedFrame = m_frameGraph.latest(FrameGraphStream::Raw, trimmedCameraId);
+        if (cachedFrame.isValid())
         {
-            frame = cachedFrame.value();
+            frame = cachedFrame;
             return true;
         }
 
         return m_managers->mpcm->getLatestRaw(trimmedCameraId, frame);
+    }
+
+    // Return newest valid raw frames for a camera selection
+    QList<ImageFrame> ScopeOneCore::latestRawFrames(const QStringList& cameraIds) const
+    {
+        QList<ImageFrame> frames = m_frameGraph.latestFrames(FrameGraphStream::Raw, cameraIds);
+        frames.reserve(cameraIds.size());
+        QStringList resolvedCameraIds;
+        resolvedCameraIds.reserve(frames.size());
+        for (const ImageFrame& frame : frames)
+        {
+            resolvedCameraIds.append(frame.cameraId);
+        }
+
+        for (const QString& cameraId : cameraIds)
+        {
+            const QString trimmedCameraId = cameraId.trimmed();
+            if (resolvedCameraIds.contains(trimmedCameraId))
+            {
+                continue;
+            }
+
+            ImageFrame frame;
+            if (getLatestRawFrame(trimmedCameraId, frame) && frame.isValid())
+            {
+                resolvedCameraIds.append(trimmedCameraId);
+                frames.append(std::move(frame));
+            }
+        }
+        return frames;
+    }
+
+    // Return one frame from a session source through the graph facade
+    ImageFrame ScopeOneCore::sessionFrameAt(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const QString& cameraId,
+        int index)
+    {
+        if (!session || index < 0)
+        {
+            return {};
+        }
+
+        const QString trimmedCameraId = cameraId.trimmed();
+        if (index == 0)
+        {
+            for (const ImageFrame& frame : firstSessionFrames(session))
+            {
+                if (frame.cameraId == trimmedCameraId)
+                {
+                    return frame;
+                }
+            }
+        }
+        return session->imageFrameAt(trimmedCameraId, index);
+    }
+
+    // Return the first frame set from a session source
+    QList<ImageFrame> ScopeOneCore::firstSessionFrames(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        if (!session)
+        {
+            return {};
+        }
+
+        const QList<ImageFrame> graphFrames = m_frameGraph.frameSet(sessionFrameSetSourceId(session));
+        if (!graphFrames.isEmpty())
+        {
+            return graphFrames;
+        }
+
+        const QList<ImageFrame> sessionFrames = session->firstImageFrames();
+        m_frameGraph.publishFrameSet(sessionFrameSetSourceId(session), sessionFrames);
+        return sessionFrames;
+    }
+
+    // Remove a session frame set from the graph
+    void ScopeOneCore::removeSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session)
+    {
+        m_frameGraph.removeFrameSet(sessionFrameSetSourceId(session));
+    }
+
+    // Build a session source from a frame set
+    std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::createFrameSession(
+        const QList<ImageFrame>& frames,
+        const RecordingCapturePlanData& capturePlan)
+    {
+        auto session = RecordingSessionData::fromImageFrames(frames, capturePlan);
+        publishSessionFrameSet(session);
+        return session;
+    }
+
+    // Build a stable graph source id for one session
+    QString ScopeOneCore::sessionFrameSetSourceId(const std::shared_ptr<RecordingSessionData>& session) const
+    {
+        if (!session)
+        {
+            return {};
+        }
+        return QStringLiteral("session:%1").arg(
+            static_cast<qulonglong>(reinterpret_cast<quintptr>(session.get())), 0, 16);
+    }
+
+    // Publish the preview frame set from a session
+    void ScopeOneCore::publishSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session)
+    {
+        if (!session)
+        {
+            return;
+        }
+        m_frameGraph.publishFrameSet(sessionFrameSetSourceId(session), session->firstImageFrames());
+    }
+
+    // Publish a static frame source to the central graph
+    ImageFrame ScopeOneCore::publishStaticFrame(const QString& sourceId, const ImageFrame& frame)
+    {
+        if (!m_frameGraph.publishLatest(FrameGraphStream::Static, sourceId, frame))
+        {
+            return {};
+        }
+        return m_frameGraph.latest(FrameGraphStream::Static, sourceId);
+    }
+
+    // Publish an externally supplied frame to the central graph
+    ImageFrame ScopeOneCore::publishExternalFrame(const QString& sourceId, const ImageFrame& frame)
+    {
+        if (!m_frameGraph.publishLatest(FrameGraphStream::External, sourceId, frame))
+        {
+            return {};
+        }
+        return m_frameGraph.latest(FrameGraphStream::External, sourceId);
+    }
+
+    // Remove one static frame graph source
+    void ScopeOneCore::removeStaticFrame(const QString& sourceId)
+    {
+        m_frameGraph.remove(FrameGraphStream::Static, sourceId);
+    }
+
+    // Clear all static frame graph sources
+    void ScopeOneCore::clearStaticFrames()
+    {
+        m_frameGraph.clear(FrameGraphStream::Static);
+    }
+
+    // Clear stale live frames for a camera source
+    void ScopeOneCore::clearLiveFrames(const QString& cameraId)
+    {
+        m_frameGraph.remove(FrameGraphStream::Raw, cameraId);
+        m_frameGraph.remove(FrameGraphStream::Processed, cameraId);
     }
 
     // Compute public histogram statistics for a frame

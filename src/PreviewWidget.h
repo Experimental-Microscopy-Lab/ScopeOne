@@ -129,6 +129,8 @@ namespace scopeone::ui
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
         void staticLayerFrameChanged(const QString& layerKey, const scopeone::core::ImageFrame& frame);
+        void staticLayerRemoved(const QString& layerKey);
+        void staticLayersCleared();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
                       int x,
@@ -179,6 +181,7 @@ namespace scopeone::ui
 
         enum class Colormap { Gray = 0, Green, Magenta, Cyan, Red, Blue, Yellow, Fire };
         enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
+        enum class FrameRole { Raw, Processed };
 
         struct LayerDisplaySettings
         {
@@ -283,6 +286,13 @@ namespace scopeone::ui
         bool m_lineVisible{false};
         void updateImageDisplay();
         FpsUpdate updateFpsOnFrame(const QString& layerKey, const scopeone::core::ImageFrame& frame);
+        bool storeSourceFrame(const QString& sourceId,
+                              FrameRole role,
+                              const scopeone::core::ImageFrame& frame,
+                              bool& hadFrame);
+        void updateLayerInfoForFrame(const QString& layerKey,
+                                     const scopeone::core::ImageFrame& frame,
+                                     bool updateFps);
         void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
