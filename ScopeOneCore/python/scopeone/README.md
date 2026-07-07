@@ -1,6 +1,6 @@
 # ScopeOne Python API
 
-Minimal external Python API for controlling a running `ScopeOne.exe`, loading a Micro-Manager config, starting preview, recording frames into a session, and saving when needed.
+Minimal external Python API for controlling a running ScopeOne app, loading a Micro-Manager config, starting preview, recording frames into a session, and saving when needed.
 
 ## Project layout
 
@@ -14,6 +14,8 @@ Minimal external Python API for controlling a running `ScopeOne.exe`, loading a 
 ## Current API
 
 ```python
+import numpy as np
+
 from scopeone import ScopeOne
 
 scopeone = ScopeOne()
@@ -21,9 +23,8 @@ scopeone.load_config(r"C:\path\to\MMConfig.cfg")
 print(scopeone.camera_ids())
 scopeone.start_preview("Camera")
 live = scopeone.latest_raw_frame("Camera")
-# edit live.image here
-live.write()
-scopeone.show_frame_mapping_as_layer(layer_id="python_live", name="Python Live")
+preview_image = np.flipud(live.image)
+scopeone.show_frame(live, image=preview_image, layer_id="python_live", name="Python Live")
 
 property_names = scopeone.device_property_names("Camera")
 print(property_names[:10])
@@ -36,13 +37,12 @@ if "Exposure" in property_names:
     # scopeone.set_property("Camera", "Exposure", "10")
 
 session = scopeone.record(frames=10, camera="Camera")
-frame = session.frame("Camera", 0)
 stage = session.process_frame("Camera", 0, end_module_index=0)
-# edit stage.image here
-stage.write()
-scopeone.process_frame_mapping(start_module_index=stage.metadata["nextModuleIndex"])
-scopeone.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result")
-paths = session.save(r"C:\data", base_name="test", format="tiff")
+edited_stage = np.clip(stage.image * 1.2, 0, (1 << stage.bits_per_sample) - 1)
+result = scopeone.continue_pipeline(stage, image=edited_stage)
+scopeone.show_frame(result, layer_id="python_result", name="Python Result")
+paths = scopeone.save_frame(result, r"C:\data", base_name="python_result", format="tiff")
+session_paths = session.save(r"C:\data", base_name="raw_session", format="tiff")
 
 scopeone.stop_preview("Camera")
 scopeone.unload_config()
@@ -72,6 +72,10 @@ scopeone.unload_config()
 - `ScopeOne.process_frame_mapping(camera=None, start_module_index=None, end_module_index=None)`
 - `ScopeOne.latest_raw_frame(camera)`
 - `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
+- `ScopeOne.save_frame_mapping(save_dir, base_name, format="tiff", compression=False, compression_level=6, camera=None)`
+- `ScopeOne.continue_pipeline(frame, image=None)`
+- `ScopeOne.show_frame(frame, image=None, layer_id="python_result", name="Python Result")`
+- `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="tiff", compression=False, compression_level=6)`
 - `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
@@ -81,11 +85,16 @@ scopeone.unload_config()
 - `RecordingSession.save(save_dir, base_name, format="tiff", compression=False, compression_level=6)`
 - `FrameResult.write(image=None)`
 
+`FrameResult` exposes common metadata as typed attributes: `camera`, `width`, `height`, `pixel_format`, `bits_per_sample`, `frame_index`, `timestamp_ns`, `source_roi`, `module_index`, `next_module_index`, and `start_module_index`.
+
+`FrameResult.write(image)` clips and casts the edited pixels to the frame format, writes them into the shared mapping, and updates `frame.image` to the written array.
+
 ## Local API Protocol
 
 ScopeOne uses one local control pipe for JSON commands and one shared-memory block for frame transfer.
 
-- Control endpoint: `\\.\pipe\ScopeOne.Api.local`
+- Control endpoint on Windows: `\\.\pipe\ScopeOne.Api.local`
+- Control endpoint on Linux/Unix: `<tempdir>/ScopeOne.Api.local`
 - Message framing: 4-byte little-endian unsigned payload size, followed by UTF-8 JSON.
 - Maximum JSON payload: 256 KiB.
 - Success response: `{"type": "<request type>", "ok": true, ...}`
@@ -119,6 +128,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `session_process_frame`: fields `sessionId`, `camera`, `index`, optional `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `process_frame_mapping`: optional fields `camera`, `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `show_frame_mapping_as_layer`: optional fields `camera`, `layerId`, `name`; imports the current shared memory frame as a preview layer and returns `layerKey`.
+- `save_frame_mapping`: fields `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`, optional field `camera`; imports the current shared memory frame and saves it as a one-frame output.
 - `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`; response `paths`.
 
 ### Record request
@@ -148,9 +158,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Python reads this through `scopeone.shm.frame_to_ndarray()`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
 - Session frames can come from memory, saved TIFF stacks, or saved binary streams.
-- `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
+- `ScopeOne.latest_raw_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
 
-`latest_raw_frame` exports the current live raw frame for Python processing. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. After editing `FrameResult.image`, call `FrameResult.write()` and then call `process_frame_mapping` with `startModuleIndex` set to the returned next stage index to continue the pipeline. Call `show_frame_mapping_as_layer` to display the current shared memory frame in the ScopeOne preview as a static layer. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping` and `show_frame_mapping_as_layer` reuse the last exported camera id when `camera` is omitted. Provide `camera` when the mapping was written by an external client.
+`latest_raw_frame` exports the current live raw frame for Python processing. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported camera id when `camera` is omitted. Provide `camera` when the mapping was written by an external client.
 
 ### Error policy
 
@@ -158,9 +168,10 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 
 ## Notes
 
-- `ScopeOne()` connects to a running `ScopeOne.exe` control server over the local Windows pipe `\\.\pipe\ScopeOne.Api.local`.
+- `ScopeOne()` connects to a running ScopeOne control server over the local platform endpoint.
 - `ScopeOne.connect("local")` is an alias for the default local connection.
-- Start `ScopeOne.exe` before using the Python API.
+- Start the ScopeOne app before using the Python API.
+- Python 3.10 or newer is required.
 - Frame reads use a shared-memory export block plus `scopeone.shm` parsing helpers.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
 - Runnable examples are kept in `examples/example_minimal.ipynb`.

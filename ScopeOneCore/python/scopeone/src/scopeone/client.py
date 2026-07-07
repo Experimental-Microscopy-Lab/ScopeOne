@@ -185,11 +185,65 @@ def _metadata_bool(metadata: dict, key: str) -> bool:
     return bool(metadata[key])
 
 
-@dataclass(frozen=True)
+@dataclass
 class FrameResult:
     image: object
     metadata: dict
     _transport: object
+
+    @property
+    def camera(self) -> str:
+        return str(self.metadata.get("camera", ""))
+
+    @property
+    def width(self) -> int:
+        return _metadata_int(self.metadata, "width")
+
+    @property
+    def height(self) -> int:
+        return _metadata_int(self.metadata, "height")
+
+    @property
+    def pixel_format(self) -> str:
+        return str(self.metadata.get("pixelFormat", ""))
+
+    @property
+    def bits_per_sample(self) -> int:
+        return _metadata_int(self.metadata, "bitsPerSample")
+
+    @property
+    def frame_index(self) -> int:
+        return _metadata_int(self.metadata, "frameIndex")
+
+    @property
+    def timestamp_ns(self) -> int:
+        return _metadata_int(self.metadata, "timestampNs")
+
+    @property
+    def source_roi(self) -> tuple[int, int, int, int] | None:
+        if not _metadata_bool(self.metadata, "sourceRoiValid"):
+            return None
+        return (
+            _metadata_int(self.metadata, "sourceRoiX"),
+            _metadata_int(self.metadata, "sourceRoiY"),
+            _metadata_int(self.metadata, "sourceRoiWidth"),
+            _metadata_int(self.metadata, "sourceRoiHeight"),
+        )
+
+    @property
+    def module_index(self) -> int | None:
+        value = self.metadata.get("moduleIndex")
+        return None if value is None else int(value)
+
+    @property
+    def next_module_index(self) -> int | None:
+        value = self.metadata.get("nextModuleIndex")
+        return None if value is None else int(value)
+
+    @property
+    def start_module_index(self) -> int | None:
+        value = self.metadata.get("startModuleIndex")
+        return None if value is None else int(value)
 
     def write(self, image: object | None = None) -> None:
         from .shm import MONO8, MONO16, SHARED_FRAME_HEADER_SIZE, parse_frame_header
@@ -255,6 +309,7 @@ class FrameResult:
             finally:
                 payload.release()
             struct.pack_into("<I", view, 0, 2)
+            self.image = np.array(contiguous, copy=True)
 
 
 def _add_stage_fields(
@@ -463,6 +518,28 @@ class ExternalClient:
         response = self._request(request)
         return str(response["layerKey"])
 
+    def save_frame_mapping(
+        self,
+        save_dir: str,
+        base_name: str,
+        format: str = "tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+        camera: str | None = None,
+    ) -> list[str]:
+        request = {
+            "type": "save_frame_mapping",
+            "saveDir": save_dir,
+            "baseName": base_name,
+            "format": format,
+            "compression": bool(compression),
+            "compressionLevel": int(compression_level),
+        }
+        if camera:
+            request["camera"] = camera
+        response = self._request(request)
+        return list(response.get("paths", []))
+
     def close(self) -> None:
         self._transport.close()
 
@@ -494,6 +571,7 @@ class ExternalClient:
             header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
             image = frame_to_ndarray(header, view[SHARED_FRAME_HEADER_SIZE:])
         return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
+
 
 class ExternalRecordingSession:
     def __init__(self, client: ExternalClient, session_id: str) -> None:

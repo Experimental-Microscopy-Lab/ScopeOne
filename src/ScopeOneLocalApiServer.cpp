@@ -17,6 +17,7 @@
 #include <QtEndian>
 #include <cstring>
 #include <limits>
+#include <memory>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -183,6 +184,36 @@ namespace scopeone::ui
             return value.isEmpty() ? defaultValue : value;
         }
 
+        QString saveRequestError(const QJsonObject& request)
+        {
+            if (request.value(QStringLiteral("saveDir")).toString().trimmed().isEmpty())
+            {
+                return QStringLiteral("Missing saveDir");
+            }
+            if (request.value(QStringLiteral("baseName")).toString().trimmed().isEmpty())
+            {
+                return QStringLiteral("Missing baseName");
+            }
+            return {};
+        }
+
+        void applySaveRequest(
+            const QJsonObject& request,
+            scopeone::core::ScopeOneCore::RecordingCapturePlanData& capturePlan)
+        {
+            capturePlan.saveDir = request.value(QStringLiteral("saveDir")).toString().trimmed();
+            capturePlan.baseName = request.value(QStringLiteral("baseName")).toString().trimmed();
+            const QString formatName = request.value(QStringLiteral("format"))
+                                           .toString(QStringLiteral("tiff"))
+                                           .trimmed()
+                                           .toLower();
+            capturePlan.format = (formatName == QStringLiteral("binary") || formatName == QStringLiteral("bin"))
+                                     ? scopeone::core::RecordingFormat::Binary
+                                     : scopeone::core::RecordingFormat::Tiff;
+            capturePlan.enableCompression = request.value(QStringLiteral("compression")).toBool(false);
+            capturePlan.compressionLevel = request.value(QStringLiteral("compressionLevel")).toInt(6);
+        }
+
         // Resolves a request camera target against loaded cameras
         QStringList resolveCameraIds(scopeone::core::ScopeOneCore* core, const QString& cameraIdOrAll)
         {
@@ -295,6 +326,22 @@ namespace scopeone::ui
             {
                 response.insert(QStringLiteral("startModuleIndex"), result.startModuleIndex);
             }
+        }
+
+        QJsonArray savedFramePaths(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        {
+            QJsonArray paths;
+            const auto& files = session->outputFiles();
+            for (const QString& cameraId : session->recordedCameraIds())
+            {
+                const auto it = files.constFind(cameraId);
+                if (it != files.constEnd() && !it.value().rawPath.isEmpty())
+                {
+                    paths.append(it.value().rawPath);
+                }
+            }
+            return paths;
         }
     } // namespace
 
@@ -1010,6 +1057,55 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("save_frame_mapping"))
+        {
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            const QString saveError = saveRequestError(request);
+            if (!saveError.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), saveError);
+                return response;
+            }
+
+            scopeone::core::ImageFrame frame;
+            QString errorMessage;
+            if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
+            {
+                response.insert(QStringLiteral("error"),
+                                errorMessage.isEmpty()
+                                    ? QStringLiteral("Failed to import frame")
+                                    : errorMessage);
+                return response;
+            }
+
+            auto session = std::make_shared<scopeone::core::ScopeOneCore::RecordingSessionData>();
+            scopeone::core::ScopeOneCore::RecordingCapturePlanData capturePlan;
+            capturePlan.cameraIds.append(frame.cameraId);
+            capturePlan.streamToDisk = false;
+            capturePlan.captureAll = false;
+            applySaveRequest(request, capturePlan);
+            session->setCapturePlan(capturePlan);
+
+            if (!session->appendImageFrame(frame))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to create frame session"));
+                return response;
+            }
+
+            const QString saveResult = m_scopeonecore->saveRecordingSession(session);
+            if (saveResult.startsWith(QStringLiteral("Error:"), Qt::CaseInsensitive))
+            {
+                response.insert(QStringLiteral("error"), saveResult);
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("paths"), savedFramePaths(session));
+            addFrameMetadata(response, frame);
+            return response;
+        }
+
         if (type == QStringLiteral("session_save"))
         {
             const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
@@ -1020,17 +1116,15 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
                 return response;
             }
+            const QString saveError = saveRequestError(request);
+            if (!saveError.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), saveError);
+                return response;
+            }
 
             auto capturePlan = session->capturePlan();
-            capturePlan.saveDir = request.value(QStringLiteral("saveDir")).toString().trimmed();
-            capturePlan.baseName = request.value(QStringLiteral("baseName")).toString().trimmed();
-            const QString formatName = request.value(QStringLiteral("format")).toString(QStringLiteral("tiff")).
-                                               trimmed().toLower();
-            capturePlan.format = (formatName == QStringLiteral("binary") || formatName == QStringLiteral("bin"))
-                                     ? scopeone::core::RecordingFormat::Binary
-                                     : scopeone::core::RecordingFormat::Tiff;
-            capturePlan.enableCompression = request.value(QStringLiteral("compression")).toBool(false);
-            capturePlan.compressionLevel = request.value(QStringLiteral("compressionLevel")).toInt(6);
+            applySaveRequest(request, capturePlan);
             session->setCapturePlan(capturePlan);
 
             const QString saveResult = m_scopeonecore->saveRecordingSession(session);
@@ -1041,17 +1135,7 @@ namespace scopeone::ui
             }
 
             response = makeResponse(type, true);
-            QJsonArray paths;
-            const auto& files = session->outputFiles();
-            for (const QString& cameraId : session->recordedCameraIds())
-            {
-                const auto it = files.constFind(cameraId);
-                if (it != files.constEnd() && !it.value().rawPath.isEmpty())
-                {
-                    paths.append(it.value().rawPath);
-                }
-            }
-            response.insert(QStringLiteral("paths"), paths);
+            response.insert(QStringLiteral("paths"), savedFramePaths(session));
             return response;
         }
 

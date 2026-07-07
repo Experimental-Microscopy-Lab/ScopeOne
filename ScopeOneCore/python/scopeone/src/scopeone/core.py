@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .client import ExternalClient, LOCAL_SERVER_NAME
+from .client import ExternalClient, FrameResult, LOCAL_SERVER_NAME
 from .session import RecordingSession
 
 
@@ -94,6 +94,63 @@ class ScopeOne:
         camera: str | None = None,
     ):
         return self._client.show_frame_mapping_as_layer(layer_id, name, camera)
+
+    def save_frame_mapping(
+        self,
+        save_dir: str,
+        base_name: str,
+        format: str = "tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+        camera: str | None = None,
+    ):
+        return self._client.save_frame_mapping(
+            save_dir,
+            base_name,
+            format,
+            compression,
+            compression_level,
+            camera,
+        )
+
+    def continue_pipeline(self, frame: FrameResult, image: object | None = None):
+        if frame.next_module_index is None:
+            raise ValueError("FrameResult has no next_module_index")
+        frame.write(image)
+        return self.process_frame_mapping(
+            frame.camera or None,
+            start_module_index=frame.next_module_index,
+        )
+
+    def show_frame(
+        self,
+        frame: FrameResult,
+        image: object | None = None,
+        layer_id: str = "python_result",
+        name: str = "Python Result",
+    ):
+        frame.write(image)
+        return self.show_frame_mapping_as_layer(layer_id, name, frame.camera or None)
+
+    def save_frame(
+        self,
+        frame: FrameResult,
+        save_dir: str,
+        base_name: str,
+        image: object | None = None,
+        format: str = "tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+    ):
+        frame.write(image)
+        return self.save_frame_mapping(
+            save_dir,
+            base_name,
+            format,
+            compression,
+            compression_level,
+            frame.camera or None,
+        )
 
     def record(
         self,
