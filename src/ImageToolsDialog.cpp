@@ -398,7 +398,6 @@ namespace scopeone::ui
         m_mosaic->count.release();
         m_mosaicError.clear();
         m_mosaicReferenceFrame = ImageFrame{};
-        m_latestMosaicFrame = ImageFrame{};
         m_gallerySessionPublished = false;
         m_running = true;
         m_startButton->setEnabled(false);
@@ -650,7 +649,6 @@ namespace scopeone::ui
         }
         const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(layerId);
 
-        m_latestMosaicFrame = previewFrame;
         m_previewWidget->setLayerColormap(layerKey, QStringLiteral("Gray"));
         m_previewWidget->setLayerBlending(layerKey, QStringLiteral("Opaque"));
         m_previewWidget->setSelectedLayerKeys({layerKey});
@@ -661,12 +659,14 @@ namespace scopeone::ui
     // Adds the completed mosaic image to the persistent gallery
     void StageMosaicDialog::publishMosaicToGallery()
     {
-        if (m_gallerySessionPublished || !m_latestMosaicFrame.isValid())
+        const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(QStringLiteral("stage_mosaic"));
+        const ImageFrame mosaicFrame = m_core->graphFrame(layerKey);
+        if (m_gallerySessionPublished || !mosaicFrame.isValid())
         {
             return;
         }
 
-        auto session = mosaicSessionFromFrame(*m_core, m_latestMosaicFrame);
+        auto session = mosaicSessionFromFrame(*m_core, mosaicFrame);
         m_gallerySessionPublished = true;
         emit gallerySessionCreated(session, tr("Stage Mosaic %1").arg(m_activeCameraId));
         m_statusLabel->setText(tr("Mosaic complete and added to Gallery"));
@@ -798,8 +798,8 @@ namespace scopeone::ui
         }
         ensurePreviewRunning(cameraId);
 
-        ImageFrame frame;
-        if (!m_core->getLatestRawFrame(cameraId, frame))
+        const ImageFrame frame = m_core->graphFrame(ScopeOneCore::rawLayerKey(cameraId));
+        if (!frame.isValid())
         {
             m_statusLabel->setText(tr("Waiting for live frame"));
             return;

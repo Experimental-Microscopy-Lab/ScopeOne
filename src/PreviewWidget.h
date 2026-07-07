@@ -45,14 +45,6 @@ namespace scopeone::ui
         explicit PreviewWidget(QWidget* parent = nullptr);
         ~PreviewWidget() override;
 
-        static QString rawLayerKey(const QString& cameraId);
-        static QString processedLayerKey(const QString& cameraId);
-        static QString staticLayerKey(const QString& layerId);
-        static QString sourceIdFromLayerKey(const QString& layerKey);
-        static bool isRawLayerKey(const QString& layerKey);
-        static bool isProcessedLayerKey(const QString& layerKey);
-        static bool isStaticLayerKey(const QString& layerKey);
-
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
         void setLayerLayoutMode(LayerLayoutMode mode);

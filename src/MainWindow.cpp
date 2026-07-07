@@ -347,8 +347,9 @@ namespace scopeone::ui
                         || sourceWidth <= 0
                         || sourceHeight <= 0)
                     {
-                        scopeone::core::ImageFrame latestFrame;
-                        if (!m_scopeonecore->getLatestRawFrame(cameraId, latestFrame) || !latestFrame.isValid())
+                        const scopeone::core::ImageFrame latestFrame =
+                            m_scopeonecore->graphFrame(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
+                        if (!latestFrame.isValid())
                         {
                             qWarning().noquote() << QString("Failed to set half ROI for %1: no raw frame").arg(cameraId);
                             showStatusMessage(tr("No raw frame available for Half ROI"), 5000);

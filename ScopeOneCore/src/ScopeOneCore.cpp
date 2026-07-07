@@ -716,22 +716,6 @@ namespace scopeone::core
         return it != latestMap(stream).constEnd() && it.value().isValid() ? it.value() : ImageFrame{};
     }
 
-    // Return latest valid frames for several graph sources
-    QList<ImageFrame> ScopeOneCore::FrameGraph::latestFrames(FrameGraphStream stream, const QStringList& sourceIds) const
-    {
-        QList<ImageFrame> frames;
-        frames.reserve(sourceIds.size());
-        for (const QString& sourceId : sourceIds)
-        {
-            ImageFrame frame = latest(stream, sourceId);
-            if (frame.isValid())
-            {
-                frames.append(std::move(frame));
-            }
-        }
-        return frames;
-    }
-
     // Store a session source without copying the full recording into the graph
     bool ScopeOneCore::FrameGraph::publishSessionSource(
         const QString& sourceId,
@@ -1153,6 +1137,12 @@ namespace scopeone::core
         return QStringLiteral("static:%1").arg(sourceId.trimmed());
     }
 
+    // Build the graph layer key for one external source
+    QString ScopeOneCore::externalLayerKey(const QString& sourceId)
+    {
+        return QStringLiteral("external:%1").arg(sourceId.trimmed());
+    }
+
     // Extract the source id encoded in a graph layer key
     QString ScopeOneCore::sourceIdFromLayerKey(const QString& layerKey)
     {
@@ -1176,6 +1166,11 @@ namespace scopeone::core
         return layerKey.trimmed().startsWith(QStringLiteral("static:"));
     }
 
+    bool ScopeOneCore::isExternalLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("external:"));
+    }
+
     // Wire core managers and public signals into one facade object
     ScopeOneCore::ScopeOneCore(QObject* parent)
         : QObject(parent)
@@ -1197,7 +1192,8 @@ namespace scopeone::core
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)
             {
-                return getLatestRawFrame(cameraId, frame);
+                frame = graphFrame(rawLayerKey(cameraId));
+                return frame.isValid();
             });
 
         connect(m_managers->mpcm, &MultiProcessCameraManager::newRawFrameReady,
@@ -1463,7 +1459,7 @@ namespace scopeone::core
 
         if (processed)
         {
-            const ImageFrame frame = m_frameGraph.latest(FrameGraphStream::Processed, trimmedCameraId);
+            const ImageFrame frame = graphFrame(processedLayerKey(trimmedCameraId));
             if (frame.isValid())
             {
                 updateLineProfile(trimmedCameraId, true, frame);
@@ -1471,8 +1467,8 @@ namespace scopeone::core
             return;
         }
 
-        ImageFrame frame;
-        if (getLatestRawFrame(trimmedCameraId, frame))
+        const ImageFrame frame = graphFrame(rawLayerKey(trimmedCameraId));
+        if (frame.isValid())
         {
             updateLineProfile(trimmedCameraId, false, frame);
         }
@@ -1488,7 +1484,7 @@ namespace scopeone::core
         }
 
         m_activeLineProfile = ActiveLineProfile{};
-        const ImageFrame frame = m_frameGraph.latest(FrameGraphStream::Static, trimmedSourceId);
+        const ImageFrame frame = graphFrame(staticLayerKey(trimmedSourceId));
         QVector<int> values;
         if (!sampleLine(start, end, values,
                         [&](const QPoint& point, int& value)
@@ -1589,69 +1585,55 @@ namespace scopeone::core
         }
     }
 
-    // Return the newest raw frame from the graph
-    bool ScopeOneCore::getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const
+    // Return the latest frame for one graph layer key
+    ImageFrame ScopeOneCore::graphFrame(const QString& layerKey) const
     {
-        const QString trimmedCameraId = cameraId.trimmed();
-        if (trimmedCameraId.isEmpty())
+        const QString trimmedLayerKey = layerKey.trimmed();
+        const QString sourceId = sourceIdFromLayerKey(trimmedLayerKey).trimmed();
+        if (sourceId.isEmpty())
         {
-            frame = ImageFrame{};
-            return false;
+            return {};
         }
 
-        const ImageFrame cachedFrame = m_frameGraph.latest(FrameGraphStream::Raw, trimmedCameraId);
-        if (cachedFrame.isValid())
+        if (isRawLayerKey(trimmedLayerKey))
         {
-            frame = cachedFrame;
-            return true;
+            return m_frameGraph.latest(FrameGraphStream::Raw, sourceId);
         }
-
-        frame = ImageFrame{};
-        return false;
+        if (isProcessedLayerKey(trimmedLayerKey))
+        {
+            return m_frameGraph.latest(FrameGraphStream::Processed, sourceId);
+        }
+        if (isStaticLayerKey(trimmedLayerKey))
+        {
+            return m_frameGraph.latest(FrameGraphStream::Static, sourceId);
+        }
+        if (isExternalLayerKey(trimmedLayerKey))
+        {
+            return m_frameGraph.latest(FrameGraphStream::External, sourceId);
+        }
+        return {};
     }
 
-    // Return newest valid graph raw frames for a camera selection
-    QList<ImageFrame> ScopeOneCore::latestRawFrames(const QStringList& cameraIds) const
+    // Return latest valid frames for several graph layer keys
+    QList<ImageFrame> ScopeOneCore::graphFrames(const QStringList& layerKeys) const
     {
-        return m_frameGraph.latestFrames(FrameGraphStream::Raw, cameraIds);
+        QList<ImageFrame> frames;
+        frames.reserve(layerKeys.size());
+        for (const QString& layerKey : layerKeys)
+        {
+            ImageFrame frame = graphFrame(layerKey);
+            if (frame.isValid())
+            {
+                frames.append(std::move(frame));
+            }
+        }
+        return frames;
     }
 
     // Read one pixel from a named frame graph layer
     bool ScopeOneCore::graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const
     {
-        const QString trimmedLayerKey = layerKey.trimmed();
-        const int separator = trimmedLayerKey.indexOf(QLatin1Char(':'));
-        if (separator <= 0 || separator == trimmedLayerKey.size() - 1)
-        {
-            return false;
-        }
-
-        const QString streamName = trimmedLayerKey.left(separator);
-        const QString sourceId = trimmedLayerKey.mid(separator + 1).trimmed();
-        if (sourceId.isEmpty())
-        {
-            return false;
-        }
-
-        FrameGraphStream stream = FrameGraphStream::Raw;
-        if (streamName == QStringLiteral("proc"))
-        {
-            stream = FrameGraphStream::Processed;
-        }
-        else if (streamName == QStringLiteral("static"))
-        {
-            stream = FrameGraphStream::Static;
-        }
-        else if (streamName == QStringLiteral("external"))
-        {
-            stream = FrameGraphStream::External;
-        }
-        else if (streamName != QStringLiteral("raw"))
-        {
-            return false;
-        }
-
-        return sampleFrameValue(m_frameGraph.latest(stream, sourceId), imagePos, value);
+        return sampleFrameValue(graphFrame(layerKey), imagePos, value);
     }
 
     // Return one frame from a session source through the graph facade
@@ -1756,16 +1738,16 @@ namespace scopeone::core
         {
             return {};
         }
-        const ImageFrame graphFrame = m_frameGraph.latest(FrameGraphStream::Static, sourceId);
+        const ImageFrame storedFrame = graphFrame(staticLayerKey(sourceId));
         HistogramStats stats;
-        if (computeHistogramStats(graphFrame, stats))
+        if (computeHistogramStats(storedFrame, stats))
         {
-            const QString layerKey = staticLayerKey(graphFrame.cameraId);
+            const QString layerKey = staticLayerKey(storedFrame.cameraId);
             m_latestHistogramStats.insert(layerKey, stats);
             emit layerHistogramReady(layerKey, stats);
         }
-        emit staticFramePublished(graphFrame.cameraId, displayName.trimmed(), graphFrame);
-        return graphFrame;
+        emit staticFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
+        return storedFrame;
     }
 
     // Publish an externally supplied frame to the central graph
@@ -1775,7 +1757,7 @@ namespace scopeone::core
         {
             return {};
         }
-        return m_frameGraph.latest(FrameGraphStream::External, sourceId);
+        return graphFrame(externalLayerKey(sourceId));
     }
 
     // Remove one static frame graph source
@@ -1898,8 +1880,8 @@ namespace scopeone::core
             return true;
         }
 
-        ImageFrame frame;
-        if (!getLatestRawFrame(cameraId, frame))
+        const ImageFrame frame = graphFrame(rawLayerKey(cameraId));
+        if (!frame.isValid())
         {
             return false;
         }

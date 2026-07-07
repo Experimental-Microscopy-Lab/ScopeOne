@@ -12,6 +12,7 @@
 namespace scopeone::ui
 {
     using scopeone::core::ImageFrame;
+    using scopeone::core::ScopeOneCore;
 
     namespace
     {
@@ -19,8 +20,8 @@ namespace scopeone::ui
         QString previewLayerKey(const QString& cameraId, bool processed)
         {
             return processed
-                       ? PreviewWidget::processedLayerKey(cameraId)
-                       : PreviewWidget::rawLayerKey(cameraId);
+                       ? ScopeOneCore::processedLayerKey(cameraId)
+                       : ScopeOneCore::rawLayerKey(cameraId);
         }
 
         // Normalizes one source id before it becomes a layer key
@@ -126,48 +127,6 @@ namespace scopeone::ui
             return clippedStart != clippedEnd;
         }
     } // namespace
-
-    // Builds the layer key for a raw image source
-    QString PreviewWidget::rawLayerKey(const QString& cameraId)
-    {
-        return scopeone::core::ScopeOneCore::rawLayerKey(cameraId);
-    }
-
-    // Builds the layer key for a processed image source
-    QString PreviewWidget::processedLayerKey(const QString& cameraId)
-    {
-        return scopeone::core::ScopeOneCore::processedLayerKey(cameraId);
-    }
-
-    // Builds the layer key for a static image source
-    QString PreviewWidget::staticLayerKey(const QString& layerId)
-    {
-        return scopeone::core::ScopeOneCore::staticLayerKey(layerId);
-    }
-
-    // Extracts the source id encoded in a layer key
-    QString PreviewWidget::sourceIdFromLayerKey(const QString& layerKey)
-    {
-        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
-    }
-
-    // Checks whether a layer key points to raw data
-    bool PreviewWidget::isRawLayerKey(const QString& layerKey)
-    {
-        return scopeone::core::ScopeOneCore::isRawLayerKey(layerKey);
-    }
-
-    // Checks whether a layer key points to processed data
-    bool PreviewWidget::isProcessedLayerKey(const QString& layerKey)
-    {
-        return scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey);
-    }
-
-    // Checks whether a layer key points to static data
-    bool PreviewWidget::isStaticLayerKey(const QString& layerKey)
-    {
-        return scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey);
-    }
 
     // Creates the OpenGL preview widget
     PreviewWidget::PreviewWidget(QWidget* parent)
@@ -536,8 +495,8 @@ namespace scopeone::ui
             return {};
         }
 
-        const QString layerKey = PreviewWidget::staticLayerKey(normalizedId);
-        const QString sourceId = PreviewWidget::sourceIdFromLayerKey(layerKey);
+        const QString layerKey = ScopeOneCore::staticLayerKey(normalizedId);
+        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
         if (normalizedSourceId(frame.cameraId) != sourceId)
         {
             return {};
@@ -576,8 +535,8 @@ namespace scopeone::ui
     // Removes one static image layer from the preview
     bool PreviewWidget::removeStaticLayer(const QString& layerKey)
     {
-        const QString sourceId = PreviewWidget::sourceIdFromLayerKey(layerKey);
-        if (layerKey != PreviewWidget::staticLayerKey(sourceId) || !m_staticSourceIds.contains(sourceId))
+        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
+        if (layerKey != ScopeOneCore::staticLayerKey(sourceId) || !m_staticSourceIds.contains(sourceId))
         {
             return false;
         }
@@ -642,7 +601,7 @@ namespace scopeone::ui
         }
         for (const QString& sourceId : m_staticSourceIds)
         {
-            const QString layerKey = PreviewWidget::staticLayerKey(sourceId);
+            const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
             availableKeys.append(layerKey);
             availableSet.insert(layerKey);
         }
@@ -741,8 +700,8 @@ namespace scopeone::ui
             return nameIt.value();
         }
 
-        const QString cameraId = PreviewWidget::sourceIdFromLayerKey(layerKey);
-        return PreviewWidget::isProcessedLayerKey(layerKey)
+        const QString cameraId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
+        return ScopeOneCore::isProcessedLayerKey(layerKey)
                    ? QStringLiteral("%1 Processed").arg(cameraId)
                    : QStringLiteral("%1 Raw").arg(cameraId);
     }
@@ -761,7 +720,7 @@ namespace scopeone::ui
             return {};
         }
 
-        const QString sourceId = PreviewWidget::sourceIdFromLayerKey(layerKey);
+        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
         if (m_staticSourceIds.contains(sourceId))
         {
             return QStringLiteral("%1x%2")
@@ -888,7 +847,7 @@ namespace scopeone::ui
         {
             return it.value();
         }
-        return defaultLayerDisplaySettings(PreviewWidget::isProcessedLayerKey(layerKey));
+        return defaultLayerDisplaySettings(ScopeOneCore::isProcessedLayerKey(layerKey));
     }
 
     PreviewWidget::Colormap PreviewWidget::colormapFromName(const QString& name) const
@@ -965,7 +924,7 @@ namespace scopeone::ui
         }
         if (!m_layers.contains(layerKey))
         {
-            m_layers.insert(layerKey, defaultLayerDisplaySettings(PreviewWidget::isProcessedLayerKey(layerKey)));
+            m_layers.insert(layerKey, defaultLayerDisplaySettings(ScopeOneCore::isProcessedLayerKey(layerKey)));
         }
         if (!m_layerOrder.contains(layerKey))
         {
@@ -988,7 +947,7 @@ namespace scopeone::ui
     // Removes stored state for one static image source
     void PreviewWidget::removeStaticLayerData(const QString& sourceId)
     {
-        const QString layerKey = PreviewWidget::staticLayerKey(sourceId);
+        const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
         m_staticSourceIds.remove(sourceId);
         m_layerInfos.remove(layerKey);
         m_fpsStates.remove(layerKey);
@@ -1037,7 +996,7 @@ namespace scopeone::ui
         QSet<QString> keys = validPreviewLayerKeys(m_availableCameraIds);
         for (const QString& sourceId : m_staticSourceIds)
         {
-            keys.insert(PreviewWidget::staticLayerKey(sourceId));
+            keys.insert(ScopeOneCore::staticLayerKey(sourceId));
         }
         return keys;
     }
@@ -1538,7 +1497,7 @@ namespace scopeone::ui
             }
             appendedKeys.insert(key);
             const LayerInfo& info = it.value();
-            const QString sourceId = PreviewWidget::sourceIdFromLayerKey(key);
+            const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(key);
             if (m_staticSourceIds.contains(sourceId))
             {
                 lines.append(QString("%1: %2×%3")
@@ -1764,7 +1723,7 @@ namespace scopeone::ui
                 continue;
             }
 
-            const QString sourceId = PreviewWidget::sourceIdFromLayerKey(layerKey);
+            const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
             const auto it = renderInfoBySourceId.constFind(sourceId);
             if (it == renderInfoBySourceId.constEnd())
             {
@@ -1772,7 +1731,7 @@ namespace scopeone::ui
             }
 
             const FrameSourceRenderInfo* info = it.value();
-            const bool processed = PreviewWidget::isProcessedLayerKey(layerKey);
+            const bool processed = ScopeOneCore::isProcessedLayerKey(layerKey);
             if (processed && !info->hasProcessedFrame)
             {
                 continue;
@@ -2267,7 +2226,7 @@ namespace scopeone::ui
         }
         m_lineDrawingMode = true;
         m_lineTargetLayerKey = layerKey.trimmed();
-        m_lineTargetSourceId = PreviewWidget::sourceIdFromLayerKey(m_lineTargetLayerKey);
+        m_lineTargetSourceId = ScopeOneCore::sourceIdFromLayerKey(m_lineTargetLayerKey);
         m_lineDragging = false;
         setFocus();
         setCursor(Qt::CrossCursor);

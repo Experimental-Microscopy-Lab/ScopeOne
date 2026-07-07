@@ -875,7 +875,13 @@ namespace scopeone::ui
         capturedPlan.baseName = captureBase + QStringLiteral("_capture_")
             + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
 
-        const QList<scopeone::core::ImageFrame> frames = m_scopeonecore->latestRawFrames(cameraIds);
+        QStringList layerKeys;
+        layerKeys.reserve(cameraIds.size());
+        for (const QString& cameraId : cameraIds)
+        {
+            layerKeys.append(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
+        }
+        const QList<scopeone::core::ImageFrame> frames = m_scopeonecore->graphFrames(layerKeys);
         auto capturedSession = m_scopeonecore->createFrameSession(
             frames,
             capturedPlan);

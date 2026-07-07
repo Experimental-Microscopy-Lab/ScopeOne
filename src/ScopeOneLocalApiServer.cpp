@@ -926,8 +926,9 @@ namespace scopeone::ui
                 return response;
             }
 
-            scopeone::core::ImageFrame frame;
-            if (!m_scopeonecore->getLatestRawFrame(cameraId, frame))
+            const scopeone::core::ImageFrame frame =
+                m_scopeonecore->graphFrame(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
+            if (!frame.isValid())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("No latest raw frame for camera"));
                 return response;

@@ -554,10 +554,12 @@ namespace scopeone::core
         static QString rawLayerKey(const QString& cameraId);
         static QString processedLayerKey(const QString& cameraId);
         static QString staticLayerKey(const QString& sourceId);
+        static QString externalLayerKey(const QString& sourceId);
         static QString sourceIdFromLayerKey(const QString& layerKey);
         static bool isRawLayerKey(const QString& layerKey);
         static bool isProcessedLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
+        static bool isExternalLayerKey(const QString& layerKey);
 
         bool loadConfiguration(const QString& configPath,
                                LoadConfigResult* result,
@@ -575,8 +577,8 @@ namespace scopeone::core
         void setLineProfile(const QString& cameraId, const QPoint& start, const QPoint& end, bool processed);
         void setStaticLineProfile(const QString& sourceId, const QPoint& start, const QPoint& end);
         void clearLineProfile();
-        bool getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const;
-        QList<ImageFrame> latestRawFrames(const QStringList& cameraIds) const;
+        ImageFrame graphFrame(const QString& layerKey) const;
+        QList<ImageFrame> graphFrames(const QStringList& layerKeys) const;
         bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
         ImageFrame sessionFrameAt(
             const std::shared_ptr<RecordingSessionData>& session,
@@ -724,7 +726,6 @@ namespace scopeone::core
             bool publishLatest(FrameGraphStream stream, const ImageFrame& frame);
             bool publishLatest(FrameGraphStream stream, const QString& sourceId, const ImageFrame& frame);
             ImageFrame latest(FrameGraphStream stream, const QString& sourceId) const;
-            QList<ImageFrame> latestFrames(FrameGraphStream stream, const QStringList& sourceIds) const;
             bool publishSessionSource(const QString& sourceId,
                                       const std::shared_ptr<RecordingSessionData>& session,
                                       const QList<ImageFrame>& firstFrames);
