@@ -52,6 +52,12 @@ Outputs:
 - `setROI(...)`
 - `clearROI(...)`
 - `getLatestRawFrame(...)`
+- `latestRawFrames(...)`
+- `sessionFrameAt(...)`
+- `firstSessionFrames(...)`
+- `createFrameSession(...)`
+- `publishStaticFrame(...)`
+- `publishExternalFrame(...)`
 - `getRawImageStatistics(...)`
 - `computeHistogramStats(...)`
 - `setLineProfile(...)`
@@ -75,11 +81,9 @@ Outputs:
 - `setPropertyValue(...)`
 - `isRealTimeProcessingEnabled()`
 - `setRealTimeProcessingEnabled(...)`
-- `processFrameAsync(...)`
 - `processFrame(...)`
 - `processFrameFrom(...)`
 - `processFrameThrough(...)`
-- `processFrameWithIntermediates(...)`
 - `processingModules()`
 - `addProcessingModule(...)`
 - `removeProcessingModule(...)`
@@ -95,4 +99,6 @@ Outputs:
 
 ## Processing Data Flow
 
-`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Use `processFrameWithIntermediates(...)` to capture each module output. Each `ProcessingStageFrame::nextModuleIndex` can be passed to `processFrameFrom(...)` with an edited frame to continue the same pipeline after that module. Saved TIFF and binary recording outputs are read back through `RecordingSessionData::imageFrameAt(...)` before entering preview or processing again. Live preview processing and synchronous API processing use separate runtime pipeline state so offline frame edits do not change live module buffers.
+`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved TIFF and binary recording outputs are read back through `ScopeOneCore::sessionFrameAt(...)` or `ScopeOneCore::firstSessionFrames(...)` before entering preview or processing again. Live preview processing and synchronous API processing use separate runtime pipeline state so offline frame edits do not change live module buffers.
+
+Raw live frames, processed live frames, static tool/gallery frames, external API frames and session frame sources are routed through the core frame graph. UI preview widgets keep only a render cache, and callers should use `ScopeOneCore` frame facade methods instead of reading camera managers, recording sessions or preview cache state directly.

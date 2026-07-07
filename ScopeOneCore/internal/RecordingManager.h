@@ -235,6 +235,9 @@ namespace scopeone::core::internal
         void emitBufferUsageChanged(qint64 pendingWriteBytes);
         void emitWriterStatus();
         void setWriterStatus(RecordingWriterPhase phase, const QString& errorMessage = QString());
+        static QString updateSessionResult(const std::shared_ptr<RecordingSessionData>& session,
+                                           const QString& result,
+                                           bool saved);
         qint64 totalFramesWritten() const;
         bool enqueueFrame(const ImageFrame& frame);
         bool shouldAcceptFrame(const FramePacket& packet) const;

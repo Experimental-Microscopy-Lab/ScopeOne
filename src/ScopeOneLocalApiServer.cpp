@@ -359,6 +359,26 @@ namespace scopeone::ui
             }
             return graphFrame;
         }
+
+        bool processAndPublishExternalApiFrame(scopeone::core::ScopeOneCore* core,
+                                               const scopeone::core::ImageFrame& frame,
+                                               const QJsonObject& request,
+                                               ProcessFrameRequestResult& result,
+                                               QString& errorMessage)
+        {
+            result = processFrameFromRequest(core, frame, request, errorMessage);
+            if (!result.frame.isValid())
+            {
+                if (errorMessage.isEmpty())
+                {
+                    errorMessage = QStringLiteral("Processing produced no valid frame");
+                }
+                return false;
+            }
+
+            result.frame = publishExternalApiFrame(core, result.frame, errorMessage);
+            return result.frame.isValid();
+        }
     } // namespace
 
     // Starts the local API pipe server and frame mapping
@@ -961,27 +981,19 @@ namespace scopeone::ui
             }
 
             QString errorMessage;
-            const ProcessFrameRequestResult processedResult =
-                processFrameFromRequest(m_scopeonecore, frame, request, errorMessage);
-            const scopeone::core::ImageFrame processedFrame = processedResult.frame;
-            if (!processedFrame.isValid())
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Processing produced no valid frame")
-                                : errorMessage);
-                return response;
-            }
-            const scopeone::core::ImageFrame graphProcessedFrame =
-                publishExternalApiFrame(m_scopeonecore, processedFrame, errorMessage);
-            if (!graphProcessedFrame.isValid())
+            ProcessFrameRequestResult processedResult;
+            if (!processAndPublishExternalApiFrame(m_scopeonecore,
+                                                   frame,
+                                                   request,
+                                                   processedResult,
+                                                   errorMessage))
             {
                 response.insert(QStringLiteral("error"), errorMessage);
                 return response;
             }
 
             scopeone::core::ImageFrame exportedFrame;
-            if (!exportFrameToSharedMemory(graphProcessedFrame, exportedFrame, errorMessage))
+            if (!exportFrameToSharedMemory(processedResult.frame, exportedFrame, errorMessage))
             {
                 response.insert(QStringLiteral("error"),
                                 errorMessage.isEmpty()
@@ -1023,27 +1035,19 @@ namespace scopeone::ui
                 return response;
             }
 
-            const ProcessFrameRequestResult processedResult =
-                processFrameFromRequest(m_scopeonecore, graphFrame, request, errorMessage);
-            const scopeone::core::ImageFrame processedFrame = processedResult.frame;
-            if (!processedFrame.isValid())
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Processing produced no valid frame")
-                                : errorMessage);
-                return response;
-            }
-            const scopeone::core::ImageFrame graphProcessedFrame =
-                publishExternalApiFrame(m_scopeonecore, processedFrame, errorMessage);
-            if (!graphProcessedFrame.isValid())
+            ProcessFrameRequestResult processedResult;
+            if (!processAndPublishExternalApiFrame(m_scopeonecore,
+                                                   graphFrame,
+                                                   request,
+                                                   processedResult,
+                                                   errorMessage))
             {
                 response.insert(QStringLiteral("error"), errorMessage);
                 return response;
             }
 
             scopeone::core::ImageFrame exportedFrame;
-            if (!exportFrameToSharedMemory(graphProcessedFrame, exportedFrame, errorMessage))
+            if (!exportFrameToSharedMemory(processedResult.frame, exportedFrame, errorMessage))
             {
                 response.insert(QStringLiteral("error"),
                                 errorMessage.isEmpty()
@@ -1098,7 +1102,7 @@ namespace scopeone::ui
             }
 
             const scopeone::core::ImageFrame previewFrame = m_scopeonecore->publishStaticFrame(layerId, graphFrame);
-            const QString layerKey = m_previewWidget->setStaticLayerFrame(layerId, displayName, previewFrame);
+            const QString layerKey = m_previewWidget->setGraphStaticLayerFrame(layerId, displayName, previewFrame);
             if (layerKey.isEmpty())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Failed to show frame as preview layer"));
@@ -1188,9 +1192,8 @@ namespace scopeone::ui
 
             auto capturePlan = session->capturePlan();
             applySaveRequest(request, capturePlan);
-            session->setCapturePlan(capturePlan);
 
-            const QString saveResult = m_scopeonecore->saveRecordingSession(session);
+            const QString saveResult = m_scopeonecore->saveRecordingSession(session, capturePlan);
             if (saveResult.startsWith(QStringLiteral("Error:"), Qt::CaseInsensitive))
             {
                 response.insert(QStringLiteral("error"), saveResult);

@@ -71,17 +71,6 @@ namespace scopeone::core::internal
             }
         }
 
-        QString updateSessionResult(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-                                    const QString& result,
-                                    bool saved)
-        {
-            if (session)
-            {
-                session->setSaveResult(saved, result);
-            }
-            return result;
-        }
-
         quint64 timestampNsForStorage(const ImageFrame& frame)
         {
             if (frame.timestampNs != 0)
@@ -635,6 +624,19 @@ namespace scopeone::core::internal
             m_writerState.status.setMaxPendingWriteBytes(static_cast<qint64>(m_writerState.recordedMaxBytes));
         }
         emitWriterStatus();
+    }
+
+    // Update the persisted save result on a recording session
+    QString RecordingManager::updateSessionResult(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const QString& result,
+        bool saved)
+    {
+        if (session)
+        {
+            session->setSaveResult(saved, result);
+        }
+        return result;
     }
 
     // Returns the total frame count written by all writer threads

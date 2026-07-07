@@ -141,7 +141,7 @@ namespace scopeone::ui
                 {
                     continue;
                 }
-                const QString layerKey = previewWidget.setStaticLayerFrame(
+                const QString layerKey = previewWidget.setGraphStaticLayerFrame(
                     layerId,
                     displayName,
                     graphFrame);
@@ -281,12 +281,7 @@ namespace scopeone::ui
                     const QPoint end(endX, endY);
                     if (PreviewWidget::isStaticLayerKey(layerKey))
                     {
-                        m_scopeonecore->clearLineProfile();
-                        QVector<int> values;
-                        if (m_previewWidget->lineProfile(sourceId, start, end, processed, values))
-                        {
-                            m_inspectWidget->setLayerCrossSectionProfile(layerKey, values);
-                        }
+                        m_scopeonecore->setStaticLineProfile(sourceId, start, end);
                         return;
                     }
 
@@ -303,14 +298,14 @@ namespace scopeone::ui
                     {
                         return;
                     }
-                    m_previewWidget->setRawFrame(frame);
+                    m_previewWidget->setGraphRawFrame(frame);
                     refreshPreviewCursorStatus();
                 });
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewProcessedFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
                 {
-                    m_previewWidget->setProcessedFrame(frame);
+                    m_previewWidget->setGraphProcessedFrame(frame);
                     refreshPreviewCursorStatus();
                 });
 
@@ -418,15 +413,6 @@ namespace scopeone::ui
                 m_inspectWidget, &InspectWidget::setCurrentLayer);
         connect(m_previewWidget, &PreviewWidget::availableLayerKeysChanged,
                 m_inspectWidget, &InspectWidget::setAvailableLayers);
-        connect(m_previewWidget, &PreviewWidget::staticLayerFrameChanged,
-                this, [this](const QString& layerKey, const scopeone::core::ImageFrame& frame)
-                {
-                    scopeone::core::ScopeOneCore::HistogramStats stats;
-                    if (scopeone::core::ScopeOneCore::computeHistogramStats(frame, stats))
-                    {
-                        m_inspectWidget->setLayerInspect(layerKey, stats);
-                    }
-                });
         connect(m_previewWidget, &PreviewWidget::staticLayerRemoved,
                 this, [this](const QString& layerKey)
                 {
@@ -605,7 +591,7 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     removeGallerySessionPreview(*m_previewWidget, session);
-                    m_scopeonecore->removeSessionFrameSet(session);
+                    m_scopeonecore->removeSessionFrameSource(session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionsRequested,
                 this,

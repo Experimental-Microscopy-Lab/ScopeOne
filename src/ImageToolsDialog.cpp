@@ -493,7 +493,6 @@ namespace scopeone::ui
             return;
         }
 
-        m_previewWidget->setRawFrame(frame);
         m_waitingForTileFrame = false;
         const int columns = m_columnsSpinBox->value();
         const int totalTiles = m_rowsSpinBox->value() * columns;
@@ -640,16 +639,21 @@ namespace scopeone::ui
                                                             m_mosaic->count,
                                                             m_mosaic->outputType);
         const ImageFrame mosaicFrame = frameFromMat(mosaicPreview, m_mosaicReferenceFrame);
-        m_latestMosaicFrame = mosaicFrame;
         const ImageFrame previewFrame = m_core->publishStaticFrame(QStringLiteral("stage_mosaic"), mosaicFrame);
-        const QString layerKey = m_previewWidget->setStaticLayerFrame(QStringLiteral("stage_mosaic"),
-                                                                      tr("Stage Mosaic %1").arg(m_activeCameraId),
-                                                                      previewFrame);
+        if (!previewFrame.isValid())
+        {
+            return false;
+        }
+        const QString layerKey = m_previewWidget->setGraphStaticLayerFrame(
+            QStringLiteral("stage_mosaic"),
+            tr("Stage Mosaic %1").arg(m_activeCameraId),
+            previewFrame);
         if (layerKey.isEmpty())
         {
             return false;
         }
 
+        m_latestMosaicFrame = previewFrame;
         m_previewWidget->setLayerColormap(layerKey, QStringLiteral("Gray"));
         m_previewWidget->setLayerBlending(layerKey, QStringLiteral("Opaque"));
         m_previewWidget->setSelectedLayerKeys({layerKey});
@@ -803,7 +807,6 @@ namespace scopeone::ui
             m_statusLabel->setText(tr("Waiting for live frame"));
             return;
         }
-        m_previewWidget->setRawFrame(frame);
         const int maxPixelValue = frame.maxValue();
         if (m_thresholdSpinBox->maximum() != maxPixelValue)
         {
@@ -862,9 +865,10 @@ namespace scopeone::ui
 
         ImageFrame maskFrame = frameFromMat(filtered, frame);
         const ImageFrame previewMaskFrame = m_core->publishStaticFrame(QStringLiteral("particle_mask"), maskFrame);
-        const QString maskLayer = m_previewWidget->setStaticLayerFrame(QStringLiteral("particle_mask"),
-                                                                       tr("Particles %1").arg(cameraId),
-                                                                       previewMaskFrame);
+        const QString maskLayer = m_previewWidget->setGraphStaticLayerFrame(
+            QStringLiteral("particle_mask"),
+            tr("Particles %1").arg(cameraId),
+            previewMaskFrame);
         if (maskLayer.isEmpty())
         {
             m_statusLabel->setText(tr("Failed to display particle mask"));

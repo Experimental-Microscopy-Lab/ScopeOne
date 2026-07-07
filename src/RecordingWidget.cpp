@@ -886,7 +886,7 @@ namespace scopeone::ui
         }
 
         emit gallerySessionCaptured(capturedSession);
-        qInfo().noquote() << QStringLiteral("Gallery appended with %1 frame set(s)").arg(frames.size());
+        qInfo().noquote() << QStringLiteral("Gallery appended with %1 frame(s)").arg(frames.size());
         return true;
     }
 

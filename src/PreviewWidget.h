@@ -53,8 +53,8 @@ namespace scopeone::ui
         static bool isProcessedLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
 
-        void setProcessedFrame(const scopeone::core::ImageFrame& frame);
-        void setRawFrame(const scopeone::core::ImageFrame& frame);
+        void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
+        void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
@@ -69,9 +69,9 @@ namespace scopeone::ui
                                    int maxLevel,
                                    int maxPossible);
         void moveLayer(const QString& layerKey, int offset);
-        QString setStaticLayerFrame(const QString& layerId,
-                                    const QString& displayName,
-                                    const scopeone::core::ImageFrame& frame);
+        QString setGraphStaticLayerFrame(const QString& layerId,
+                                         const QString& displayName,
+                                         const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
         void clearStaticLayers();
         QStringList availableCameraIds() const;
@@ -114,13 +114,7 @@ namespace scopeone::ui
                            const QPoint& imagePos,
                            bool processed,
                            int& outValue) const;
-        bool lineProfile(const QString& sourceId,
-                         const QPoint& start,
-                         const QPoint& end,
-                         bool processed,
-                         QVector<int>& outValues) const;
-
-    signals:
+signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
         void selectedLayerKeysChanged(const QStringList& layerKeys);
@@ -128,7 +122,6 @@ namespace scopeone::ui
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
-        void staticLayerFrameChanged(const QString& layerKey, const scopeone::core::ImageFrame& frame);
         void staticLayerRemoved(const QString& layerKey);
         void staticLayersCleared();
         void mousePositionChanged(const QPoint& widgetPos);

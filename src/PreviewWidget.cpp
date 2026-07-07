@@ -82,30 +82,6 @@ namespace scopeone::ui
             return false;
         }
 
-        // Sample a straight line through one frame
-        bool sampleLineValues(const ImageFrame& frame,
-                              const QPoint& start,
-                              const QPoint& end,
-                              QVector<int>& outValues)
-        {
-            const int dx = end.x() - start.x();
-            const int dy = end.y() - start.y();
-            const int steps = qMax(qAbs(dx), qAbs(dy));
-            outValues.clear();
-            outValues.reserve(steps + 1);
-            for (int i = 0; i <= steps; ++i)
-            {
-                const double t = (steps == 0) ? 0.0 : static_cast<double>(i) / static_cast<double>(steps);
-                const QPoint point(qRound(start.x() + dx * t), qRound(start.y() + dy * t));
-                int value = 0;
-                if (sampleFrameValue(frame, point, value))
-                {
-                    outValues.push_back(value);
-                }
-            }
-            return !outValues.isEmpty();
-        }
-
         // Clips one widget line to a display rectangle
         bool clipLineToRect(const QPoint& start,
                             const QPoint& end,
@@ -255,8 +231,14 @@ namespace scopeone::ui
             return false;
         }
 
+        const QString frameSourceId = normalizedSourceId(frame.cameraId);
+        if (!frame.isValid() || frameSourceId != normalizedId)
+        {
+            hadFrame = false;
+            return false;
+        }
+
         ImageFrame storedFrame = frame;
-        storedFrame.cameraId = normalizedId;
         QMutexLocker lock(&m_mutex);
         FrameSourceState& frameState = m_frameSources[normalizedId];
         if (role == FrameRole::Processed)
@@ -299,11 +281,11 @@ namespace scopeone::ui
         }
     }
 
-    // Stores one processed frame and updates layer statistics
-    void PreviewWidget::setProcessedFrame(const ImageFrame& frame)
+    // Stores one graph processed frame and updates layer statistics
+    void PreviewWidget::setGraphProcessedFrame(const ImageFrame& frame)
     {
         const QString sourceId = normalizedSourceId(frame.cameraId);
-        if (sourceId.isEmpty())
+        if (sourceId.isEmpty() || !frame.isValid())
         {
             return;
         }
@@ -326,11 +308,11 @@ namespace scopeone::ui
         updateImageDisplay();
     }
 
-    // Stores one raw frame and updates layer statistics
-    void PreviewWidget::setRawFrame(const ImageFrame& frame)
+    // Stores one graph raw frame and updates layer statistics
+    void PreviewWidget::setGraphRawFrame(const ImageFrame& frame)
     {
         const QString sourceId = normalizedSourceId(frame.cameraId);
-        if (sourceId.isEmpty())
+        if (sourceId.isEmpty() || !frame.isValid())
         {
             return;
         }
@@ -570,10 +552,10 @@ namespace scopeone::ui
         updateImageDisplay();
     }
 
-    // Adds a static image frame as a preview layer
-    QString PreviewWidget::setStaticLayerFrame(const QString& layerId,
-                                               const QString& displayName,
-                                               const ImageFrame& frame)
+    // Adds a graph static image frame as a preview layer
+    QString PreviewWidget::setGraphStaticLayerFrame(const QString& layerId,
+                                                    const QString& displayName,
+                                                    const ImageFrame& frame)
     {
         const QString normalizedId = layerId.trimmed();
         if (normalizedId.isEmpty() || !frame.isValid())
@@ -583,8 +565,11 @@ namespace scopeone::ui
 
         const QString layerKey = PreviewWidget::staticLayerKey(normalizedId);
         const QString sourceId = PreviewWidget::sourceIdFromLayerKey(layerKey);
+        if (normalizedSourceId(frame.cameraId) != sourceId)
+        {
+            return {};
+        }
         ImageFrame staticFrame = frame;
-        staticFrame.cameraId = sourceId;
         const bool hadStaticLayer = m_staticSourceIds.contains(sourceId);
         const bool wasVisible = m_layers.value(layerKey).visible;
 
@@ -611,7 +596,6 @@ namespace scopeone::ui
         {
             emit selectedLayerKeysChanged(selectedLayerKeys());
         }
-        emit staticLayerFrameChanged(layerKey, staticFrame);
         updateImageDisplay();
         return layerKey;
     }
@@ -1728,35 +1712,6 @@ namespace scopeone::ui
         }
 
         return false;
-    }
-
-    // Returns a sampled line profile from one preview layer
-    bool PreviewWidget::lineProfile(const QString& sourceId,
-                                    const QPoint& start,
-                                    const QPoint& end,
-                                    bool processed,
-                                    QVector<int>& outValues) const
-    {
-        const QString trimmedSourceId = sourceId.trimmed();
-        if (trimmedSourceId.isEmpty())
-        {
-            outValues.clear();
-            return false;
-        }
-
-        ImageFrame frame;
-        {
-            QMutexLocker lock(&m_mutex);
-            const auto it = m_frameSources.constFind(trimmedSourceId);
-            if (it == m_frameSources.constEnd())
-            {
-                outValues.clear();
-                return false;
-            }
-            frame = processed ? it.value().processedFrame : it.value().rawFrame;
-        }
-
-        return sampleLineValues(frame, start, end, outValues);
     }
 
     // Initializes OpenGL state for preview rendering

@@ -21,6 +21,11 @@ class CMMCore;
 
 namespace scopeone::core
 {
+    namespace internal
+    {
+        class RecordingManager;
+    }
+
     enum class RecordingFormat
     {
         Tiff = 0,
@@ -278,58 +283,9 @@ namespace scopeone::core
         class SCOPEONE_CORE_EXPORT RecordingSessionData
         {
         public:
-            void setCapturePlan(const RecordingCapturePlanData& planData)
-            {
-                m_manifest.plan = planData;
-                QStringList cameraIds;
-                for (const QString& cameraId : m_manifest.plan.cameraIds)
-                {
-                    const QString trimmedCameraId = cameraId.trimmed();
-                    if (!trimmedCameraId.isEmpty() && !cameraIds.contains(trimmedCameraId))
-                    {
-                        cameraIds.append(trimmedCameraId);
-                    }
-                }
-                m_manifest.plan.cameraIds = cameraIds;
-            }
             const QStringList& cameraIds() const { return m_manifest.plan.cameraIds; }
             const RecordingCapturePlanData& capturePlan() const { return m_manifest.plan; }
-            void setStreamedToDisk(bool streamedToDisk) { m_manifest.output.streamedToDisk = streamedToDisk; }
             bool streamedToDisk() const { return m_manifest.output.streamedToDisk; }
-
-            bool hasFrames(const QString& cameraId) const
-            {
-                const auto it = m_frames.constFind(cameraId.trimmed());
-                return it != m_frames.constEnd() && !it.value().empty();
-            }
-
-            int frameCount() const
-            {
-                int total = 0;
-                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
-                {
-                    total += static_cast<int>(it.value().size());
-                }
-                return total;
-            }
-
-            int frameCount(const QString& cameraId) const
-            {
-                const auto it = m_frames.constFind(cameraId.trimmed());
-                return it == m_frames.constEnd() ? 0 : static_cast<int>(it.value().size());
-            }
-
-            bool hasAnyFrames() const
-            {
-                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
-                {
-                    if (!it.value().empty())
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            }
 
             QStringList recordedCameraIds() const
             {
@@ -359,9 +315,6 @@ namespace scopeone::core
                 }
                 return ids;
             }
-
-            ImageFrame imageFrameAt(const QString& cameraId, int index) const;
-            QList<ImageFrame> firstImageFrames() const;
 
             const QHash<QString, RecordingFileManifest>& outputFiles() const
             {
@@ -405,6 +358,91 @@ namespace scopeone::core
                 return recordedFrameCount() > 0;
             }
 
+            bool isSaved() const { return m_saveResult.saved(); }
+            const QString& saveMessage() const { return m_saveResult.message(); }
+
+        private:
+            friend class ScopeOneCore;
+            friend class internal::RecordingManager;
+
+            void setStreamedToDisk(bool streamedToDisk) { m_manifest.output.streamedToDisk = streamedToDisk; }
+            bool hasFrames(const QString& cameraId) const
+            {
+                const auto it = m_frames.constFind(cameraId.trimmed());
+                return it != m_frames.constEnd() && !it.value().empty();
+            }
+            int frameCount() const
+            {
+                int total = 0;
+                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
+                {
+                    total += static_cast<int>(it.value().size());
+                }
+                return total;
+            }
+            int frameCount(const QString& cameraId) const
+            {
+                const auto it = m_frames.constFind(cameraId.trimmed());
+                return it == m_frames.constEnd() ? 0 : static_cast<int>(it.value().size());
+            }
+            bool hasAnyFrames() const
+            {
+                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
+                {
+                    if (!it.value().empty())
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            void resetSaveResult()
+            {
+                m_saveResult.reset();
+            }
+            void setSaveResult(bool saved, const QString& message)
+            {
+                m_saveResult.set(saved, message);
+            }
+            void resetWriterStatus(qint64 maxPendingWriteBytes = 0)
+            {
+                m_writerStatus.reset(maxPendingWriteBytes);
+            }
+            void setWriterPhase(RecordingWriterPhase phase, const QString& errorMessage = QString())
+            {
+                m_writerStatus.setPhase(phase, errorMessage);
+            }
+            void addWrittenFrames(qint64 framesWritten)
+            {
+                m_writerStatus.addWrittenFrames(framesWritten);
+            }
+            void setWriterStatusSnapshot(const RecordingWriterStatus& status)
+            {
+                m_writerStatus.setFrom(status);
+            }
+            void prepareForSave(bool streamedToDisk, qint64 maxPendingWriteBytes = 0)
+            {
+                setStreamedToDisk(streamedToDisk);
+                clearOutputFiles();
+                resetSaveResult();
+                resetWriterStatus(maxPendingWriteBytes);
+            }
+            void setCapturePlan(const RecordingCapturePlanData& planData)
+            {
+                m_manifest.plan = planData;
+                QStringList cameraIds;
+                for (const QString& cameraId : m_manifest.plan.cameraIds)
+                {
+                    const QString trimmedCameraId = cameraId.trimmed();
+                    if (!trimmedCameraId.isEmpty() && !cameraIds.contains(trimmedCameraId))
+                    {
+                        cameraIds.append(trimmedCameraId);
+                    }
+                }
+                m_manifest.plan.cameraIds = cameraIds;
+            }
+            ImageFrame imageFrameAt(const QString& cameraId, int index) const;
+            QList<ImageFrame> firstImageFrames() const;
             bool appendImageFrame(const ImageFrame& frame)
             {
                 const QString cameraId = frame.cameraId.trimmed();
@@ -422,7 +460,6 @@ namespace scopeone::core
                 return true;
             }
             bool appendImageFrames(const QList<ImageFrame>& frames);
-
             ImageFrame firstImageFrame(const QString& cameraId) const
             {
                 return imageFrameAt(cameraId, 0);
@@ -430,69 +467,23 @@ namespace scopeone::core
             static std::shared_ptr<RecordingSessionData> fromImageFrames(
                 const QList<ImageFrame>& frames,
                 const RecordingCapturePlanData& capturePlan);
-
             void clearFrames() { m_frames.clear(); }
             void clearOutputFiles() { m_manifest.clearOutput(); }
-
             RecordingFileManifest& ensureFileManifest(const QString& cameraId)
             {
                 return m_manifest.ensureFile(cameraId.trimmed());
             }
-
             void setOutputFilePaths(const QString& cameraId, const QString& rawPath, const QString& frameInfoPath)
             {
                 auto& fileManifest = ensureFileManifest(cameraId);
                 fileManifest.rawPath = rawPath;
                 fileManifest.frameInfoPath = frameInfoPath;
             }
-
             void setOutputFramesWritten(const QString& cameraId, qint64 framesWritten)
             {
                 ensureFileManifest(cameraId).framesWritten = framesWritten;
             }
 
-            void resetSaveResult()
-            {
-                m_saveResult.reset();
-            }
-
-            void setSaveResult(bool saved, const QString& message)
-            {
-                m_saveResult.set(saved, message);
-            }
-
-            bool isSaved() const { return m_saveResult.saved(); }
-            const QString& saveMessage() const { return m_saveResult.message(); }
-
-            void resetWriterStatus(qint64 maxPendingWriteBytes = 0)
-            {
-                m_writerStatus.reset(maxPendingWriteBytes);
-            }
-
-            void setWriterPhase(RecordingWriterPhase phase, const QString& errorMessage = QString())
-            {
-                m_writerStatus.setPhase(phase, errorMessage);
-            }
-
-            void addWrittenFrames(qint64 framesWritten)
-            {
-                m_writerStatus.addWrittenFrames(framesWritten);
-            }
-
-            void setWriterStatusSnapshot(const RecordingWriterStatus& status)
-            {
-                m_writerStatus.setFrom(status);
-            }
-
-            void prepareForSave(bool streamedToDisk, qint64 maxPendingWriteBytes = 0)
-            {
-                setStreamedToDisk(streamedToDisk);
-                clearOutputFiles();
-                resetSaveResult();
-                resetWriterStatus(maxPendingWriteBytes);
-            }
-
-        private:
             ImageFrame outputImageFrameAt(const QString& cameraId, int index) const;
             const ImageFrame* frameAt(const QString& cameraId, int index) const;
 
@@ -575,6 +566,7 @@ namespace scopeone::core
         bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
         void setLineProfile(const QString& cameraId, const QPoint& start, const QPoint& end, bool processed);
+        void setStaticLineProfile(const QString& sourceId, const QPoint& start, const QPoint& end);
         void clearLineProfile();
         bool getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const;
         QList<ImageFrame> latestRawFrames(const QStringList& cameraIds) const;
@@ -584,7 +576,7 @@ namespace scopeone::core
             int index);
         QList<ImageFrame> firstSessionFrames(
             const std::shared_ptr<RecordingSessionData>& session);
-        void removeSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session);
+        void removeSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session);
         std::shared_ptr<RecordingSessionData> createFrameSession(
             const QList<ImageFrame>& frames,
             const RecordingCapturePlanData& capturePlan);
@@ -636,7 +628,6 @@ namespace scopeone::core
         void setRealTimeProcessingEnabled(bool enabled);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
-        void processFrameAsync(const ImageFrame& frame);
         ImageFrame processFrame(const ImageFrame& frame) const;
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
@@ -653,6 +644,8 @@ namespace scopeone::core
         void stopRecording();
         bool isRecording() const;
         QString saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session) const;
+        QString saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session,
+                                     const RecordingCapturePlanData& capturePlan) const;
         void saveRecordingSessionAsync(const std::shared_ptr<RecordingSessionData>& session);
 
     signals:
@@ -713,13 +706,22 @@ namespace scopeone::core
             bool publishLatest(FrameGraphStream stream, const QString& sourceId, const ImageFrame& frame);
             ImageFrame latest(FrameGraphStream stream, const QString& sourceId) const;
             QList<ImageFrame> latestFrames(FrameGraphStream stream, const QStringList& sourceIds) const;
-            bool publishFrameSet(const QString& sourceId, const QList<ImageFrame>& frames);
-            QList<ImageFrame> frameSet(const QString& sourceId) const;
-            void removeFrameSet(const QString& sourceId);
+            bool publishSessionSource(const QString& sourceId,
+                                      const std::shared_ptr<RecordingSessionData>& session,
+                                      const QList<ImageFrame>& firstFrames);
+            std::shared_ptr<RecordingSessionData> sessionSource(const QString& sourceId) const;
+            QList<ImageFrame> sessionFirstFrames(const QString& sourceId) const;
+            void removeSessionSource(const QString& sourceId);
             void remove(FrameGraphStream stream, const QString& sourceId);
             void clear(FrameGraphStream stream);
 
         private:
+            struct SessionSource
+            {
+                std::weak_ptr<RecordingSessionData> session;
+                QList<ImageFrame> firstFrames;
+            };
+
             QHash<QString, ImageFrame>& latestMap(FrameGraphStream stream);
             const QHash<QString, ImageFrame>& latestMap(FrameGraphStream stream) const;
 
@@ -727,7 +729,7 @@ namespace scopeone::core
             QHash<QString, ImageFrame> m_processedFrames;
             QHash<QString, ImageFrame> m_staticFrames;
             QHash<QString, ImageFrame> m_externalFrames;
-            QHash<QString, QList<ImageFrame>> m_frameSets;
+            QHash<QString, SessionSource> m_sessionSources;
         };
 
         struct HistogramJobState
@@ -747,12 +749,13 @@ namespace scopeone::core
         QStringList runningPreviewCameraIds() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void handleIncomingRawFrame(const ImageFrame& frame);
+        void processGraphRawFrameAsync(const ImageFrame& frame);
         void queuePreviewRawFrame(const ImageFrame& frame);
         void queuePreviewProcessedFrame(const ImageFrame& frame);
         void flushPreviewRawFrames();
         void flushPreviewProcessedFrames();
-        QString sessionFrameSetSourceId(const std::shared_ptr<RecordingSessionData>& session) const;
-        void publishSessionFrameSet(const std::shared_ptr<RecordingSessionData>& session);
+        QString sessionFrameSourceId(const std::shared_ptr<RecordingSessionData>& session) const;
+        bool publishSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session);
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);

@@ -60,8 +60,6 @@ namespace scopeone::core::internal
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
         bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
-        bool getLatestRaw(const QString& cameraId,
-                          scopeone::core::ImageFrame& frame);
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
                                int timeoutMs = 1500);
