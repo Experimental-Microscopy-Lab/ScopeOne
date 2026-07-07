@@ -253,18 +253,17 @@ namespace scopeone::ui
                                                    processed);
                 });
 
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::newRawFrameReady,
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
                 {
-                    if (!frame.isValid()
-                        || !m_deviceControlWidget->acceptsFrameFromCamera(frame.cameraId))
+                    if (!frame.isValid())
                     {
                         return;
                     }
                     m_previewWidget->setRawFrame(frame);
-                }, Qt::QueuedConnection);
+                });
 
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewProcessedFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
                 {
                     m_previewWidget->setProcessedFrame(frame);

@@ -496,6 +496,14 @@ namespace scopeone::ui
                     updateModuleList();
                     updateConfigWidget();
                 });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingModuleParametersChanged,
+                this, [this](int moduleIndex)
+                {
+                    if (moduleIndex == m_moduleList->currentRow())
+                    {
+                        updateConfigWidget();
+                    }
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingSettingsChanged,
                 this, &ImageProcessingWidget::updateProcessingSettings);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingError,

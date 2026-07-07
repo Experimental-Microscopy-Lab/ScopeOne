@@ -24,14 +24,6 @@ namespace scopeone::ui
 {
     namespace
     {
-        // Build the inspect layer key for raw or processed data
-        QString inspectLayerKey(const QString& cameraId, bool processed)
-        {
-            return processed
-                       ? PreviewWidget::processedLayerKey(cameraId)
-                       : PreviewWidget::rawLayerKey(cameraId);
-        }
-
         // Return the short source label used by inspect groups
         QString inspectLayerSourceLabel(const QString& layerKey)
         {
@@ -405,10 +397,10 @@ namespace scopeone::ui
         setupUI();
         updateControlsState();
 
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::imageHistogramReady,
-                this, &InspectWidget::onImageHistogramReady);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileUpdated,
-                this, &InspectWidget::setCrossSectionProfile);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerHistogramReady,
+                this, &InspectWidget::setLayerInspect);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerLineProfileUpdated,
+                this, &InspectWidget::setLayerCrossSectionProfile);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
                 this, &InspectWidget::clearCrossSectionProfile);
     }
@@ -532,12 +524,6 @@ namespace scopeone::ui
         }
 
         m_crossSectionWidget->setProfile(trimmedLayerKey, values);
-    }
-
-    // Display a freshly computed live cross section profile
-    void InspectWidget::setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values)
-    {
-        setLayerCrossSectionProfile(inspectLayerKey(cameraId, processed), values);
     }
 
     // Build the scrollable inspect panel
@@ -837,24 +823,6 @@ namespace scopeone::ui
 
         updateStatisticsDisplay(normalizedLayerKey, stats);
         updateControlsState();
-    }
-
-    // Create UI state on first histogram update
-    void InspectWidget::onImageHistogramReady(
-        const QString& cameraId,
-        bool processed,
-        const scopeone::core::ScopeOneCore::HistogramStats& stats)
-    {
-        if (cameraId.isEmpty())
-        {
-            return;
-        }
-        const QString layerKey = inspectLayerKey(cameraId, processed);
-        if (!m_layerInfoGroups.contains(layerKey))
-        {
-            addLayerInfo(layerKey);
-        }
-        updateLayerInspect(layerKey, stats);
     }
 
     // Apply the computed auto display range once

@@ -262,7 +262,7 @@ namespace scopeone::ui
         if (processedFrame.isValid())
         {
             const QString layerKey = previewLayerKey(sourceId, true);
-            const FpsUpdate fps = updateFpsOnFrame(layerKey);
+            const FpsUpdate fps = updateFpsOnFrame(layerKey, processedFrame);
 
             LayerInfo& info = m_layerInfos[layerKey];
             const bool sizeChanged = info.width != processedFrame.width || info.height != processedFrame.height;
@@ -307,7 +307,7 @@ namespace scopeone::ui
         if (rawFrame.isValid())
         {
             const QString layerKey = previewLayerKey(sourceId, false);
-            const FpsUpdate fps = updateFpsOnFrame(layerKey);
+            const FpsUpdate fps = updateFpsOnFrame(layerKey, rawFrame);
 
             LayerInfo& info = m_layerInfos[layerKey];
             const bool sizeChanged = info.width != rawFrame.width || info.height != rawFrame.height;
@@ -1215,26 +1215,36 @@ namespace scopeone::ui
     }
 
     // Updates rolling FPS statistics for one layer
-    PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& layerKey)
+    PreviewWidget::FpsUpdate PreviewWidget::updateFpsOnFrame(const QString& layerKey, const ImageFrame& frame)
     {
         FpsState& state = m_fpsStates[layerKey];
-        if (!state.timer.isValid())
+        bool changed = false;
+
+        if (frame.frameIndex > 0 && frame.timestampNs > 0)
         {
-            state.timer.start();
-            state.frameCounter = 0;
-            state.lastFps = 0.0;
+            if (state.acquisitionStartFrameIndex == 0
+                || frame.frameIndex <= state.acquisitionStartFrameIndex
+                || frame.timestampNs <= state.acquisitionStartTimestampNs)
+            {
+                state.acquisitionStartFrameIndex = frame.frameIndex;
+                state.acquisitionStartTimestampNs = frame.timestampNs;
+            }
+            else
+            {
+                const quint64 deltaFrames = frame.frameIndex - state.acquisitionStartFrameIndex;
+                const quint64 deltaNs = frame.timestampNs - state.acquisitionStartTimestampNs;
+                if (deltaNs >= 3000000000ull && deltaFrames > 0)
+                {
+                    state.lastFps = (static_cast<double>(deltaFrames) * 1000000000.0)
+                                    / static_cast<double>(deltaNs);
+                    state.acquisitionStartFrameIndex = frame.frameIndex;
+                    state.acquisitionStartTimestampNs = frame.timestampNs;
+                    changed = true;
+                }
+            }
         }
 
-        ++state.frameCounter;
-        const qint64 elapsedMs = state.timer.elapsed();
-        if (elapsedMs >= 3000)
-        {
-            state.lastFps = (state.frameCounter * 1000.0) / elapsedMs;
-            state.frameCounter = 0;
-            state.timer.restart();
-            return {state.lastFps, true};
-        }
-        return {state.lastFps, false};
+        return {state.lastFps, changed};
     }
 
     // Checks whether a frame source has raw data

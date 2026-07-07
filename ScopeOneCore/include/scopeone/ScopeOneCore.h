@@ -636,14 +636,19 @@ namespace scopeone::core
 
     signals:
         void newRawFrameReady(const ImageFrame& frame);
+        void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
         void processedFrameReady(const ImageFrame& frame);
+        void previewProcessedFrameReady(const ImageFrame& frame);
         void imageHistogramReady(const QString& cameraId, bool processed, const HistogramStats& stats);
+        void layerHistogramReady(const QString& layerKey, const HistogramStats& stats);
         void lineProfileUpdated(const QString& cameraId, bool processed, const QVector<int>& values);
+        void layerLineProfileUpdated(const QString& layerKey, const QVector<int>& values);
         void lineProfileCleared();
         void processingError(const QString& errorMessage);
         void processingModulesChanged();
+        void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
 
         void recordingProgressChanged(int phase,
@@ -688,6 +693,10 @@ namespace scopeone::core
         QStringList runningPreviewCameraIds() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void handleIncomingRawFrame(const ImageFrame& frame);
+        void queuePreviewRawFrame(const ImageFrame& frame);
+        void queuePreviewProcessedFrame(const ImageFrame& frame);
+        void flushPreviewRawFrames();
+        void flushPreviewProcessedFrames();
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);
@@ -709,9 +718,13 @@ namespace scopeone::core
         ActiveLineProfile m_activeLineProfile;
         QHash<QString, ImageFrame> m_latestRawFrames;
         QHash<QString, ImageFrame> m_latestProcessedFrames;
+        QHash<QString, ImageFrame> m_pendingPreviewRawFrames;
+        QHash<QString, ImageFrame> m_pendingPreviewProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;
         QHash<QString, HistogramStats> m_latestHistogramStats;
         quint64 m_nextHistogramSequence{0};
+        bool m_previewRawFlushQueued{false};
+        bool m_previewProcessedFlushQueued{false};
     };
 }
 

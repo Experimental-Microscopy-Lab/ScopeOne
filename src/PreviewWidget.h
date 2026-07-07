@@ -9,7 +9,6 @@
 #include <QString>
 #include <QStringList>
 #include <QSet>
-#include <QElapsedTimer>
 #include <QPoint>
 #include <QRect>
 #include <QSize>
@@ -165,8 +164,8 @@ namespace scopeone::ui
 
         struct FpsState
         {
-            QElapsedTimer timer;
-            int frameCounter{0};
+            quint64 acquisitionStartFrameIndex{0};
+            quint64 acquisitionStartTimestampNs{0};
             double lastFps{0.0};
         };
 
@@ -281,7 +280,7 @@ namespace scopeone::ui
         bool m_lineProcessed{false};
         bool m_lineVisible{false};
         void updateImageDisplay();
-        FpsUpdate updateFpsOnFrame(const QString& layerKey);
+        FpsUpdate updateFpsOnFrame(const QString& layerKey, const scopeone::core::ImageFrame& frame);
         void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;

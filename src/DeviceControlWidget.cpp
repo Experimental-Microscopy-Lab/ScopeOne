@@ -470,6 +470,7 @@ namespace scopeone::ui
         if (m_selectedLayerKey != previousLayerKey)
         {
             emit currentLayerChanged(m_selectedLayerKey);
+            syncControlTargetToSelectedRawLayer();
         }
     }
 
@@ -707,6 +708,24 @@ namespace scopeone::ui
     void DeviceControlWidget::onPreviewLayerRemoveClicked()
     {
         m_previewWidget->removeStaticLayer(m_selectedLayerKey);
+    }
+
+    // Use the selected raw camera layer as the hardware control target
+    void DeviceControlWidget::syncControlTargetToSelectedRawLayer()
+    {
+        if (!PreviewWidget::isRawLayerKey(m_selectedLayerKey))
+        {
+            return;
+        }
+
+        const QString sourceId = selectedLayerSourceId();
+        const int index = m_cameraSelectCombo->findText(sourceId);
+        if (index < 0 || m_cameraSelectCombo->currentIndex() == index)
+        {
+            return;
+        }
+
+        m_cameraSelectCombo->setCurrentIndex(index);
     }
 
     void DeviceControlWidget::resetSelectedLayerTransform()
@@ -1369,21 +1388,6 @@ namespace scopeone::ui
         }
 
         onControlTargetSelectionChanged(m_cameraSelectCombo->currentText());
-    }
-
-    // Checks whether a frame source matches the selected target
-    bool DeviceControlWidget::acceptsFrameFromCamera(const QString& cameraId) const
-    {
-        if (cameraId.isEmpty())
-        {
-            return false;
-        }
-        if (isAllTarget(m_currentTarget))
-        {
-            return true;
-        }
-
-        return m_currentTarget == cameraId;
     }
 
     // Emits start or stop preview request from the toggle button

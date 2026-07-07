@@ -34,8 +34,6 @@ namespace scopeone::ui
 
         void setControlTargets(const QStringList& cameraIds);
 
-        bool acceptsFrameFromCamera(const QString& cameraId) const;
-
         void setPreviewWidget(PreviewWidget* previewWidget);
 
         void setControlTargetEnabled(bool enabled);
@@ -97,6 +95,7 @@ namespace scopeone::ui
         void onPreviewLayerMoveUpClicked();
         void onPreviewLayerMoveDownClicked();
         void onPreviewLayerRemoveClicked();
+        void syncControlTargetToSelectedRawLayer();
         void resetSelectedLayerTransform();
 
         void setupUI();

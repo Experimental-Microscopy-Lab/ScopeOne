@@ -53,7 +53,6 @@ namespace scopeone::ui
         void clearInspect();
         void clearCrossSectionProfile();
         void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
-        void setCrossSectionProfile(const QString& cameraId, bool processed, const QVector<int>& values);
 
     signals:
         void displayRangeChanged(const QString& layerKey,
@@ -93,9 +92,6 @@ namespace scopeone::ui
         void removeLayerInfo(const QString& layerKey);
         void updateLayerInspect(const QString& layerKey,
                                 const scopeone::core::ScopeOneCore::HistogramStats& stats);
-        void onImageHistogramReady(const QString& cameraId,
-                                   bool processed,
-                                   const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void onAutoButtonClicked(const QString& layerKey);
         void onFullButtonClicked(const QString& layerKey);
         void onAutoStretchChanged(const QString& layerKey, bool checked);

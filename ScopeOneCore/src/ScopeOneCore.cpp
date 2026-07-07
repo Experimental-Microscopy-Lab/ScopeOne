@@ -14,6 +14,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QStringList>
+#include <QTimer>
 #include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
@@ -982,6 +983,7 @@ namespace scopeone::core
                     }
                     m_latestProcessedFrames.insert(frame.cameraId, frame);
                     emit processedFrameReady(frame);
+                    queuePreviewProcessedFrame(frame);
                     scheduleHistogramStats(frame.cameraId, true, frame);
                     updateLineProfile(frame.cameraId, true, frame);
                 });
@@ -1093,6 +1095,10 @@ namespace scopeone::core
         m_cameraIds.clear();
         m_latestRawFrames.clear();
         m_latestProcessedFrames.clear();
+        m_pendingPreviewRawFrames.clear();
+        m_pendingPreviewProcessedFrames.clear();
+        m_previewRawFlushQueued = false;
+        m_previewProcessedFlushQueued = false;
         m_histogramJobStates.clear();
         m_latestHistogramStats.clear();
         clearLineProfile();
@@ -1241,12 +1247,63 @@ namespace scopeone::core
         normalizedFrame.cameraId = cameraId;
         m_latestRawFrames.insert(cameraId, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
+        queuePreviewRawFrame(normalizedFrame);
         scheduleHistogramStats(cameraId, false, normalizedFrame);
         updateLineProfile(cameraId, false, normalizedFrame);
 
         if (isRealTimeProcessingEnabled())
         {
             processFrameAsync(normalizedFrame);
+        }
+    }
+
+    // Queue the newest raw frame for the display path
+    void ScopeOneCore::queuePreviewRawFrame(const ImageFrame& frame)
+    {
+        m_pendingPreviewRawFrames.insert(frame.cameraId, frame);
+        if (m_previewRawFlushQueued)
+        {
+            return;
+        }
+
+        m_previewRawFlushQueued = true;
+        QTimer::singleShot(0, this, [this]() { flushPreviewRawFrames(); });
+    }
+
+    // Queue the newest processed frame for the display path
+    void ScopeOneCore::queuePreviewProcessedFrame(const ImageFrame& frame)
+    {
+        m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
+        if (m_previewProcessedFlushQueued)
+        {
+            return;
+        }
+
+        m_previewProcessedFlushQueued = true;
+        QTimer::singleShot(0, this, [this]() { flushPreviewProcessedFrames(); });
+    }
+
+    // Flush latest only raw frames to preview consumers
+    void ScopeOneCore::flushPreviewRawFrames()
+    {
+        m_previewRawFlushQueued = false;
+        QHash<QString, ImageFrame> frames;
+        frames.swap(m_pendingPreviewRawFrames);
+        for (auto it = frames.constBegin(); it != frames.constEnd(); ++it)
+        {
+            emit previewRawFrameReady(it.value());
+        }
+    }
+
+    // Flush latest only processed frames to preview consumers
+    void ScopeOneCore::flushPreviewProcessedFrames()
+    {
+        m_previewProcessedFlushQueued = false;
+        QHash<QString, ImageFrame> frames;
+        frames.swap(m_pendingPreviewProcessedFrames);
+        for (auto it = frames.constBegin(); it != frames.constEnd(); ++it)
+        {
+            emit previewProcessedFrameReady(it.value());
         }
     }
 
@@ -1339,6 +1396,7 @@ namespace scopeone::core
                         {
                             m_latestHistogramStats.insert(cacheKey, stats);
                             emit imageHistogramReady(trimmedCameraId, processed, stats);
+                            emit layerHistogramReady(cacheKey, stats);
                         }
                         if (it->queuedFrame.isValid())
                         {
@@ -1389,7 +1447,9 @@ namespace scopeone::core
             return;
         }
 
+        const QString layerKey = histogramLayerKey(cameraId, processed);
         emit lineProfileUpdated(cameraId, processed, values);
+        emit layerLineProfileUpdated(layerKey, values);
     }
 
     QStringList ScopeOneCore::xyStageDevices() const
@@ -2108,7 +2168,7 @@ namespace scopeone::core
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        emit processingModulesChanged();
+        emit processingModuleParametersChanged(index);
         return true;
     }
 
@@ -2151,7 +2211,7 @@ namespace scopeone::core
         if (reset)
         {
             m_managers->imageProcessingManager->clearRuntimePipelines();
-            emit processingModulesChanged();
+            emit processingModuleParametersChanged(index);
             return true;
         }
         return false;
