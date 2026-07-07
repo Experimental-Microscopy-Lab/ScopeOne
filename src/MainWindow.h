@@ -8,8 +8,10 @@
 class QAction;
 class QCloseEvent;
 class QDockWidget;
+class QLabel;
 class QMenu;
 class QProgressDialog;
+class QTimer;
 
 namespace scopeone::core
 {
@@ -44,6 +46,7 @@ namespace scopeone::ui
     private:
         void setupUI();
         void setupSignalWiring();
+        void setupStatusBar();
 
         void setupMenuBar();
         void setupDeviceControl();
@@ -62,10 +65,15 @@ namespace scopeone::ui
         void applyUnloadedCameraState(const QStringList& cameraIds);
         void refreshDevicePanels(bool fromCache = false);
         void applyStoredApplicationSettings();
+        void logStartupSummary();
         void openSettingsDialog();
         void openStageMosaicTool();
         void openParticleDetectionTool();
         void connectPropertyPanels();
+        void showStatusMessage(const QString& message, int timeoutMs = 0);
+        void setCursorStatus(const QString& text);
+        void clearCursorStatus();
+        void refreshPreviewCursorStatus();
 
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
@@ -131,7 +139,15 @@ namespace scopeone::ui
         QPointer<QProgressDialog> m_loadConfigProgress;
         QPointer<StageMosaicDialog> m_stageMosaicDialog;
         QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
+        QLabel* m_statusMessageLabel{nullptr};
+        QLabel* m_statusCursorLabel{nullptr};
+        QLabel* m_statusTargetLabel{nullptr};
+        QLabel* m_statusPreviewLabel{nullptr};
+        QLabel* m_statusProcessingLabel{nullptr};
+        QLabel* m_statusRecordingLabel{nullptr};
+        QTimer* m_statusMessageTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
+        QPoint m_lastPreviewMousePos{-1, -1};
     };
 }

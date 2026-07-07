@@ -16,6 +16,7 @@
 #include <vector>
 #include "scopeone/ImageFrame.h"
 
+class QEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPointF;
@@ -151,6 +152,7 @@ namespace scopeone::ui
         void mousePressEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
+        void leaveEvent(QEvent* event) override;
         void wheelEvent(QWheelEvent* event) override;
         void keyPressEvent(QKeyEvent* event) override;
 

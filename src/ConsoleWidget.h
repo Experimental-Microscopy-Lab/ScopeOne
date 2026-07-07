@@ -1,7 +1,10 @@
 #pragma once
 
-#include <QWidget>
 #include <QDateTime>
+#include <QList>
+#include <QString>
+#include <QStringList>
+#include <QWidget>
 
 class QTextEdit;
 class QPushButton;
@@ -19,11 +22,14 @@ namespace scopeone::ui
         explicit ConsoleWidget(QWidget* parent = nullptr);
         ~ConsoleWidget() override;
 
-        void addMessage(const QString& message, const QString& type = "INFO");
+        void addMessage(const QString& message,
+                        const QString& type = "INFO",
+                        const QDateTime& timestamp = QDateTime::currentDateTime());
 
         void clearMessages();
 
         static void installAsQtMessageSink(ConsoleWidget* sink);
+        static void installQtMessageHandler();
 
         void setShowTimestamps(bool show);
 

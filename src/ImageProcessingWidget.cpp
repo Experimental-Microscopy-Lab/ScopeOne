@@ -517,7 +517,6 @@ namespace scopeone::ui
         updateModuleList();
         updateConfigWidget();
         updateRunButtons();
-        qInfo().noquote() << "Image Processing Widget initialized";
     }
 
     // Builds the image processing widget layout

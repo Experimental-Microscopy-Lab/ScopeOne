@@ -2,6 +2,7 @@
 #include <QIcon>
 #include <memory>
 #include "scopeone/ScopeOneCore.h"
+#include "ConsoleWidget.h"
 #include "MainWindow.h"
 
 // Create the shared core before the main window
@@ -10,6 +11,7 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     app.setStyle(QStringLiteral("Fusion"));
     app.setWindowIcon(QIcon(":/Scopeone_Icon.svg"));
+    scopeone::ui::ConsoleWidget::installQtMessageHandler();
 
     auto scopeOneCore = std::make_unique<scopeone::core::ScopeOneCore>();
     scopeone::ui::MainWindow window(scopeOneCore.get());

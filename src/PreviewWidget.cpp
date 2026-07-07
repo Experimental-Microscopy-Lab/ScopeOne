@@ -2605,6 +2605,13 @@ namespace scopeone::ui
         QOpenGLWidget::mouseReleaseEvent(event);
     }
 
+    // Clears the cursor readout after the pointer leaves the preview
+    void PreviewWidget::leaveEvent(QEvent* event)
+    {
+        emit mousePositionChanged(QPoint(-1, -1));
+        QOpenGLWidget::leaveEvent(event);
+    }
+
     // Handles control wheel zoom around the cursor anchor
     void PreviewWidget::wheelEvent(QWheelEvent* event)
     {

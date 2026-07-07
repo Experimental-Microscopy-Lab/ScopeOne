@@ -354,7 +354,6 @@ namespace scopeone::ui
         }
 
         updateUiState();
-        qInfo().noquote() << "Initialized";
     }
 
     RecordingWidget::~RecordingWidget()
