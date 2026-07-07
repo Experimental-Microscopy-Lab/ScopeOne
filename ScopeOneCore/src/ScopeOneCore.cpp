@@ -332,15 +332,9 @@ namespace
     // Build the cache key for raw and processed histogram layers
     QString histogramLayerKey(const QString& cameraId, bool processed)
     {
-        return QStringLiteral("%1:%2")
-            .arg(processed ? QStringLiteral("proc") : QStringLiteral("raw"),
-                 cameraId.trimmed());
-    }
-
-    // Build the cache key for static histogram layers
-    QString staticHistogramLayerKey(const QString& sourceId)
-    {
-        return QStringLiteral("static:%1").arg(sourceId.trimmed());
+        return processed
+                   ? scopeone::core::ScopeOneCore::processedLayerKey(cameraId)
+                   : scopeone::core::ScopeOneCore::rawLayerKey(cameraId);
     }
 
     // Derive a stable metadata file name from the recording base name
@@ -1141,6 +1135,47 @@ namespace scopeone::core
         return QStringLiteral(SCOPEONE_CORE_VERSION_STRING);
     }
 
+    // Build the graph layer key for one raw source
+    QString ScopeOneCore::rawLayerKey(const QString& cameraId)
+    {
+        return QStringLiteral("raw:%1").arg(cameraId.trimmed());
+    }
+
+    // Build the graph layer key for one processed source
+    QString ScopeOneCore::processedLayerKey(const QString& cameraId)
+    {
+        return QStringLiteral("proc:%1").arg(cameraId.trimmed());
+    }
+
+    // Build the graph layer key for one static source
+    QString ScopeOneCore::staticLayerKey(const QString& sourceId)
+    {
+        return QStringLiteral("static:%1").arg(sourceId.trimmed());
+    }
+
+    // Extract the source id encoded in a graph layer key
+    QString ScopeOneCore::sourceIdFromLayerKey(const QString& layerKey)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        const int separator = trimmedLayerKey.indexOf(QLatin1Char(':'));
+        return separator >= 0 ? trimmedLayerKey.mid(separator + 1) : trimmedLayerKey;
+    }
+
+    bool ScopeOneCore::isRawLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("raw:"));
+    }
+
+    bool ScopeOneCore::isProcessedLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("proc:"));
+    }
+
+    bool ScopeOneCore::isStaticLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("static:"));
+    }
+
     // Wire core managers and public signals into one facade object
     ScopeOneCore::ScopeOneCore(QObject* parent)
         : QObject(parent)
@@ -1299,8 +1334,17 @@ namespace scopeone::core
     // Stop cameras and clear all cached runtime state
     void ScopeOneCore::unloadConfiguration()
     {
+        const QStringList cameraIds = m_cameraIds;
         m_managers->mpcm->stopPreview();
         m_managers->mpcm->stopAgents();
+
+        for (const QString& cameraId : cameraIds)
+        {
+            clearLiveFrames(cameraId);
+        }
+        clearProcessedFrames();
+        clearStaticFrames();
+
         auto handle = core();
         try
         {
@@ -1311,8 +1355,6 @@ namespace scopeone::core
         }
         m_cameraIds.clear();
         m_frameGraph.clear();
-        m_pendingPreviewRawFrames.clear();
-        m_pendingPreviewProcessedFrames.clear();
         m_previewRawFlushQueued = false;
         m_previewProcessedFlushQueued = false;
         m_histogramJobStates.clear();
@@ -1457,7 +1499,7 @@ namespace scopeone::core
             return;
         }
 
-        emit layerLineProfileUpdated(staticHistogramLayerKey(trimmedSourceId), values);
+        emit layerLineProfileUpdated(staticLayerKey(trimmedSourceId), values);
     }
 
     void ScopeOneCore::clearLineProfile()
@@ -1574,6 +1616,44 @@ namespace scopeone::core
         return m_frameGraph.latestFrames(FrameGraphStream::Raw, cameraIds);
     }
 
+    // Read one pixel from a named frame graph layer
+    bool ScopeOneCore::graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        const int separator = trimmedLayerKey.indexOf(QLatin1Char(':'));
+        if (separator <= 0 || separator == trimmedLayerKey.size() - 1)
+        {
+            return false;
+        }
+
+        const QString streamName = trimmedLayerKey.left(separator);
+        const QString sourceId = trimmedLayerKey.mid(separator + 1).trimmed();
+        if (sourceId.isEmpty())
+        {
+            return false;
+        }
+
+        FrameGraphStream stream = FrameGraphStream::Raw;
+        if (streamName == QStringLiteral("proc"))
+        {
+            stream = FrameGraphStream::Processed;
+        }
+        else if (streamName == QStringLiteral("static"))
+        {
+            stream = FrameGraphStream::Static;
+        }
+        else if (streamName == QStringLiteral("external"))
+        {
+            stream = FrameGraphStream::External;
+        }
+        else if (streamName != QStringLiteral("raw"))
+        {
+            return false;
+        }
+
+        return sampleFrameValue(m_frameGraph.latest(stream, sourceId), imagePos, value);
+    }
+
     // Return one frame from a session source through the graph facade
     ImageFrame ScopeOneCore::sessionFrameAt(
         const std::shared_ptr<RecordingSessionData>& session,
@@ -1668,7 +1748,9 @@ namespace scopeone::core
     }
 
     // Publish a static frame source to the central graph
-    ImageFrame ScopeOneCore::publishStaticFrame(const QString& sourceId, const ImageFrame& frame)
+    ImageFrame ScopeOneCore::publishStaticFrame(const QString& sourceId,
+                                                const ImageFrame& frame,
+                                                const QString& displayName)
     {
         if (!m_frameGraph.publishLatest(FrameGraphStream::Static, sourceId, frame))
         {
@@ -1678,10 +1760,11 @@ namespace scopeone::core
         HistogramStats stats;
         if (computeHistogramStats(graphFrame, stats))
         {
-            const QString layerKey = staticHistogramLayerKey(graphFrame.cameraId);
+            const QString layerKey = staticLayerKey(graphFrame.cameraId);
             m_latestHistogramStats.insert(layerKey, stats);
             emit layerHistogramReady(layerKey, stats);
         }
+        emit staticFramePublished(graphFrame.cameraId, displayName.trimmed(), graphFrame);
         return graphFrame;
     }
 
@@ -1698,20 +1781,105 @@ namespace scopeone::core
     // Remove one static frame graph source
     void ScopeOneCore::removeStaticFrame(const QString& sourceId)
     {
-        m_frameGraph.remove(FrameGraphStream::Static, sourceId);
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (trimmedSourceId.isEmpty())
+        {
+            return;
+        }
+
+        const QString layerKey = staticLayerKey(trimmedSourceId);
+        m_frameGraph.remove(FrameGraphStream::Static, trimmedSourceId);
+        clearLayerAnalysis(layerKey);
+        emit staticFrameRemoved(trimmedSourceId);
     }
 
     // Clear all static frame graph sources
     void ScopeOneCore::clearStaticFrames()
     {
         m_frameGraph.clear(FrameGraphStream::Static);
+        clearLayerAnalysisByPrefix(QStringLiteral("static:"));
+        emit staticFramesCleared();
+    }
+
+    // Clear derived analysis data for one layer
+    void ScopeOneCore::clearLayerAnalysis(const QString& layerKey)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty())
+        {
+            return;
+        }
+
+        m_latestHistogramStats.remove(trimmedLayerKey);
+        m_histogramJobStates.remove(trimmedLayerKey);
+        emit layerAnalysisCleared(trimmedLayerKey);
+    }
+
+    // Clear derived analysis data for one graph stream
+    void ScopeOneCore::clearLayerAnalysisByPrefix(const QString& prefix)
+    {
+        const QString trimmedPrefix = prefix.trimmed();
+        if (trimmedPrefix.isEmpty())
+        {
+            return;
+        }
+
+        QStringList clearedKeys;
+        for (const QString& key : m_latestHistogramStats.keys())
+        {
+            if (key.startsWith(trimmedPrefix))
+            {
+                m_latestHistogramStats.remove(key);
+                if (!clearedKeys.contains(key))
+                {
+                    clearedKeys.append(key);
+                }
+            }
+        }
+        for (const QString& key : m_histogramJobStates.keys())
+        {
+            if (key.startsWith(trimmedPrefix))
+            {
+                m_histogramJobStates.remove(key);
+                if (!clearedKeys.contains(key))
+                {
+                    clearedKeys.append(key);
+                }
+            }
+        }
+        for (const QString& key : clearedKeys)
+        {
+            emit layerAnalysisCleared(key);
+        }
     }
 
     // Clear stale live frames for a camera source
     void ScopeOneCore::clearLiveFrames(const QString& cameraId)
     {
-        m_frameGraph.remove(FrameGraphStream::Raw, cameraId);
-        m_frameGraph.remove(FrameGraphStream::Processed, cameraId);
+        const QString trimmedCameraId = cameraId.trimmed();
+        if (trimmedCameraId.isEmpty())
+        {
+            return;
+        }
+
+        m_frameGraph.remove(FrameGraphStream::Raw, trimmedCameraId);
+        m_frameGraph.remove(FrameGraphStream::Processed, trimmedCameraId);
+        m_pendingPreviewRawFrames.remove(trimmedCameraId);
+        m_pendingPreviewProcessedFrames.remove(trimmedCameraId);
+        const QString rawLayerKey = histogramLayerKey(trimmedCameraId, false);
+        const QString processedLayerKey = histogramLayerKey(trimmedCameraId, true);
+        clearLayerAnalysis(rawLayerKey);
+        clearLayerAnalysis(processedLayerKey);
+        emit liveFramesCleared(trimmedCameraId);
+    }
+
+    // Clear all processed graph frames
+    void ScopeOneCore::clearProcessedFrames()
+    {
+        m_frameGraph.clear(FrameGraphStream::Processed);
+        m_pendingPreviewProcessedFrames.clear();
+        clearLayerAnalysisByPrefix(QStringLiteral("proc:"));
+        emit processedFramesCleared();
     }
 
     // Compute public histogram statistics for a frame

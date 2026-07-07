@@ -565,7 +565,7 @@ namespace scopeone::ui
         const int row = m_layerTable->currentRow();
         m_layerMoveUpButton->setEnabled(row > 0);
         m_layerMoveDownButton->setEnabled(row < m_layerTable->rowCount() - 1);
-        m_layerRemoveButton->setEnabled(PreviewWidget::isStaticLayerKey(m_selectedLayerKey));
+        m_layerRemoveButton->setEnabled(scopeone::core::ScopeOneCore::isStaticLayerKey(m_selectedLayerKey));
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
 
         int offsetX = 0;
@@ -602,7 +602,7 @@ namespace scopeone::ui
 
     QString DeviceControlWidget::selectedLayerSourceId() const
     {
-        return PreviewWidget::sourceIdFromLayerKey(m_selectedLayerKey);
+        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_selectedLayerKey);
     }
 
     // Refreshes selected layer transform values when live cameras change
@@ -707,13 +707,14 @@ namespace scopeone::ui
 
     void DeviceControlWidget::onPreviewLayerRemoveClicked()
     {
-        m_previewWidget->removeStaticLayer(m_selectedLayerKey);
+        m_scopeonecore->removeStaticFrame(
+            scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_selectedLayerKey));
     }
 
     // Use the selected raw camera layer as the hardware control target
     void DeviceControlWidget::syncControlTargetToSelectedRawLayer()
     {
-        if (!PreviewWidget::isRawLayerKey(m_selectedLayerKey))
+        if (!scopeone::core::ScopeOneCore::isRawLayerKey(m_selectedLayerKey))
         {
             return;
         }

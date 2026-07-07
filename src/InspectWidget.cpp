@@ -1,7 +1,5 @@
 #include "InspectWidget.h"
 
-#include "PreviewWidget.h"
-
 #include <QCheckBox>
 #include <QColor>
 #include <QFrame>
@@ -27,11 +25,11 @@ namespace scopeone::ui
         // Return the short source label used by inspect groups
         QString inspectLayerSourceLabel(const QString& layerKey)
         {
-            if (PreviewWidget::isStaticLayerKey(layerKey))
+            if (scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey))
             {
                 return QStringLiteral("static");
             }
-            return PreviewWidget::isProcessedLayerKey(layerKey)
+            return scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey)
                        ? QStringLiteral("proc")
                        : QStringLiteral("raw");
         }
@@ -39,7 +37,7 @@ namespace scopeone::ui
         // Check whether a preview layer can use live core inspection
         bool isLiveLayerKey(const QString& layerKey)
         {
-            return !PreviewWidget::isStaticLayerKey(layerKey);
+            return !scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey);
         }
     }
 
@@ -399,6 +397,8 @@ namespace scopeone::ui
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerHistogramReady,
                 this, &InspectWidget::setLayerInspect);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerAnalysisCleared,
+                this, &InspectWidget::clearLayerInspect);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerLineProfileUpdated,
                 this, &InspectWidget::setLayerCrossSectionProfile);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
@@ -458,6 +458,7 @@ namespace scopeone::ui
         if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
         {
             m_currentLayerKey.clear();
+            clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
@@ -506,6 +507,25 @@ namespace scopeone::ui
     {
         setAvailableLayers({});
         setAvailableCameras({});
+    }
+
+    // Remove cached inspect data for one graph layer
+    void InspectWidget::clearLayerInspect(const QString& layerKey)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty())
+        {
+            return;
+        }
+
+        m_layerStates.remove(trimmedLayerKey);
+        removeLayerInfo(trimmedLayerKey);
+        if (m_currentLayerKey == trimmedLayerKey)
+        {
+            clearCrossSectionProfile();
+        }
+        updateLayerVisibility();
+        updateControlsState();
     }
 
     // Clear the cross section plot
@@ -584,8 +604,8 @@ namespace scopeone::ui
     QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
-        const QString cameraId = PreviewWidget::sourceIdFromLayerKey(normalizedLayerKey);
-        const bool processed = PreviewWidget::isProcessedLayerKey(normalizedLayerKey);
+        const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey);
+        const bool processed = scopeone::core::ScopeOneCore::isProcessedLayerKey(normalizedLayerKey);
         auto* group = new QGroupBox(
             QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(normalizedLayerKey)),
             this);
@@ -779,8 +799,8 @@ namespace scopeone::ui
         }
         LayerInfoGroup& infoGroup = it.value();
 
-        const QString cameraId = PreviewWidget::sourceIdFromLayerKey(normalizedLayerKey);
-        const bool processed = PreviewWidget::isProcessedLayerKey(normalizedLayerKey);
+        const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey);
+        const bool processed = scopeone::core::ScopeOneCore::isProcessedLayerKey(normalizedLayerKey);
         LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey, cameraId, processed);
         state.stats = stats;
         state.hasStats = stats.hasData();
@@ -990,7 +1010,7 @@ namespace scopeone::ui
         const bool liveCrossSectionEnabled = m_cameraInitialized
                                              && isLiveLayerKey(m_currentLayerKey)
                                              && m_availableCameraIds.contains(currentLayerCameraId());
-        const bool staticCrossSectionEnabled = PreviewWidget::isStaticLayerKey(m_currentLayerKey)
+        const bool staticCrossSectionEnabled = scopeone::core::ScopeOneCore::isStaticLayerKey(m_currentLayerKey)
                                                && currentLayerHasStats;
         const bool crossSectionEnabled = !m_currentLayerKey.isEmpty()
                                          && (liveCrossSectionEnabled || staticCrossSectionEnabled);
@@ -1129,6 +1149,6 @@ namespace scopeone::ui
 
     QString InspectWidget::currentLayerCameraId() const
     {
-        return PreviewWidget::sourceIdFromLayerKey(m_currentLayerKey);
+        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_currentLayerKey);
     }
 } // namespace scopeone::ui

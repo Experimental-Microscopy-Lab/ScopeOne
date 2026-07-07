@@ -51,6 +51,7 @@ namespace scopeone::ui
         void setLayerInspect(const QString& layerKey,
                              const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void clearInspect();
+        void clearLayerInspect(const QString& layerKey);
         void clearCrossSectionProfile();
         void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
 

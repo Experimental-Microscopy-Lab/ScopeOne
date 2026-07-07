@@ -413,7 +413,7 @@ namespace scopeone::ui
         m_settleMsSpinBox->setEnabled(false);
         m_returnToStartCheckBox->setEnabled(false);
         m_statusLabel->setText(tr("Starting mosaic capture"));
-        m_previewWidget->setSelectedLayerKeys({PreviewWidget::rawLayerKey(m_activeCameraId)});
+        m_previewWidget->setSelectedLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         QTimer::singleShot(qMax(50, m_settleMsSpinBox->value()), this, &StageMosaicDialog::captureNextTile);
     }
@@ -632,26 +632,23 @@ namespace scopeone::ui
         return true;
     }
 
-    // Push the mosaic image into the shared preview engine
+    // Publish the mosaic image as a static graph layer
     bool StageMosaicDialog::updatePreviewMosaic()
     {
         const cv::Mat mosaicPreview = accumulatedPreviewMat(m_mosaic->sum,
                                                             m_mosaic->count,
                                                             m_mosaic->outputType);
         const ImageFrame mosaicFrame = frameFromMat(mosaicPreview, m_mosaicReferenceFrame);
-        const ImageFrame previewFrame = m_core->publishStaticFrame(QStringLiteral("stage_mosaic"), mosaicFrame);
+        const QString layerId = QStringLiteral("stage_mosaic");
+        const ImageFrame previewFrame = m_core->publishStaticFrame(
+            layerId,
+            mosaicFrame,
+            tr("Stage Mosaic %1").arg(m_activeCameraId));
         if (!previewFrame.isValid())
         {
             return false;
         }
-        const QString layerKey = m_previewWidget->setGraphStaticLayerFrame(
-            QStringLiteral("stage_mosaic"),
-            tr("Stage Mosaic %1").arg(m_activeCameraId),
-            previewFrame);
-        if (layerKey.isEmpty())
-        {
-            return false;
-        }
+        const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(layerId);
 
         m_latestMosaicFrame = previewFrame;
         m_previewWidget->setLayerColormap(layerKey, QStringLiteral("Gray"));
@@ -864,22 +861,23 @@ namespace scopeone::ui
         }
 
         ImageFrame maskFrame = frameFromMat(filtered, frame);
-        const ImageFrame previewMaskFrame = m_core->publishStaticFrame(QStringLiteral("particle_mask"), maskFrame);
-        const QString maskLayer = m_previewWidget->setGraphStaticLayerFrame(
-            QStringLiteral("particle_mask"),
-            tr("Particles %1").arg(cameraId),
-            previewMaskFrame);
-        if (maskLayer.isEmpty())
+        const QString maskLayerId = QStringLiteral("particle_mask");
+        const ImageFrame previewMaskFrame = m_core->publishStaticFrame(
+            maskLayerId,
+            maskFrame,
+            tr("Particles %1").arg(cameraId));
+        if (!previewMaskFrame.isValid())
         {
             m_statusLabel->setText(tr("Failed to display particle mask"));
             return;
         }
+        const QString maskLayer = scopeone::core::ScopeOneCore::staticLayerKey(maskLayerId);
 
         m_previewWidget->setLayerColormap(maskLayer, QStringLiteral("Magenta"));
         m_previewWidget->setLayerOpacityPercent(maskLayer, 70);
         m_previewWidget->setLayerBlending(maskLayer, QStringLiteral("Additive"));
-        m_previewWidget->setLayerVisible(PreviewWidget::rawLayerKey(cameraId), true);
-        m_previewWidget->setSelectedLayerKeys({PreviewWidget::rawLayerKey(cameraId), maskLayer});
+        m_previewWidget->setLayerVisible(scopeone::core::ScopeOneCore::rawLayerKey(cameraId), true);
+        m_previewWidget->setSelectedLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(cameraId), maskLayer});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         m_statusLabel->setText(tr("Detected %1 particle(s)").arg(acceptedCount));
     }

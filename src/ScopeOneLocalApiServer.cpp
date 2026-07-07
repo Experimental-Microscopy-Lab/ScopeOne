@@ -1,7 +1,6 @@
 #include "ScopeOneLocalApiServer.h"
 
 #include "scopeone/ScopeOneCore.h"
-#include "PreviewWidget.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -383,20 +382,14 @@ namespace scopeone::ui
 
     // Starts the local API pipe server and frame mapping
     ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
-                                                   PreviewWidget* previewWidget,
                                                    QObject* parent)
         : QObject(parent)
           , m_scopeonecore(core)
-          , m_previewWidget(previewWidget)
           , m_server(new QLocalServer(this))
     {
         if (!core)
         {
             qFatal("ScopeOneLocalApiServer requires ScopeOneCore");
-        }
-        if (!previewWidget)
-        {
-            qFatal("ScopeOneLocalApiServer requires PreviewWidget");
         }
 
         QLocalServer::removeServer(kServerName);
@@ -1101,13 +1094,14 @@ namespace scopeone::ui
                 return response;
             }
 
-            const scopeone::core::ImageFrame previewFrame = m_scopeonecore->publishStaticFrame(layerId, graphFrame);
-            const QString layerKey = m_previewWidget->setGraphStaticLayerFrame(layerId, displayName, previewFrame);
-            if (layerKey.isEmpty())
+            const scopeone::core::ImageFrame previewFrame =
+                m_scopeonecore->publishStaticFrame(layerId, graphFrame, displayName);
+            if (!previewFrame.isValid())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Failed to show frame as preview layer"));
                 return response;
             }
+            const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(layerId);
 
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);

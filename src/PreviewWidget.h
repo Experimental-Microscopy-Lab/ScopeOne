@@ -110,10 +110,6 @@ namespace scopeone::ui
                                  PreviewInteractionTarget& outTarget,
                                  const QString& sourceId = QString(),
                                  bool rawOnly = false) const;
-        bool getPixelValue(const QString& sourceId,
-                           const QPoint& imagePos,
-                           bool processed,
-                           int& outValue) const;
 signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
@@ -122,8 +118,6 @@ signals:
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
-        void staticLayerRemoved(const QString& layerKey);
-        void staticLayersCleared();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
                       int x,

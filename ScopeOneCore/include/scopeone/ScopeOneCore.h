@@ -551,6 +551,13 @@ namespace scopeone::core
         explicit ScopeOneCore(QObject* parent = nullptr);
         ~ScopeOneCore() override;
         static QString getVersion();
+        static QString rawLayerKey(const QString& cameraId);
+        static QString processedLayerKey(const QString& cameraId);
+        static QString staticLayerKey(const QString& sourceId);
+        static QString sourceIdFromLayerKey(const QString& layerKey);
+        static bool isRawLayerKey(const QString& layerKey);
+        static bool isProcessedLayerKey(const QString& layerKey);
+        static bool isStaticLayerKey(const QString& layerKey);
 
         bool loadConfiguration(const QString& configPath,
                                LoadConfigResult* result,
@@ -570,6 +577,7 @@ namespace scopeone::core
         void clearLineProfile();
         bool getLatestRawFrame(const QString& cameraId, ImageFrame& frame) const;
         QList<ImageFrame> latestRawFrames(const QStringList& cameraIds) const;
+        bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
         ImageFrame sessionFrameAt(
             const std::shared_ptr<RecordingSessionData>& session,
             const QString& cameraId,
@@ -580,11 +588,14 @@ namespace scopeone::core
         std::shared_ptr<RecordingSessionData> createFrameSession(
             const QList<ImageFrame>& frames,
             const RecordingCapturePlanData& capturePlan);
-        ImageFrame publishStaticFrame(const QString& sourceId, const ImageFrame& frame);
+        ImageFrame publishStaticFrame(const QString& sourceId,
+                                      const ImageFrame& frame,
+                                      const QString& displayName = QString());
         ImageFrame publishExternalFrame(const QString& sourceId, const ImageFrame& frame);
         void removeStaticFrame(const QString& sourceId);
         void clearStaticFrames();
         void clearLiveFrames(const QString& cameraId);
+        void clearProcessedFrames();
         bool getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const;
         static bool computeHistogramStats(const ImageFrame& frame, HistogramStats& stats);
 
@@ -655,8 +666,16 @@ namespace scopeone::core
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
         void processedFrameReady(const ImageFrame& frame);
         void previewProcessedFrameReady(const ImageFrame& frame);
+        void staticFramePublished(const QString& sourceId,
+                                  const QString& displayName,
+                                  const ImageFrame& frame);
+        void staticFrameRemoved(const QString& sourceId);
+        void staticFramesCleared();
+        void liveFramesCleared(const QString& cameraId);
+        void processedFramesCleared();
         void imageHistogramReady(const QString& cameraId, bool processed, const HistogramStats& stats);
         void layerHistogramReady(const QString& layerKey, const HistogramStats& stats);
+        void layerAnalysisCleared(const QString& layerKey);
         void lineProfileUpdated(const QString& cameraId, bool processed, const QVector<int>& values);
         void layerLineProfileUpdated(const QString& layerKey, const QVector<int>& values);
         void lineProfileCleared();
@@ -759,6 +778,8 @@ namespace scopeone::core
         void scheduleHistogramStats(const QString& cameraId,
                                     bool processed,
                                     const ImageFrame& frame);
+        void clearLayerAnalysis(const QString& layerKey);
+        void clearLayerAnalysisByPrefix(const QString& prefix);
         void updateLineProfile(const QString& cameraId,
                                bool processed,
                                const ImageFrame& frame);

@@ -1,4 +1,5 @@
 #include "PreviewWidget.h"
+#include "scopeone/ScopeOneCore.h"
 #include <QSurfaceFormat>
 #include <QPainter>
 #include <QMouseEvent>
@@ -54,32 +55,6 @@ namespace scopeone::ui
                 keys.insert(previewLayerKey(cameraId, true));
             }
             return keys;
-        }
-
-        // Reads one mono pixel value from a frame
-        bool sampleFrameValue(const ImageFrame& frame, const QPoint& imagePos, int& outValue)
-        {
-            if (!frame.isValid()
-                || imagePos.x() < 0 || imagePos.y() < 0
-                || imagePos.x() >= frame.width || imagePos.y() >= frame.height)
-            {
-                return false;
-            }
-
-            const char* rowData = frame.bytes.constData() + static_cast<qint64>(frame.stride) * imagePos.y();
-            if (frame.isMono8())
-            {
-                const uchar* row = reinterpret_cast<const uchar*>(rowData);
-                outValue = static_cast<int>(row[imagePos.x()]);
-                return true;
-            }
-            if (frame.isMono16())
-            {
-                const quint16* row = reinterpret_cast<const quint16*>(rowData);
-                outValue = static_cast<int>(row[imagePos.x()]);
-                return true;
-            }
-            return false;
         }
 
         // Clips one widget line to a display rectangle
@@ -155,45 +130,43 @@ namespace scopeone::ui
     // Builds the layer key for a raw image source
     QString PreviewWidget::rawLayerKey(const QString& cameraId)
     {
-        return QStringLiteral("raw:%1").arg(cameraId.trimmed());
+        return scopeone::core::ScopeOneCore::rawLayerKey(cameraId);
     }
 
     // Builds the layer key for a processed image source
     QString PreviewWidget::processedLayerKey(const QString& cameraId)
     {
-        return QStringLiteral("proc:%1").arg(cameraId.trimmed());
+        return scopeone::core::ScopeOneCore::processedLayerKey(cameraId);
     }
 
     // Builds the layer key for a static image source
     QString PreviewWidget::staticLayerKey(const QString& layerId)
     {
-        return QStringLiteral("static:%1").arg(layerId.trimmed());
+        return scopeone::core::ScopeOneCore::staticLayerKey(layerId);
     }
 
     // Extracts the source id encoded in a layer key
     QString PreviewWidget::sourceIdFromLayerKey(const QString& layerKey)
     {
-        const QString normalizedLayerKey = layerKey.trimmed();
-        const int separator = normalizedLayerKey.indexOf(QLatin1Char(':'));
-        return separator >= 0 ? normalizedLayerKey.mid(separator + 1) : normalizedLayerKey;
+        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
     }
 
     // Checks whether a layer key points to raw data
     bool PreviewWidget::isRawLayerKey(const QString& layerKey)
     {
-        return layerKey.trimmed().startsWith(QStringLiteral("raw:"));
+        return scopeone::core::ScopeOneCore::isRawLayerKey(layerKey);
     }
 
     // Checks whether a layer key points to processed data
     bool PreviewWidget::isProcessedLayerKey(const QString& layerKey)
     {
-        return layerKey.trimmed().startsWith(QStringLiteral("proc:"));
+        return scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey);
     }
 
     // Checks whether a layer key points to static data
     bool PreviewWidget::isStaticLayerKey(const QString& layerKey)
     {
-        return layerKey.trimmed().startsWith(QStringLiteral("static:"));
+        return scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey);
     }
 
     // Creates the OpenGL preview widget
@@ -611,7 +584,6 @@ namespace scopeone::ui
 
         removeStaticLayerData(sourceId);
         updateLayerInfoDisplay();
-        emit staticLayerRemoved(layerKey);
         emit selectedLayerKeysChanged(selectedLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
@@ -638,7 +610,6 @@ namespace scopeone::ui
         }
 
         updateLayerInfoDisplay();
-        emit staticLayersCleared();
         emit selectedLayerKeysChanged(selectedLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
@@ -1679,39 +1650,6 @@ namespace scopeone::ui
                                             bool rawOnly) const
     {
         return resolveInteractionTarget(widgetPos, outTarget, sourceId, rawOnly, QString());
-    }
-
-    // Reads one raw or processed pixel value
-    bool PreviewWidget::getPixelValue(const QString& sourceId,
-                                      const QPoint& imagePos,
-                                      bool processed,
-                                      int& outValue) const
-    {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            return false;
-        }
-        QMutexLocker lock(&m_mutex);
-        auto it = m_frameSources.find(normalizedId);
-        if (it == m_frameSources.end())
-        {
-            return false;
-        }
-
-        const FrameSourceState& frameState = it.value();
-
-        if (processed)
-        {
-            return sampleFrameValue(frameState.processedFrame, imagePos, outValue);
-        }
-
-        if (frameState.rawFrame.isValid())
-        {
-            return sampleFrameValue(frameState.rawFrame, imagePos, outValue);
-        }
-
-        return false;
     }
 
     // Initializes OpenGL state for preview rendering
