@@ -782,13 +782,15 @@ namespace scopeone::core
         void updateLineProfile(const QString& cameraId,
                                bool processed,
                                const ImageFrame& frame);
+        bool updateStaticLineProfile(const QString& sourceId, const ImageFrame& frame);
 
         struct ActiveLineProfile
         {
-            QString cameraId;
+            QString sourceId;
             QPoint start;
             QPoint end;
             bool processed{false};
+            bool staticSource{false};
             bool active{false};
         };
 

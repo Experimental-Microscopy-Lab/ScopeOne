@@ -8,6 +8,7 @@
 #include "DevicePropertyWidget.h"
 #include "ConfigPresetWidget.h"
 #include "PreviewWidget.h"
+#include "ImageMarkupModel.h"
 #include "ImageGalleryWidget.h"
 #include "ImageToolsDialog.h"
 #include "ImageProcessingWidget.h"
@@ -210,7 +211,9 @@ namespace scopeone::ui
         }
 
         setupUI();
-        new ScopeOneLocalApiServer(m_scopeonecore, this);
+        m_markupModel = new ImageMarkupModel(this);
+        m_previewWidget->setMarkupModel(m_markupModel);
+        new ScopeOneLocalApiServer(m_scopeonecore, m_previewWidget, m_markupModel, this);
         setupSignalWiring();
         applyStoredApplicationSettings();
         logStartupSummary();
@@ -268,6 +271,18 @@ namespace scopeone::ui
     // Connect core events and panel actions into one UI flow
     void MainWindow::setupSignalWiring()
     {
+        const auto clearLayerMarkups = [this](const QString& layerKey)
+        {
+            const bool clearedCrossSection = m_markupModel->hasRole(
+                ImageMarkupModel::MarkupRole::CrossSection,
+                layerKey);
+            m_markupModel->clear(layerKey);
+            if (clearedCrossSection)
+            {
+                m_scopeonecore->clearLineProfile();
+            }
+        };
+
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewStateChanged,
                 this, [this](bool running)
                 {
@@ -283,7 +298,7 @@ namespace scopeone::ui
                 this, &MainWindow::handlePreviewMousePosition);
         connect(m_previewWidget, &PreviewWidget::roiDrawn,
                 this, &MainWindow::handleRoiDrawn);
-        connect(m_previewWidget, &PreviewWidget::lineDrawn,
+        connect(m_previewWidget, &PreviewWidget::crossSectionDrawn,
                 this, [this](const QString& layerKey,
                              const QString& sourceId,
                              int startX,
@@ -304,6 +319,11 @@ namespace scopeone::ui
                                                    start,
                                                    end,
                                                    processed);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
+                this, [this]()
+                {
+                    m_markupModel->clearRole(ImageMarkupModel::MarkupRole::CrossSection);
                 });
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady,
@@ -332,16 +352,24 @@ namespace scopeone::ui
                     refreshPreviewCursorStatus();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFrameRemoved,
-                this, [this](const QString& sourceId)
+                this, [this, clearLayerMarkups](const QString& sourceId)
                 {
                     const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
                     m_galleryLayerFrameControls.remove(layerKey);
                     m_deviceControlWidget->removeLayerFrameControl(layerKey);
+                    clearLayerMarkups(layerKey);
                     m_previewWidget->removeStaticLayer(layerKey);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
-                this, [this]()
+                this, [this, clearLayerMarkups]()
                 {
+                    for (const QString& layerKey : m_previewWidget->availableLayerKeys())
+                    {
+                        if (scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey))
+                        {
+                            clearLayerMarkups(layerKey);
+                        }
+                    }
                     for (const QString& layerKey : m_galleryLayerFrameControls.keys())
                     {
                         m_deviceControlWidget->removeLayerFrameControl(layerKey);
@@ -350,9 +378,21 @@ namespace scopeone::ui
                     m_previewWidget->clearStaticLayers();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::liveFramesCleared,
-                m_previewWidget, &PreviewWidget::clearSourceFrames);
+                this, [this, clearLayerMarkups](const QString& sourceId)
+                {
+                    clearLayerMarkups(scopeone::core::ScopeOneCore::rawLayerKey(sourceId));
+                    clearLayerMarkups(scopeone::core::ScopeOneCore::processedLayerKey(sourceId));
+                    m_previewWidget->clearSourceFrames(sourceId);
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCleared,
-                m_previewWidget, &PreviewWidget::clearProcessedFrames);
+                this, [this, clearLayerMarkups]()
+                {
+                    for (const QString& cameraId : m_scopeonecore->cameraIds())
+                    {
+                        clearLayerMarkups(scopeone::core::ScopeOneCore::processedLayerKey(cameraId));
+                    }
+                    m_previewWidget->clearProcessedFrames();
+                });
 
         connect(m_deviceControlWidget, &DeviceControlWidget::startPreviewRequested,
                 this, [this]()
@@ -474,14 +514,14 @@ namespace scopeone::ui
         connect(m_inspectWidget, &InspectWidget::requestDrawCrossSectionLayer,
                 this, [this](const QString& layerKey)
                 {
-                    m_previewWidget->startLineDrawingForLayer(layerKey);
+                    m_previewWidget->startCrossSectionDrawingForLayer(layerKey);
                     showStatusMessage(tr("Drag a line on the preview"), 5000);
                 });
 
         connect(m_inspectWidget, &InspectWidget::requestClearCrossSection,
                 this, [this]()
                 {
-                    m_previewWidget->clearLine();
+                    m_previewWidget->clearCrossSection();
                     m_scopeonecore->clearLineProfile();
                 });
 
@@ -972,6 +1012,8 @@ namespace scopeone::ui
         m_inspectWidget->onCameraInitialized(true);
         m_inspectWidget->setAvailableCameras(cameraIds);
 
+        m_markupModel->clear();
+        m_scopeonecore->clearLineProfile();
         m_previewWidget->setAvailableCameraIds(cameraIds);
         setStatusLabelText(m_statusTargetLabel,
                            tr("Target: All"),
@@ -993,6 +1035,8 @@ namespace scopeone::ui
     void MainWindow::applyUnloadedCameraState(const QStringList& cameraIds)
     {
         (void)cameraIds;
+        m_markupModel->clear();
+        m_scopeonecore->clearLineProfile();
         m_previewWidget->setAvailableCameraIds({});
         setStatusLabelText(m_statusTargetLabel,
                            tr("Target: All"),
@@ -1001,7 +1045,7 @@ namespace scopeone::ui
                            tr("Preview: Idle"),
                            tr("Preview is idle"));
         clearCursorStatus();
-        m_previewWidget->clearLine();
+        m_previewWidget->clearCrossSection();
         m_deviceControlWidget->setControlTargets({});
         m_deviceControlWidget->onCameraInitialized(false);
         m_inspectWidget->setAvailableCameras({});

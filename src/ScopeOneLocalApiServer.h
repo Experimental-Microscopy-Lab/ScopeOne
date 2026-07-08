@@ -14,12 +14,17 @@ class QLocalSocket;
 
 namespace scopeone::ui
 {
+    class ImageMarkupModel;
+    class PreviewWidget;
+
     class ScopeOneLocalApiServer : public QObject
     {
         Q_OBJECT
 
     public:
         explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
+                                        PreviewWidget* previewWidget,
+                                        ImageMarkupModel* markupModel,
                                         QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
 
@@ -42,6 +47,8 @@ namespace scopeone::ui
                                          QString& errorMessage) const;
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        PreviewWidget* m_previewWidget{nullptr};
+        ImageMarkupModel* m_markupModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;
         QHash<QString, std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_sessions;

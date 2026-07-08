@@ -119,5 +119,6 @@ namespace scopeone::ui
         QPushButton* m_clearCrossSectionButton{nullptr};
         bool m_cameraInitialized{false};
         QString m_currentLayerKey;
+        QString m_crossSectionLayerKey;
     };
 }

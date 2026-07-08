@@ -421,6 +421,11 @@ namespace scopeone::ui
     void InspectWidget::setCurrentLayer(const QString& layerKey)
     {
         m_currentLayerKey = layerKey.trimmed();
+        if (!m_crossSectionLayerKey.isEmpty() && m_crossSectionLayerKey != m_currentLayerKey)
+        {
+            clearCrossSectionProfile();
+            emit requestClearCrossSection();
+        }
         updateLayerVisibility();
         updateControlsState();
     }
@@ -455,6 +460,12 @@ namespace scopeone::ui
             removeLayerInfo(key);
         }
 
+        if (!m_crossSectionLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_crossSectionLayerKey))
+        {
+            clearCrossSectionProfile();
+            emit requestClearCrossSection();
+        }
+
         if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
         {
             m_currentLayerKey.clear();
@@ -469,11 +480,21 @@ namespace scopeone::ui
     {
         m_availableCameraIds = cameraIds;
 
+        if (!m_crossSectionLayerKey.isEmpty()
+            && isLiveLayerKey(m_crossSectionLayerKey)
+            && !m_availableCameraIds.contains(
+                scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_crossSectionLayerKey)))
+        {
+            clearCrossSectionProfile();
+            emit requestClearCrossSection();
+        }
+
         if (!m_currentLayerKey.isEmpty()
             && isLiveLayerKey(m_currentLayerKey)
             && !m_availableCameraIds.contains(currentLayerCameraId()))
         {
             m_currentLayerKey.clear();
+            clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
@@ -531,6 +552,7 @@ namespace scopeone::ui
     // Clear the cross section plot
     void InspectWidget::clearCrossSectionProfile()
     {
+        m_crossSectionLayerKey.clear();
         m_crossSectionWidget->clear();
     }
 
@@ -543,6 +565,7 @@ namespace scopeone::ui
             return;
         }
 
+        m_crossSectionLayerKey = trimmedLayerKey;
         m_crossSectionWidget->setProfile(trimmedLayerKey, values);
     }
 
@@ -588,6 +611,7 @@ namespace scopeone::ui
             {
                 return;
             }
+            m_crossSectionLayerKey = m_currentLayerKey;
             emit requestDrawCrossSectionLayer(m_currentLayerKey);
         });
         connect(m_clearCrossSectionButton, &QPushButton::clicked, this, [this]()

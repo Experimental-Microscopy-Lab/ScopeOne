@@ -1,4 +1,6 @@
 #include "PreviewWidget.h"
+
+#include "ImageMarkupModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QSurfaceFormat>
 #include <QPainter>
@@ -58,7 +60,7 @@ namespace scopeone::ui
             return keys;
         }
 
-        // Clips one widget line to a display rectangle
+        // Clips one line to a rectangle
         bool clipLineToRect(const QPoint& start,
                             const QPoint& end,
                             const QRect& rect,
@@ -148,6 +150,29 @@ namespace scopeone::ui
     PreviewWidget::~PreviewWidget()
     {
         cleanupTextureCache();
+    }
+
+    // Sets the shared markup model rendered by the preview
+    void PreviewWidget::setMarkupModel(ImageMarkupModel* model)
+    {
+        if (m_markupModel == model)
+        {
+            return;
+        }
+        if (m_markupModel)
+        {
+            disconnect(m_markupModel, nullptr, this, nullptr);
+        }
+        m_markupModel = model;
+        if (m_markupModel)
+        {
+            connect(m_markupModel, &ImageMarkupModel::changed,
+                    this, [this]()
+                    {
+                        update();
+                    });
+        }
+        update();
     }
 
     // Stores one frame in the preview sink cache
@@ -1431,6 +1456,213 @@ namespace scopeone::ui
                          text.isEmpty() ? QStringLiteral("No image loaded") : text);
     }
 
+    // Draws one image-space markup over one render item
+    bool PreviewWidget::drawMarkup(QPainter& painter,
+                                   const ImageMarkupModel::Markup& markup,
+                                   const RenderItem& item) const
+    {
+        if (item.layerKey != markup.layerKey || !item.info || !item.info->frameState)
+        {
+            return false;
+        }
+        QRect displayRect;
+        QSize imageSize;
+        if (!resolveDisplayGeometry(*item.info->frameState,
+                                    item.processed,
+                                    item.area,
+                                    displayRect,
+                                    imageSize))
+        {
+            return false;
+        }
+        const QRect imageBounds(QPoint(0, 0), imageSize);
+
+        QPen linePen(QColor(255, 210, 0));
+        linePen.setWidth(2);
+        QPen rectPen(QColor(0, 220, 180));
+        rectPen.setWidth(2);
+        painter.setBrush(Qt::NoBrush);
+
+        if (markup.type == ImageMarkupModel::MarkupType::Line)
+        {
+            QPoint startImage;
+            QPoint endImage;
+            if (!clipLineToRect(markup.start, markup.end, imageBounds, startImage, endImage))
+            {
+                return false;
+            }
+            QPoint startWidget;
+            QPoint endWidget;
+            if (!mapImagePositionToWidget(*item.info->frameState,
+                                          item.processed,
+                                          item.area,
+                                          startImage,
+                                          startWidget)
+                || !mapImagePositionToWidget(*item.info->frameState,
+                                             item.processed,
+                                             item.area,
+                                             endImage,
+                                             endWidget))
+            {
+                return false;
+            }
+
+            QPen pen = linePen;
+            if (markup.role == ImageMarkupModel::MarkupRole::CrossSection && item.processed)
+            {
+                pen.setStyle(Qt::DashLine);
+            }
+            painter.setPen(pen);
+            painter.drawLine(startWidget, endWidget);
+            if (!markup.label.isEmpty())
+            {
+                painter.drawText(startWidget + QPoint(4, -4), markup.label);
+            }
+            return true;
+        }
+
+        if (markup.type == ImageMarkupModel::MarkupType::Rect)
+        {
+            QPoint topLeft;
+            QPoint bottomRight;
+            const QRect imageRect = markup.rect.normalized().intersected(imageBounds);
+            if (imageRect.isEmpty())
+            {
+                return false;
+            }
+            if (!mapImagePositionToWidget(*item.info->frameState,
+                                          item.processed,
+                                          item.area,
+                                          imageRect.topLeft(),
+                                          topLeft)
+                || !mapImagePositionToWidget(*item.info->frameState,
+                                             item.processed,
+                                             item.area,
+                                             imageRect.bottomRight(),
+                                             bottomRight))
+            {
+                return false;
+            }
+
+            QPen pen = rectPen;
+            if (markup.role == ImageMarkupModel::MarkupRole::Roi)
+            {
+                pen.setColor(QColor(0, 180, 255));
+                pen.setStyle(Qt::DashLine);
+            }
+            painter.setPen(pen);
+            const QRect widgetRect = QRect(topLeft, bottomRight).normalized();
+            painter.drawRect(widgetRect);
+            if (!markup.label.isEmpty())
+            {
+                painter.drawText(widgetRect.topLeft() + QPoint(4, -4), markup.label);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // Draws persisted markups over their target layers
+    void PreviewWidget::drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (!m_markupModel || !m_markupModel->hasMarkups())
+        {
+            return;
+        }
+
+        for (const ImageMarkupModel::Markup& markup : m_markupModel->markups())
+        {
+            for (const RenderItem& item : renderItems)
+            {
+                if (drawMarkup(painter, markup, item))
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Draws the current drag operation through the same markup renderer
+    void PreviewWidget::drawActiveInteractionMarkup(QPainter& painter,
+                                                    const std::vector<RenderItem>& renderItems) const
+    {
+        if (m_crossSectionDrawingMode && m_crossSectionDragging && !m_crossSectionTargetLayerKey.isEmpty())
+        {
+            for (const RenderItem& item : renderItems)
+            {
+                if (item.layerKey != m_crossSectionTargetLayerKey || !item.info || !item.info->frameState)
+                {
+                    continue;
+                }
+
+                QRect displayRect;
+                QSize imageSize;
+                QPoint clippedStart;
+                QPoint clippedEnd;
+                QPoint imageStart;
+                QPoint imageEnd;
+                if (!resolveDisplayGeometry(*item.info->frameState,
+                                            item.processed,
+                                            item.area,
+                                            displayRect,
+                                            imageSize)
+                    || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
+                    || !mapWidgetPositionToImage(*item.info->frameState,
+                                                 item.processed,
+                                                 item.area,
+                                                 clippedStart,
+                                                 imageStart)
+                    || !mapWidgetPositionToImage(*item.info->frameState,
+                                                 item.processed,
+                                                 item.area,
+                                                 clippedEnd,
+                                                 imageEnd))
+                {
+                    break;
+                }
+
+                ImageMarkupModel::Markup markup;
+                markup.type = ImageMarkupModel::MarkupType::Line;
+                markup.role = ImageMarkupModel::MarkupRole::CrossSection;
+                markup.layerKey = m_crossSectionTargetLayerKey;
+                markup.start = imageStart;
+                markup.end = imageEnd;
+                drawMarkup(painter, markup, item);
+                break;
+            }
+        }
+
+        if (m_roiDrawingMode && m_roiDragging && !m_roiTargetLayerKey.isEmpty())
+        {
+            for (const RenderItem& item : renderItems)
+            {
+                if (item.layerKey != m_roiTargetLayerKey || !item.info || !item.info->frameState)
+                {
+                    continue;
+                }
+
+                QRect imageRect;
+                if (!mapWidgetRectToImage(*item.info->frameState,
+                                          item.processed,
+                                          item.area,
+                                          QRect(m_roiStart, m_roiEnd),
+                                          imageRect))
+                {
+                    break;
+                }
+
+                ImageMarkupModel::Markup markup;
+                markup.type = ImageMarkupModel::MarkupType::Rect;
+                markup.role = ImageMarkupModel::MarkupRole::Roi;
+                markup.layerKey = m_roiTargetLayerKey;
+                markup.rect = imageRect;
+                drawMarkup(painter, markup, item);
+                break;
+            }
+        }
+    }
+
     // Draws one render item into its assigned area
     void PreviewWidget::drawRenderItem(const RenderItem& item)
     {
@@ -1803,58 +2035,13 @@ namespace scopeone::ui
                 drawRenderItem(item);
             }
 
-            if (m_roiDrawingMode && m_roiDragging)
+            if ((m_markupModel && m_markupModel->hasMarkups())
+                || (m_roiDrawingMode && m_roiDragging)
+                || (m_crossSectionDrawingMode && m_crossSectionDragging))
             {
                 QPainter p(this);
-                QPen pen(QColor(0, 180, 255));
-                pen.setWidth(1);
-                pen.setStyle(Qt::DashLine);
-                p.setPen(pen);
-                p.setBrush(Qt::NoBrush);
-                const QRect roiRect = QRect(m_roiStart, m_roiEnd).normalized();
-                p.drawRect(roiRect);
-            }
-            if (m_lineVisible || (m_lineDrawingMode && m_lineDragging))
-            {
-                QPainter p(this);
-                QPen pen(QColor(255, 200, 0));
-                pen.setWidth(2);
-                if (m_lineProcessed)
-                {
-                    pen.setStyle(Qt::DashLine);
-                }
-                p.setPen(pen);
-
-                QPoint lineStart = m_lineStart;
-                QPoint lineEnd = m_lineEnd;
-                if (m_lineVisible)
-                {
-                    for (const auto& item : renderItems)
-                    {
-                        if (item.layerKey != m_lineTargetLayerKey || !item.info || !item.info->frameState)
-                        {
-                            continue;
-                        }
-                        QPoint startWidget;
-                        QPoint endWidget;
-                        if (mapImagePositionToWidget(*item.info->frameState,
-                                                     item.processed,
-                                                     item.area,
-                                                     m_lineStartImage,
-                                                     startWidget)
-                            && mapImagePositionToWidget(*item.info->frameState,
-                                                        item.processed,
-                                                        item.area,
-                                                        m_lineEndImage,
-                                                        endWidget))
-                        {
-                            lineStart = startWidget;
-                            lineEnd = endWidget;
-                        }
-                        break;
-                    }
-                }
-                p.drawLine(lineStart, lineEnd);
+                drawMarkups(p, renderItems);
+                drawActiveInteractionMarkup(p, renderItems);
             }
             return;
         }
@@ -2189,9 +2376,9 @@ namespace scopeone::ui
     // Starts ROI drawing for one camera
     void PreviewWidget::startROIDrawing(const QString& cameraId)
     {
-        if (m_lineDrawingMode)
+        if (m_crossSectionDrawingMode)
         {
-            cancelLineDrawing();
+            cancelCrossSectionDrawing();
         }
         m_roiDrawingMode = true;
         m_roiTargetCameraId = cameraId;
@@ -2217,76 +2404,75 @@ namespace scopeone::ui
         update();
     }
 
-    // Starts line drawing for one exact preview layer
-    void PreviewWidget::startLineDrawingForLayer(const QString& layerKey)
+    // Starts cross section drawing for one exact preview layer
+    void PreviewWidget::startCrossSectionDrawingForLayer(const QString& layerKey)
     {
         if (m_roiDrawingMode)
         {
             cancelROIDrawing();
         }
-        m_lineDrawingMode = true;
-        m_lineTargetLayerKey = layerKey.trimmed();
-        m_lineTargetSourceId = ScopeOneCore::sourceIdFromLayerKey(m_lineTargetLayerKey);
-        m_lineDragging = false;
+        m_crossSectionDrawingMode = true;
+        m_crossSectionTargetLayerKey = layerKey.trimmed();
+        m_crossSectionTargetSourceId = ScopeOneCore::sourceIdFromLayerKey(m_crossSectionTargetLayerKey);
+        m_crossSectionDragging = false;
         setFocus();
         setCursor(Qt::CrossCursor);
         update();
     }
 
-    // Cancels active line drawing
-    void PreviewWidget::cancelLineDrawing()
+    // Cancels active cross section drawing
+    void PreviewWidget::cancelCrossSectionDrawing()
     {
-        if (!m_lineDrawingMode)
+        if (!m_crossSectionDrawingMode)
         {
             return;
         }
-        m_lineDrawingMode = false;
-        m_lineDragging = false;
-        m_lineTargetSourceId.clear();
-        m_lineTargetLayerKey.clear();
+        m_crossSectionDrawingMode = false;
+        m_crossSectionDragging = false;
+        m_crossSectionTargetSourceId.clear();
+        m_crossSectionTargetLayerKey.clear();
         unsetCursor();
         update();
     }
 
-    // Clears the current line overlay
-    void PreviewWidget::clearLine()
+    // Clears the current cross section markup
+    void PreviewWidget::clearCrossSection()
     {
-        m_lineVisible = false;
-        m_lineDragging = false;
-        m_lineDrawingMode = false;
-        m_lineProcessed = false;
-        m_lineTargetSourceId.clear();
-        m_lineTargetLayerKey.clear();
+        m_crossSectionDragging = false;
+        m_crossSectionDrawingMode = false;
+        m_crossSectionTargetSourceId.clear();
+        m_crossSectionTargetLayerKey.clear();
+        if (m_markupModel)
+        {
+            m_markupModel->clearRole(ImageMarkupModel::MarkupRole::CrossSection);
+        }
         unsetCursor();
         update();
     }
 
-    // Starts ROI or line interaction from a mouse press
+    // Starts ROI or cross section interaction from a mouse press
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
-        if (m_lineDrawingMode && event->button() == Qt::LeftButton)
+        if (m_crossSectionDrawingMode && event->button() == Qt::LeftButton)
         {
-            QString sourceId = m_lineTargetSourceId;
+            QString sourceId = m_crossSectionTargetSourceId;
             PreviewInteractionTarget target;
             const bool ok = resolveInteractionTarget(event->pos(),
                                                      target,
                                                      sourceId,
                                                      false,
-                                                     m_lineTargetLayerKey);
+                                                     m_crossSectionTargetLayerKey);
             if (!ok)
             {
                 return;
             }
 
-            m_lineTargetSourceId = target.sourceId;
-            m_lineTargetLayerKey = target.layerKey;
-            m_lineStart = event->pos();
-            m_lineEnd = event->pos();
-            m_lineStartImage = target.imagePos;
-            m_lineEndImage = target.imagePos;
-            m_lineProcessed = target.processed;
-            m_lineDragging = true;
+            m_crossSectionTargetSourceId = target.sourceId;
+            m_crossSectionTargetLayerKey = target.layerKey;
+            m_crossSectionStart = event->pos();
+            m_crossSectionEnd = event->pos();
+            m_crossSectionDragging = true;
             update();
             return;
         }
@@ -2315,22 +2501,13 @@ namespace scopeone::ui
         QOpenGLWidget::mousePressEvent(event);
     }
 
-    // Updates active ROI or line interaction during mouse move
+    // Updates active ROI or cross section interaction during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
-        if (m_lineDrawingMode && m_lineDragging)
+        if (m_crossSectionDrawingMode && m_crossSectionDragging)
         {
-            m_lineEnd = event->pos();
-            PreviewInteractionTarget target;
-            if (resolveInteractionTarget(event->pos(),
-                                         target,
-                                         m_lineTargetSourceId,
-                                         false,
-                                         m_lineTargetLayerKey))
-            {
-                m_lineEndImage = target.imagePos;
-            }
+            m_crossSectionEnd = event->pos();
             update();
             return;
         }
@@ -2345,21 +2522,21 @@ namespace scopeone::ui
         QOpenGLWidget::mouseMoveEvent(event);
     }
 
-    // Finishes ROI or line drawing in image coordinates
+    // Finishes ROI or cross section drawing in image coordinates
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
-        if (m_lineDrawingMode && event->button() == Qt::LeftButton && m_lineDragging)
+        if (m_crossSectionDrawingMode && event->button() == Qt::LeftButton && m_crossSectionDragging)
         {
-            m_lineDragging = false;
-            m_lineEnd = event->pos();
+            m_crossSectionDragging = false;
+            m_crossSectionEnd = event->pos();
 
             PreviewInteractionTarget startTarget;
-            const bool okStart = resolveInteractionTarget(m_lineStart,
+            const bool okStart = resolveInteractionTarget(m_crossSectionStart,
                                                           startTarget,
-                                                          m_lineTargetSourceId,
+                                                          m_crossSectionTargetSourceId,
                                                           false,
-                                                          m_lineTargetLayerKey);
+                                                          m_crossSectionTargetLayerKey);
             FrameSourceState frameState;
             bool processed = false;
             QRect itemArea;
@@ -2376,30 +2553,35 @@ namespace scopeone::ui
                                                 itemArea,
                                                 displayRect,
                                                 imageSize)
-                || !clipLineToRect(m_lineStart, m_lineEnd, displayRect, clippedStart, clippedEnd)
+                || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
                 || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedStart, imgStart)
                 || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedEnd, imgEnd))
             {
-                cancelLineDrawing();
+                cancelCrossSectionDrawing();
                 return;
             }
 
-            m_lineTargetLayerKey = startTarget.layerKey;
-            m_lineTargetSourceId = startTarget.sourceId;
-            m_lineStart = clippedStart;
-            m_lineEnd = clippedEnd;
-            m_lineStartImage = imgStart;
-            m_lineEndImage = imgEnd;
-            m_lineProcessed = processed;
-            m_lineVisible = true;
-            m_lineDrawingMode = false;
-            m_lineDragging = false;
+            m_crossSectionTargetLayerKey = startTarget.layerKey;
+            m_crossSectionTargetSourceId = startTarget.sourceId;
+            m_crossSectionStart = clippedStart;
+            m_crossSectionEnd = clippedEnd;
+            m_crossSectionDrawingMode = false;
+            m_crossSectionDragging = false;
             unsetCursor();
-            emit lineDrawn(m_lineTargetLayerKey,
-                           m_lineTargetSourceId,
-                           m_lineStartImage.x(), m_lineStartImage.y(),
-                           m_lineEndImage.x(), m_lineEndImage.y(),
-                           m_lineProcessed);
+            if (m_markupModel)
+            {
+                m_markupModel->clearRole(ImageMarkupModel::MarkupRole::CrossSection);
+                m_markupModel->createLine(m_crossSectionTargetLayerKey,
+                                          imgStart,
+                                          imgEnd,
+                                          QString(),
+                                          ImageMarkupModel::MarkupRole::CrossSection);
+            }
+            emit crossSectionDrawn(m_crossSectionTargetLayerKey,
+                                   m_crossSectionTargetSourceId,
+                                   imgStart.x(), imgStart.y(),
+                                   imgEnd.x(), imgEnd.y(),
+                                   processed);
             update();
             return;
         }
@@ -2556,9 +2738,9 @@ namespace scopeone::ui
     // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
-        if (m_lineDrawingMode && event->key() == Qt::Key_Escape)
+        if (m_crossSectionDrawingMode && event->key() == Qt::Key_Escape)
         {
-            cancelLineDrawing();
+            cancelCrossSectionDrawing();
             event->accept();
             return;
         }

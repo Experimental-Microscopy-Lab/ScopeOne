@@ -14,11 +14,13 @@
 #include <QSize>
 #include <QVector>
 #include <vector>
+#include "ImageMarkupModel.h"
 #include "scopeone/ImageFrame.h"
 
 class QEvent;
 class QKeyEvent;
 class QMouseEvent;
+class QPainter;
 class QPointF;
 class QWheelEvent;
 
@@ -45,6 +47,7 @@ namespace scopeone::ui
         explicit PreviewWidget(QWidget* parent = nullptr);
         ~PreviewWidget() override;
 
+        void setMarkupModel(ImageMarkupModel* model);
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
         void setLayerLayoutMode(LayerLayoutMode mode);
@@ -95,8 +98,8 @@ namespace scopeone::ui
         void setSourceZoomPercent(const QString& sourceId, int percent);
 
         void startROIDrawing(const QString& cameraId);
-        void startLineDrawingForLayer(const QString& layerKey);
-        void clearLine();
+        void startCrossSectionDrawingForLayer(const QString& layerKey);
+        void clearCrossSection();
 
         bool interactionTargetAt(const QPoint& widgetPos,
                                  PreviewInteractionTarget& outTarget,
@@ -118,13 +121,13 @@ signals:
                       int height,
                       int sourceRoiX,
                       int sourceRoiY);
-        void lineDrawn(const QString& layerKey,
-                       const QString& sourceId,
-                       int startX,
-                       int startY,
-                       int endX,
-                       int endY,
-                       bool processed);
+        void crossSectionDrawn(const QString& layerKey,
+                               const QString& sourceId,
+                               int startX,
+                               int startY,
+                               int endX,
+                               int endY,
+                               bool processed);
 
     protected:
         void initializeGL() override;
@@ -220,6 +223,7 @@ signals:
         QMap<QString, LayerInfo> m_layerInfos;
         QString m_layerInfoText{QStringLiteral("No image loaded")};
         QMap<QString, FpsState> m_fpsStates;
+        ImageMarkupModel* m_markupModel{nullptr};
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
@@ -253,16 +257,12 @@ signals:
         QPoint m_roiStart;
         QPoint m_roiEnd;
         bool m_roiDragging{false};
-        bool m_lineDrawingMode{false};
-        QString m_lineTargetSourceId;
-        QString m_lineTargetLayerKey;
-        QPoint m_lineStart;
-        QPoint m_lineEnd;
-        QPoint m_lineStartImage;
-        QPoint m_lineEndImage;
-        bool m_lineDragging{false};
-        bool m_lineProcessed{false};
-        bool m_lineVisible{false};
+        bool m_crossSectionDrawingMode{false};
+        QString m_crossSectionTargetSourceId;
+        QString m_crossSectionTargetLayerKey;
+        QPoint m_crossSectionStart;
+        QPoint m_crossSectionEnd;
+        bool m_crossSectionDragging{false};
         void updateImageDisplay();
         FpsUpdate updateFpsOnFrame(const QString& layerKey, const scopeone::core::ImageFrame& frame);
         bool storeSourceFrame(const QString& sourceId,
@@ -323,6 +323,11 @@ signals:
                                       const QPoint& imagePos,
                                       QPoint& widgetPos) const;
         void paintPlaceholder(const QString& text);
+        bool drawMarkup(QPainter& painter,
+                        const ImageMarkupModel::Markup& markup,
+                        const RenderItem& item) const;
+        void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawRenderItem(const RenderItem& item);
         void ensureGlPipeline();
         void drawFrameInRect(const QString& textureKey,
@@ -343,6 +348,6 @@ signals:
         GLuint getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat);
         void cleanupTextureCache();
         void cancelROIDrawing();
-        void cancelLineDrawing();
+        void cancelCrossSectionDrawing();
     };
 }

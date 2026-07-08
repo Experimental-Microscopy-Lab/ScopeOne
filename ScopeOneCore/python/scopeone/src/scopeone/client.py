@@ -347,6 +347,76 @@ class ExternalClient:
     def stop_preview(self, camera: str = "All") -> None:
         self._request({"type": "stop_preview", "camera": camera})
 
+    def list_layers(self) -> list[dict]:
+        response = self._request({"type": "list_layers"})
+        return list(response.get("layers", []))
+
+    def remove_static_layer(self, layer_key: str) -> None:
+        self._request({"type": "remove_static_layer", "layerKey": layer_key})
+
+    def clear_static_layers(self) -> None:
+        self._request({"type": "clear_static_layers"})
+
+    def create_line_markup(
+        self,
+        layer_key: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        label: str = "",
+    ) -> str:
+        response = self._request(
+            {
+                "type": "create_line_markup",
+                "layerKey": layer_key,
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+                "label": label,
+            }
+        )
+        return str(response["markupId"])
+
+    def create_rect_markup(
+        self,
+        layer_key: str,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        label: str = "",
+    ) -> str:
+        response = self._request(
+            {
+                "type": "create_rect_markup",
+                "layerKey": layer_key,
+                "x": int(x),
+                "y": int(y),
+                "width": int(width),
+                "height": int(height),
+                "label": label,
+            }
+        )
+        return str(response["markupId"])
+
+    def list_markups(self, layer_key: str | None = None) -> list[dict]:
+        request = {"type": "list_markups"}
+        if layer_key:
+            request["layerKey"] = layer_key
+        response = self._request(request)
+        return list(response.get("markups", []))
+
+    def remove_markup(self, markup_id: str) -> None:
+        self._request({"type": "remove_markup", "markupId": markup_id})
+
+    def clear_markups(self, layer_key: str | None = None) -> None:
+        request = {"type": "clear_markups"}
+        if layer_key:
+            request["layerKey"] = layer_key
+        self._request(request)
+
     def device_properties(self, device: str, from_cache: bool = True) -> list[dict]:
         response = self._request(
             {

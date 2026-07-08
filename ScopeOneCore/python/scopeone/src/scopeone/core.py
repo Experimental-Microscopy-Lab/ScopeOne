@@ -30,6 +30,46 @@ class ScopeOne:
     def stop_preview(self, camera: str = "All"):
         self._client.stop_preview(camera)
 
+    def list_layers(self):
+        return self._client.list_layers()
+
+    def remove_static_layer(self, layer_key: str):
+        self._client.remove_static_layer(layer_key)
+
+    def clear_static_layers(self):
+        self._client.clear_static_layers()
+
+    def create_line_markup(
+        self,
+        layer_key: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        label: str = "",
+    ):
+        return self._client.create_line_markup(layer_key, x1, y1, x2, y2, label)
+
+    def create_rect_markup(
+        self,
+        layer_key: str,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        label: str = "",
+    ):
+        return self._client.create_rect_markup(layer_key, x, y, width, height, label)
+
+    def list_markups(self, layer_key: str | None = None):
+        return self._client.list_markups(layer_key)
+
+    def remove_markup(self, markup_id: str):
+        self._client.remove_markup(markup_id)
+
+    def clear_markups(self, layer_key: str | None = None):
+        self._client.clear_markups(layer_key)
+
     def device_properties(self, device: str, from_cache: bool = True):
         return self._client.device_properties(device, from_cache)
 

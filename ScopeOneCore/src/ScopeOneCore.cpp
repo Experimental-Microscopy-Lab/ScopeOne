@@ -1440,10 +1440,11 @@ namespace scopeone::core
             return;
         }
 
-        m_activeLineProfile.cameraId = trimmedCameraId;
+        m_activeLineProfile.sourceId = trimmedCameraId;
         m_activeLineProfile.start = start;
         m_activeLineProfile.end = end;
         m_activeLineProfile.processed = processed;
+        m_activeLineProfile.staticSource = false;
         m_activeLineProfile.active = true;
 
         if (processed)
@@ -1469,22 +1470,28 @@ namespace scopeone::core
         const QString trimmedSourceId = sourceId.trimmed();
         if (trimmedSourceId.isEmpty())
         {
+            clearLineProfile();
             return;
         }
 
         m_activeLineProfile = ActiveLineProfile{};
+        m_activeLineProfile.sourceId = trimmedSourceId;
+        m_activeLineProfile.start = start;
+        m_activeLineProfile.end = end;
+        m_activeLineProfile.staticSource = true;
+        m_activeLineProfile.active = true;
+
         const ImageFrame frame = graphFrame(staticLayerKey(trimmedSourceId));
-        QVector<int> values;
-        if (!sampleLine(start, end, values,
-                        [&](const QPoint& point, int& value)
-                        {
-                            return sampleFrameValue(frame, point, value);
-                        }))
+        if (!frame.isValid())
         {
+            clearLineProfile();
             return;
         }
 
-        emit layerLineProfileUpdated(staticLayerKey(trimmedSourceId), values);
+        if (!updateStaticLineProfile(trimmedSourceId, frame))
+        {
+            clearLineProfile();
+        }
     }
 
     void ScopeOneCore::clearLineProfile()
@@ -1735,6 +1742,10 @@ namespace scopeone::core
             m_latestHistogramStats.insert(layerKey, stats);
             emit layerHistogramReady(layerKey, stats);
         }
+        if (!updateStaticLineProfile(storedFrame.cameraId, storedFrame))
+        {
+            clearLineProfile();
+        }
         emit staticFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
         return storedFrame;
     }
@@ -1761,6 +1772,12 @@ namespace scopeone::core
         const QString layerKey = staticLayerKey(trimmedSourceId);
         m_frameGraph.remove(FrameGraphStream::Static, trimmedSourceId);
         clearLayerAnalysis(layerKey);
+        if (m_activeLineProfile.active
+            && m_activeLineProfile.staticSource
+            && m_activeLineProfile.sourceId == trimmedSourceId)
+        {
+            clearLineProfile();
+        }
         emit staticFrameRemoved(trimmedSourceId);
     }
 
@@ -1769,6 +1786,10 @@ namespace scopeone::core
     {
         m_frameGraph.clear(FrameGraphStream::Static);
         clearLayerAnalysisByPrefix(QStringLiteral("static:"));
+        if (m_activeLineProfile.active && m_activeLineProfile.staticSource)
+        {
+            clearLineProfile();
+        }
         emit staticFramesCleared();
     }
 
@@ -1841,6 +1862,12 @@ namespace scopeone::core
         const QString processedLayerKey = histogramLayerKey(trimmedCameraId, true);
         clearLayerAnalysis(rawLayerKey);
         clearLayerAnalysis(processedLayerKey);
+        if (m_activeLineProfile.active
+            && !m_activeLineProfile.staticSource
+            && m_activeLineProfile.sourceId == trimmedCameraId)
+        {
+            clearLineProfile();
+        }
         emit liveFramesCleared(trimmedCameraId);
     }
 
@@ -1850,6 +1877,12 @@ namespace scopeone::core
         m_frameGraph.clear(FrameGraphStream::Processed);
         m_pendingPreviewProcessedFrames.clear();
         clearLayerAnalysisByPrefix(QStringLiteral("proc:"));
+        if (m_activeLineProfile.active
+            && !m_activeLineProfile.staticSource
+            && m_activeLineProfile.processed)
+        {
+            clearLineProfile();
+        }
         emit processedFramesCleared();
     }
 
@@ -1957,8 +1990,9 @@ namespace scopeone::core
         }
 
         if (!m_activeLineProfile.active
+            || m_activeLineProfile.staticSource
             || m_activeLineProfile.processed != processed
-            || m_activeLineProfile.cameraId != cameraId)
+            || m_activeLineProfile.sourceId != cameraId)
         {
             return;
         }
@@ -1976,6 +2010,35 @@ namespace scopeone::core
         const QString layerKey = histogramLayerKey(cameraId, processed);
         emit lineProfileUpdated(cameraId, processed, values);
         emit layerLineProfileUpdated(layerKey, values);
+    }
+
+    // Emit a line profile when the active request matches this static source
+    bool ScopeOneCore::updateStaticLineProfile(const QString& sourceId, const ImageFrame& frame)
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (!m_activeLineProfile.active
+            || !m_activeLineProfile.staticSource
+            || m_activeLineProfile.sourceId != trimmedSourceId)
+        {
+            return true;
+        }
+        if (!frame.isValid())
+        {
+            return false;
+        }
+
+        QVector<int> values;
+        if (!sampleLine(m_activeLineProfile.start, m_activeLineProfile.end, values,
+                        [&](const QPoint& point, int& value)
+                        {
+                            return sampleFrameValue(frame, point, value);
+                        }))
+        {
+            return false;
+        }
+
+        emit layerLineProfileUpdated(staticLayerKey(trimmedSourceId), values);
+        return true;
     }
 
     QStringList ScopeOneCore::xyStageDevices() const

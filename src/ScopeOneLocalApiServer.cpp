@@ -1,5 +1,7 @@
 #include "ScopeOneLocalApiServer.h"
 
+#include "ImageMarkupModel.h"
+#include "PreviewWidget.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QCoreApplication>
@@ -105,6 +107,32 @@ namespace scopeone::ui
             return response;
         }
 
+        // Converts one markup to local API JSON
+        QJsonObject markupToJson(const ImageMarkupModel::Markup& markup)
+        {
+            QJsonObject object;
+            object.insert(QStringLiteral("id"), markup.id);
+            object.insert(QStringLiteral("type"), ImageMarkupModel::typeName(markup.type));
+            object.insert(QStringLiteral("role"), ImageMarkupModel::roleName(markup.role));
+            object.insert(QStringLiteral("layerKey"), markup.layerKey);
+            object.insert(QStringLiteral("label"), markup.label);
+            if (markup.type == ImageMarkupModel::MarkupType::Line)
+            {
+                object.insert(QStringLiteral("x1"), markup.start.x());
+                object.insert(QStringLiteral("y1"), markup.start.y());
+                object.insert(QStringLiteral("x2"), markup.end.x());
+                object.insert(QStringLiteral("y2"), markup.end.y());
+            }
+            else if (markup.type == ImageMarkupModel::MarkupType::Rect)
+            {
+                object.insert(QStringLiteral("x"), markup.rect.x());
+                object.insert(QStringLiteral("y"), markup.rect.y());
+                object.insert(QStringLiteral("width"), markup.rect.width());
+                object.insert(QStringLiteral("height"), markup.rect.height());
+            }
+            return object;
+        }
+
         // Converts device property metadata to JSON
         QJsonObject propertyInfoToJson(const scopeone::core::ScopeOneCore::DevicePropertyInfo& info)
         {
@@ -181,6 +209,18 @@ namespace scopeone::ui
         {
             const QString value = object.value(key).toString().trimmed();
             return value.isEmpty() ? defaultValue : value;
+        }
+
+        // Reads one required integer field
+        bool intField(const QJsonObject& object, const QString& key, int& value)
+        {
+            const QJsonValue field = object.value(key);
+            if (!field.isDouble())
+            {
+                return false;
+            }
+            value = field.toInt();
+            return true;
         }
 
         QString saveRequestError(const QJsonObject& request)
@@ -382,9 +422,13 @@ namespace scopeone::ui
 
     // Starts the local API pipe server and frame mapping
     ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
+                                                   PreviewWidget* previewWidget,
+                                                   ImageMarkupModel* markupModel,
                                                    QObject* parent)
         : QObject(parent)
           , m_scopeonecore(core)
+          , m_previewWidget(previewWidget)
+          , m_markupModel(markupModel)
           , m_server(new QLocalServer(this))
     {
         if (!core)
@@ -603,6 +647,208 @@ namespace scopeone::ui
         if (type == QStringLiteral("stop_preview"))
         {
             m_scopeonecore->stopPreview(request.value(QStringLiteral("camera")).toString(QStringLiteral("All")));
+            return makeResponse(type, true);
+        }
+
+        if (type == QStringLiteral("list_layers"))
+        {
+            const QStringList selectedLayerKeys = m_previewWidget->selectedLayerKeys();
+            QJsonArray layers;
+            for (const QString& layerKey : m_previewWidget->availableLayerKeys())
+            {
+                QJsonObject layer;
+                layer.insert(QStringLiteral("layerKey"), layerKey);
+                layer.insert(QStringLiteral("sourceId"),
+                             scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey));
+                layer.insert(QStringLiteral("name"), m_previewWidget->layerName(layerKey));
+                layer.insert(QStringLiteral("info"), m_previewWidget->layerInfoText(layerKey));
+                layer.insert(QStringLiteral("selected"), selectedLayerKeys.contains(layerKey));
+                if (scopeone::core::ScopeOneCore::isRawLayerKey(layerKey))
+                {
+                    layer.insert(QStringLiteral("kind"), QStringLiteral("raw"));
+                }
+                else if (scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey))
+                {
+                    layer.insert(QStringLiteral("kind"), QStringLiteral("processed"));
+                }
+                else if (scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey))
+                {
+                    layer.insert(QStringLiteral("kind"), QStringLiteral("static"));
+                }
+                layers.append(layer);
+            }
+
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("layers"), layers);
+            return response;
+        }
+
+        if (type == QStringLiteral("remove_static_layer"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey).trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (!scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
+                || sourceId.isEmpty()
+                || !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown static layerKey"));
+                return response;
+            }
+
+            m_scopeonecore->removeStaticFrame(sourceId);
+            return makeResponse(type, true);
+        }
+
+        if (type == QStringLiteral("clear_static_layers"))
+        {
+            m_scopeonecore->clearStaticFrames();
+            return makeResponse(type, true);
+        }
+
+        if (type == QStringLiteral("create_line_markup"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (layerKey.isEmpty() || !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            int x1 = 0;
+            int y1 = 0;
+            int x2 = 0;
+            int y2 = 0;
+            if (!intField(request, QStringLiteral("x1"), x1)
+                || !intField(request, QStringLiteral("y1"), y1)
+                || !intField(request, QStringLiteral("x2"), x2)
+                || !intField(request, QStringLiteral("y2"), y2))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing markup geometry"));
+                return response;
+            }
+
+            const QString id = m_markupModel->createLine(
+                layerKey,
+                QPoint(x1, y1),
+                QPoint(x2, y2),
+                request.value(QStringLiteral("label")).toString());
+            if (id.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("markupId"), id);
+            return response;
+        }
+
+        if (type == QStringLiteral("create_rect_markup"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (layerKey.isEmpty() || !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            int x = 0;
+            int y = 0;
+            int width = 0;
+            int height = 0;
+            if (!intField(request, QStringLiteral("x"), x)
+                || !intField(request, QStringLiteral("y"), y)
+                || !intField(request, QStringLiteral("width"), width)
+                || !intField(request, QStringLiteral("height"), height))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing markup geometry"));
+                return response;
+            }
+            if (width <= 0 || height <= 0)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry"));
+                return response;
+            }
+
+            const QString id = m_markupModel->createRect(
+                layerKey,
+                QRect(x, y, width, height),
+                request.value(QStringLiteral("label")).toString());
+            if (id.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("markupId"), id);
+            return response;
+        }
+
+        if (type == QStringLiteral("list_markups"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (!layerKey.isEmpty() && !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            QJsonArray markups;
+            for (const ImageMarkupModel::Markup& markup : m_markupModel->markups(layerKey))
+            {
+                markups.append(markupToJson(markup));
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("markups"), markups);
+            return response;
+        }
+
+        if (type == QStringLiteral("remove_markup"))
+        {
+            const QString markupId = request.value(QStringLiteral("markupId")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (markupId.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing markupId"));
+                return response;
+            }
+            ImageMarkupModel::Markup markup;
+            if (!m_markupModel->findMarkup(markupId, markup) || !m_markupModel->remove(markupId))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
+                return response;
+            }
+            if (markup.role == ImageMarkupModel::MarkupRole::CrossSection)
+            {
+                m_scopeonecore->clearLineProfile();
+            }
+            return makeResponse(type, true);
+        }
+
+        if (type == QStringLiteral("clear_markups"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (!layerKey.isEmpty() && !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            const bool clearsCrossSection = m_markupModel->hasRole(
+                ImageMarkupModel::MarkupRole::CrossSection,
+                layerKey);
+            m_markupModel->clear(layerKey);
+            if (clearsCrossSection)
+            {
+                m_scopeonecore->clearLineProfile();
+            }
             return makeResponse(type, true);
         }
 

@@ -24,7 +24,9 @@ print(scopeone.camera_ids())
 scopeone.start_preview("Camera")
 live = scopeone.latest_raw_frame("Camera")
 preview_image = np.flipud(live.image)
-scopeone.show_frame(live, image=preview_image, layer_id="python_live", name="Python Live")
+layer_key = scopeone.show_frame(live, image=preview_image, layer_id="python_live", name="Python Live")
+markup_id = scopeone.create_rect_markup(layer_key, 10, 10, 100, 80, "Region")
+scopeone.remove_markup(markup_id)
 
 property_names = scopeone.device_property_names("Camera")
 print(property_names[:10])
@@ -55,6 +57,14 @@ scopeone.unload_config()
 - `ScopeOne.camera_ids()`
 - `ScopeOne.start_preview(camera="All")`
 - `ScopeOne.stop_preview(camera="All")`
+- `ScopeOne.list_layers()`
+- `ScopeOne.remove_static_layer(layer_key)`
+- `ScopeOne.clear_static_layers()`
+- `ScopeOne.create_line_markup(layer_key, x1, y1, x2, y2, label="")`
+- `ScopeOne.create_rect_markup(layer_key, x, y, width, height, label="")`
+- `ScopeOne.list_markups(layer_key=None)`
+- `ScopeOne.remove_markup(markup_id)`
+- `ScopeOne.clear_markups(layer_key=None)`
 - `ScopeOne.device_properties(device, from_cache=True)`
 - `ScopeOne.device_property_names(device)`
 - `ScopeOne.get_property(device, property, from_cache=True)`
@@ -108,6 +118,14 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `camera_ids`: response `cameraIds`.
 - `start_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
+- `list_layers`: response `layers`.
+- `remove_static_layer`: fields `layerKey`.
+- `clear_static_layers`: remove all static preview layers.
+- `create_line_markup`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`, optional `label`; response `markupId`.
+- `create_rect_markup`: fields `layerKey`, `x`, `y`, `width`, `height`, optional `label`; response `markupId`.
+- `list_markups`: optional field `layerKey`; response `markups` with `id`, `type`, `role`, `layerKey`, `label`, and geometry fields.
+- `remove_markup`: fields `markupId`.
+- `clear_markups`: optional field `layerKey`.
 - `device_property_names`: fields `device`; response `names`.
 - `device_properties`: fields `device`, `fromCache`; response `properties`.
 - `get_property`: fields `device`, `property`, `fromCache`; response `value`.
