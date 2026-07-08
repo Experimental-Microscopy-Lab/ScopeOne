@@ -17,6 +17,7 @@ class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QTableWidget;
 
@@ -45,6 +46,8 @@ namespace scopeone::ui
 
         void setPreviewRunning(bool running);
         QString currentLayerKey() const;
+        void setLayerFrameControl(const QString& layerKey, int frameCount, int frameIndex);
+        void removeLayerFrameControl(const QString& layerKey);
 
     signals :
         void startPreviewRequested();
@@ -54,6 +57,7 @@ namespace scopeone::ui
         void exposureValueChanged(double exposureMs);
         void controlTargetChanged(const QString& target);
         void currentLayerChanged(const QString& layerKey);
+        void previewLayerFrameRequested(const QString& layerKey, int frameIndex);
 
         void requestDrawROI(const QString& cameraId);
         void requestHalfROI(const QString& cameraId);
@@ -76,6 +80,7 @@ namespace scopeone::ui
         void rebuildPreviewLayerTable(const QStringList& layerKeys);
         void applyPreviewSelection(const QStringList& layerKeys, bool notifyPreview);
         void refreshPreviewLayerSettings();
+        void refreshLayerFrameControl();
         QString selectedLayerSourceId() const;
         void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
         void onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys);
@@ -91,6 +96,7 @@ namespace scopeone::ui
         void onPreviewLayerGammaChanged(double value);
         void onPreviewLayerColormapChanged(int index);
         void onPreviewLayerBlendingChanged(int index);
+        void onPreviewLayerFrameSliderChanged(int value);
         void onPreviewLayerSelectionChanged(int currentRow, int currentColumn, int previousRow, int previousColumn);
         void onPreviewLayerMoveUpClicked();
         void onPreviewLayerMoveDownClicked();
@@ -124,6 +130,11 @@ namespace scopeone::ui
         QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
         QComboBox* m_layerColormapComboBox{nullptr};
         QComboBox* m_layerBlendingComboBox{nullptr};
+        QLabel* m_layerFrameLabel{nullptr};
+        QSlider* m_layerFrameSlider{nullptr};
+        QLabel* m_layerFrameValueLabel{nullptr};
+        QMap<QString, int> m_layerFrameCounts;
+        QMap<QString, int> m_layerFrameIndices;
         QString m_selectedLayerKey;
         QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};

@@ -128,6 +128,22 @@ namespace scopeone::core::internal
             return QDir(saveDir).filePath(baseName.trimmed());
         }
 
+        QString displayOutputPath(const QString& path)
+        {
+            const QString trimmedPath = path.trimmed();
+            return trimmedPath.isEmpty()
+                       ? QString()
+                       : QDir::toNativeSeparators(QDir::cleanPath(trimmedPath));
+        }
+
+        QString saveSuccessMessage(const QString& message, const QString& outputPath)
+        {
+            const QString displayPath = displayOutputPath(outputPath);
+            return displayPath.isEmpty()
+                       ? message
+                       : QStringLiteral("%1 in %2").arg(message, displayPath);
+        }
+
         struct SessionOutputInfo
         {
             QString outputDir;
@@ -344,6 +360,33 @@ namespace scopeone::core::internal
             output.metadataFileName = metadataFileNameForPlan(baseName, metadataFileName);
             const QString metadataFilePath = QDir(output.outputDir).filePath(output.metadataFileName);
             return writeSessionMetadataFile(metadataFilePath, sessionMetadataJson, errorMessage);
+        }
+
+        QString savedSessionOutputDir(
+            const std::shared_ptr<ScopeOneCore::RecordingSessionData>& session)
+        {
+            if (!session)
+            {
+                return {};
+            }
+
+            for (auto it = session->outputFiles().constBegin(); it != session->outputFiles().constEnd(); ++it)
+            {
+                const QString path = !it.value().rawPath.isEmpty()
+                                         ? it.value().rawPath
+                                         : it.value().frameInfoPath;
+                if (!path.isEmpty())
+                {
+                    return QFileInfo(path).absolutePath();
+                }
+            }
+
+            const auto& plan = session->capturePlan();
+            if (!plan.saveDir.trimmed().isEmpty() && !plan.baseName.trimmed().isEmpty())
+            {
+                return sessionOutputDir(plan.saveDir, plan.baseName);
+            }
+            return {};
         }
 
         int tiffStorageBitsForFormat(ImagePixelFormat pixelFormat)
@@ -787,8 +830,10 @@ namespace scopeone::core::internal
             m_writerState.writerError = QStringLiteral("No frames captured");
         }
         const QString result = m_writerState.writerError.isEmpty()
-                                   ? QStringLiteral("Success: Saved %1 recording during acquisition").arg(
-                                       formatName(m_captureState.format))
+                                   ? saveSuccessMessage(
+                                       QStringLiteral("Success: Saved %1 recording during acquisition").arg(
+                                           formatName(m_captureState.format)),
+                                       savedSessionOutputDir(m_sessionState.activeSession))
                                    : QStringLiteral("Error: %1").arg(m_writerState.writerError);
         updateSessionResult(m_sessionState.activeSession, result, m_writerState.writerError.isEmpty());
     }
@@ -1723,13 +1768,17 @@ namespace scopeone::core::internal
             }
             if (session->isSaved())
             {
-                return QStringLiteral("Success: Recording was already saved during acquisition");
+                return saveSuccessMessage(
+                    QStringLiteral("Success: Recording was already saved during acquisition"),
+                    savedSessionOutputDir(session));
             }
             if (session->streamedToDisk() && session->hasRecordedOutput())
             {
                 return updateSessionResult(
                     session,
-                    QStringLiteral("Success: Recording was already saved during acquisition"),
+                    saveSuccessMessage(
+                        QStringLiteral("Success: Recording was already saved during acquisition"),
+                        savedSessionOutputDir(session)),
                     true);
             }
             return updateSessionResult(session, QStringLiteral("Error: No frames captured"), false);
@@ -1894,7 +1943,9 @@ namespace scopeone::core::internal
         session->setWriterPhase(RecordingWriterPhase::Completed);
         return updateSessionResult(
             session,
-            QStringLiteral("Success: Saved %1 recording").arg(recordingFormatName(capturePlan.format)),
+            saveSuccessMessage(
+                QStringLiteral("Success: Saved %1 recording").arg(recordingFormatName(capturePlan.format)),
+                outputInfo.outputDir),
             true);
     }
 } // namespace scopeone::core::internal

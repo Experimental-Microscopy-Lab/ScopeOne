@@ -35,6 +35,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QVector>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -111,21 +112,46 @@ namespace scopeone::ui
             return QStringLiteral("%1_%2").arg(gallerySessionKey(session), cameraId);
         }
 
-        // Publish the first frame of each recorded camera as graph layers
+        int uiFrameCount(qint64 frameCount)
+        {
+            return static_cast<int>(
+                qBound<qint64>(1, frameCount, static_cast<qint64>((std::numeric_limits<int>::max)())));
+        }
+
+        // Publish one frame of each recorded camera as graph layers
         QStringList previewGallerySession(
             scopeone::core::ScopeOneCore& core,
             PreviewWidget& previewWidget,
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            int frameIndex = 0)
         {
             QStringList selectedLayerKeys = previewWidget.selectedLayerKeys();
             QStringList openedLayerKeys;
 
-            for (const scopeone::core::ImageFrame& frame : core.firstSessionFrames(session))
+            if (!session)
             {
-                const QString cameraId = frame.cameraId;
+                return openedLayerKeys;
+            }
 
-                const QString displayName = session->recordedFrameCount(cameraId) > 1
-                                                ? QStringLiteral("Gallery %1 Frame 1").arg(cameraId)
+            for (const QString& cameraId : session->recordedCameraIds())
+            {
+                const qint64 cameraFrameCount = session->recordedFrameCount(cameraId);
+                if (cameraFrameCount <= 0)
+                {
+                    continue;
+                }
+
+                const int cameraFrameIndex = static_cast<int>(
+                    qBound<qint64>(0, static_cast<qint64>(frameIndex), cameraFrameCount - 1));
+                const scopeone::core::ImageFrame frame = core.sessionFrameAt(session, cameraId, cameraFrameIndex);
+                if (!frame.isValid())
+                {
+                    continue;
+                }
+
+                const QString displayName = cameraFrameCount > 1
+                                                ? QStringLiteral("Gallery %1 Frame %2").arg(cameraId)
+                                                  .arg(cameraFrameIndex + 1)
                                                 : QStringLiteral("Gallery %1").arg(cameraId);
                 const QString layerId = gallerySessionLayerId(session, cameraId);
                 const scopeone::core::ImageFrame graphFrame = core.publishStaticFrame(layerId, frame, displayName);
@@ -308,11 +334,21 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFrameRemoved,
                 this, [this](const QString& sourceId)
                 {
-                    m_previewWidget->removeStaticLayer(
-                        scopeone::core::ScopeOneCore::staticLayerKey(sourceId));
+                    const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
+                    m_galleryLayerFrameControls.remove(layerKey);
+                    m_deviceControlWidget->removeLayerFrameControl(layerKey);
+                    m_previewWidget->removeStaticLayer(layerKey);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
-                m_previewWidget, &PreviewWidget::clearStaticLayers);
+                this, [this]()
+                {
+                    for (const QString& layerKey : m_galleryLayerFrameControls.keys())
+                    {
+                        m_deviceControlWidget->removeLayerFrameControl(layerKey);
+                    }
+                    m_galleryLayerFrameControls.clear();
+                    m_previewWidget->clearStaticLayers();
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::liveFramesCleared,
                 m_previewWidget, &PreviewWidget::clearSourceFrames);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCleared,
@@ -419,6 +455,8 @@ namespace scopeone::ui
                 this, &MainWindow::updateControlTarget);
         connect(m_deviceControlWidget, &DeviceControlWidget::currentLayerChanged,
                 m_inspectWidget, &InspectWidget::setCurrentLayer);
+        connect(m_deviceControlWidget, &DeviceControlWidget::previewLayerFrameRequested,
+                this, &MainWindow::updateGalleryLayerFrame);
         connect(m_previewWidget, &PreviewWidget::availableLayerKeysChanged,
                 m_inspectWidget, &InspectWidget::setAvailableLayers);
         connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
@@ -577,6 +615,7 @@ namespace scopeone::ui
                         showStatusMessage(tr("No gallery image available for preview"), 5000);
                         return;
                     }
+                    registerGallerySessionFrameControls(session, 0);
                     showStatusMessage(
                         tr("Gallery preview opened with %1 layer(s)").arg(selectedLayerKeys.size()),
                         5000);
@@ -587,6 +626,7 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
+                    removeGallerySessionFrameControls(session);
                     removeGallerySessionPreview(*m_scopeonecore, session);
                     m_scopeonecore->removeSessionFrameSource(session);
                 });
@@ -1064,6 +1104,105 @@ namespace scopeone::ui
         setCursorStatus(msg);
     }
 
+    // Registers right panel frame sliders for stack backed gallery layers
+    void MainWindow::registerGallerySessionFrameControls(
+        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+        int frameIndex)
+    {
+        if (!session)
+        {
+            return;
+        }
+
+        for (const QString& cameraId : session->recordedCameraIds())
+        {
+            const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(
+                gallerySessionLayerId(session, cameraId));
+            const int frameCount = uiFrameCount(session->recordedFrameCount(cameraId));
+            if (frameCount <= 1)
+            {
+                m_galleryLayerFrameControls.remove(layerKey);
+                m_deviceControlWidget->removeLayerFrameControl(layerKey);
+                continue;
+            }
+
+            m_galleryLayerFrameControls.insert(layerKey, {session, cameraId});
+            m_deviceControlWidget->setLayerFrameControl(
+                layerKey,
+                frameCount,
+                qBound(0, frameIndex, frameCount - 1));
+        }
+    }
+
+    // Removes right panel frame sliders for one gallery session
+    void MainWindow::removeGallerySessionFrameControls(
+        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+    {
+        if (!session)
+        {
+            return;
+        }
+
+        for (const QString& cameraId : session->recordedCameraIds())
+        {
+            const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(
+                gallerySessionLayerId(session, cameraId));
+            m_galleryLayerFrameControls.remove(layerKey);
+            m_deviceControlWidget->removeLayerFrameControl(layerKey);
+        }
+    }
+
+    // Updates gallery static layers when a layer frame slider moves
+    void MainWindow::updateGalleryLayerFrame(const QString& layerKey, int frameIndex)
+    {
+        const auto it = m_galleryLayerFrameControls.constFind(layerKey);
+        if (it == m_galleryLayerFrameControls.constEnd())
+        {
+            return;
+        }
+
+        const auto session = it.value().session;
+        if (!session)
+        {
+            return;
+        }
+
+        const QString cameraId = it.value().cameraId;
+        const qint64 cameraFrameCount = session->recordedFrameCount(cameraId);
+        if (cameraFrameCount <= 0)
+        {
+            return;
+        }
+
+        const int cameraFrameIndex = static_cast<int>(
+            qBound<qint64>(0, static_cast<qint64>(frameIndex), cameraFrameCount - 1));
+        const scopeone::core::ImageFrame frame = m_scopeonecore->sessionFrameAt(
+            session,
+            cameraId,
+            cameraFrameIndex);
+        if (!frame.isValid())
+        {
+            return;
+        }
+
+        const QString layerId = gallerySessionLayerId(session, cameraId);
+        const QString displayName = cameraFrameCount > 1
+                                        ? tr("Gallery %1 Frame %2").arg(cameraId).arg(cameraFrameIndex + 1)
+                                        : tr("Gallery %1").arg(cameraId);
+        const scopeone::core::ImageFrame graphFrame = m_scopeonecore->publishStaticFrame(
+            layerId,
+            frame,
+            displayName);
+        if (!graphFrame.isValid())
+        {
+            return;
+        }
+
+        const int frameCount = uiFrameCount(cameraFrameCount);
+        m_deviceControlWidget->setLayerFrameControl(layerKey, frameCount, cameraFrameIndex);
+        showStatusMessage(tr("Gallery %1 frame %2").arg(cameraId).arg(cameraFrameIndex + 1), 1500);
+    }
+
     // Edit persistent application settings
     void MainWindow::openSettingsDialog()
     {
@@ -1099,7 +1238,10 @@ namespace scopeone::ui
                     {
                         m_imageGalleryWidget->addSession(session, title);
                         m_scopeonecore->removeStaticFrame(QStringLiteral("stage_mosaic"));
-                        previewGallerySession(*m_scopeonecore, *m_previewWidget, session);
+                        if (!previewGallerySession(*m_scopeonecore, *m_previewWidget, session).isEmpty())
+                        {
+                            registerGallerySessionFrameControls(session, 0);
+                        }
                         showStatusMessage(tr("Mosaic added to Gallery"), 5000);
                     });
             dialog->setAttribute(Qt::WA_DeleteOnClose);

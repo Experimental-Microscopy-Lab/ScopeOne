@@ -554,12 +554,10 @@ namespace scopeone::core
         static QString rawLayerKey(const QString& cameraId);
         static QString processedLayerKey(const QString& cameraId);
         static QString staticLayerKey(const QString& sourceId);
-        static QString externalLayerKey(const QString& sourceId);
         static QString sourceIdFromLayerKey(const QString& layerKey);
         static bool isRawLayerKey(const QString& layerKey);
         static bool isProcessedLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
-        static bool isExternalLayerKey(const QString& layerKey);
 
         bool loadConfiguration(const QString& configPath,
                                LoadConfigResult* result,

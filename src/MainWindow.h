@@ -1,10 +1,14 @@
 #pragma once
 
+#include "scopeone/ScopeOneCore.h"
+
+#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 #include <QPoint>
 #include <QString>
 #include <QStringList>
+#include <memory>
 
 class QAction;
 class QCloseEvent;
@@ -75,6 +79,12 @@ namespace scopeone::ui
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
+        void registerGallerySessionFrameControls(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            int frameIndex);
+        void removeGallerySessionFrameControls(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
+        void updateGalleryLayerFrame(const QString& layerKey, int frameIndex);
 
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
@@ -111,6 +121,13 @@ namespace scopeone::ui
         RecordingWidget* m_recordingWidget{nullptr};
         QDockWidget* m_imageGalleryDockWidget{nullptr};
         ImageGalleryWidget* m_imageGalleryWidget{nullptr};
+
+        struct GalleryLayerFrameControl
+        {
+            std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> session;
+            QString cameraId;
+        };
+        QHash<QString, GalleryLayerFrameControl> m_galleryLayerFrameControls;
 
         QDockWidget* m_deviceControlDockWidget{nullptr};
         DeviceControlWidget* m_deviceControlWidget{nullptr};

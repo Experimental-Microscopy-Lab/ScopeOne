@@ -20,6 +20,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -246,19 +247,29 @@ namespace scopeone::ui
         m_layerColormapComboBox = new QComboBox(m_layerSettingsGroup);
         m_layerBlendingComboBox = new QComboBox(m_layerSettingsGroup);
 
+        m_layerFrameLabel = new QLabel(QStringLiteral("Frame:"), m_layerSettingsGroup);
+        m_layerFrameSlider = new QSlider(Qt::Horizontal, m_layerSettingsGroup);
+        m_layerFrameSlider->setRange(0, 0);
+        m_layerFrameValueLabel = new QLabel(QStringLiteral("1 / 1"), m_layerSettingsGroup);
+        m_layerFrameValueLabel->setMinimumWidth(46);
+        m_layerFrameValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
         layerSettingsLayout->addWidget(m_selectedLayerLabel, 0, 0, 1, 6);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 1, 0);
-        layerSettingsLayout->addWidget(m_layerMoveUpButton, 1, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerMoveDownButton, 1, 2, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerRemoveButton, 1, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 2, 0);
-        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 2, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 2, 2);
-        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 2, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 3, 0);
-        layerSettingsLayout->addWidget(m_layerColormapComboBox, 3, 1);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 3, 2);
-        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 3, 3, 1, 3);
+        layerSettingsLayout->addWidget(m_layerFrameLabel, 1, 0);
+        layerSettingsLayout->addWidget(m_layerFrameSlider, 1, 1, 1, 4);
+        layerSettingsLayout->addWidget(m_layerFrameValueLabel, 1, 5);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 2, 0);
+        layerSettingsLayout->addWidget(m_layerMoveUpButton, 2, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_layerMoveDownButton, 2, 2, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_layerRemoveButton, 2, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 3, 0);
+        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 3, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 3, 2);
+        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 3, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 4, 0);
+        layerSettingsLayout->addWidget(m_layerColormapComboBox, 4, 1);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 4, 2);
+        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 4, 3, 1, 3);
 
         m_alignXLabel = new QLabel("X offset:", m_layerSettingsGroup);
         m_alignXSpinBox = new QSpinBox(m_layerSettingsGroup);
@@ -289,16 +300,16 @@ namespace scopeone::ui
         m_alignResetButton->setToolTip("Reset offset and flip");
 
         // Display transforms are edited from the selected layer but stored per source camera for now
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Transform:"), m_layerSettingsGroup), 4, 0, 1, 6);
-        layerSettingsLayout->addWidget(m_alignXLabel, 5, 0);
-        layerSettingsLayout->addWidget(m_alignXSpinBox, 5, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignYLabel, 5, 2);
-        layerSettingsLayout->addWidget(m_alignYSpinBox, 5, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignZoomLabel, 6, 0);
-        layerSettingsLayout->addWidget(m_alignZoomSpinBox, 6, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignFlipXCheckBox, 6, 2, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignFlipYCheckBox, 6, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignResetButton, 6, 4, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Transform:"), m_layerSettingsGroup), 5, 0, 1, 6);
+        layerSettingsLayout->addWidget(m_alignXLabel, 6, 0);
+        layerSettingsLayout->addWidget(m_alignXSpinBox, 6, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_alignYLabel, 6, 2);
+        layerSettingsLayout->addWidget(m_alignYSpinBox, 6, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_alignZoomLabel, 7, 0);
+        layerSettingsLayout->addWidget(m_alignZoomSpinBox, 7, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_alignFlipXCheckBox, 7, 2, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_alignFlipYCheckBox, 7, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_alignResetButton, 7, 4, Qt::AlignLeft);
         layerSettingsLayout->setColumnStretch(5, 1);
 
         m_zoomLabel->setMinimumWidth(60);
@@ -344,6 +355,8 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewLayerColormapChanged);
         connect(m_layerBlendingComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &DeviceControlWidget::onPreviewLayerBlendingChanged);
+        connect(m_layerFrameSlider, &QSlider::valueChanged,
+                this, &DeviceControlWidget::onPreviewLayerFrameSliderChanged);
 
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int x)
@@ -419,6 +432,14 @@ namespace scopeone::ui
         QSignalBlocker tableBlocker(m_layerTable);
         m_layerRows.clear();
         m_layerTable->setRowCount(layerKeys.size());
+        for (const QString& layerKey : m_layerFrameCounts.keys())
+        {
+            if (!layerKeys.contains(layerKey))
+            {
+                m_layerFrameCounts.remove(layerKey);
+                m_layerFrameIndices.remove(layerKey);
+            }
+        }
 
         int row = 0;
         const auto addLayerRow = [&](const QString& layerKey)
@@ -538,10 +559,12 @@ namespace scopeone::ui
         if (!hasLayer)
         {
             m_selectedLayerLabel->setText(QStringLiteral("No layer selected"));
+            refreshLayerFrameControl();
             return;
         }
 
         m_selectedLayerLabel->setText(m_previewWidget->layerName(m_selectedLayerKey));
+        refreshLayerFrameControl();
 
         {
             QSignalBlocker blocker(m_layerOpacitySpinBox);
@@ -598,6 +621,24 @@ namespace scopeone::ui
             QSignalBlocker blocker(m_alignFlipYCheckBox);
             m_alignFlipYCheckBox->setChecked(flipY);
         }
+    }
+
+    // Updates the frame slider for stack backed gallery layers
+    void DeviceControlWidget::refreshLayerFrameControl()
+    {
+        const int frameCount = m_layerFrameCounts.value(m_selectedLayerKey, 1);
+        const int frameIndex = qBound(0, m_layerFrameIndices.value(m_selectedLayerKey, 0), qMax(0, frameCount - 1));
+        const bool visible = frameCount > 1;
+
+        m_layerFrameLabel->setVisible(visible);
+        m_layerFrameSlider->setVisible(visible);
+        m_layerFrameValueLabel->setVisible(visible);
+        m_layerFrameSlider->setEnabled(visible);
+
+        QSignalBlocker blocker(m_layerFrameSlider);
+        m_layerFrameSlider->setRange(0, qMax(0, frameCount - 1));
+        m_layerFrameSlider->setValue(frameIndex);
+        m_layerFrameValueLabel->setText(QStringLiteral("%1 / %2").arg(frameIndex + 1).arg(qMax(1, frameCount)));
     }
 
     QString DeviceControlWidget::selectedLayerSourceId() const
@@ -680,6 +721,25 @@ namespace scopeone::ui
     {
         m_previewWidget->setLayerBlending(m_selectedLayerKey, m_layerBlendingComboBox->currentText());
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
+    }
+
+    void DeviceControlWidget::onPreviewLayerFrameSliderChanged(int value)
+    {
+        const int frameCount = m_layerFrameCounts.value(m_selectedLayerKey, 1);
+        if (m_selectedLayerKey.isEmpty() || frameCount <= 1)
+        {
+            return;
+        }
+
+        const int frameIndex = qBound(0, value, frameCount - 1);
+        if (m_layerFrameIndices.value(m_selectedLayerKey, 0) == frameIndex)
+        {
+            return;
+        }
+
+        m_layerFrameIndices.insert(m_selectedLayerKey, frameIndex);
+        m_layerFrameValueLabel->setText(QStringLiteral("%1 / %2").arg(frameIndex + 1).arg(frameCount));
+        emit previewLayerFrameRequested(m_selectedLayerKey, frameIndex);
     }
 
     void DeviceControlWidget::onPreviewLayerSelectionChanged(int currentRow, int, int, int)
@@ -1329,6 +1389,37 @@ namespace scopeone::ui
     QString DeviceControlWidget::currentLayerKey() const
     {
         return m_selectedLayerKey;
+    }
+
+    // Sets stack frame metadata for one preview layer
+    void DeviceControlWidget::setLayerFrameControl(const QString& layerKey, int frameCount, int frameIndex)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty() || frameCount <= 1)
+        {
+            removeLayerFrameControl(trimmedLayerKey);
+            return;
+        }
+
+        const int clampedCount = qMax(1, frameCount);
+        m_layerFrameCounts.insert(trimmedLayerKey, clampedCount);
+        m_layerFrameIndices.insert(trimmedLayerKey, qBound(0, frameIndex, clampedCount - 1));
+        if (trimmedLayerKey == m_selectedLayerKey)
+        {
+            refreshLayerFrameControl();
+        }
+    }
+
+    // Removes stack frame metadata for one preview layer
+    void DeviceControlWidget::removeLayerFrameControl(const QString& layerKey)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        m_layerFrameCounts.remove(trimmedLayerKey);
+        m_layerFrameIndices.remove(trimmedLayerKey);
+        if (trimmedLayerKey.isEmpty() || trimmedLayerKey == m_selectedLayerKey)
+        {
+            refreshLayerFrameControl();
+        }
     }
 
     bool DeviceControlWidget::isAllTarget(const QString& target) const

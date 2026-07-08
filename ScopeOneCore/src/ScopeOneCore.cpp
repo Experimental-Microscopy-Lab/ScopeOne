@@ -1137,12 +1137,6 @@ namespace scopeone::core
         return QStringLiteral("static:%1").arg(sourceId.trimmed());
     }
 
-    // Build the graph layer key for one external source
-    QString ScopeOneCore::externalLayerKey(const QString& sourceId)
-    {
-        return QStringLiteral("external:%1").arg(sourceId.trimmed());
-    }
-
     // Extract the source id encoded in a graph layer key
     QString ScopeOneCore::sourceIdFromLayerKey(const QString& layerKey)
     {
@@ -1164,11 +1158,6 @@ namespace scopeone::core
     bool ScopeOneCore::isStaticLayerKey(const QString& layerKey)
     {
         return layerKey.trimmed().startsWith(QStringLiteral("static:"));
-    }
-
-    bool ScopeOneCore::isExternalLayerKey(const QString& layerKey)
-    {
-        return layerKey.trimmed().startsWith(QStringLiteral("external:"));
     }
 
     // Wire core managers and public signals into one facade object
@@ -1607,7 +1596,7 @@ namespace scopeone::core
         {
             return m_frameGraph.latest(FrameGraphStream::Static, sourceId);
         }
-        if (isExternalLayerKey(trimmedLayerKey))
+        if (trimmedLayerKey.startsWith(QStringLiteral("external:")))
         {
             return m_frameGraph.latest(FrameGraphStream::External, sourceId);
         }
@@ -1757,7 +1746,7 @@ namespace scopeone::core
         {
             return {};
         }
-        return graphFrame(externalLayerKey(sourceId));
+        return graphFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
     }
 
     // Remove one static frame graph source
