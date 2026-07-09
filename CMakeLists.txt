@@ -235,8 +235,41 @@ set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
 include(InstallRequiredSystemLibraries)
 
 set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_VENDOR "ScopeOne Project")
+set(CPACK_PACKAGE_CONTACT "https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/Experimental-Microscopy-Lab/ScopeOne")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CPACK_PACKAGE_FILE_NAME "ScopeOne-${PROJECT_VERSION}-win-x64")
+
+if (WIN32)
+    find_program(SCOPEONE_MAKENSIS_EXECUTABLE
+            NAMES makensis.exe makensis
+            HINTS
+            "C:/Program Files/NSIS"
+            "C:/Program Files (x86)/NSIS"
+    )
+    if (SCOPEONE_MAKENSIS_EXECUTABLE)
+        list(APPEND CPACK_GENERATOR "NSIS")
+        set(CPACK_NSIS_PACKAGE_NAME "ScopeOne")
+        set(CPACK_NSIS_DISPLAY_NAME "ScopeOne")
+        set(CPACK_NSIS_BRANDING_TEXT "ScopeOne")
+        set(CPACK_NSIS_URL_INFO_ABOUT "${CPACK_PACKAGE_HOMEPAGE_URL}")
+        set(CPACK_NSIS_CONTACT "${CPACK_PACKAGE_CONTACT}")
+        set(CPACK_PACKAGE_INSTALL_DIRECTORY "ScopeOne")
+        set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+        set(CPACK_NSIS_UNINSTALL_NAME "Uninstall ScopeOne")
+        set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
+        set(CPACK_NSIS_INSTALLED_ICON_NAME "ScopeOne.exe")
+        set(CPACK_PACKAGE_EXECUTABLES "ScopeOne" "ScopeOne")
+        set(CPACK_CREATE_DESKTOP_LINKS "ScopeOne")
+        set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/resources/icon.ico")
+        set(CPACK_NSIS_MUI_UNIICON "${CMAKE_SOURCE_DIR}/resources/icon.ico")
+        set(CPACK_NSIS_MUI_FINISHPAGE_RUN "ScopeOne.exe")
+    else ()
+        message(WARNING "NSIS was not found; CPack will produce only the portable ZIP package.")
+    endif ()
+endif ()
 
 include(CPack)

@@ -294,9 +294,9 @@ if ($target -in @("all", "gui")) {
 }
 
 $guiExe = Join-Path $guiBuildDir "$config\ScopeOne.exe"
-$packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -Filter "ScopeOne-*-win-x64.zip" -ErrorAction SilentlyContinue |
+$packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "ScopeOne-*-win-x64.zip" -or $_.Name -like "ScopeOne-*-win-x64.exe" } |
     Sort-Object LastWriteTime -Descending
-$latestPackage = if ($packageCandidates) { $packageCandidates[0].FullName } else { $null }
 
 Write-Step "Summary"
 Write-Host "Target: $target"
@@ -305,8 +305,11 @@ Write-Host "ScopeOneCore install: $coreInstallDir"
 if (Test-Path $guiExe) {
     Write-Host "GUI executable: $guiExe"
 }
-if ($latestPackage) {
-    Write-Host "Latest package: $latestPackage"
+if ($packageCandidates) {
+    Write-Host "Packages:"
+    foreach ($candidate in $packageCandidates) {
+        Write-Host "  $($candidate.FullName)"
+    }
 }
 
 if ($run) {
