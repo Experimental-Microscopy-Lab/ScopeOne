@@ -320,6 +320,8 @@ namespace scopeone::ui
                                                    end,
                                                    processed);
                 });
+        connect(m_previewWidget, &PreviewWidget::crossSectionClearedByUser,
+                m_scopeonecore, &scopeone::core::ScopeOneCore::clearLineProfile);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
                 this, [this]()
                 {

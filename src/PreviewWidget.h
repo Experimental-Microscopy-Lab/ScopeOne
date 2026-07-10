@@ -38,7 +38,6 @@ namespace scopeone::ui
             QString layerKey;
             QString sourceId;
             QPoint imagePos;
-            QSize imageSize;
             QRect itemArea;
             QRect displayRect;
             bool processed{false};
@@ -121,6 +120,7 @@ signals:
                       int height,
                       int sourceRoiX,
                       int sourceRoiY);
+        void crossSectionClearedByUser();
         void crossSectionDrawn(const QString& layerKey,
                                const QString& sourceId,
                                int startX,
@@ -164,6 +164,17 @@ signals:
         enum class Colormap { Gray = 0, Green, Magenta, Cyan, Red, Blue, Yellow, Fire };
         enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
         enum class FrameRole { Raw, Processed };
+        enum class MarkupEditMode
+        {
+            None,
+            Move,
+            LineStart,
+            LineEnd,
+            RectTopLeft,
+            RectTopRight,
+            RectBottomLeft,
+            RectBottomRight,
+        };
 
         struct LayerDisplaySettings
         {
@@ -263,6 +274,11 @@ signals:
         QPoint m_crossSectionStart;
         QPoint m_crossSectionEnd;
         bool m_crossSectionDragging{false};
+        QString m_dragMarkupId;
+        ImageMarkupModel::Markup m_dragMarkupOriginal;
+        QPoint m_dragMarkupStartImagePos;
+        MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
+        bool m_markupDragging{false};
         void updateImageDisplay();
         FpsUpdate updateFpsOnFrame(const QString& layerKey, const scopeone::core::ImageFrame& frame);
         bool storeSourceFrame(const QString& sourceId,
@@ -328,6 +344,11 @@ signals:
                         const RenderItem& item) const;
         void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        bool markupAtWidgetPosition(const QPoint& widgetPos,
+                                    ImageMarkupModel::Markup& outMarkup,
+                                    PreviewInteractionTarget& outTarget,
+                                    MarkupEditMode& outEditMode) const;
+        void clearSelectedMarkups();
         void drawRenderItem(const RenderItem& item);
         void ensureGlPipeline();
         void drawFrameInRect(const QString& textureKey,

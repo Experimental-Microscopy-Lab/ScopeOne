@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QtGlobal>
 #include <QtMath>
 #include <algorithm>
@@ -127,6 +128,23 @@ namespace scopeone::ui
             clippedEnd = QPoint(qBound(rect.left(), qRound(x0 + u2 * dx), rect.right()),
                                 qBound(rect.top(), qRound(y0 + u2 * dy), rect.bottom()));
             return clippedStart != clippedEnd;
+        }
+
+        double pointSegmentDistance(const QPoint& point, const QPoint& start, const QPoint& end)
+        {
+            const double dx = end.x() - start.x();
+            const double dy = end.y() - start.y();
+            if (qFuzzyIsNull(dx) && qFuzzyIsNull(dy))
+            {
+                return QLineF(QPointF(point), QPointF(start)).length();
+            }
+
+            const double t = qBound(0.0,
+                                    ((point.x() - start.x()) * dx + (point.y() - start.y()) * dy)
+                                        / (dx * dx + dy * dy),
+                                    1.0);
+            const QPointF projected(start.x() + t * dx, start.y() + t * dy);
+            return QLineF(QPointF(point), projected).length();
         }
     } // namespace
 
@@ -1465,6 +1483,10 @@ namespace scopeone::ui
         {
             return false;
         }
+        if (!markup.visible)
+        {
+            return false;
+        }
         QRect displayRect;
         QSize imageSize;
         if (!resolveDisplayGeometry(*item.info->frameState,
@@ -1478,9 +1500,9 @@ namespace scopeone::ui
         const QRect imageBounds(QPoint(0, 0), imageSize);
 
         QPen linePen(QColor(255, 210, 0));
-        linePen.setWidth(2);
+        linePen.setWidth(markup.selected ? 3 : 2);
         QPen rectPen(QColor(0, 220, 180));
-        rectPen.setWidth(2);
+        rectPen.setWidth(markup.selected ? 3 : 2);
         painter.setBrush(Qt::NoBrush);
 
         if (markup.type == ImageMarkupModel::MarkupType::Line)
@@ -1663,6 +1685,176 @@ namespace scopeone::ui
         }
     }
 
+    bool PreviewWidget::markupAtWidgetPosition(const QPoint& widgetPos,
+                                               ImageMarkupModel::Markup& outMarkup,
+                                               PreviewInteractionTarget& outTarget,
+                                               MarkupEditMode& outEditMode) const
+    {
+        if (!m_markupModel || !m_markupModel->hasMarkups())
+        {
+            return false;
+        }
+
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        const QList<ImageMarkupModel::Markup> markups = m_markupModel->markups();
+        for (int markupIndex = markups.size() - 1; markupIndex >= 0; --markupIndex)
+        {
+            const ImageMarkupModel::Markup& markup = markups.at(markupIndex);
+            if (!markup.visible)
+            {
+                continue;
+            }
+
+            for (const RenderItem& item : renderItems)
+            {
+                if (item.layerKey != markup.layerKey || !item.info || !item.info->frameState)
+                {
+                    continue;
+                }
+
+                QRect displayRect;
+                QSize imageSize;
+                if (!resolveDisplayGeometry(*item.info->frameState,
+                                            item.processed,
+                                            item.area,
+                                            displayRect,
+                                            imageSize)
+                    || !displayRect.contains(widgetPos))
+                {
+                    continue;
+                }
+
+                QPoint imagePos;
+                if (!mapWidgetPositionToImage(*item.info->frameState,
+                                               item.processed,
+                                               item.area,
+                                               widgetPos,
+                                               imagePos))
+                {
+                    continue;
+                }
+
+                if (markup.type == ImageMarkupModel::MarkupType::Line)
+                {
+                    QPoint startWidget;
+                    QPoint endWidget;
+                    if (!mapImagePositionToWidget(*item.info->frameState,
+                                                  item.processed,
+                                                  item.area,
+                                                  markup.start,
+                                                  startWidget)
+                        || !mapImagePositionToWidget(*item.info->frameState,
+                                                     item.processed,
+                                                     item.area,
+                                                     markup.end,
+                                                     endWidget))
+                    {
+                        continue;
+                    }
+                    if (QLineF(QPointF(widgetPos), QPointF(startWidget)).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::LineStart;
+                    }
+                    else if (QLineF(QPointF(widgetPos), QPointF(endWidget)).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::LineEnd;
+                    }
+                    else if (pointSegmentDistance(widgetPos, startWidget, endWidget) <= 6.0)
+                    {
+                        outEditMode = MarkupEditMode::Move;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+                else if (markup.type == ImageMarkupModel::MarkupType::Rect)
+                {
+                    QPoint topLeft;
+                    QPoint bottomRight;
+                    if (!mapImagePositionToWidget(*item.info->frameState,
+                                                  item.processed,
+                                                  item.area,
+                                                  markup.rect.normalized().topLeft(),
+                                                  topLeft)
+                        || !mapImagePositionToWidget(*item.info->frameState,
+                                                     item.processed,
+                                                     item.area,
+                                                     markup.rect.normalized().bottomRight(),
+                                                     bottomRight))
+                    {
+                        continue;
+                    }
+                    const QRect widgetRect = QRect(topLeft, bottomRight).normalized();
+                    if (QLineF(QPointF(widgetPos), QPointF(widgetRect.topLeft())).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::RectTopLeft;
+                    }
+                    else if (QLineF(QPointF(widgetPos), QPointF(widgetRect.topRight())).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::RectTopRight;
+                    }
+                    else if (QLineF(QPointF(widgetPos), QPointF(widgetRect.bottomLeft())).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::RectBottomLeft;
+                    }
+                    else if (QLineF(QPointF(widgetPos), QPointF(widgetRect.bottomRight())).length() <= 8.0)
+                    {
+                        outEditMode = MarkupEditMode::RectBottomRight;
+                    }
+                    else if (widgetRect.adjusted(-6, -6, 6, 6).contains(widgetPos))
+                    {
+                        outEditMode = MarkupEditMode::Move;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+
+                outMarkup = markup;
+                outTarget.layerKey = item.layerKey;
+                outTarget.sourceId = item.info->sourceId;
+                outTarget.imagePos = imagePos;
+                outTarget.itemArea = item.area;
+                outTarget.processed = item.processed;
+                outTarget.displayRect = displayRect;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void PreviewWidget::clearSelectedMarkups()
+    {
+        if (!m_markupModel || !m_markupModel->hasMarkups())
+        {
+            return;
+        }
+
+        bool removedCrossSection = false;
+        const QList<ImageMarkupModel::Markup> markups = m_markupModel->markups();
+        for (const ImageMarkupModel::Markup& markup : markups)
+        {
+            if (!markup.selected)
+            {
+                continue;
+            }
+            removedCrossSection = removedCrossSection
+                                  || markup.role == ImageMarkupModel::MarkupRole::CrossSection;
+            m_markupModel->remove(markup.id);
+        }
+        if (removedCrossSection)
+        {
+            emit crossSectionClearedByUser();
+        }
+    }
+
     // Draws one render item into its assigned area
     void PreviewWidget::drawRenderItem(const RenderItem& item)
     {
@@ -1824,7 +2016,6 @@ namespace scopeone::ui
             outTarget.layerKey = item.layerKey;
             outTarget.sourceId = item.info->sourceId;
             outTarget.imagePos = imagePos;
-            outTarget.imageSize = imageSize;
             outTarget.itemArea = item.area;
             outTarget.displayRect = displayRect;
             outTarget.processed = item.processed;
@@ -2498,6 +2689,25 @@ namespace scopeone::ui
             return;
         }
 
+        if (event->button() == Qt::LeftButton && m_markupModel)
+        {
+            ImageMarkupModel::Markup markup;
+            PreviewInteractionTarget target;
+            MarkupEditMode editMode = MarkupEditMode::None;
+            if (markupAtWidgetPosition(event->pos(), markup, target, editMode))
+            {
+                m_markupModel->selectOnly(markup.id);
+                m_dragMarkupId = markup.id;
+                m_dragMarkupOriginal = markup;
+                m_dragMarkupStartImagePos = target.imagePos;
+                m_dragMarkupEditMode = editMode;
+                m_markupDragging = true;
+                update();
+                return;
+            }
+            m_markupModel->selectOnly(QString());
+        }
+
         QOpenGLWidget::mousePressEvent(event);
     }
 
@@ -2515,6 +2725,77 @@ namespace scopeone::ui
         if (m_roiDrawingMode && m_roiDragging)
         {
             m_roiEnd = event->pos();
+            update();
+            return;
+        }
+
+        if (m_markupDragging && m_markupModel)
+        {
+            FrameSourceState frameState;
+            bool processed = false;
+            QRect itemArea;
+            QRect displayRect;
+            QSize imageSize;
+            QPoint imagePos;
+            if (resolveLayerDisplayGeometry(m_dragMarkupOriginal.layerKey,
+                                            frameState,
+                                            processed,
+                                            itemArea,
+                                            displayRect,
+                                            imageSize)
+                && mapWidgetPositionToImage(frameState, processed, itemArea, event->pos(), imagePos))
+            {
+                if (m_dragMarkupOriginal.type == ImageMarkupModel::MarkupType::Line)
+                {
+                    if (m_dragMarkupEditMode == MarkupEditMode::LineStart)
+                    {
+                        m_markupModel->updateLine(m_dragMarkupId, imagePos, m_dragMarkupOriginal.end);
+                    }
+                    else if (m_dragMarkupEditMode == MarkupEditMode::LineEnd)
+                    {
+                        m_markupModel->updateLine(m_dragMarkupId, m_dragMarkupOriginal.start, imagePos);
+                    }
+                    else
+                    {
+                        const QPoint delta = imagePos - m_dragMarkupStartImagePos;
+                        m_markupModel->updateLine(m_dragMarkupId,
+                                                  m_dragMarkupOriginal.start + delta,
+                                                  m_dragMarkupOriginal.end + delta);
+                    }
+                }
+                else if (m_dragMarkupOriginal.type == ImageMarkupModel::MarkupType::Rect)
+                {
+                    const QRect originalRect = m_dragMarkupOriginal.rect.normalized();
+                    if (m_dragMarkupEditMode == MarkupEditMode::RectTopLeft)
+                    {
+                        m_markupModel->updateRect(m_dragMarkupId,
+                                                  QRect(imagePos, originalRect.bottomRight()).normalized());
+                    }
+                    else if (m_dragMarkupEditMode == MarkupEditMode::RectTopRight)
+                    {
+                        m_markupModel->updateRect(m_dragMarkupId,
+                                                  QRect(QPoint(originalRect.left(), imagePos.y()),
+                                                        QPoint(imagePos.x(), originalRect.bottom())).normalized());
+                    }
+                    else if (m_dragMarkupEditMode == MarkupEditMode::RectBottomLeft)
+                    {
+                        m_markupModel->updateRect(m_dragMarkupId,
+                                                  QRect(QPoint(imagePos.x(), originalRect.top()),
+                                                        QPoint(originalRect.right(), imagePos.y())).normalized());
+                    }
+                    else if (m_dragMarkupEditMode == MarkupEditMode::RectBottomRight)
+                    {
+                        m_markupModel->updateRect(m_dragMarkupId,
+                                                  QRect(originalRect.topLeft(), imagePos).normalized());
+                    }
+                    else
+                    {
+                        const QPoint delta = imagePos - m_dragMarkupStartImagePos;
+                        m_markupModel->updateRect(m_dragMarkupId,
+                                                  originalRect.translated(delta));
+                    }
+                }
+            }
             update();
             return;
         }
@@ -2656,6 +2937,29 @@ namespace scopeone::ui
             return;
         }
 
+        if (m_markupDragging && event->button() == Qt::LeftButton)
+        {
+            ImageMarkupModel::Markup markup;
+            if (m_markupModel
+                && m_markupModel->findMarkup(m_dragMarkupId, markup)
+                && markup.role == ImageMarkupModel::MarkupRole::CrossSection
+                && markup.type == ImageMarkupModel::MarkupType::Line)
+            {
+                emit crossSectionDrawn(markup.layerKey,
+                                       markup.sourceId,
+                                       markup.start.x(),
+                                       markup.start.y(),
+                                       markup.end.x(),
+                                       markup.end.y(),
+                                       markup.layerKind == ImageMarkupModel::LayerKind::Processed);
+            }
+            m_markupDragging = false;
+            m_dragMarkupId.clear();
+            m_dragMarkupEditMode = MarkupEditMode::None;
+            update();
+            return;
+        }
+
         QOpenGLWidget::mouseReleaseEvent(event);
     }
 
@@ -2748,6 +3052,20 @@ namespace scopeone::ui
         if (m_roiDrawingMode && event->key() == Qt::Key_Escape)
         {
             cancelROIDrawing();
+            event->accept();
+            return;
+        }
+
+        if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
+        {
+            clearSelectedMarkups();
+            event->accept();
+            return;
+        }
+
+        if (event->key() == Qt::Key_Escape && m_markupModel)
+        {
+            m_markupModel->selectOnly(QString());
             event->accept();
             return;
         }

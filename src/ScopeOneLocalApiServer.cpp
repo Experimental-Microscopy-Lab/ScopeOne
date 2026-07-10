@@ -115,7 +115,12 @@ namespace scopeone::ui
             object.insert(QStringLiteral("type"), ImageMarkupModel::typeName(markup.type));
             object.insert(QStringLiteral("role"), ImageMarkupModel::roleName(markup.role));
             object.insert(QStringLiteral("layerKey"), markup.layerKey);
+            object.insert(QStringLiteral("layerKind"), ImageMarkupModel::layerKindName(markup.layerKind));
+            object.insert(QStringLiteral("sourceId"), markup.sourceId);
+            object.insert(QStringLiteral("coordinateSpace"), QStringLiteral("image"));
             object.insert(QStringLiteral("label"), markup.label);
+            object.insert(QStringLiteral("visible"), markup.visible);
+            object.insert(QStringLiteral("selected"), markup.selected);
             if (markup.type == ImageMarkupModel::MarkupType::Line)
             {
                 object.insert(QStringLiteral("x1"), markup.start.x());
@@ -131,6 +136,50 @@ namespace scopeone::ui
                 object.insert(QStringLiteral("height"), markup.rect.height());
             }
             return object;
+        }
+
+        ImageMarkupModel::MarkupRole markupRoleFromJson(const QJsonValue& value)
+        {
+            QString roleName = value.toString().trimmed().toLower();
+            roleName.remove(QLatin1Char('_'));
+            roleName.remove(QLatin1Char('-'));
+            roleName.remove(QLatin1Char(' '));
+            if (roleName == QStringLiteral("crosssection") || roleName == QStringLiteral("lineprofile"))
+            {
+                return ImageMarkupModel::MarkupRole::CrossSection;
+            }
+            if (roleName == QStringLiteral("roi"))
+            {
+                return ImageMarkupModel::MarkupRole::Roi;
+            }
+            if (roleName == QStringLiteral("measurement") || roleName == QStringLiteral("measure"))
+            {
+                return ImageMarkupModel::MarkupRole::Measurement;
+            }
+            return ImageMarkupModel::MarkupRole::Generic;
+        }
+
+        void applyCrossSectionMarkup(scopeone::core::ScopeOneCore* core,
+                                     const ImageMarkupModel::Markup& markup)
+        {
+            if (!core
+                || markup.role != ImageMarkupModel::MarkupRole::CrossSection
+                || markup.type != ImageMarkupModel::MarkupType::Line)
+            {
+                return;
+            }
+
+            if (markup.layerKind == ImageMarkupModel::LayerKind::Static
+                || markup.layerKind == ImageMarkupModel::LayerKind::Gallery)
+            {
+                core->setStaticLineProfile(markup.sourceId, markup.start, markup.end);
+                return;
+            }
+
+            core->setLineProfile(markup.sourceId,
+                                 markup.start,
+                                 markup.end,
+                                 markup.layerKind == ImageMarkupModel::LayerKind::Processed);
         }
 
         // Converts device property metadata to JSON
@@ -1142,17 +1191,44 @@ namespace scopeone::ui
                 return response;
             }
 
+            const ImageMarkupModel::MarkupRole role = markupRoleFromJson(request.value(QStringLiteral("role")));
+            if (role == ImageMarkupModel::MarkupRole::Roi)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup role for line"));
+                return response;
+            }
+
+            const QPoint start(x1, y1);
+            const QPoint end(x2, y2);
+            if (start == end)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry"));
+                return response;
+            }
+
+            if (role == ImageMarkupModel::MarkupRole::CrossSection)
+            {
+                m_markupModel->clearRole(ImageMarkupModel::MarkupRole::CrossSection);
+                m_scopeonecore->clearLineProfile();
+            }
+
             const QString id = m_markupModel->createLine(
                 layerKey,
-                QPoint(x1, y1),
-                QPoint(x2, y2),
-                request.value(QStringLiteral("label")).toString());
+                start,
+                end,
+                request.value(QStringLiteral("label")).toString(),
+                role);
             if (id.isEmpty())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
                 return response;
             }
 
+            ImageMarkupModel::Markup markup;
+            if (m_markupModel->findMarkup(id, markup))
+            {
+                applyCrossSectionMarkup(m_scopeonecore, markup);
+            }
             response = makeResponse(type, true);
             response.insert(QStringLiteral("markupId"), id);
             return response;
@@ -1186,10 +1262,18 @@ namespace scopeone::ui
                 return response;
             }
 
+            const ImageMarkupModel::MarkupRole role = markupRoleFromJson(request.value(QStringLiteral("role")));
+            if (role == ImageMarkupModel::MarkupRole::CrossSection)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup role for rect"));
+                return response;
+            }
+
             const QString id = m_markupModel->createRect(
                 layerKey,
                 QRect(x, y, width, height),
-                request.value(QStringLiteral("label")).toString());
+                request.value(QStringLiteral("label")).toString(),
+                role);
             if (id.isEmpty())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
@@ -1219,6 +1303,107 @@ namespace scopeone::ui
 
             response = makeResponse(type, true);
             response.insert(QStringLiteral("markups"), markups);
+            return response;
+        }
+
+        if (type == QStringLiteral("update_markup"))
+        {
+            const QString markupId = request.value(QStringLiteral("markupId")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            ImageMarkupModel::Markup markup;
+            if (markupId.isEmpty() || !m_markupModel->findMarkup(markupId, markup))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
+                return response;
+            }
+
+            if (request.contains(QStringLiteral("label"))
+                && !m_markupModel->setLabel(markupId, request.value(QStringLiteral("label")).toString()))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup label"));
+                return response;
+            }
+            if (request.contains(QStringLiteral("visible"))
+                && !m_markupModel->setVisible(markupId, request.value(QStringLiteral("visible")).toBool(true)))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup visibility"));
+                return response;
+            }
+            if (request.contains(QStringLiteral("selected")))
+            {
+                const bool selected = request.value(QStringLiteral("selected")).toBool(false);
+                if (selected)
+                {
+                    if (!m_markupModel->selectOnly(markupId))
+                    {
+                        response.insert(QStringLiteral("error"), QStringLiteral("Failed to select markup"));
+                        return response;
+                    }
+                }
+                else if (!m_markupModel->setSelected(markupId, false))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup selection"));
+                    return response;
+                }
+            }
+
+            const bool hasLineGeometry = request.contains(QStringLiteral("x1"))
+                || request.contains(QStringLiteral("y1"))
+                || request.contains(QStringLiteral("x2"))
+                || request.contains(QStringLiteral("y2"));
+            const bool hasRectGeometry = request.contains(QStringLiteral("x"))
+                || request.contains(QStringLiteral("y"))
+                || request.contains(QStringLiteral("width"))
+                || request.contains(QStringLiteral("height"));
+            if ((markup.type == ImageMarkupModel::MarkupType::Line && hasRectGeometry)
+                || (markup.type == ImageMarkupModel::MarkupType::Rect && hasLineGeometry))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry for type"));
+                return response;
+            }
+
+            if (markup.type == ImageMarkupModel::MarkupType::Line && hasLineGeometry)
+            {
+                int x1 = markup.start.x();
+                int y1 = markup.start.y();
+                int x2 = markup.end.x();
+                int y2 = markup.end.y();
+                if ((request.contains(QStringLiteral("x1")) && !intField(request, QStringLiteral("x1"), x1))
+                    || (request.contains(QStringLiteral("y1")) && !intField(request, QStringLiteral("y1"), y1))
+                    || (request.contains(QStringLiteral("x2")) && !intField(request, QStringLiteral("x2"), x2))
+                    || (request.contains(QStringLiteral("y2")) && !intField(request, QStringLiteral("y2"), y2))
+                    || !m_markupModel->updateLine(markupId, QPoint(x1, y1), QPoint(x2, y2)))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Invalid line markup geometry"));
+                    return response;
+                }
+            }
+
+            if (markup.type == ImageMarkupModel::MarkupType::Rect && hasRectGeometry)
+            {
+                int x = markup.rect.x();
+                int y = markup.rect.y();
+                int width = markup.rect.width();
+                int height = markup.rect.height();
+                if ((request.contains(QStringLiteral("x")) && !intField(request, QStringLiteral("x"), x))
+                    || (request.contains(QStringLiteral("y")) && !intField(request, QStringLiteral("y"), y))
+                    || (request.contains(QStringLiteral("width")) && !intField(request, QStringLiteral("width"), width))
+                    || (request.contains(QStringLiteral("height")) && !intField(request, QStringLiteral("height"), height))
+                    || !m_markupModel->updateRect(markupId, QRect(x, y, width, height)))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Invalid rect markup geometry"));
+                    return response;
+                }
+            }
+
+            if (!m_markupModel->findMarkup(markupId, markup))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
+                return response;
+            }
+            applyCrossSectionMarkup(m_scopeonecore, markup);
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("markup"), markupToJson(markup));
             return response;
         }
 
@@ -1432,6 +1617,7 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Failed to set ROI"));
                 return response;
             }
+            m_scopeonecore->clearLiveFrames(camera);
 
             response = makeResponse(type, true);
             if (m_scopeonecore->getROI(camera, x, y, width, height))
@@ -1463,6 +1649,7 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Failed to clear ROI"));
                 return response;
             }
+            m_scopeonecore->clearLiveFrames(camera);
             return makeResponse(type, true);
         }
 

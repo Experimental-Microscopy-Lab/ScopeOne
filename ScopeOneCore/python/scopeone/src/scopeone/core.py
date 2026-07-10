@@ -109,8 +109,9 @@ class ScopeOne:
         x2: int,
         y2: int,
         label: str = "",
+        role: str = "generic",
     ):
-        return self._client.create_line_markup(layer_key, x1, y1, x2, y2, label)
+        return self._client.create_line_markup(layer_key, x1, y1, x2, y2, label, role)
 
     def create_rect_markup(
         self,
@@ -120,14 +121,25 @@ class ScopeOne:
         width: int,
         height: int,
         label: str = "",
+        role: str = "generic",
     ):
-        return self._client.create_rect_markup(layer_key, x, y, width, height, label)
+        return self._client.create_rect_markup(layer_key, x, y, width, height, label, role)
 
     def list_markups(self, layer_key: str | None = None):
         return self._client.list_markups(layer_key)
 
     def remove_markup(self, markup_id: str):
         self._client.remove_markup(markup_id)
+
+    def update_markup(
+        self,
+        markup_id: str,
+        label: str | None = None,
+        visible: bool | None = None,
+        selected: bool | None = None,
+        **geometry,
+    ):
+        return self._client.update_markup(markup_id, label, visible, selected, **geometry)
 
     def clear_markups(self, layer_key: str | None = None):
         self._client.clear_markups(layer_key)

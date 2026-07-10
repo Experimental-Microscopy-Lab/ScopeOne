@@ -92,9 +92,10 @@ scopeone.close()
 - `ScopeOne.set_config(group, config)`
 - `ScopeOne.remove_static_layer(layer_key)`
 - `ScopeOne.clear_static_layers()`
-- `ScopeOne.create_line_markup(layer_key, x1, y1, x2, y2, label="")`
-- `ScopeOne.create_rect_markup(layer_key, x, y, width, height, label="")`
+- `ScopeOne.create_line_markup(layer_key, x1, y1, x2, y2, label="", role="generic")`
+- `ScopeOne.create_rect_markup(layer_key, x, y, width, height, label="", role="generic")`
 - `ScopeOne.list_markups(layer_key=None)`
+- `ScopeOne.update_markup(markup_id, label=None, visible=None, selected=None, **geometry)`
 - `ScopeOne.remove_markup(markup_id)`
 - `ScopeOne.clear_markups(layer_key=None)`
 - `ScopeOne.device_properties(device, from_cache=True)`
@@ -187,9 +188,10 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `set_config`: fields `group`, `config`; response `config`.
 - `remove_static_layer`: fields `layerKey`.
 - `clear_static_layers`: remove all static preview layers.
-- `create_line_markup`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`, optional `label`; response `markupId`.
-- `create_rect_markup`: fields `layerKey`, `x`, `y`, `width`, `height`, optional `label`; response `markupId`.
-- `list_markups`: optional field `layerKey`; response `markups` with `id`, `type`, `role`, `layerKey`, `label`, and geometry fields.
+- `create_line_markup`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`, optional `label` and `role`; response `markupId`.
+- `create_rect_markup`: fields `layerKey`, `x`, `y`, `width`, `height`, optional `label` and `role`; response `markupId`.
+- `list_markups`: optional field `layerKey`; response `markups` with `id`, `type`, `role`, `layerKey`, `layerKind`, `sourceId`, `coordinateSpace`, `label`, `visible`, `selected`, and geometry fields.
+- `update_markup`: fields `markupId` and optional `label`, `visible`, `selected`, plus line fields `x1`, `y1`, `x2`, `y2` or rect fields `x`, `y`, `width`, `height`; response `markup`.
 - `remove_markup`: fields `markupId`.
 - `clear_markups`: optional field `layerKey`.
 - `device_property_names`: fields `device`; response `names`.

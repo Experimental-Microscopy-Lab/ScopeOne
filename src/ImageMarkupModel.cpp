@@ -1,5 +1,7 @@
 #include "ImageMarkupModel.h"
 
+#include "scopeone/ScopeOneCore.h"
+
 namespace scopeone::ui
 {
     ImageMarkupModel::ImageMarkupModel(QObject* parent)
@@ -63,6 +65,8 @@ namespace scopeone::ui
         }
 
         markup.id = QStringLiteral("markup_%1").arg(m_nextMarkupId++);
+        markup.layerKind = layerKindForLayerKey(markup.layerKey);
+        markup.sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(markup.layerKey);
         m_markupOrder.append(markup.id);
         m_markups.insert(markup.id, markup);
         emit changed();
@@ -125,6 +129,122 @@ namespace scopeone::ui
         return false;
     }
 
+    bool ImageMarkupModel::setLabel(const QString& id, const QString& label)
+    {
+        auto it = m_markups.find(id.trimmed());
+        if (it == m_markups.end())
+        {
+            return false;
+        }
+
+        const QString trimmedLabel = label.trimmed();
+        if (it.value().label == trimmedLabel)
+        {
+            return true;
+        }
+        it.value().label = trimmedLabel;
+        emit changed();
+        return true;
+    }
+
+    bool ImageMarkupModel::setVisible(const QString& id, bool visible)
+    {
+        auto it = m_markups.find(id.trimmed());
+        if (it == m_markups.end())
+        {
+            return false;
+        }
+
+        if (it.value().visible == visible)
+        {
+            return true;
+        }
+        it.value().visible = visible;
+        emit changed();
+        return true;
+    }
+
+    bool ImageMarkupModel::setSelected(const QString& id, bool selected)
+    {
+        auto it = m_markups.find(id.trimmed());
+        if (it == m_markups.end())
+        {
+            return false;
+        }
+
+        if (it.value().selected == selected)
+        {
+            return true;
+        }
+        it.value().selected = selected;
+        emit changed();
+        return true;
+    }
+
+    bool ImageMarkupModel::selectOnly(const QString& id)
+    {
+        const QString trimmedId = id.trimmed();
+        if (!trimmedId.isEmpty() && !m_markups.contains(trimmedId))
+        {
+            return false;
+        }
+
+        bool selectionChanged = false;
+        for (auto it = m_markups.begin(); it != m_markups.end(); ++it)
+        {
+            const bool selected = !trimmedId.isEmpty() && it.key() == trimmedId;
+            if (it.value().selected != selected)
+            {
+                it.value().selected = selected;
+                selectionChanged = true;
+            }
+        }
+        if (selectionChanged)
+        {
+            emit changed();
+        }
+        return true;
+    }
+
+    bool ImageMarkupModel::updateLine(const QString& id, const QPoint& start, const QPoint& end)
+    {
+        auto it = m_markups.find(id.trimmed());
+        if (it == m_markups.end() || it.value().type != MarkupType::Line || start == end)
+        {
+            return false;
+        }
+
+        if (it.value().start == start && it.value().end == end)
+        {
+            return true;
+        }
+        it.value().start = start;
+        it.value().end = end;
+        emit changed();
+        return true;
+    }
+
+    bool ImageMarkupModel::updateRect(const QString& id, const QRect& rect)
+    {
+        auto it = m_markups.find(id.trimmed());
+        const QRect normalizedRect = rect.normalized();
+        if (it == m_markups.end()
+            || it.value().type != MarkupType::Rect
+            || normalizedRect.width() <= 0
+            || normalizedRect.height() <= 0)
+        {
+            return false;
+        }
+
+        if (it.value().rect == normalizedRect)
+        {
+            return true;
+        }
+        it.value().rect = normalizedRect;
+        emit changed();
+        return true;
+    }
+
     QString ImageMarkupModel::typeName(MarkupType type)
     {
         switch (type)
@@ -147,8 +267,47 @@ namespace scopeone::ui
             return QStringLiteral("cross_section");
         case MarkupRole::Roi:
             return QStringLiteral("roi");
+        case MarkupRole::Measurement:
+            return QStringLiteral("measurement");
         }
         return {};
+    }
+
+    QString ImageMarkupModel::layerKindName(LayerKind layerKind)
+    {
+        switch (layerKind)
+        {
+        case LayerKind::Raw:
+            return QStringLiteral("raw");
+        case LayerKind::Processed:
+            return QStringLiteral("processed");
+        case LayerKind::Static:
+            return QStringLiteral("static");
+        case LayerKind::Gallery:
+            return QStringLiteral("gallery");
+        case LayerKind::Unknown:
+            return QStringLiteral("unknown");
+        }
+        return QStringLiteral("unknown");
+    }
+
+    ImageMarkupModel::LayerKind ImageMarkupModel::layerKindForLayerKey(const QString& layerKey)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (scopeone::core::ScopeOneCore::isRawLayerKey(trimmedLayerKey))
+        {
+            return LayerKind::Raw;
+        }
+        if (scopeone::core::ScopeOneCore::isProcessedLayerKey(trimmedLayerKey))
+        {
+            return LayerKind::Processed;
+        }
+        if (scopeone::core::ScopeOneCore::isStaticLayerKey(trimmedLayerKey))
+        {
+            const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(trimmedLayerKey);
+            return sourceId.startsWith(QStringLiteral("gallery:")) ? LayerKind::Gallery : LayerKind::Static;
+        }
+        return LayerKind::Unknown;
     }
 
     bool ImageMarkupModel::remove(const QString& id)

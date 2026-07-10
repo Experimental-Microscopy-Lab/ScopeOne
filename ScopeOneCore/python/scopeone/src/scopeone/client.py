@@ -504,6 +504,7 @@ class ExternalClient:
         x2: int,
         y2: int,
         label: str = "",
+        role: str = "generic",
     ) -> str:
         response = self._request(
             {
@@ -514,6 +515,7 @@ class ExternalClient:
                 "x2": int(x2),
                 "y2": int(y2),
                 "label": label,
+                "role": role,
             }
         )
         return str(response["markupId"])
@@ -526,6 +528,7 @@ class ExternalClient:
         width: int,
         height: int,
         label: str = "",
+        role: str = "generic",
     ) -> str:
         response = self._request(
             {
@@ -536,6 +539,7 @@ class ExternalClient:
                 "width": int(width),
                 "height": int(height),
                 "label": label,
+                "role": role,
             }
         )
         return str(response["markupId"])
@@ -549,6 +553,31 @@ class ExternalClient:
 
     def remove_markup(self, markup_id: str) -> None:
         self._request({"type": "remove_markup", "markupId": markup_id})
+
+    def update_markup(
+        self,
+        markup_id: str,
+        label: str | None = None,
+        visible: bool | None = None,
+        selected: bool | None = None,
+        **geometry,
+    ) -> dict:
+        request = {
+            "type": "update_markup",
+            "markupId": markup_id,
+        }
+        if label is not None:
+            request["label"] = label
+        if visible is not None:
+            request["visible"] = bool(visible)
+        if selected is not None:
+            request["selected"] = bool(selected)
+        for key, value in geometry.items():
+            if key not in {"x", "y", "width", "height", "x1", "y1", "x2", "y2"}:
+                raise ValueError(f"Unsupported markup geometry field: {key}")
+            request[key] = int(value)
+        response = self._request(request)
+        return dict(response["markup"])
 
     def clear_markups(self, layer_key: str | None = None) -> None:
         request = {"type": "clear_markups"}

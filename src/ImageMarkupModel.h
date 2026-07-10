@@ -26,6 +26,16 @@ namespace scopeone::ui
             Generic,
             CrossSection,
             Roi,
+            Measurement,
+        };
+
+        enum class LayerKind
+        {
+            Unknown,
+            Raw,
+            Processed,
+            Static,
+            Gallery,
         };
 
         struct Markup
@@ -33,11 +43,15 @@ namespace scopeone::ui
             QString id;
             MarkupType type{MarkupType::Line};
             MarkupRole role{MarkupRole::Generic};
+            LayerKind layerKind{LayerKind::Unknown};
             QString layerKey;
+            QString sourceId;
             QPoint start;
             QPoint end;
             QRect rect;
             QString label;
+            bool visible{true};
+            bool selected{false};
         };
 
         explicit ImageMarkupModel(QObject* parent = nullptr);
@@ -55,8 +69,16 @@ namespace scopeone::ui
         bool hasMarkups() const;
         bool findMarkup(const QString& id, Markup& outMarkup) const;
         bool hasRole(MarkupRole role, const QString& layerKey = QString()) const;
+        bool setLabel(const QString& id, const QString& label);
+        bool setVisible(const QString& id, bool visible);
+        bool setSelected(const QString& id, bool selected);
+        bool selectOnly(const QString& id);
+        bool updateLine(const QString& id, const QPoint& start, const QPoint& end);
+        bool updateRect(const QString& id, const QRect& rect);
         static QString typeName(MarkupType type);
         static QString roleName(MarkupRole role);
+        static QString layerKindName(LayerKind layerKind);
+        static LayerKind layerKindForLayerKey(const QString& layerKey);
         bool remove(const QString& id);
         void clear(const QString& layerKey = QString());
         void clearRole(MarkupRole role, const QString& layerKey = QString());
