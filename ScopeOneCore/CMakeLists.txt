@@ -28,7 +28,7 @@ if (WIN32)
     set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
     set(ZLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib-1.3.1")
     set(ZLIB_BIN_DIR "${ZLIB_DIR}/build/Release")
-    set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}")
+    set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}" "${ZLIB_DIR}/build")
     set(ZLIB_LIB "${ZLIB_BIN_DIR}/zlib.lib")
 
     set(TIFF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiff-4.7.1")

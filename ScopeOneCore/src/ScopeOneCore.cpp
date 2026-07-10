@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 #include <tiffio.h>
+#include <zlib.h>
 
 namespace
 {
@@ -1117,6 +1118,29 @@ namespace scopeone::core
     QString ScopeOneCore::getVersion()
     {
         return QStringLiteral(SCOPEONE_CORE_VERSION_STRING);
+    }
+
+    // Return the linked MMCore version
+    QString ScopeOneCore::getMMCoreVersion()
+    {
+        return QStringLiteral("%1.%2.%3")
+            .arg(CMMCore::getMMCoreVersionMajor())
+            .arg(CMMCore::getMMCoreVersionMinor())
+            .arg(CMMCore::getMMCoreVersionPatch());
+    }
+
+    // Return the linked libtiff version
+    QString ScopeOneCore::getLibTiffVersion()
+    {
+        QString version = QString::fromLatin1(TIFFGetVersion()).section('\n', 0, 0).trimmed();
+        version.remove(QStringLiteral("LIBTIFF, Version "));
+        return version;
+    }
+
+    // Return the linked zlib version
+    QString ScopeOneCore::getZlibVersion()
+    {
+        return QString::fromLatin1(zlibVersion());
     }
 
     // Build the graph layer key for one raw source

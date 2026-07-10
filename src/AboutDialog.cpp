@@ -2,12 +2,13 @@
 #include "AppVersion.h"
 #include "scopeone/ScopeOneCore.h"
 
-#include <QDialog>
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QLabel>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSysInfo>
+#include <QTextBrowser>
+#include <opencv2/core/version.hpp>
 
 namespace scopeone::ui
 {
@@ -22,10 +23,10 @@ namespace scopeone::ui
     void AboutDialog::setupUI()
     {
         setWindowTitle("About ScopeOne");
-        resize(520, 320);
+        resize(600, 420);
 
         auto* mainLayout = new QVBoxLayout(this);
-        auto* contentLayout = new QVBoxLayout();
+        mainLayout->setSpacing(14);
 
         auto* logoLabel = new QLabel(this);
         logoLabel->setAlignment(Qt::AlignCenter);
@@ -33,60 +34,76 @@ namespace scopeone::ui
         const QPixmap logoPixmap(":/Scopeone_Logo.svg");
         if (!logoPixmap.isNull())
         {
-            logoLabel->setPixmap(logoPixmap.scaledToWidth(320, Qt::SmoothTransformation));
+            logoLabel->setPixmap(logoPixmap.scaledToWidth(260, Qt::SmoothTransformation));
         }
         mainLayout->addWidget(logoLabel, 0, Qt::AlignHCenter);
 
-        m_contentLabel = new QLabel(this);
-        m_contentLabel->setAlignment(Qt::AlignLeft);
-        m_contentLabel->setWordWrap(true);
-        m_contentLabel->setTextFormat(Qt::PlainText);
-        setContent(SCOPEONE_APP_NAME, SCOPEONE_APP_VERSION_STRING);
-        contentLayout->addWidget(m_contentLabel);
+        m_contentBrowser = new QTextBrowser(this);
+        m_contentBrowser->setOpenExternalLinks(true);
+        setContent();
+        mainLayout->addWidget(m_contentBrowser, 1);
 
-        auto* okButton = new QPushButton("OK", this);
-        connect(okButton, &QPushButton::clicked, this, &AboutDialog::onOkClicked);
-        contentLayout->addWidget(okButton, 0, Qt::AlignRight);
-
-        mainLayout->addLayout(contentLayout);
+        auto* okButton = new QPushButton("Close", this);
+        connect(okButton, &QPushButton::clicked, this, &QDialog::accept);
+        mainLayout->addWidget(okButton, 0, Qt::AlignRight);
     }
 
     // Show the about dialog modally
-    int AboutDialog::showAbout(QWidget* parent, const QString& appName, const QString& version)
+    int AboutDialog::showAbout(QWidget* parent)
     {
         AboutDialog dialog(parent);
-        dialog.setContent(appName, version);
         return dialog.exec();
     }
 
     // Keep app and core version text in one place
-    void AboutDialog::setContent(const QString& appName, const QString& version)
+    void AboutDialog::setContent()
     {
-        const QString description =
-            "A microscope control software based on Micro-Manager Core. "
-            "Supports dual-camera real-time preview and image processing.";
-        const QString techStack =
-            "- Qt 6\n"
-            "- zlib\n"
-            "- libtiff\n"
-            "- OpenCV 4\n"
-            "- Micro-Manager Core\n"
-            "- C++20";
-        const QString coreInfo =
-            QString("ScopeOneCore %1").arg(scopeone::core::ScopeOneCore::getVersion());
-        const QString license =
-            "Copyright (C) 2025-2026 ScopeOne Project";
-        m_contentLabel->setText(QString("%1 %2\n%3\n\n%4\n\n%5\n\n%6")
-            .arg(appName,
-                 version,
-                 coreInfo,
-                 description,
-                 techStack,
-                 license));
+        const QString title = QStringLiteral(SCOPEONE_APP_NAME " " SCOPEONE_APP_VERSION_STRING);
+        const QString coreVersion = scopeone::core::ScopeOneCore::getVersion();
+        const QString mmCoreVersion = scopeone::core::ScopeOneCore::getMMCoreVersion();
+        const QString libTiffVersion = scopeone::core::ScopeOneCore::getLibTiffVersion();
+        const QString zlibVersion = scopeone::core::ScopeOneCore::getZlibVersion();
+        const QString platformInfo = QString("%1, %2")
+            .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture());
+
+        m_contentBrowser->setHtml(QString(R"(
+<html>
+<body style="font-family: sans-serif; font-size: 10pt;">
+<h2>%1</h2>
+
+<h3>Runtime</h3>
+<table cellspacing="4" cellpadding="0">
+<tr><td><b>ScopeOneCore</b></td><td>%2</td></tr>
+<tr><td><b>MMCore</b></td><td>%3</td></tr>
+<tr><td><b>Qt</b></td><td>%4</td></tr>
+<tr><td><b>OpenCV</b></td><td>%5</td></tr>
+<tr><td><b>libtiff</b></td><td>%6</td></tr>
+<tr><td><b>zlib</b></td><td>%7</td></tr>
+<tr><td><b>Platform</b></td><td>%8</td></tr>
+</table>
+
+<h3>Links</h3>
+<p>
+Project: <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne">https://github.com/Experimental-Microscopy-Lab/ScopeOne</a><br>
+Issues: <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues">https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues</a>
+</p>
+
+<h3>Copyright and License</h3>
+<p>
+Copyright (c) 2025-2026, Tianyi Zhao.<br>
+Licensed under the BSD 3-Clause License.
+</p>
+</body>
+</html>
+)")
+            .arg(title.toHtmlEscaped(),
+                 coreVersion.toHtmlEscaped(),
+                 mmCoreVersion.toHtmlEscaped(),
+                 QString::fromLatin1(qVersion()).toHtmlEscaped(),
+                 QStringLiteral(CV_VERSION).toHtmlEscaped(),
+                 libTiffVersion.toHtmlEscaped(),
+                 zlibVersion.toHtmlEscaped(),
+                 platformInfo.toHtmlEscaped()));
     }
 
-    void AboutDialog::onOkClicked()
-    {
-        accept();
-    }
 } // namespace scopeone::ui

@@ -551,6 +551,9 @@ namespace scopeone::core
         explicit ScopeOneCore(QObject* parent = nullptr);
         ~ScopeOneCore() override;
         static QString getVersion();
+        static QString getMMCoreVersion();
+        static QString getLibTiffVersion();
+        static QString getZlibVersion();
         static QString rawLayerKey(const QString& cameraId);
         static QString processedLayerKey(const QString& cameraId);
         static QString staticLayerKey(const QString& sourceId);
