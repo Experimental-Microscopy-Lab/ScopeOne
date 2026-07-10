@@ -44,7 +44,7 @@ namespace scopeone::ui
                                        QString& errorMessage);
         bool importFrameFromSharedMemory(const QString& cameraId,
                                          scopeone::core::ImageFrame& frame,
-                                         QString& errorMessage) const;
+                                         QString& errorMessage);
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         PreviewWidget* m_previewWidget{nullptr};

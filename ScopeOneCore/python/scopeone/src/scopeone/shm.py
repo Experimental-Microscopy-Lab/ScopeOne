@@ -1,8 +1,9 @@
-"""Helpers for decoding ScopeOne shared-memory frame slots."""
+"""Helpers for decoding and writing ScopeOne shared-memory frame slots."""
 
 from __future__ import annotations
 
 import struct
+import time
 from dataclasses import dataclass
 
 try:
@@ -55,16 +56,22 @@ class SharedFrameHeader:
 
 def latest_slot_index(control_bytes: bytes | bytearray | memoryview) -> int:
     view = memoryview(control_bytes)
-    if len(view) < SHARED_MEMORY_CONTROL_SIZE:
-        raise ValueError("Shared memory control block is too small")
-    return int(_CONTROL_STRUCT.unpack_from(view, 0)[0])
+    try:
+        if len(view) < SHARED_MEMORY_CONTROL_SIZE:
+            raise ValueError("Shared memory control block is too small")
+        return int(_CONTROL_STRUCT.unpack_from(view, 0)[0])
+    finally:
+        view.release()
 
 
 def parse_frame_header(header_bytes: bytes | bytearray | memoryview) -> SharedFrameHeader:
     view = memoryview(header_bytes)
-    if len(view) < SHARED_FRAME_HEADER_SIZE:
-        raise ValueError("Shared frame header is too small")
-    return SharedFrameHeader(*_HEADER_STRUCT.unpack_from(view, 0))
+    try:
+        if len(view) < SHARED_FRAME_HEADER_SIZE:
+            raise ValueError("Shared frame header is too small")
+        return SharedFrameHeader(*_HEADER_STRUCT.unpack_from(view, 0))
+    finally:
+        view.release()
 
 
 def frame_to_ndarray(
@@ -90,13 +97,118 @@ def frame_to_ndarray(
     itemsize = np.dtype(dtype).itemsize
     required = header.payload_nbytes
     view = memoryview(payload)
-    if len(view) < required:
-        raise ValueError("Frame payload is smaller than expected")
+    frame_view = None
+    try:
+        if len(view) < required:
+            raise ValueError("Frame payload is smaller than expected")
 
-    array = np.ndarray(
-        shape=(header.height, header.width),
-        dtype=dtype,
-        buffer=view[:required],
-        strides=(header.stride, itemsize),
-    )
-    return np.array(array, copy=True)
+        frame_view = view[:required]
+        array = np.ndarray(
+            shape=(header.height, header.width),
+            dtype=dtype,
+            buffer=frame_view,
+            strides=(header.stride, itemsize),
+        )
+        return np.array(array, copy=True)
+    finally:
+        if frame_view is not None:
+            frame_view.release()
+        view.release()
+
+
+def write_ndarray_to_frame(
+    view: bytes | bytearray | memoryview,
+    image: object,
+    bits_per_sample: int | None = None,
+    frame_index: int = 0,
+    timestamp_ns: int | None = None,
+    source_roi: tuple[int, int, int, int] | None = None,
+) -> tuple[np.ndarray, dict]:
+    if np is None:
+        raise RuntimeError("numpy is required to write ScopeOne frames")
+
+    array = np.asarray(image)
+    if array.ndim != 2:
+        raise ValueError("ScopeOne frames must be 2D mono images")
+    height, width = array.shape
+    if width <= 0 or height <= 0:
+        raise ValueError("ScopeOne frame dimensions must be positive")
+
+    if bits_per_sample is None:
+        bits_per_sample = 8 if array.dtype == np.uint8 else 16
+    bits_per_sample = int(bits_per_sample)
+    if bits_per_sample <= 8:
+        pixel_format = MONO8
+        bits_per_sample = 8
+        dtype = np.uint8
+    elif bits_per_sample <= 16:
+        pixel_format = MONO16
+        dtype = np.uint16
+    else:
+        raise ValueError("bits_per_sample must be in the range 1..16")
+
+    max_value = (1 << bits_per_sample) - 1
+    contiguous = np.ascontiguousarray(np.clip(array, 0, max_value).astype(dtype, copy=False))
+    stride = width * np.dtype(dtype).itemsize
+    payload_nbytes = stride * height
+    if payload_nbytes > SHARED_FRAME_MAX_BYTES:
+        raise ValueError("ScopeOne frame payload exceeds the shared mapping capacity")
+
+    if source_roi is None:
+        source_roi_x = source_roi_y = source_roi_width = source_roi_height = 0
+        source_roi_valid = 0
+    else:
+        source_roi_x, source_roi_y, source_roi_width, source_roi_height = (int(v) for v in source_roi)
+        source_roi_valid = 1 if source_roi_width > 0 and source_roi_height > 0 else 0
+
+    if timestamp_ns is None:
+        timestamp_ns = time.time_ns()
+
+    mapping = memoryview(view)
+    try:
+        required = SHARED_FRAME_HEADER_SIZE + payload_nbytes
+        if len(mapping) < required:
+            raise ValueError("Shared frame mapping is smaller than the frame payload")
+
+        header_values = (
+            1,
+            width,
+            height,
+            stride,
+            pixel_format,
+            bits_per_sample,
+            1,
+            int(frame_index),
+            int(timestamp_ns),
+            source_roi_x,
+            source_roi_y,
+            source_roi_width,
+            source_roi_height,
+            source_roi_valid,
+        )
+        _HEADER_STRUCT.pack_into(mapping, 0, *header_values)
+        payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + payload_nbytes]
+        try:
+            payload[:] = contiguous.tobytes(order="C")
+        finally:
+            payload.release()
+        _HEADER_STRUCT.pack_into(mapping, 0, 2, *header_values[1:])
+    finally:
+        mapping.release()
+
+    metadata = {
+        "width": width,
+        "height": height,
+        "stride": stride,
+        "payloadBytes": str(payload_nbytes),
+        "pixelFormat": "Mono16" if pixel_format == MONO16 else "Mono8",
+        "bitsPerSample": bits_per_sample,
+        "frameIndex": str(int(frame_index)),
+        "timestampNs": str(int(timestamp_ns)),
+        "sourceRoiX": source_roi_x,
+        "sourceRoiY": source_roi_y,
+        "sourceRoiWidth": source_roi_width,
+        "sourceRoiHeight": source_roi_height,
+        "sourceRoiValid": bool(source_roi_valid),
+    }
+    return np.array(contiguous, copy=True), metadata

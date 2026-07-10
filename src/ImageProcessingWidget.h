@@ -42,8 +42,10 @@ namespace scopeone::ui
         void updateModuleList();
         void updateConfigWidget();
         void updateRunButtons();
+        void syncProcessingState();
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        bool m_processingRunning{false};
         QWidget* m_runControlsWidget{nullptr};
         QPushButton* m_startButton{nullptr};
         QPushButton* m_stopButton{nullptr};

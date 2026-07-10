@@ -3,6 +3,13 @@
 from .client import FrameResult
 from .core import ScopeOne
 from .session import RecordingSession
+from .shm import (
+    SharedFrameHeader,
+    frame_to_ndarray,
+    latest_slot_index,
+    parse_frame_header,
+    write_ndarray_to_frame,
+)
 
 __version__ = "0.1.0"
 
@@ -10,17 +17,10 @@ __all__ = [
     "FrameResult",
     "RecordingSession",
     "ScopeOne",
+    "SharedFrameHeader",
+    "frame_to_ndarray",
+    "latest_slot_index",
+    "parse_frame_header",
+    "write_ndarray_to_frame",
     "__version__",
 ]
-
-try:
-    from .shm import SharedFrameHeader, frame_to_ndarray, latest_slot_index, parse_frame_header
-except ImportError:
-    pass
-else:
-    __all__ += [
-        "SharedFrameHeader",
-        "frame_to_ndarray",
-        "latest_slot_index",
-        "parse_frame_header",
-    ]

@@ -152,6 +152,97 @@ namespace scopeone::ui
             return object;
         }
 
+        QString processingModuleKindName(scopeone::core::ScopeOneCore::ProcessingModuleKind kind)
+        {
+            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
+            switch (kind)
+            {
+            case ProcessingModuleKind::FFT:
+                return QStringLiteral("fft");
+            case ProcessingModuleKind::BackgroundCalibration:
+                return QStringLiteral("background_calibration");
+            case ProcessingModuleKind::SpatiotemporalBinning:
+                return QStringLiteral("spatiotemporal_binning");
+            case ProcessingModuleKind::GaussianBlur:
+                return QStringLiteral("gaussian_blur");
+            case ProcessingModuleKind::DifferentialRolling:
+                return QStringLiteral("differential_rolling");
+            case ProcessingModuleKind::Unknown:
+                return QStringLiteral("unknown");
+            }
+            return QStringLiteral("unknown");
+        }
+
+        scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKindFromJson(const QJsonValue& value)
+        {
+            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
+            if (value.isDouble())
+            {
+                const int kind = value.toInt(static_cast<int>(ProcessingModuleKind::Unknown));
+                switch (static_cast<ProcessingModuleKind>(kind))
+                {
+                case ProcessingModuleKind::FFT:
+                case ProcessingModuleKind::BackgroundCalibration:
+                case ProcessingModuleKind::SpatiotemporalBinning:
+                case ProcessingModuleKind::GaussianBlur:
+                case ProcessingModuleKind::DifferentialRolling:
+                    return static_cast<ProcessingModuleKind>(kind);
+                case ProcessingModuleKind::Unknown:
+                    return ProcessingModuleKind::Unknown;
+                }
+            }
+
+            QString name = value.toString().trimmed().toLower();
+            name.remove(QLatin1Char('_'));
+            name.remove(QLatin1Char('-'));
+            name.remove(QLatin1Char(' '));
+            if (name == QStringLiteral("fft"))
+            {
+                return ProcessingModuleKind::FFT;
+            }
+            if (name == QStringLiteral("backgroundcalibration") || name == QStringLiteral("background"))
+            {
+                return ProcessingModuleKind::BackgroundCalibration;
+            }
+            if (name == QStringLiteral("spatiotemporalbinning") || name == QStringLiteral("binning"))
+            {
+                return ProcessingModuleKind::SpatiotemporalBinning;
+            }
+            if (name == QStringLiteral("gaussianblur") || name == QStringLiteral("blur"))
+            {
+                return ProcessingModuleKind::GaussianBlur;
+            }
+            if (name == QStringLiteral("differentialrolling") || name == QStringLiteral("rolling"))
+            {
+                return ProcessingModuleKind::DifferentialRolling;
+            }
+            return ProcessingModuleKind::Unknown;
+        }
+
+        QJsonObject processingModuleToJson(
+            int index,
+            const scopeone::core::ScopeOneCore::ProcessingModuleInfo& info)
+        {
+            QJsonObject object;
+            object.insert(QStringLiteral("index"), index);
+            object.insert(QStringLiteral("kind"), processingModuleKindName(info.kind()));
+            object.insert(QStringLiteral("kindValue"), static_cast<int>(info.kind()));
+            object.insert(QStringLiteral("name"), info.name());
+            object.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(info.parameters()));
+            return object;
+        }
+
+        QJsonArray processingModulesToJson(
+            const QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo>& modules)
+        {
+            QJsonArray array;
+            for (int i = 0; i < modules.size(); ++i)
+            {
+                array.append(processingModuleToJson(i, modules.at(i)));
+            }
+            return array;
+        }
+
         // Converts an axis name into a recording axis enum
         scopeone::core::ScopeOneCore::RecordingAxis axisFromName(const QString& name)
         {
@@ -209,6 +300,47 @@ namespace scopeone::ui
         {
             const QString value = object.value(key).toString().trimmed();
             return value.isEmpty() ? defaultValue : value;
+        }
+
+        QStringList stringArrayFromJson(const QJsonArray& array)
+        {
+            QStringList values;
+            values.reserve(array.size());
+            for (const QJsonValue& value : array)
+            {
+                const QString text = value.toString().trimmed();
+                if (!text.isEmpty())
+                {
+                    values.append(text);
+                }
+            }
+            return values;
+        }
+
+        QString layerLayoutModeName(PreviewWidget::LayerLayoutMode mode)
+        {
+            return mode == PreviewWidget::LayerLayoutMode::Overlay
+                       ? QStringLiteral("overlay")
+                       : QStringLiteral("side_by_side");
+        }
+
+        bool layerLayoutModeFromName(const QString& name, PreviewWidget::LayerLayoutMode& mode)
+        {
+            QString normalized = name.trimmed().toLower();
+            normalized.remove(QLatin1Char('_'));
+            normalized.remove(QLatin1Char('-'));
+            normalized.remove(QLatin1Char(' '));
+            if (normalized == QStringLiteral("overlay"))
+            {
+                mode = PreviewWidget::LayerLayoutMode::Overlay;
+                return true;
+            }
+            if (normalized == QStringLiteral("sidebyside"))
+            {
+                mode = PreviewWidget::LayerLayoutMode::SideBySide;
+                return true;
+            }
+            return false;
         }
 
         // Reads one required integer field
@@ -600,13 +732,73 @@ namespace scopeone::ui
 
         if (type == QStringLiteral("ping"))
         {
-            return makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("version"), scopeone::core::ScopeOneCore::getVersion());
+            response.insert(QStringLiteral("apiVersion"), 1);
+            return response;
+        }
+
+        if (type == QStringLiteral("version"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("version"), scopeone::core::ScopeOneCore::getVersion());
+            response.insert(QStringLiteral("apiVersion"), 1);
+            return response;
+        }
+
+        if (type == QStringLiteral("status"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("version"), scopeone::core::ScopeOneCore::getVersion());
+            response.insert(QStringLiteral("apiVersion"), 1);
+            response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));
+            response.insert(QStringLiteral("loadedDevices"),
+                            QJsonArray::fromStringList(m_scopeonecore->loadedDevices()));
+            response.insert(QStringLiteral("runningPreviews"),
+                            QJsonArray::fromStringList(m_scopeonecore->runningPreviewCameraIds()));
+            response.insert(QStringLiteral("processingBitDepth"),
+                            static_cast<int>(m_scopeonecore->processingBitDepth()));
+            response.insert(QStringLiteral("processingRealTime"),
+                            m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("processingModuleCount"),
+                            static_cast<int>(m_scopeonecore->processingModules().size()));
+            response.insert(QStringLiteral("layers"),
+                            QJsonArray::fromStringList(m_previewWidget->availableLayerKeys()));
+            response.insert(QStringLiteral("selectedLayers"),
+                            QJsonArray::fromStringList(m_previewWidget->selectedLayerKeys()));
+            response.insert(QStringLiteral("layerLayout"),
+                            layerLayoutModeName(m_previewWidget->layerLayoutMode()));
+            return response;
+        }
+
+        if (type == QStringLiteral("frame_mapping_info"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+            response.insert(QStringLiteral("mappingSize"),
+                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                + scopeone::core::kSharedFrameMaxBytes));
+            response.insert(QStringLiteral("headerBytes"), scopeone::core::kSharedFrameHeaderSize);
+            response.insert(QStringLiteral("maxPayloadBytes"), scopeone::core::kSharedFrameMaxBytes);
+            response.insert(QStringLiteral("pixelFormats"),
+                            QJsonArray::fromStringList(QStringList{
+                                QStringLiteral("Mono8"),
+                                QStringLiteral("Mono16"),
+                            }));
+            return response;
         }
 
         if (type == QStringLiteral("camera_ids"))
         {
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));
+            return response;
+        }
+
+        if (type == QStringLiteral("loaded_devices"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("devices"), QJsonArray::fromStringList(m_scopeonecore->loadedDevices()));
             return response;
         }
 
@@ -663,6 +855,11 @@ namespace scopeone::ui
                 layer.insert(QStringLiteral("name"), m_previewWidget->layerName(layerKey));
                 layer.insert(QStringLiteral("info"), m_previewWidget->layerInfoText(layerKey));
                 layer.insert(QStringLiteral("selected"), selectedLayerKeys.contains(layerKey));
+                layer.insert(QStringLiteral("visible"), selectedLayerKeys.contains(layerKey));
+                layer.insert(QStringLiteral("opacityPercent"), m_previewWidget->layerOpacityPercent(layerKey));
+                layer.insert(QStringLiteral("gamma"), m_previewWidget->layerGamma(layerKey));
+                layer.insert(QStringLiteral("colormap"), m_previewWidget->layerColormap(layerKey));
+                layer.insert(QStringLiteral("blending"), m_previewWidget->layerBlending(layerKey));
                 if (scopeone::core::ScopeOneCore::isRawLayerKey(layerKey))
                 {
                     layer.insert(QStringLiteral("kind"), QStringLiteral("raw"));
@@ -680,6 +877,222 @@ namespace scopeone::ui
 
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layers"), layers);
+            return response;
+        }
+
+        if (type == QStringLiteral("layer_options"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("layouts"),
+                            QJsonArray::fromStringList(QStringList{
+                                QStringLiteral("side_by_side"),
+                                QStringLiteral("overlay"),
+                            }));
+            response.insert(QStringLiteral("colormaps"),
+                            QJsonArray::fromStringList(m_previewWidget->supportedLayerColormaps()));
+            response.insert(QStringLiteral("blendingModes"),
+                            QJsonArray::fromStringList(m_previewWidget->supportedLayerBlendingModes()));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_layer_layout"))
+        {
+            PreviewWidget::LayerLayoutMode mode = PreviewWidget::LayerLayoutMode::SideBySide;
+            QJsonObject response = makeResponse(type, false);
+            if (!layerLayoutModeFromName(request.value(QStringLiteral("layout")).toString(), mode))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown layer layout"));
+                return response;
+            }
+
+            m_previewWidget->setLayerLayoutMode(mode);
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("layout"), layerLayoutModeName(m_previewWidget->layerLayoutMode()));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_selected_layers"))
+        {
+            QJsonObject response = makeResponse(type, false);
+            if (!request.value(QStringLiteral("layerKeys")).isArray())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing layerKeys"));
+                return response;
+            }
+
+            const QStringList layerKeys = stringArrayFromJson(request.value(QStringLiteral("layerKeys")).toArray());
+            const QStringList availableLayerKeys = m_previewWidget->availableLayerKeys();
+            for (const QString& layerKey : layerKeys)
+            {
+                if (!availableLayerKeys.contains(layerKey))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Unknown layerKey: %1").arg(layerKey));
+                    return response;
+                }
+            }
+
+            m_previewWidget->setSelectedLayerKeys(layerKeys);
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("selectedLayers"),
+                            QJsonArray::fromStringList(m_previewWidget->selectedLayerKeys()));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_layer_display"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (layerKey.isEmpty() || !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            const bool hasColormap = request.contains(QStringLiteral("colormap"));
+            const QString colormap = request.value(QStringLiteral("colormap")).toString().trimmed();
+            const bool hasBlending = request.contains(QStringLiteral("blending"));
+            const QString blending = request.value(QStringLiteral("blending")).toString().trimmed();
+            const bool hasLevels = request.contains(QStringLiteral("minLevel"))
+                                   || request.contains(QStringLiteral("maxLevel"))
+                                   || request.contains(QStringLiteral("maxPossible"));
+            int minLevel = 0;
+            int maxLevel = 0;
+            int maxPossible = 0;
+
+            if (hasColormap)
+            {
+                if (!m_previewWidget->supportedLayerColormaps().contains(colormap, Qt::CaseInsensitive))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Unsupported colormap"));
+                    return response;
+                }
+            }
+            if (hasBlending)
+            {
+                if (!m_previewWidget->supportedLayerBlendingModes().contains(blending, Qt::CaseInsensitive))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Unsupported blending mode"));
+                    return response;
+                }
+            }
+            if (hasLevels)
+            {
+                if (!intField(request, QStringLiteral("minLevel"), minLevel)
+                    || !intField(request, QStringLiteral("maxLevel"), maxLevel)
+                    || !intField(request, QStringLiteral("maxPossible"), maxPossible))
+                {
+                    response.insert(QStringLiteral("error"), QStringLiteral("Display levels require minLevel, maxLevel, and maxPossible"));
+                    return response;
+                }
+            }
+
+            if (request.contains(QStringLiteral("visible")))
+            {
+                m_previewWidget->setLayerVisible(layerKey, request.value(QStringLiteral("visible")).toBool());
+            }
+            if (request.contains(QStringLiteral("opacityPercent")))
+            {
+                m_previewWidget->setLayerOpacityPercent(
+                    layerKey,
+                    request.value(QStringLiteral("opacityPercent")).toInt(100));
+            }
+            if (request.contains(QStringLiteral("gamma")))
+            {
+                m_previewWidget->setLayerGamma(layerKey, request.value(QStringLiteral("gamma")).toDouble(1.0));
+            }
+            if (hasColormap)
+            {
+                m_previewWidget->setLayerColormap(layerKey, colormap);
+            }
+            if (hasBlending)
+            {
+                m_previewWidget->setLayerBlending(layerKey, blending);
+            }
+            if (hasLevels)
+            {
+                m_previewWidget->setLayerDisplayLevels(layerKey, minLevel, maxLevel, maxPossible);
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("layerKey"), layerKey);
+            response.insert(QStringLiteral("visible"), m_previewWidget->selectedLayerKeys().contains(layerKey));
+            response.insert(QStringLiteral("opacityPercent"), m_previewWidget->layerOpacityPercent(layerKey));
+            response.insert(QStringLiteral("gamma"), m_previewWidget->layerGamma(layerKey));
+            response.insert(QStringLiteral("colormap"), m_previewWidget->layerColormap(layerKey));
+            response.insert(QStringLiteral("blending"), m_previewWidget->layerBlending(layerKey));
+            return response;
+        }
+
+        if (type == QStringLiteral("move_layer"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            const int offset = request.value(QStringLiteral("offset")).toInt(0);
+            QJsonObject response = makeResponse(type, false);
+            if (layerKey.isEmpty() || !m_previewWidget->availableLayerKeys().contains(layerKey))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
+                return response;
+            }
+
+            m_previewWidget->moveLayer(layerKey, offset);
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("layers"),
+                            QJsonArray::fromStringList(m_previewWidget->availableLayerKeys()));
+            return response;
+        }
+
+        if (type == QStringLiteral("config_groups"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("groups"),
+                            QJsonArray::fromStringList(m_scopeonecore->availableConfigGroups()));
+            return response;
+        }
+
+        if (type == QStringLiteral("configs"))
+        {
+            const QString group = request.value(QStringLiteral("group")).toString().trimmed();
+            QJsonObject response = makeResponse(type, !group.isEmpty());
+            if (group.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing group"));
+                return response;
+            }
+            response.insert(QStringLiteral("configs"),
+                            QJsonArray::fromStringList(m_scopeonecore->availableConfigs(group)));
+            return response;
+        }
+
+        if (type == QStringLiteral("current_config"))
+        {
+            const QString group = request.value(QStringLiteral("group")).toString().trimmed();
+            QJsonObject response = makeResponse(type, !group.isEmpty());
+            if (group.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing group"));
+                return response;
+            }
+            response.insert(QStringLiteral("config"), m_scopeonecore->currentConfig(group));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_config"))
+        {
+            const QString group = request.value(QStringLiteral("group")).toString().trimmed();
+            const QString config = request.value(QStringLiteral("config")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (group.isEmpty() || config.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing group or config"));
+                return response;
+            }
+            if (!m_scopeonecore->setConfig(group, config))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set config"));
+                return response;
+            }
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("config"), m_scopeonecore->currentConfig(group));
             return response;
         }
 
@@ -921,6 +1334,138 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("read_exposure"))
+        {
+            const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
+            double exposureMs = 0.0;
+            QJsonObject response = makeResponse(type, m_scopeonecore->readExposure(camera, exposureMs));
+            if (response.value(QStringLiteral("ok")).toBool())
+            {
+                response.insert(QStringLiteral("exposureMs"), exposureMs);
+            }
+            else
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to read exposure"));
+            }
+            return response;
+        }
+
+        if (type == QStringLiteral("set_exposure"))
+        {
+            const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
+            const QJsonValue exposureValue = request.value(QStringLiteral("exposureMs"));
+            QJsonObject response = makeResponse(type, false);
+            if (!exposureValue.isDouble())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing exposureMs"));
+                return response;
+            }
+            if (!m_scopeonecore->setExposure(camera, exposureValue.toDouble()))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set exposure"));
+                return response;
+            }
+
+            double exposureMs = 0.0;
+            response = makeResponse(type, true);
+            if (m_scopeonecore->readExposure(camera, exposureMs))
+            {
+                response.insert(QStringLiteral("exposureMs"), exposureMs);
+            }
+            return response;
+        }
+
+        if (type == QStringLiteral("get_roi"))
+        {
+            const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (camera.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
+                return response;
+            }
+
+            int x = 0;
+            int y = 0;
+            int width = 0;
+            int height = 0;
+            if (!m_scopeonecore->getROI(camera, x, y, width, height))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to read ROI"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("x"), x);
+            response.insert(QStringLiteral("y"), y);
+            response.insert(QStringLiteral("width"), width);
+            response.insert(QStringLiteral("height"), height);
+            return response;
+        }
+
+        if (type == QStringLiteral("set_roi"))
+        {
+            const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (camera.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
+                return response;
+            }
+
+            int x = 0;
+            int y = 0;
+            int width = 0;
+            int height = 0;
+            if (!intField(request, QStringLiteral("x"), x)
+                || !intField(request, QStringLiteral("y"), y)
+                || !intField(request, QStringLiteral("width"), width)
+                || !intField(request, QStringLiteral("height"), height)
+                || width <= 0
+                || height <= 0)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Invalid ROI"));
+                return response;
+            }
+            if (!m_scopeonecore->setROI(camera, x, y, width, height))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set ROI"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            if (m_scopeonecore->getROI(camera, x, y, width, height))
+            {
+                response.insert(QStringLiteral("readBack"), true);
+            }
+            else
+            {
+                response.insert(QStringLiteral("readBack"), false);
+            }
+            response.insert(QStringLiteral("x"), x);
+            response.insert(QStringLiteral("y"), y);
+            response.insert(QStringLiteral("width"), width);
+            response.insert(QStringLiteral("height"), height);
+            return response;
+        }
+
+        if (type == QStringLiteral("clear_roi"))
+        {
+            const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
+            QJsonObject response = makeResponse(type, false);
+            if (camera.isEmpty())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
+                return response;
+            }
+            if (!m_scopeonecore->clearROI(camera))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to clear ROI"));
+                return response;
+            }
+            return makeResponse(type, true);
+        }
+
         if (type == QStringLiteral("xy_stage_devices"))
         {
             QJsonObject response = makeResponse(type, true);
@@ -1049,6 +1594,167 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("processing_modules"))
+        {
+            const QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> modules =
+                m_scopeonecore->processingModules();
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("bitDepth"),
+                            static_cast<int>(m_scopeonecore->processingBitDepth()));
+            response.insert(QStringLiteral("realTime"),
+                            m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("modules"), processingModulesToJson(modules));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_processing_bit_depth"))
+        {
+            const int bitDepth = request.value(QStringLiteral("bitDepth")).toInt(0);
+            const bool ok = bitDepth == 8 || bitDepth == 16;
+            QJsonObject response = makeResponse(type, ok);
+            if (!ok)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("bitDepth must be 8 or 16"));
+                return response;
+            }
+            if (m_scopeonecore->isRealTimeProcessingEnabled())
+            {
+                response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Stop real-time processing before editing the pipeline"));
+                return response;
+            }
+
+            const auto depth = bitDepth == 16
+                                   ? scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit16
+                                   : scopeone::core::ScopeOneCore::ProcessingBitDepth::Bit8;
+            if (!m_scopeonecore->setProcessingBitDepth(depth))
+            {
+                response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set processing bit depth"));
+                return response;
+            }
+            response.insert(QStringLiteral("bitDepth"), bitDepth);
+            return response;
+        }
+
+        if (type == QStringLiteral("set_realtime_processing"))
+        {
+            const bool enabled = request.value(QStringLiteral("enabled")).toBool(false);
+            if (enabled && m_scopeonecore->processingModules().isEmpty())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Add a processing module before starting real-time processing"));
+                return response;
+            }
+            m_scopeonecore->setRealTimeProcessingEnabled(enabled);
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("realTime"), m_scopeonecore->isRealTimeProcessingEnabled());
+            return response;
+        }
+
+        if (type == QStringLiteral("add_processing_module"))
+        {
+            const auto kind = processingModuleKindFromJson(request.value(QStringLiteral("kind")));
+            QJsonObject response = makeResponse(type, false);
+            if (m_scopeonecore->isRealTimeProcessingEnabled())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Stop real-time processing before editing the pipeline"));
+                return response;
+            }
+            if (kind == scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown processing module kind"));
+                return response;
+            }
+            if (!m_scopeonecore->addProcessingModule(kind))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to add processing module"));
+                return response;
+            }
+
+            const QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> modules =
+                m_scopeonecore->processingModules();
+            const int index = modules.size() - 1;
+            if (request.value(QStringLiteral("parameters")).isObject()
+                && !m_scopeonecore->setProcessingModuleParameters(
+                    index,
+                    request.value(QStringLiteral("parameters")).toObject().toVariantMap()))
+            {
+                m_scopeonecore->removeProcessingModule(index);
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set processing module parameters"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("index"), index);
+            response.insert(QStringLiteral("modules"), processingModulesToJson(m_scopeonecore->processingModules()));
+            return response;
+        }
+
+        if (type == QStringLiteral("remove_processing_module"))
+        {
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            QJsonObject response = makeResponse(type, false);
+            if (m_scopeonecore->isRealTimeProcessingEnabled())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Stop real-time processing before editing the pipeline"));
+                return response;
+            }
+            if (!m_scopeonecore->removeProcessingModule(index))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to remove processing module"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("modules"), processingModulesToJson(m_scopeonecore->processingModules()));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_processing_module_parameters"))
+        {
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            QJsonObject response = makeResponse(type, false);
+            if (m_scopeonecore->isRealTimeProcessingEnabled())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Stop real-time processing before editing the pipeline"));
+                return response;
+            }
+            if (!request.value(QStringLiteral("parameters")).isObject())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Missing parameters"));
+                return response;
+            }
+            if (!m_scopeonecore->setProcessingModuleParameters(
+                index,
+                request.value(QStringLiteral("parameters")).toObject().toVariantMap()))
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set processing module parameters"));
+                return response;
+            }
+
+            response = makeResponse(type, true);
+            response.insert(QStringLiteral("modules"), processingModulesToJson(m_scopeonecore->processingModules()));
+            return response;
+        }
+
+        if (type == QStringLiteral("reset_processing_module_state"))
+        {
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            if (m_scopeonecore->isRealTimeProcessingEnabled())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Stop real-time processing before editing the pipeline"));
+                return response;
+            }
+            QJsonObject response = makeResponse(type, m_scopeonecore->resetProcessingModuleState(index));
+            if (!response.value(QStringLiteral("ok")).toBool())
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to reset processing module state"));
+            }
+            return response;
+        }
+
         if (type == QStringLiteral("record"))
         {
             QString errorMessage;
@@ -1112,6 +1818,22 @@ namespace scopeone::ui
                 counts.insert(cameraId, session->recordedFrameCount(cameraId));
             }
             response.insert(QStringLiteral("frameCounts"), counts);
+            return response;
+        }
+
+        if (type == QStringLiteral("session_close"))
+        {
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const auto session = m_sessions.value(sessionId);
+            QJsonObject response = makeResponse(type, static_cast<bool>(session));
+            if (!session)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
+                return response;
+            }
+
+            m_scopeonecore->removeSessionFrameSource(session);
+            m_sessions.remove(sessionId);
             return response;
         }
 
@@ -1623,7 +2345,7 @@ namespace scopeone::ui
     // Imports the current shared frame mapping as an ImageFrame
     bool ScopeOneLocalApiServer::importFrameFromSharedMemory(const QString& cameraId,
                                                              scopeone::core::ImageFrame& frame,
-                                                             QString& errorMessage) const
+                                                             QString& errorMessage)
     {
 #if defined(_WIN32)
         if (!m_frameMappingHandle || !m_frameMappingView)
@@ -1667,6 +2389,7 @@ namespace scopeone::ui
             errorMessage = QStringLiteral("Frame mapping metadata is invalid");
             return false;
         }
+        m_frameMappingCameraId = frame.cameraId.trimmed();
         return true;
     }
 } // namespace scopeone::ui

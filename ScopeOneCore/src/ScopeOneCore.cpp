@@ -2629,7 +2629,16 @@ namespace scopeone::core
     // Toggle live processing without changing the module list
     void ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
+        if (enabled && m_managers->imageProcessingManager->pipeline()->getModuleCount() == 0)
+        {
+            return;
+        }
+        if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
+        {
+            return;
+        }
         m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
+        emit processingSettingsChanged();
     }
 
     // Return the configured processing precision exposed to the UI
@@ -2757,7 +2766,11 @@ namespace scopeone::core
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        emit processingModuleParametersChanged(index);
+        if (pipeline->getModuleCount() == 0)
+        {
+            setRealTimeProcessingEnabled(false);
+        }
+        emit processingModulesChanged();
         return true;
     }
 
@@ -2779,31 +2792,35 @@ namespace scopeone::core
         return true;
     }
 
-    // Reset stateful module buffers through the public facade
+    // Reset module state when the selected module owns runtime buffers
     bool ScopeOneCore::resetProcessingModuleState(int index)
     {
         ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
-        const bool reset = pipeline->withModule(index, [](ProcessingModule* module)
+        bool resetRuntimeState = false;
+        const bool found = pipeline->withModule(index, [&resetRuntimeState](ProcessingModule* module)
         {
             if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
             {
                 background->resetCalibration();
-                return true;
+                resetRuntimeState = true;
             }
-            if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
+            else if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
             {
                 differentialRolling->resetBuffer();
-                return true;
+                resetRuntimeState = true;
             }
-            return false;
+            return true;
         });
-        if (reset)
+        if (!found)
+        {
+            return false;
+        }
+        if (resetRuntimeState)
         {
             m_managers->imageProcessingManager->clearRuntimePipelines();
             emit processingModuleParametersChanged(index);
-            return true;
         }
-        return false;
+        return true;
     }
 
     void ScopeOneCore::setRecordingMaxPendingWriteBytes(qint64 bytes)

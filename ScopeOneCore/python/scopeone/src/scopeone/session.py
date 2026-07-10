@@ -9,6 +9,15 @@ class RecordingSession:
     def __init__(self, native_session) -> None:
         self._session = native_session
 
+    def close(self):
+        self._session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+
     def camera_ids(self):
         return self._session.camera_ids()
 

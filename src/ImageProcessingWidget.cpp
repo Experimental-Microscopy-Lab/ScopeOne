@@ -489,12 +489,14 @@ namespace scopeone::ui
         {
             qFatal("ImageProcessingWidget requires ScopeOneCore");
         }
+        m_processingRunning = m_scopeonecore->isRealTimeProcessingEnabled();
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingModulesChanged,
                 this, [this]()
                 {
                     updateModuleList();
                     updateConfigWidget();
+                    updateRunButtons();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingModuleParametersChanged,
                 this, [this](int moduleIndex)
@@ -505,7 +507,12 @@ namespace scopeone::ui
                     }
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingSettingsChanged,
-                this, &ImageProcessingWidget::updateProcessingSettings);
+                this, [this]()
+                {
+                    updateProcessingSettings();
+                    updateRunButtons();
+                    syncProcessingState();
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processingError,
                 this, [](const QString& error)
                 {
@@ -669,6 +676,25 @@ namespace scopeone::ui
         m_configStack->parentWidget()->setEnabled(!running);
     }
 
+    // Emits user facing processing state changes from the shared core state
+    void ImageProcessingWidget::syncProcessingState()
+    {
+        const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
+        if (m_processingRunning == running)
+        {
+            return;
+        }
+        m_processingRunning = running;
+        if (running)
+        {
+            emit processingStarted();
+        }
+        else
+        {
+            emit processingStopped();
+        }
+    }
+
     // Syncs processing settings from core state
     void ImageProcessingWidget::updateProcessingSettings()
     {
@@ -714,16 +740,6 @@ namespace scopeone::ui
 
         updateModuleList();
         updateConfigWidget();
-        const bool noModules = m_scopeonecore->processingModules().isEmpty();
-        if (noModules && m_scopeonecore->isRealTimeProcessingEnabled())
-        {
-            m_scopeonecore->setRealTimeProcessingEnabled(false);
-            emit processingStopped();
-        }
-        else if (noModules)
-        {
-            emit processingStopped();
-        }
         updateRunButtons();
     }
 
@@ -756,7 +772,6 @@ namespace scopeone::ui
         }
         m_scopeonecore->setRealTimeProcessingEnabled(true);
         updateRunButtons();
-        emit processingStarted();
         qInfo().noquote() << "Processing started";
     }
 
@@ -765,7 +780,6 @@ namespace scopeone::ui
     {
         m_scopeonecore->setRealTimeProcessingEnabled(false);
         updateRunButtons();
-        emit processingStopped();
         qInfo().noquote() << "Processing stopped";
     }
 } // namespace scopeone::ui

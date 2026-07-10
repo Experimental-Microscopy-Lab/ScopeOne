@@ -255,60 +255,70 @@ class FrameResult:
 
         mapping_name = str(self.metadata["mappingName"])
         mapping_size = int(self.metadata["mappingSize"])
+        contiguous = None
         with self._transport.open_frame(mapping_name, mapping_size, write=True) as view:
-            header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
-            if header.state != 2:
-                raise RuntimeError("Shared frame mapping no longer contains a ready FrameResult")
-            if header.pixel_format not in (MONO8, MONO16):
-                raise ValueError(f"Unsupported pixel format: {header.pixel_format}")
-            if header.channels != 1:
-                raise ValueError("ScopeOne frames must use one channel")
-            if self.metadata["pixelFormat"] == "Mono16":
-                expected_pixel_format = MONO16
-            elif self.metadata["pixelFormat"] == "Mono8":
-                expected_pixel_format = MONO8
-            else:
-                raise ValueError(f"Unsupported metadata pixel format: {self.metadata['pixelFormat']}")
-            if (
-                header.width != _metadata_int(self.metadata, "width")
-                or header.height != _metadata_int(self.metadata, "height")
-                or header.stride != _metadata_int(self.metadata, "stride")
-                or header.pixel_format != expected_pixel_format
-                or header.bits_per_sample != _metadata_int(self.metadata, "bitsPerSample")
-                or header.frame_index != _metadata_int(self.metadata, "frameIndex")
-                or header.timestamp_ns != _metadata_int(self.metadata, "timestampNs")
-                or header.payload_nbytes != _metadata_int(self.metadata, "payloadBytes")
-                or header.source_roi_x != _metadata_int(self.metadata, "sourceRoiX")
-                or header.source_roi_y != _metadata_int(self.metadata, "sourceRoiY")
-                or header.source_roi_width != _metadata_int(self.metadata, "sourceRoiWidth")
-                or header.source_roi_height != _metadata_int(self.metadata, "sourceRoiHeight")
-                or bool(header.source_roi_valid) != _metadata_bool(self.metadata, "sourceRoiValid")
-            ):
-                raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
-            dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
-            array = np.asarray(self.image if image is None else image)
-            if array.shape != (header.height, header.width):
-                raise ValueError("Edited frame shape does not match the shared frame")
-
-            max_value = (1 << header.bits_per_sample) - 1
-            contiguous = np.ascontiguousarray(np.clip(array, 0, max_value).astype(dtype, copy=False))
-            row_bytes = header.width * contiguous.dtype.itemsize
-            if row_bytes > header.stride:
-                raise ValueError("Shared frame stride is smaller than one image row")
-            if header.payload_nbytes > mapping_size - SHARED_FRAME_HEADER_SIZE:
-                raise ValueError("Shared frame payload exceeds the mapping size")
-            row_padding = b"\x00" * (header.stride - row_bytes)
-            struct.pack_into("<I", view, 0, 1)
-            payload = memoryview(view)[SHARED_FRAME_HEADER_SIZE:]
+            mapping = memoryview(view)
+            header_view = None
+            payload = None
             try:
+                header_view = mapping[:SHARED_FRAME_HEADER_SIZE]
+                header = parse_frame_header(header_view)
+                if header.state != 2:
+                    raise RuntimeError("Shared frame mapping no longer contains a ready FrameResult")
+                if header.pixel_format not in (MONO8, MONO16):
+                    raise ValueError(f"Unsupported pixel format: {header.pixel_format}")
+                if header.channels != 1:
+                    raise ValueError("ScopeOne frames must use one channel")
+                if self.metadata["pixelFormat"] == "Mono16":
+                    expected_pixel_format = MONO16
+                elif self.metadata["pixelFormat"] == "Mono8":
+                    expected_pixel_format = MONO8
+                else:
+                    raise ValueError(f"Unsupported metadata pixel format: {self.metadata['pixelFormat']}")
+                if (
+                    header.width != _metadata_int(self.metadata, "width")
+                    or header.height != _metadata_int(self.metadata, "height")
+                    or header.stride != _metadata_int(self.metadata, "stride")
+                    or header.pixel_format != expected_pixel_format
+                    or header.bits_per_sample != _metadata_int(self.metadata, "bitsPerSample")
+                    or header.frame_index != _metadata_int(self.metadata, "frameIndex")
+                    or header.timestamp_ns != _metadata_int(self.metadata, "timestampNs")
+                    or header.payload_nbytes != _metadata_int(self.metadata, "payloadBytes")
+                    or header.source_roi_x != _metadata_int(self.metadata, "sourceRoiX")
+                    or header.source_roi_y != _metadata_int(self.metadata, "sourceRoiY")
+                    or header.source_roi_width != _metadata_int(self.metadata, "sourceRoiWidth")
+                    or header.source_roi_height != _metadata_int(self.metadata, "sourceRoiHeight")
+                    or bool(header.source_roi_valid) != _metadata_bool(self.metadata, "sourceRoiValid")
+                ):
+                    raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
+                dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
+                array = np.asarray(self.image if image is None else image)
+                if array.shape != (header.height, header.width):
+                    raise ValueError("Edited frame shape does not match the shared frame")
+
+                max_value = (1 << header.bits_per_sample) - 1
+                contiguous = np.ascontiguousarray(np.clip(array, 0, max_value).astype(dtype, copy=False))
+                row_bytes = header.width * contiguous.dtype.itemsize
+                if row_bytes > header.stride:
+                    raise ValueError("Shared frame stride is smaller than one image row")
+                if header.payload_nbytes > mapping_size - SHARED_FRAME_HEADER_SIZE:
+                    raise ValueError("Shared frame payload exceeds the mapping size")
+                row_padding = b"\x00" * (header.stride - row_bytes)
+                struct.pack_into("<I", mapping, 0, 1)
+                payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + header.payload_nbytes]
                 for row in range(header.height):
                     begin = row * header.stride
                     payload[begin:begin + row_bytes] = contiguous[row].tobytes(order="C")
                     if row_padding:
                         payload[begin + row_bytes:begin + header.stride] = row_padding
+                struct.pack_into("<I", mapping, 0, 2)
             finally:
-                payload.release()
-            struct.pack_into("<I", view, 0, 2)
+                if payload is not None:
+                    payload.release()
+                if header_view is not None:
+                    header_view.release()
+                mapping.release()
+        if contiguous is not None:
             self.image = np.array(contiguous, copy=True)
 
 
@@ -330,6 +340,12 @@ class ExternalClient:
         self._transport = _make_transport(server_name)
         self._request({"type": "ping"})
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
     def load_config(self, config_path: str) -> bool:
         self._request({"type": "load_config", "configPath": config_path})
         return True
@@ -337,9 +353,33 @@ class ExternalClient:
     def unload_config(self) -> None:
         self._request({"type": "unload_config"})
 
+    def version(self) -> str:
+        response = self._request({"type": "version"})
+        return str(response.get("version", ""))
+
+    def status(self) -> dict:
+        response = self._request({"type": "status"})
+        return {
+            "version": str(response.get("version", "")),
+            "apiVersion": int(response.get("apiVersion", 0)),
+            "cameraIds": list(response.get("cameraIds", [])),
+            "loadedDevices": list(response.get("loadedDevices", [])),
+            "runningPreviews": list(response.get("runningPreviews", [])),
+            "processingBitDepth": int(response.get("processingBitDepth", 0)),
+            "processingRealTime": bool(response.get("processingRealTime", False)),
+            "processingModuleCount": int(response.get("processingModuleCount", 0)),
+            "layers": list(response.get("layers", [])),
+            "selectedLayers": list(response.get("selectedLayers", [])),
+            "layerLayout": str(response.get("layerLayout", "")),
+        }
+
     def camera_ids(self) -> list[str]:
         response = self._request({"type": "camera_ids"})
         return list(response.get("cameraIds", []))
+
+    def loaded_devices(self) -> list[str]:
+        response = self._request({"type": "loaded_devices"})
+        return list(response.get("devices", []))
 
     def start_preview(self, camera: str = "All") -> None:
         self._request({"type": "start_preview", "camera": camera})
@@ -350,6 +390,105 @@ class ExternalClient:
     def list_layers(self) -> list[dict]:
         response = self._request({"type": "list_layers"})
         return list(response.get("layers", []))
+
+    def layer_options(self) -> dict:
+        response = self._request({"type": "layer_options"})
+        return {
+            "layouts": list(response.get("layouts", [])),
+            "colormaps": list(response.get("colormaps", [])),
+            "blendingModes": list(response.get("blendingModes", [])),
+        }
+
+    def set_layer_layout(self, layout: str) -> str:
+        response = self._request(
+            {
+                "type": "set_layer_layout",
+                "layout": layout,
+            }
+        )
+        return str(response.get("layout", ""))
+
+    def set_selected_layers(self, layer_keys: list[str]) -> list[str]:
+        response = self._request(
+            {
+                "type": "set_selected_layers",
+                "layerKeys": [str(layer_key) for layer_key in layer_keys],
+            }
+        )
+        return list(response.get("selectedLayers", []))
+
+    def set_layer_display(
+        self,
+        layer_key: str,
+        visible: bool | None = None,
+        opacity_percent: int | None = None,
+        gamma: float | None = None,
+        colormap: str | None = None,
+        blending: str | None = None,
+        levels: tuple[int, int, int] | None = None,
+    ) -> dict:
+        request = {
+            "type": "set_layer_display",
+            "layerKey": layer_key,
+        }
+        if visible is not None:
+            request["visible"] = bool(visible)
+        if opacity_percent is not None:
+            request["opacityPercent"] = int(opacity_percent)
+        if gamma is not None:
+            request["gamma"] = float(gamma)
+        if colormap is not None:
+            request["colormap"] = colormap
+        if blending is not None:
+            request["blending"] = blending
+        if levels is not None:
+            min_level, max_level, max_possible = levels
+            request["minLevel"] = int(min_level)
+            request["maxLevel"] = int(max_level)
+            request["maxPossible"] = int(max_possible)
+        return dict(self._request(request))
+
+    def move_layer(self, layer_key: str, offset: int) -> list[str]:
+        response = self._request(
+            {
+                "type": "move_layer",
+                "layerKey": layer_key,
+                "offset": int(offset),
+            }
+        )
+        return list(response.get("layers", []))
+
+    def config_groups(self) -> list[str]:
+        response = self._request({"type": "config_groups"})
+        return list(response.get("groups", []))
+
+    def configs(self, group: str) -> list[str]:
+        response = self._request(
+            {
+                "type": "configs",
+                "group": group,
+            }
+        )
+        return list(response.get("configs", []))
+
+    def current_config(self, group: str) -> str:
+        response = self._request(
+            {
+                "type": "current_config",
+                "group": group,
+            }
+        )
+        return str(response.get("config", ""))
+
+    def set_config(self, group: str, config: str) -> str:
+        response = self._request(
+            {
+                "type": "set_config",
+                "group": group,
+                "config": config,
+            }
+        )
+        return str(response.get("config", ""))
 
     def remove_static_layer(self, layer_key: str) -> None:
         self._request({"type": "remove_static_layer", "layerKey": layer_key})
@@ -452,6 +591,73 @@ class ExternalClient:
             }
         )
 
+    def read_exposure(self, camera: str = "All") -> float:
+        response = self._request(
+            {
+                "type": "read_exposure",
+                "camera": camera,
+            }
+        )
+        return float(response["exposureMs"])
+
+    def set_exposure(self, exposure_ms: float, camera: str = "All") -> float | None:
+        response = self._request(
+            {
+                "type": "set_exposure",
+                "camera": camera,
+                "exposureMs": float(exposure_ms),
+            }
+        )
+        value = response.get("exposureMs")
+        return None if value is None else float(value)
+
+    def get_roi(self, camera: str) -> tuple[int, int, int, int]:
+        response = self._request(
+            {
+                "type": "get_roi",
+                "camera": camera,
+            }
+        )
+        return (
+            int(response["x"]),
+            int(response["y"]),
+            int(response["width"]),
+            int(response["height"]),
+        )
+
+    def set_roi(
+        self,
+        camera: str,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        response = self._request(
+            {
+                "type": "set_roi",
+                "camera": camera,
+                "x": int(x),
+                "y": int(y),
+                "width": int(width),
+                "height": int(height),
+            }
+        )
+        return (
+            int(response["x"]),
+            int(response["y"]),
+            int(response["width"]),
+            int(response["height"]),
+        )
+
+    def clear_roi(self, camera: str) -> None:
+        self._request(
+            {
+                "type": "clear_roi",
+                "camera": camera,
+            }
+        )
+
     def xy_stage_devices(self) -> list[str]:
         response = self._request({"type": "xy_stage_devices"})
         return list(response.get("devices", []))
@@ -524,6 +730,72 @@ class ExternalClient:
             }
         )
 
+    def processing_state(self) -> dict:
+        response = self._request({"type": "processing_modules"})
+        return {
+            "bitDepth": int(response.get("bitDepth", 0)),
+            "realTime": bool(response.get("realTime", False)),
+            "modules": list(response.get("modules", [])),
+        }
+
+    def processing_modules(self) -> list[dict]:
+        return list(self.processing_state()["modules"])
+
+    def set_processing_bit_depth(self, bit_depth: int) -> None:
+        self._request(
+            {
+                "type": "set_processing_bit_depth",
+                "bitDepth": int(bit_depth),
+            }
+        )
+
+    def set_realtime_processing(self, enabled: bool) -> None:
+        self._request(
+            {
+                "type": "set_realtime_processing",
+                "enabled": bool(enabled),
+            }
+        )
+
+    def add_processing_module(
+        self,
+        kind: str | int,
+        parameters: dict | None = None,
+    ) -> int:
+        request = {
+            "type": "add_processing_module",
+            "kind": kind,
+        }
+        if parameters is not None:
+            request["parameters"] = dict(parameters)
+        response = self._request(request)
+        return int(response["index"])
+
+    def remove_processing_module(self, index: int) -> None:
+        self._request(
+            {
+                "type": "remove_processing_module",
+                "index": int(index),
+            }
+        )
+
+    def set_processing_module_parameters(self, index: int, parameters: dict) -> None:
+        self._request(
+            {
+                "type": "set_processing_module_parameters",
+                "index": int(index),
+                "parameters": dict(parameters),
+            }
+        )
+
+    def reset_processing_module_state(self, index: int) -> None:
+        self._request(
+            {
+                "type": "reset_processing_module_state",
+                "index": int(index),
+            }
+        )
+
     def record(
         self,
         frames: int,
@@ -550,6 +822,48 @@ class ExternalClient:
         response = self._request(request)
         return ExternalRecordingSession(self, str(response["sessionId"]))
 
+    def frame_mapping_info(self) -> dict:
+        response = self._request({"type": "frame_mapping_info"})
+        return {
+            "mappingName": str(response["mappingName"]),
+            "mappingSize": int(response["mappingSize"]),
+            "headerBytes": int(response["headerBytes"]),
+            "maxPayloadBytes": int(response["maxPayloadBytes"]),
+            "pixelFormats": list(response.get("pixelFormats", [])),
+        }
+
+    def write_frame_mapping(
+        self,
+        image: object,
+        camera: str = "python",
+        bits_per_sample: int | None = None,
+        frame_index: int = 0,
+        source_roi: tuple[int, int, int, int] | None = None,
+    ) -> FrameResult:
+        from .shm import write_ndarray_to_frame
+
+        info = self.frame_mapping_info()
+        with self._transport.open_frame(
+            info["mappingName"],
+            info["mappingSize"],
+            write=True,
+        ) as view:
+            written, metadata = write_ndarray_to_frame(
+                view,
+                image,
+                bits_per_sample=bits_per_sample,
+                frame_index=frame_index,
+                source_roi=source_roi,
+            )
+        metadata.update(
+            {
+                "camera": camera,
+                "mappingName": info["mappingName"],
+                "mappingSize": info["mappingSize"],
+            }
+        )
+        return FrameResult(image=written, metadata=metadata, _transport=self._transport)
+
     def process_frame_mapping(
         self,
         camera: str | None = None,
@@ -562,6 +876,21 @@ class ExternalClient:
         _add_stage_fields(request, start_module_index, end_module_index)
         response = self._request(request)
         return self._frame_result_from_mapping_response(response)
+
+    def process_image(
+        self,
+        image: object,
+        camera: str = "python",
+        bits_per_sample: int | None = None,
+        start_module_index: int | None = None,
+        end_module_index: int | None = None,
+    ) -> FrameResult:
+        frame = self.write_frame_mapping(image, camera, bits_per_sample)
+        return self.process_frame_mapping(
+            frame.camera,
+            start_module_index,
+            end_module_index,
+        )
 
     def latest_raw_frame(self, camera: str) -> FrameResult:
         response = self._request(
@@ -588,6 +917,17 @@ class ExternalClient:
         response = self._request(request)
         return str(response["layerKey"])
 
+    def show_image(
+        self,
+        image: object,
+        layer_id: str = "python_result",
+        name: str = "Python Result",
+        camera: str = "python",
+        bits_per_sample: int | None = None,
+    ) -> str:
+        frame = self.write_frame_mapping(image, camera, bits_per_sample)
+        return self.show_frame_mapping_as_layer(layer_id, name, frame.camera)
+
     def save_frame_mapping(
         self,
         save_dir: str,
@@ -609,6 +949,27 @@ class ExternalClient:
             request["camera"] = camera
         response = self._request(request)
         return list(response.get("paths", []))
+
+    def save_image(
+        self,
+        image: object,
+        save_dir: str,
+        base_name: str,
+        format: str = "tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+        camera: str = "python",
+        bits_per_sample: int | None = None,
+    ) -> list[str]:
+        frame = self.write_frame_mapping(image, camera, bits_per_sample)
+        return self.save_frame_mapping(
+            save_dir,
+            base_name,
+            format,
+            compression,
+            compression_level,
+            frame.camera,
+        )
 
     def close(self) -> None:
         self._transport.close()
@@ -638,8 +999,23 @@ class ExternalClient:
         mapping_name = str(response["mappingName"])
         mapping_size = int(response["mappingSize"])
         with self._transport.open_frame(mapping_name, mapping_size) as view:
-            header = parse_frame_header(view[:SHARED_FRAME_HEADER_SIZE])
-            image = frame_to_ndarray(header, view[SHARED_FRAME_HEADER_SIZE:])
+            mapping = memoryview(view)
+            header_view = None
+            payload_view = None
+            try:
+                header_view = mapping[:SHARED_FRAME_HEADER_SIZE]
+                header = parse_frame_header(header_view)
+                payload_end = SHARED_FRAME_HEADER_SIZE + header.payload_nbytes
+                if payload_end > len(mapping):
+                    raise ValueError("Shared frame payload exceeds the mapping size")
+                payload_view = mapping[SHARED_FRAME_HEADER_SIZE:payload_end]
+                image = frame_to_ndarray(header, payload_view)
+            finally:
+                if payload_view is not None:
+                    payload_view.release()
+                if header_view is not None:
+                    header_view.release()
+                mapping.release()
         return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
 
 
@@ -647,6 +1023,22 @@ class ExternalRecordingSession:
     def __init__(self, client: ExternalClient, session_id: str) -> None:
         self._client = client
         self._session_id = session_id
+
+    def close(self) -> None:
+        if self._session_id:
+            self._client._request(
+                {
+                    "type": "session_close",
+                    "sessionId": self._session_id,
+                }
+            )
+            self._session_id = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def _info(self) -> dict:
         return self._client._request(

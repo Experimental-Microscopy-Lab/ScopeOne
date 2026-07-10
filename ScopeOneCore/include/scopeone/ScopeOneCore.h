@@ -565,6 +565,7 @@ namespace scopeone::core
         void unloadConfiguration();
 
         QStringList cameraIds() const { return m_cameraIds; }
+        QStringList runningPreviewCameraIds() const;
 
         void startPreview(const QString& cameraIdOrAll);
         void stopPreview(const QString& cameraIdOrAll);
@@ -764,7 +765,6 @@ namespace scopeone::core
         std::shared_ptr<CMMCore> core() const;
         bool isAgentCamera(const QString& deviceLabel) const;
         bool isNativeCamera(const QString& deviceLabel) const;
-        QStringList runningPreviewCameraIds() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void handleIncomingRawFrame(const ImageFrame& frame);
         void processGraphRawFrameAsync(const ImageFrame& frame);
