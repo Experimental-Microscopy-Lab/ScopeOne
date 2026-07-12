@@ -8,8 +8,6 @@ namespace scopeone::core::internal
 {
     class FFTModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
         enum class FilterKind
         {
@@ -24,13 +22,12 @@ namespace scopeone::core::internal
             BandpassImage = 2
         };
 
-        explicit FFTModule(QObject* parent = nullptr);
-
-        bool process(const ModuleInput& in, ModuleOutput& out) override;
-        QString getModuleName() const override { return "FFT"; }
-
-        QVariantMap getParameters() const override;
+        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::FFT; }
+        QString name() const override { return "FFT"; }
+        QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;
+        std::unique_ptr<ProcessingModule> createRuntime() const override;
+        ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
     private:
         const cv::Mat& maskForSize(const cv::Size& size);

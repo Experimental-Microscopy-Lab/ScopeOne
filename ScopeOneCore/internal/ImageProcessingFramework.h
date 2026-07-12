@@ -9,39 +9,38 @@
 #include <vector>
 #include <atomic>
 #include "internal/ProcessingModule.h"
-#include "internal/SpatiotemporalBinningModule.h"
-#include "internal/GaussianBlurModule.h"
-#include "internal/FFTModule.h"
-#include "internal/BackgroundCalibrationModule.h"
-#include "internal/DifferentialRollingModule.h"
 
 namespace scopeone::core::internal
 {
-    class ProcessingPipeline : public QObject
+    class ProcessingPipelineRuntime
     {
-        Q_OBJECT
-
     public:
-        explicit ProcessingPipeline(QObject* parent = nullptr);
+        explicit ProcessingPipelineRuntime(std::vector<std::unique_ptr<ProcessingModule>> modules);
 
-        void addModule(std::unique_ptr<ProcessingModule> module);
-        bool removeModule(int index);
-        std::shared_ptr<ProcessingPipeline> clone(QObject* parent = nullptr) const;
-        void forEachModule(const std::function<void(const ProcessingModule *)>& visitor) const;
-        bool withModule(int index, const std::function<bool(ProcessingModule *)>& visitor);
-
-        ImageFrame process(const ImageFrame& input, int processingBitDepth);
-        ImageFrame processFrom(int startModuleIndex, const ImageFrame& input, int processingBitDepth);
-        ImageFrame processThrough(int endModuleIndex, const ImageFrame& input, int processingBitDepth);
-
-        int getModuleCount() const;
+        ProcessingResult process(const ImageFrame& input, int processingBitDepth);
+        ProcessingResult processFrom(int startModuleIndex, const ImageFrame& input, int processingBitDepth);
+        ProcessingResult processThrough(int endModuleIndex, const ImageFrame& input, int processingBitDepth);
 
     private:
-        ImageFrame processRange(const ImageFrame& input,
-                                int processingBitDepth,
-                                int startModuleIndex,
-                                int endModuleIndexExclusive);
+        ProcessingResult processRange(const ImageFrame& input,
+                                      int processingBitDepth,
+                                      int startModuleIndex,
+                                      int endModuleIndexExclusive);
 
+        std::vector<std::unique_ptr<ProcessingModule>> m_modules;
+    };
+
+    class ProcessingPipelineDefinition
+    {
+    public:
+        void addModule(std::unique_ptr<ProcessingModule> module);
+        bool removeModule(int index);
+        std::shared_ptr<ProcessingPipelineRuntime> createRuntime() const;
+        void forEachModule(const std::function<void(const ProcessingModule *)>& visitor) const;
+        bool withModule(int index, const std::function<void(ProcessingModule *)>& visitor);
+        int moduleCount() const;
+
+    private:
         std::vector<std::unique_ptr<ProcessingModule>> m_modules;
         mutable QMutex m_modulesMutex;
     };
@@ -52,9 +51,9 @@ namespace scopeone::core::internal
 
     public:
         explicit ImageProcessingManager(QObject* parent = nullptr);
-        ~ImageProcessingManager();
+        ~ImageProcessingManager() override;
 
-        ProcessingPipeline* pipeline() const;
+        ProcessingPipelineDefinition& definition();
 
         void enableRealTimeProcessing(bool enabled);
         bool isRealTimeProcessingEnabled() const { return m_realTimeEnabled; }
@@ -80,21 +79,23 @@ namespace scopeone::core::internal
         };
 
         QString getCameraKey(const ImageFrame& frame) const;
-        std::shared_ptr<ProcessingPipeline> livePipelineForCamera(const QString& cameraKey);
-        std::shared_ptr<ProcessingPipeline> offlinePipelineForCamera(const QString& cameraKey);
-        std::shared_ptr<ProcessingPipeline> pipelineForCamera(
-            QHash<QString, std::shared_ptr<ProcessingPipeline>>& pipelines,
+        std::shared_ptr<ProcessingPipelineRuntime> livePipelineForCamera(const QString& cameraKey);
+        std::shared_ptr<ProcessingPipelineRuntime> offlinePipelineForCamera(const QString& cameraKey);
+        std::shared_ptr<ProcessingPipelineRuntime> pipelineForCamera(
+            QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>>& pipelines,
             const QString& cameraKey);
         void processCameraQueue(const QString& cameraKey);
-        std::shared_ptr<ProcessingPipeline> m_pipeline;
-        QHash<QString, std::shared_ptr<ProcessingPipeline>> m_livePipelines;
-        QHash<QString, std::shared_ptr<ProcessingPipeline>> m_offlinePipelines;
+        ImageFrame frameFromResult(ProcessingResult result);
+
+        ProcessingPipelineDefinition m_definition;
+        QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>> m_livePipelines;
+        QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>> m_offlinePipelines;
         std::atomic<bool> m_realTimeEnabled;
         std::atomic<int> m_processingBitDepth{16};
         void submitFrame(const ImageFrame& frame);
         mutable QMutex m_frameMutex;
         QHash<QString, CameraSlot> m_cameraSlots;
 
-        QThreadPool* m_threadPool;
+        QThreadPool m_threadPool;
     };
 }

@@ -7,30 +7,28 @@
 
 namespace scopeone::core::internal
 {
-    // Creates a Gaussian blur processing module
-    GaussianBlurModule::GaussianBlurModule(QObject* parent)
-        : ProcessingModule(parent)
+    // Creates an independent Gaussian blur runtime
+    std::unique_ptr<ProcessingModule> GaussianBlurModule::createRuntime() const
     {
+        auto module = std::make_unique<GaussianBlurModule>();
+        module->setParameters(parameters());
+        return module;
     }
 
     // Applies Gaussian blur to one mono frame
-    bool GaussianBlurModule::process(const ModuleInput& in, ModuleOutput& out)
+    ProcessingResult GaussianBlurModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!in.frame.isValid())
+        if (!frame.isValid())
         {
-            out.frame = in.frame;
-            out.error = "Invalid input";
-            return false;
+            return {{}, QStringLiteral("Invalid input")};
         }
 
         try
         {
             ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
+            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                out.frame = in.frame;
-                out.error = "Unsupported input frame";
-                return false;
+                return {{}, QStringLiteral("Unsupported input frame")};
             }
 
             const int cvType = workingFrame.isMono16() ? CV_16UC1 : CV_8UC1;
@@ -40,19 +38,16 @@ namespace scopeone::core::internal
             cv::GaussianBlur(src, blurred, cv::Size(m_kernelSize, m_kernelSize), m_sigma, m_sigma);
 
             QByteArray bytes = copyMatBytes(blurred);
-            out.frame = makeFrameLike(workingFrame, blurred.cols, blurred.rows, std::move(bytes));
+            return {makeFrameLike(workingFrame, blurred.cols, blurred.rows, std::move(bytes)), {}};
         }
         catch (const std::exception& e)
         {
-            out.frame = in.frame;
-            out.error = QString("Gaussian blur failed: %1").arg(e.what());
-            return false;
+            return {{}, QString("Gaussian blur failed: %1").arg(e.what())};
         }
-        return true;
     }
 
     // Returns the current blur parameters
-    QVariantMap GaussianBlurModule::getParameters() const
+    QVariantMap GaussianBlurModule::parameters() const
     {
         QVariantMap params;
         params["kernel_size"] = m_kernelSize;

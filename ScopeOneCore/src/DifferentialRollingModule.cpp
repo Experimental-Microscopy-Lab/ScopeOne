@@ -48,7 +48,7 @@ namespace scopeone::core::internal
         }
 
         // Resets rolling state for a new frame size
-        void resetState(DifferentialRollingModule::CameraState& state, const ImageFrame& frame)
+        void initializeCameraState(DifferentialRollingModule::CameraState& state, const ImageFrame& frame)
         {
             state = DifferentialRollingModule::CameraState{};
             state.width = frame.width;
@@ -59,8 +59,7 @@ namespace scopeone::core::internal
         }
 
         // Builds the differential rolling output frame
-        ImageFrame makeDifferentialOutput(const QString& cameraId,
-                                          int width,
+        ImageFrame makeDifferentialOutput(int width,
                                           int height,
                                           const ImageFrame& reference,
                                           const std::vector<int>& sumA,
@@ -103,36 +102,32 @@ namespace scopeone::core::internal
                 return outBytes;
             });
 
-            ImageFrame output = makeFrameLike(reference, width, height, std::move(bytes));
-            output.cameraId = cameraId;
-            return output;
+            return makeFrameLike(reference, width, height, std::move(bytes));
         }
     } // namespace
 
-    // Creates a differential rolling processing module
-    DifferentialRollingModule::DifferentialRollingModule(QObject* parent)
-        : ProcessingModule(parent)
+    // Creates an independent differential rolling runtime
+    std::unique_ptr<ProcessingModule> DifferentialRollingModule::createRuntime() const
     {
+        auto module = std::make_unique<DifferentialRollingModule>();
+        module->setParameters(parameters());
+        return module;
     }
 
     // Updates rolling batches and emits the current differential frame
-    bool DifferentialRollingModule::process(const ModuleInput& in, ModuleOutput& out)
+    ProcessingResult DifferentialRollingModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!in.frame.isValid())
+        if (!frame.isValid())
         {
-            out.frame = in.frame;
-            out.error = "Invalid input";
-            return false;
+            return {{}, QStringLiteral("Invalid input")};
         }
 
         try
         {
             ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
+            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                out.frame = in.frame;
-                out.error = "Unsupported input frame";
-                return false;
+                return {{}, QStringLiteral("Unsupported input frame")};
             }
 
             const bool incompatibleBuffers = (!m_state.batchA.empty() && !m_state.batchA.front().isCompatibleWith(
@@ -144,15 +139,14 @@ namespace scopeone::core::internal
                 || m_state.sumA.size() != static_cast<size_t>(pixelCountForSize(workingFrame.width, workingFrame.height))
                 || m_state.sumB.size() != static_cast<size_t>(pixelCountForSize(workingFrame.width, workingFrame.height)))
             {
-                resetState(m_state, workingFrame);
+                initializeCameraState(m_state, workingFrame);
             }
 
             if (m_state.batchA.size() < static_cast<size_t>(m_batchSize))
             {
                 m_state.batchA.push_back(workingFrame);
                 addFrameToSum(workingFrame, m_state.sumA);
-                out.frame = in.frame;
-                return true;
+                return {frame, {}};
             }
 
             if (m_state.batchB.size() < static_cast<size_t>(m_batchSize))
@@ -161,19 +155,17 @@ namespace scopeone::core::internal
                 addFrameToSum(workingFrame, m_state.sumB);
                 if (m_state.batchB.size() < static_cast<size_t>(m_batchSize))
                 {
-                    out.frame = in.frame;
-                    return true;
+                    return {frame, {}};
                 }
 
-                out.frame = makeDifferentialOutput(in.frame.cameraId,
-                                                   workingFrame.width,
-                                                   workingFrame.height,
-                                                   workingFrame,
-                                                   m_state.sumA,
-                                                   m_state.sumB,
-                                                   m_batchSize,
-                                                   m_normalize);
-                return true;
+                return {makeDifferentialOutput(workingFrame.width,
+                                               workingFrame.height,
+                                               workingFrame,
+                                               m_state.sumA,
+                                               m_state.sumB,
+                                               m_batchSize,
+                                               m_normalize),
+                        {}};
             }
 
             const ImageFrame oldestA = m_state.batchA.front();
@@ -189,26 +181,23 @@ namespace scopeone::core::internal
             m_state.batchB.push_back(workingFrame);
             addFrameToSum(workingFrame, m_state.sumB);
 
-            out.frame = makeDifferentialOutput(in.frame.cameraId,
-                                               workingFrame.width,
-                                               workingFrame.height,
-                                               workingFrame,
-                                               m_state.sumA,
-                                               m_state.sumB,
-                                               m_batchSize,
-                                               m_normalize);
-            return true;
+            return {makeDifferentialOutput(workingFrame.width,
+                                           workingFrame.height,
+                                           workingFrame,
+                                           m_state.sumA,
+                                           m_state.sumB,
+                                           m_batchSize,
+                                           m_normalize),
+                    {}};
         }
         catch (const std::exception& e)
         {
-            out.frame = in.frame;
-            out.error = QString("Differential rolling failed: %1").arg(e.what());
-            return false;
+            return {{}, QString("Differential rolling failed: %1").arg(e.what())};
         }
     }
 
     // Returns the current rolling differential parameters
-    QVariantMap DifferentialRollingModule::getParameters() const
+    QVariantMap DifferentialRollingModule::parameters() const
     {
         QVariantMap params;
         params["batch_size"] = m_batchSize;
@@ -241,9 +230,10 @@ namespace scopeone::core::internal
         }
     }
 
-    // Clears all accumulated rolling state
-    void DifferentialRollingModule::resetBuffer()
+    // Clears differential rolling runtime state
+    bool DifferentialRollingModule::resetState()
     {
         m_state = CameraState{};
+        return true;
     }
 } // namespace scopeone::core::internal

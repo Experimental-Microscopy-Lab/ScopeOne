@@ -4,14 +4,19 @@
 
 namespace scopeone::core::internal
 {
-    // Creates a background calibration module with median subtraction defaults
-    BackgroundCalibrationModule::BackgroundCalibrationModule(QObject* parent)
-        : ProcessingModule(parent)
-          , m_calibrationFrames(101)
-          , m_calibrated(false)
-          , m_operation(BackgroundOperation::Subtract)
-          , m_method(BackgroundMethod::Median)
+    // Creates an independent background calibration runtime
+    std::unique_ptr<ProcessingModule> BackgroundCalibrationModule::createRuntime() const
     {
+        auto module = std::make_unique<BackgroundCalibrationModule>();
+        module->setParameters(parameters());
+        return module;
+    }
+
+    // Clears background calibration runtime state
+    bool BackgroundCalibrationModule::resetState()
+    {
+        resetCalibration();
+        return true;
     }
 
     // Clears the buffered frames and computed background
@@ -116,23 +121,19 @@ namespace scopeone::core::internal
     }
 
     // Applies background calibration to one mono frame
-    bool BackgroundCalibrationModule::process(const ModuleInput& in, ModuleOutput& out)
+    ProcessingResult BackgroundCalibrationModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!in.frame.isValid())
+        if (!frame.isValid())
         {
-            out.frame = in.frame;
-            out.error = "Invalid input";
-            return false;
+            return {{}, QStringLiteral("Invalid input")};
         }
 
         try
         {
             ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
+            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                out.frame = in.frame;
-                out.error = "Unsupported input frame";
-                return false;
+                return {{}, QStringLiteral("Unsupported input frame")};
             }
 
             if ((!m_buffer.empty() && !m_buffer.front().isCompatibleWith(workingFrame))
@@ -154,8 +155,7 @@ namespace scopeone::core::internal
                 }
                 if (!m_background.isValid())
                 {
-                    out.frame = in.frame;
-                    return true;
+                    return {frame, {}};
                 }
             }
             else if (!m_calibrated)
@@ -167,8 +167,7 @@ namespace scopeone::core::internal
                 }
                 if ((int)m_buffer.size() < m_calibrationFrames)
                 {
-                    out.frame = in.frame;
-                    return true;
+                    return {frame, {}};
                 }
 
                 computeBackground();
@@ -217,28 +216,22 @@ namespace scopeone::core::internal
                     return bytes;
                 });
 
-                out.frame = makeFrameLike(workingFrame,
-                                          workingFrame.width,
-                                          workingFrame.height,
-                                          std::move(outBytes));
+                return {makeFrameLike(workingFrame,
+                                      workingFrame.width,
+                                      workingFrame.height,
+                                      std::move(outBytes)),
+                        {}};
             }
-            else
-            {
-                out.frame = workingFrame;
-            }
+            return {workingFrame, {}};
         }
         catch (const std::exception& e)
         {
-            out.frame = in.frame;
-            out.error = QString("Background calibration failed: %1").arg(e.what());
-            return false;
+            return {{}, QString("Background calibration failed: %1").arg(e.what())};
         }
-
-        return true;
     }
 
     // Returns the current background calibration parameters
-    QVariantMap BackgroundCalibrationModule::getParameters() const
+    QVariantMap BackgroundCalibrationModule::parameters() const
     {
         QVariantMap p;
         p["calibration_frames"] = m_calibrationFrames;

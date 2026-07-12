@@ -31,17 +31,14 @@ namespace scopeone::core::internal
 
         // Normalizes an OpenCV matrix into an output image frame
         ImageFrame matToOutputFrame(const cv::Mat& input,
-                                    const ImageFrame& reference,
-                                    const QString& cameraId)
+                                    const ImageFrame& reference)
         {
             cv::Mat normalized;
             const int targetType = reference.isMono16() ? CV_16U : CV_8U;
             const double targetMax = static_cast<double>(reference.maxValue());
             cv::normalize(input, normalized, 0.0, targetMax, cv::NORM_MINMAX, targetType);
             QByteArray bytes = copyMatBytes(normalized);
-            ImageFrame output = makeFrameLike(reference, normalized.cols, normalized.rows, std::move(bytes));
-            output.cameraId = cameraId;
-            return output;
+            return makeFrameLike(reference, normalized.cols, normalized.rows, std::move(bytes));
         }
 
         // Moves the zero frequency component to the image center
@@ -124,10 +121,12 @@ namespace scopeone::core::internal
         }
     }
 
-    // Creates an FFT processing module
-    FFTModule::FFTModule(QObject* parent)
-        : ProcessingModule(parent)
+    // Creates an independent FFT runtime
+    std::unique_ptr<ProcessingModule> FFTModule::createRuntime() const
     {
+        auto module = std::make_unique<FFTModule>();
+        module->setParameters(parameters());
+        return module;
     }
 
     // Returns a cached mask for the current FFT parameters
@@ -156,30 +155,24 @@ namespace scopeone::core::internal
     }
 
     // Runs FFT spectrum or bandpass processing on one frame
-    bool FFTModule::process(const ModuleInput& in, ModuleOutput& out)
+    ProcessingResult FFTModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!in.frame.isValid())
+        if (!frame.isValid())
         {
-            out.frame = in.frame;
-            out.error = "Invalid input";
-            return false;
+            return {{}, QStringLiteral("Invalid input")};
         }
 
         try
         {
             ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
+            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                out.frame = in.frame;
-                out.error = "Unsupported input frame";
-                return false;
+                return {{}, QStringLiteral("Unsupported input frame")};
             }
 
             if (!frameToGrayFloat(workingFrame, m_grayFloat))
             {
-                out.frame = in.frame;
-                out.error = "Failed to convert frame to grayscale";
-                return false;
+                return {{}, QStringLiteral("Failed to convert frame to grayscale")};
             }
 
             int optRows = cv::getOptimalDFTSize(m_grayFloat.rows);
@@ -211,8 +204,7 @@ namespace scopeone::core::internal
                 {
                     spectrum = cropCenter(spectrum, m_grayFloat.size());
                 }
-                out.frame = matToOutputFrame(spectrum, workingFrame, in.frame.cameraId);
-                return true;
+                return {matToOutputFrame(spectrum, workingFrame), {}};
             }
 
             const cv::Mat& mask = maskForSize(m_padded.size());
@@ -223,20 +215,16 @@ namespace scopeone::core::internal
             cv::dft(m_filteredComplex, m_filtered, cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
 
             const cv::Mat cropped = m_filtered(cv::Rect(0, 0, m_grayFloat.cols, m_grayFloat.rows));
-            out.frame = matToOutputFrame(cropped, workingFrame, in.frame.cameraId);
+            return {matToOutputFrame(cropped, workingFrame), {}};
         }
         catch (const std::exception& e)
         {
-            out.frame = in.frame;
-            out.error = QString("FFT processing failed: %1").arg(e.what());
-            return false;
+            return {{}, QString("FFT processing failed: %1").arg(e.what())};
         }
-
-        return true;
     }
 
     // Returns the current FFT module parameters
-    QVariantMap FFTModule::getParameters() const
+    QVariantMap FFTModule::parameters() const
     {
         QVariantMap params;
         params["min_feature_size"] = m_minFeatureSize;

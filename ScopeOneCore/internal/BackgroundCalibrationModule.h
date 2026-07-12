@@ -29,28 +29,25 @@ namespace scopeone::core::internal
 
     class BackgroundCalibrationModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
-        explicit BackgroundCalibrationModule(QObject* parent = nullptr);
-
-        bool process(const ModuleInput& in, ModuleOutput& out) override;
-        QString getModuleName() const override { return "Background Calibration"; }
-
-        QVariantMap getParameters() const override;
+        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::BackgroundCalibration; }
+        QString name() const override { return "Background Calibration"; }
+        QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;
-
-        void resetCalibration();
+        std::unique_ptr<ProcessingModule> createRuntime() const override;
+        bool resetState() override;
+        ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
     private:
+        void resetCalibration();
         void computeBackground();
 
-        int m_calibrationFrames;
+        int m_calibrationFrames{101};
         std::deque<ImageFrame> m_buffer;
         ImageFrame m_background;
-        bool m_calibrated;
-        BackgroundOperation m_operation;
-        BackgroundMethod m_method;
+        bool m_calibrated{false};
+        BackgroundOperation m_operation{BackgroundOperation::Subtract};
+        BackgroundMethod m_method{BackgroundMethod::Median};
         BackgroundMode m_mode{BackgroundMode::Snapshot};
     };
 }

@@ -8,8 +8,6 @@ namespace scopeone::core::internal
 {
     class SpatiotemporalBinningModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
         enum class BinningMode
         {
@@ -20,13 +18,13 @@ namespace scopeone::core::internal
             Skip = 4
         };
 
-        explicit SpatiotemporalBinningModule(QObject* parent = nullptr);
-
-        bool process(const ModuleInput& in, ModuleOutput& out) override;
-        QString getModuleName() const override { return "Spatiotemporal Binning"; }
-
-        QVariantMap getParameters() const override;
+        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::SpatiotemporalBinning; }
+        QString name() const override { return "Spatiotemporal Binning"; }
+        QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;
+        std::unique_ptr<ProcessingModule> createRuntime() const override;
+        bool resetState() override;
+        ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
     private:
         int m_spatialBinX{1};

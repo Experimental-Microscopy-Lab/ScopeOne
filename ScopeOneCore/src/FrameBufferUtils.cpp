@@ -10,18 +10,20 @@ namespace scopeone::core::internal
     using scopeone::core::ImageFrame;
     using scopeone::core::ImagePixelFormat;
 
+    // Copies source identity and acquisition metadata to an output frame
+    void copyFrameMetadata(const ImageFrame& src, ImageFrame& dst)
+    {
+        dst.cameraId = src.cameraId;
+        dst.frameIndex = src.frameIndex;
+        dst.timestampNs = src.timestampNs;
+        dst.sourceRoiX = src.sourceRoiX;
+        dst.sourceRoiY = src.sourceRoiY;
+        dst.sourceRoiWidth = src.sourceRoiWidth;
+        dst.sourceRoiHeight = src.sourceRoiHeight;
+    }
+
     namespace
     {
-        void copyFrameMetadata(const ImageFrame& src, ImageFrame& dst)
-        {
-            dst.frameIndex = src.frameIndex;
-            dst.timestampNs = src.timestampNs;
-            dst.sourceRoiX = src.sourceRoiX;
-            dst.sourceRoiY = src.sourceRoiY;
-            dst.sourceRoiWidth = src.sourceRoiWidth;
-            dst.sourceRoiHeight = src.sourceRoiHeight;
-        }
-
         // Converts a sixteen bit sample to an eight bit display value
         int mono8ValueFrom16(int value, int bitsPerSample)
         {

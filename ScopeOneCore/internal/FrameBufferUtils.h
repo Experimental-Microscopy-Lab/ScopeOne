@@ -12,6 +12,9 @@ namespace cv
 
 namespace scopeone::core::internal
 {
+    void copyFrameMetadata(const scopeone::core::ImageFrame& src,
+                           scopeone::core::ImageFrame& dst);
+
     bool convertFrameToMono8(const scopeone::core::ImageFrame& src,
                              scopeone::core::ImageFrame& dst);
 

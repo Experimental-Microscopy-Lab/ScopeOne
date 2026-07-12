@@ -97,8 +97,6 @@ set(CORE_SOURCES
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
         src/ImageProcessingFramework.cpp
-        src/ProcessingModule.cpp
-        src/ProcessingModuleTemplate.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
@@ -115,7 +113,6 @@ set(CORE_HEADERS
         internal/FrameBufferUtils.h
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
-        internal/ProcessingModuleTemplate.h
         internal/AgentProtocol.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h

@@ -143,30 +143,28 @@ namespace scopeone::core::internal
         }
     } // namespace
 
-    // Creates a spatiotemporal binning module
-    SpatiotemporalBinningModule::SpatiotemporalBinningModule(QObject* parent)
-        : ProcessingModule(parent)
+    // Creates an independent spatiotemporal binning runtime
+    std::unique_ptr<ProcessingModule> SpatiotemporalBinningModule::createRuntime() const
     {
+        auto module = std::make_unique<SpatiotemporalBinningModule>();
+        module->setParameters(parameters());
+        return module;
     }
 
     // Updates temporal history and emits a binned frame when ready
-    bool SpatiotemporalBinningModule::process(const ModuleInput& in, ModuleOutput& out)
+    ProcessingResult SpatiotemporalBinningModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!in.frame.isValid())
+        if (!frame.isValid())
         {
-            out.frame = in.frame;
-            out.error = "Invalid input";
-            return false;
+            return {{}, QStringLiteral("Invalid input")};
         }
 
         try
         {
             ImageFrame workingFrame;
-            if (!convertFrameForProcessing(in.frame, workingFrame, in.processingBitDepth))
+            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                out.frame = in.frame;
-                out.error = "Unsupported input frame";
-                return false;
+                return {{}, QStringLiteral("Unsupported input frame")};
             }
             if (!m_frameBuffer.empty() && !m_frameBuffer.front().isCompatibleWith(workingFrame))
             {
@@ -180,25 +178,19 @@ namespace scopeone::core::internal
 
             if (static_cast<int>(m_frameBuffer.size()) < m_temporalBin)
             {
-                out.frame = in.frame;
+                return {frame, {}};
             }
-            else
-            {
-                const ImageFrame temporal = applyTemporalBinning(m_frameBuffer, m_temporalMode);
-                out.frame = applySpatialBinning(temporal, m_spatialBinX, m_spatialBinY, m_spatialMode);
-            }
+            const ImageFrame temporal = applyTemporalBinning(m_frameBuffer, m_temporalMode);
+            return {applySpatialBinning(temporal, m_spatialBinX, m_spatialBinY, m_spatialMode), {}};
         }
         catch (const std::exception& e)
         {
-            out.frame = in.frame;
-            out.error = QString("Spatiotemporal binning failed: %1").arg(e.what());
-            return false;
+            return {{}, QString("Spatiotemporal binning failed: %1").arg(e.what())};
         }
-        return true;
     }
 
     // Returns the current spatiotemporal binning parameters
-    QVariantMap SpatiotemporalBinningModule::getParameters() const
+    QVariantMap SpatiotemporalBinningModule::parameters() const
     {
         QVariantMap params;
         params["spatial_bin_x"] = m_spatialBinX;
@@ -257,5 +249,12 @@ namespace scopeone::core::internal
         {
             m_frameBuffer.clear();
         }
+    }
+
+    // Clears temporal binning runtime state
+    bool SpatiotemporalBinningModule::resetState()
+    {
+        m_frameBuffer.clear();
+        return true;
     }
 } // namespace scopeone::core::internal

@@ -1,50 +1,35 @@
 #pragma once
 
-#include <QObject>
 #include <QString>
 #include <QVariantMap>
+#include <memory>
 
-#include "scopeone/ImageFrame.h"
+#include "scopeone/ScopeOneCore.h"
 
 namespace scopeone::core::internal
 {
     using ImageFrame = scopeone::core::ImageFrame;
+    using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
 
-    struct ModuleInput
-    {
-        ImageFrame frame;
-        int processingBitDepth{16};
-        ModuleInput() = default;
-
-        explicit ModuleInput(const ImageFrame& f, int bitDepth = 16)
-            : frame(f)
-              , processingBitDepth(bitDepth)
-        {
-        }
-    };
-
-    struct ModuleOutput
+    struct ProcessingResult
     {
         ImageFrame frame;
         QString error;
 
-        bool hasError() const { return !error.isEmpty(); }
-        bool isValid() const { return frame.isValid() && !hasError(); }
+        bool succeeded() const { return error.isEmpty() && frame.isValid(); }
     };
 
-    class ProcessingModule : public QObject
+    class ProcessingModule
     {
-        Q_OBJECT
-
     public:
-        explicit ProcessingModule(QObject* parent = nullptr);
         virtual ~ProcessingModule() = default;
 
-        virtual bool process(const ModuleInput& in, ModuleOutput& out) = 0;
-
-        virtual QString getModuleName() const = 0;
-
-        virtual QVariantMap getParameters() const = 0;
+        virtual ProcessingModuleKind kind() const noexcept = 0;
+        virtual QString name() const = 0;
+        virtual QVariantMap parameters() const = 0;
         virtual void setParameters(const QVariantMap& params) = 0;
+        virtual std::unique_ptr<ProcessingModule> createRuntime() const = 0;
+        virtual bool resetState() { return false; }
+        virtual ProcessingResult process(const ImageFrame& frame, int processingBitDepth) = 0;
     };
 }

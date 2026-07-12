@@ -9,18 +9,14 @@ namespace scopeone::core::internal
 {
     class DifferentialRollingModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
-        explicit DifferentialRollingModule(QObject* parent = nullptr);
-
-        bool process(const ModuleInput& in, ModuleOutput& out) override;
-        QString getModuleName() const override { return "Differential Rolling"; }
-
-        QVariantMap getParameters() const override;
+        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::DifferentialRolling; }
+        QString name() const override { return "Differential Rolling"; }
+        QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;
-
-        void resetBuffer();
+        std::unique_ptr<ProcessingModule> createRuntime() const override;
+        bool resetState() override;
+        ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
         struct CameraState
         {

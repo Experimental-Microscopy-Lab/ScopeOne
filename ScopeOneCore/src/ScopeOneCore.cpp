@@ -1,9 +1,14 @@
 #include "scopeone/ScopeOneCore.h"
 
+#include "internal/BackgroundCalibrationModule.h"
+#include "internal/DifferentialRollingModule.h"
+#include "internal/FFTModule.h"
+#include "internal/GaussianBlurModule.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/MMCoreManager.h"
 #include "internal/MultiProcessCameraManager.h"
 #include "internal/RecordingManager.h"
+#include "internal/SpatiotemporalBinningModule.h"
 #include "MMCore.h"
 #include <QDateTime>
 #include <QFile>
@@ -592,33 +597,6 @@ namespace
         return managerSettings;
     }
 
-    // Identify the public module kind from a concrete module instance
-    scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKind(
-        const scopeone::core::internal::ProcessingModule* module)
-    {
-        if (qobject_cast<const scopeone::core::internal::FFTModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::FFT;
-        }
-        if (qobject_cast<const scopeone::core::internal::BackgroundCalibrationModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::BackgroundCalibration;
-        }
-        if (qobject_cast<const scopeone::core::internal::SpatiotemporalBinningModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::SpatiotemporalBinning;
-        }
-        if (qobject_cast<const scopeone::core::internal::GaussianBlurModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::GaussianBlur;
-        }
-        if (qobject_cast<const scopeone::core::internal::DifferentialRollingModule*>(module))
-        {
-            return scopeone::core::ScopeOneCore::ProcessingModuleKind::DifferentialRolling;
-        }
-        return scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown;
-    }
-
     // Capture current device properties for recording metadata
     QByteArray buildDevicePropertyMetadataJson(const scopeone::core::ScopeOneCore& core)
     {
@@ -666,7 +644,7 @@ namespace scopeone::core
     using scopeone::core::internal::MMCoreManager;
     using scopeone::core::internal::MultiProcessCameraManager;
     using scopeone::core::internal::ProcessingModule;
-    using scopeone::core::internal::ProcessingPipeline;
+    using scopeone::core::internal::ProcessingPipelineDefinition;
     using scopeone::core::internal::RecordingManager;
     using scopeone::core::internal::DifferentialRollingModule;
     using scopeone::core::internal::SpatiotemporalBinningModule;
@@ -2653,7 +2631,7 @@ namespace scopeone::core
     // Toggle live processing without changing the module list
     void ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
-        if (enabled && m_managers->imageProcessingManager->pipeline()->getModuleCount() == 0)
+        if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
         {
             return;
         }
@@ -2734,15 +2712,15 @@ namespace scopeone::core
     QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
     {
         QList<ProcessingModuleInfo> out;
-        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
 
-        out.reserve(pipeline->getModuleCount());
-        pipeline->forEachModule([&out](const ProcessingModule* module)
+        out.reserve(definition.moduleCount());
+        definition.forEachModule([&out](const ProcessingModule* module)
         {
             ProcessingModuleInfo info;
-            info.setKind(processingModuleKind(module));
-            info.setName(module->getModuleName());
-            info.setParameters(module->getParameters());
+            info.setKind(module->kind());
+            info.setName(module->name());
+            info.setParameters(module->parameters());
             out.append(std::move(info));
         });
         return out;
@@ -2751,31 +2729,31 @@ namespace scopeone::core
     // Add a processing module to the editable pipeline
     bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
     {
-        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
 
         std::unique_ptr<ProcessingModule> module;
         switch (kind)
         {
         case ProcessingModuleKind::FFT:
-            module = std::make_unique<FFTModule>(pipeline);
+            module = std::make_unique<FFTModule>();
             break;
         case ProcessingModuleKind::BackgroundCalibration:
-            module = std::make_unique<BackgroundCalibrationModule>(pipeline);
+            module = std::make_unique<BackgroundCalibrationModule>();
             break;
         case ProcessingModuleKind::SpatiotemporalBinning:
-            module = std::make_unique<SpatiotemporalBinningModule>(pipeline);
+            module = std::make_unique<SpatiotemporalBinningModule>();
             break;
         case ProcessingModuleKind::GaussianBlur:
-            module = std::make_unique<GaussianBlurModule>(pipeline);
+            module = std::make_unique<GaussianBlurModule>();
             break;
         case ProcessingModuleKind::DifferentialRolling:
-            module = std::make_unique<DifferentialRollingModule>(pipeline);
+            module = std::make_unique<DifferentialRollingModule>();
             break;
         case ProcessingModuleKind::Unknown:
             return false;
         }
 
-        pipeline->addModule(std::move(module));
+        definition.addModule(std::move(module));
         m_managers->imageProcessingManager->clearRuntimePipelines();
         emit processingModulesChanged();
         return true;
@@ -2784,13 +2762,13 @@ namespace scopeone::core
     // Remove a processing module and drop stale runtime clones
     bool ScopeOneCore::removeProcessingModule(int index)
     {
-        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
-        if (!pipeline->removeModule(index))
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        if (!definition.removeModule(index))
         {
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        if (pipeline->getModuleCount() == 0)
+        if (definition.moduleCount() == 0)
         {
             setRealTimeProcessingEnabled(false);
         }
@@ -2801,11 +2779,10 @@ namespace scopeone::core
     // Update module parameters and rebuild per camera runtime modules
     bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
     {
-        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
-        const bool updated = pipeline->withModule(index, [&parameters](ProcessingModule* module)
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        const bool updated = definition.withModule(index, [&parameters](ProcessingModule* module)
         {
             module->setParameters(parameters);
-            return true;
         });
         if (!updated)
         {
@@ -2819,21 +2796,11 @@ namespace scopeone::core
     // Reset module state when the selected module owns runtime buffers
     bool ScopeOneCore::resetProcessingModuleState(int index)
     {
-        ProcessingPipeline* pipeline = m_managers->imageProcessingManager->pipeline();
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
         bool resetRuntimeState = false;
-        const bool found = pipeline->withModule(index, [&resetRuntimeState](ProcessingModule* module)
+        const bool found = definition.withModule(index, [&resetRuntimeState](ProcessingModule* module)
         {
-            if (auto* background = qobject_cast<BackgroundCalibrationModule*>(module))
-            {
-                background->resetCalibration();
-                resetRuntimeState = true;
-            }
-            else if (auto* differentialRolling = qobject_cast<DifferentialRollingModule*>(module))
-            {
-                differentialRolling->resetBuffer();
-                resetRuntimeState = true;
-            }
-            return true;
+            resetRuntimeState = module->resetState();
         });
         if (!found)
         {

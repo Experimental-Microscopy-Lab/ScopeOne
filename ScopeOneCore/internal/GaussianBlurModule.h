@@ -6,16 +6,13 @@ namespace scopeone::core::internal
 {
     class GaussianBlurModule : public ProcessingModule
     {
-        Q_OBJECT
-
     public:
-        explicit GaussianBlurModule(QObject* parent = nullptr);
-
-        bool process(const ModuleInput& in, ModuleOutput& out) override;
-        QString getModuleName() const override { return "Gaussian Blur"; }
-
-        QVariantMap getParameters() const override;
+        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::GaussianBlur; }
+        QString name() const override { return "Gaussian Blur"; }
+        QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;
+        std::unique_ptr<ProcessingModule> createRuntime() const override;
+        ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
     private:
         int m_kernelSize{3};
