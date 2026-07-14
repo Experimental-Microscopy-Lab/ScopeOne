@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .client import ExternalClient, FrameResult, LOCAL_SERVER_NAME
-from .session import RecordingSession
+from .session import ExperimentSession, RecordingSession
 
 
 class ScopeOne:
@@ -383,6 +383,27 @@ class ScopeOne:
             compression_level,
             frame.camera or None,
         )
+
+    def experiment_document(self) -> dict:
+        return self._client.experiment_document()
+
+    def validate_experiment(self, document: dict) -> dict:
+        return self._client.validate_experiment(document)
+
+    def save_experiment(self, file_path: str, document: dict) -> str:
+        return self._client.save_experiment(file_path, document)
+
+    def load_experiment(self, file_path: str) -> dict:
+        return self._client.load_experiment(file_path)
+
+    def start_experiment(self, document: dict) -> ExperimentSession:
+        return ExperimentSession(self._client.start_experiment(document))
+
+    def experiment_status(self, experiment_id: str) -> dict:
+        return self._client.experiment_status(experiment_id)
+
+    def cancel_experiment(self, experiment_id: str) -> dict:
+        return self._client.cancel_experiment(experiment_id)
 
     def record(
         self,

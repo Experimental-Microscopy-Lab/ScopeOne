@@ -1,6 +1,6 @@
 # ScopeOne Python API
 
-Minimal external Python API for controlling a running ScopeOne app, loading a Micro-Manager config, starting preview, recording frames into a session, and saving when needed.
+Minimal external Python API for controlling a running ScopeOne app, loading a Micro-Manager config, running experiment documents, previewing, recording, and saving.
 
 ## Project layout
 
@@ -14,6 +14,8 @@ Minimal external Python API for controlling a running ScopeOne app, loading a Mi
 ## Current API
 
 ```python
+import time
+
 import numpy as np
 
 from scopeone import ScopeOne
@@ -54,6 +56,16 @@ scopeone.set_processing_bit_depth(16)
 module_index = scopeone.add_processing_module("gaussian_blur", {"kernel_size": 5, "sigma": 1.2})
 print(scopeone.processing_modules())
 scopeone.set_processing_module_parameters(module_index, {"kernel_size": 7})
+
+document = scopeone.experiment_document()
+document["plan"]["framesPerBurst"] = 10
+document = scopeone.validate_experiment(document)
+scopeone.save_experiment(r"C:\data\experiment.scopeone.json", document)
+experiment = scopeone.start_experiment(document)
+while experiment.status()["state"] == "Running":
+    time.sleep(0.05)
+print(experiment.experiment_id(), experiment.status())
+experiment.close()
 
 session = scopeone.record(frames=10, camera="Camera")
 stage = session.process_frame("Camera", 0, end_module_index=0)
@@ -127,6 +139,18 @@ scopeone.close()
 - `ScopeOne.remove_processing_module(index)`
 - `ScopeOne.set_processing_module_parameters(index, parameters)`
 - `ScopeOne.reset_processing_module_state(index)`
+- `ScopeOne.experiment_document()`
+- `ScopeOne.validate_experiment(document)`
+- `ScopeOne.save_experiment(file_path, document)`
+- `ScopeOne.load_experiment(file_path)`
+- `ScopeOne.start_experiment(document)`
+- `ScopeOne.experiment_status(experiment_id)`
+- `ScopeOne.cancel_experiment(experiment_id)`
+- `ExperimentSession.experiment_id()`
+- `ExperimentSession.status()`
+- `ExperimentSession.document()`
+- `ExperimentSession.cancel()`
+- `ExperimentSession.close()`
 - `ScopeOne.frame_mapping_info()`
 - `ScopeOne.write_frame_mapping(image, camera="python", bits_per_sample=None, frame_index=0, source_roi=None)`
 - `ScopeOne.process_frame_mapping(camera=None, start_module_index=None, end_module_index=None)`
@@ -160,7 +184,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Control endpoint on Windows: `\\.\pipe\ScopeOne.Api.local`
 - Control endpoint on Linux/Unix: `<tempdir>/ScopeOne.Api.local`
 - Message framing: 4-byte little-endian unsigned payload size, followed by UTF-8 JSON.
-- Maximum JSON payload: 256 KiB.
+- Maximum JSON payload: 64 MiB.
 - Success response: `{"type": "<request type>", "ok": true, ...}`
 - Error response: `{"type": "<request type>", "ok": false, "error": "..."}`
 
@@ -220,6 +244,13 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
+- `experiment_document`: returns the shared schema version 1 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
+- `validate_experiment`: field `document`; response contains the canonical validated `document`.
+- `save_experiment`: fields `filePath`, `document`; validates and atomically saves the document.
+- `load_experiment`: field `filePath`; replaces the shared UI document when no experiment is running and responds with `document`.
+- `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
+- `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, and completed recording session details when available.
+- `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
 - `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app.
@@ -247,6 +278,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 ```
 
 `record` returns `sessionId` and `cameraIds`. If `zPositions` or `positions` is non-empty, recording uses the MDA snap path. If both are empty, recording uses the preview/raw-frame path.
+For timed MDA with more than one time point, `order` must begin with `time` so event start times remain monotonic.
+
+The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
 
 Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. `add_processing_module` accepts `fft`, `background_calibration`, `spatiotemporal_binning`, `gaussian_blur`, and `differential_rolling`.
 

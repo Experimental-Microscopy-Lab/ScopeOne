@@ -27,7 +27,7 @@ namespace scopeone::ui
 {
     class DevicePropertyWidget;
     class ConfigPresetWidget;
-    class ImageMarkupModel;
+    class ImageSceneModel;
     class ImageGalleryWidget;
     class ImageProcessingWidget;
     class InspectWidget;
@@ -110,8 +110,8 @@ namespace scopeone::ui
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
 
+        ImageSceneModel* m_imageSceneModel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
-        ImageMarkupModel* m_markupModel{nullptr};
         QDockWidget* m_consoleDockWidget{nullptr};
         ConsoleWidget* m_consoleWidget{nullptr};
 

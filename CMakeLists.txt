@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.706 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.712 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -66,7 +66,7 @@ set(SCOPEONE_UI_SOURCES
         src/ImageProcessingWidget.cpp
         src/ImageGalleryWidget.cpp
         src/ImageToolsDialog.cpp
-        src/ImageMarkupModel.cpp
+        src/ImageSceneModel.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
@@ -85,7 +85,7 @@ set(SCOPEONE_UI_HEADERS
         src/ImageProcessingWidget.h
         src/ImageGalleryWidget.h
         src/ImageToolsDialog.h
-        src/ImageMarkupModel.h
+        src/ImageSceneModel.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
         src/AboutDialog.h

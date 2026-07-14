@@ -33,7 +33,7 @@ WIN_LOCAL_SERVER_NAME = r"\\.\pipe\ScopeOne.Api.local"
 UNIX_LOCAL_SERVER_NAME = "ScopeOne.Api.local"
 LOCAL_SERVER_NAME = WIN_LOCAL_SERVER_NAME if _IS_WINDOWS else UNIX_LOCAL_SERVER_NAME
 
-MAX_MESSAGE_BYTES = 256 * 1024
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 _CONNECT_TIMEOUT_S = 5.0
 
 
@@ -825,6 +825,65 @@ class ExternalClient:
             }
         )
 
+    def experiment_document(self) -> dict:
+        response = self._request({"type": "experiment_document"})
+        return dict(response["document"])
+
+    def validate_experiment(self, document: dict) -> dict:
+        response = self._request(
+            {
+                "type": "validate_experiment",
+                "document": dict(document),
+            }
+        )
+        return dict(response["document"])
+
+    def save_experiment(self, file_path: str, document: dict) -> str:
+        response = self._request(
+            {
+                "type": "save_experiment",
+                "filePath": file_path,
+                "document": dict(document),
+            }
+        )
+        return str(response["filePath"])
+
+    def load_experiment(self, file_path: str) -> dict:
+        response = self._request(
+            {
+                "type": "load_experiment",
+                "filePath": file_path,
+            }
+        )
+        return dict(response["document"])
+
+    def start_experiment(self, document: dict):
+        response = self._request(
+            {
+                "type": "start_experiment",
+                "document": dict(document),
+            }
+        )
+        return ExternalExperimentSession(self, str(response["experimentId"]))
+
+    def experiment_status(self, experiment_id: str) -> dict:
+        response = self._request(
+            {
+                "type": "experiment_status",
+                "experimentId": experiment_id,
+            }
+        )
+        return self._experiment_status_result(response)
+
+    def cancel_experiment(self, experiment_id: str) -> dict:
+        response = self._request(
+            {
+                "type": "cancel_experiment",
+                "experimentId": experiment_id,
+            }
+        )
+        return self._experiment_status_result(response)
+
     def record(
         self,
         frames: int,
@@ -1014,6 +1073,7 @@ class ExternalClient:
         response_size = self._transport.recv_exact(4)
         payload_size = struct.unpack("<I", response_size)[0]
         if payload_size <= 0 or payload_size > MAX_MESSAGE_BYTES:
+            self._transport.close()
             raise RuntimeError("ScopeOne control response has invalid size")
         response = json.loads(self._transport.recv_exact(payload_size).decode("utf-8"))
 
@@ -1021,6 +1081,20 @@ class ExternalClient:
             error = response.get("error", "ScopeOne request failed")
             raise RuntimeError(error)
         return response
+
+    @staticmethod
+    def _experiment_status_result(response: dict) -> dict:
+        result = {
+            "experimentId": str(response["experimentId"]),
+            "state": str(response["state"]),
+            "cancelRequested": bool(response.get("cancelRequested", False)),
+            "document": dict(response["document"]),
+        }
+        if "sessionId" in response:
+            result["sessionId"] = str(response["sessionId"])
+            result["cameraIds"] = list(response.get("cameraIds", []))
+            result["frameCount"] = int(response.get("frameCount", 0))
+        return result
 
     def _frame_result_from_mapping_response(self, response: dict) -> FrameResult:
         from .shm import SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header
@@ -1046,6 +1120,35 @@ class ExternalClient:
                     header_view.release()
                 mapping.release()
         return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
+
+
+class ExternalExperimentSession:
+    def __init__(self, client: ExternalClient, experiment_id: str) -> None:
+        self._client = client
+        self._experiment_id = experiment_id
+
+    def experiment_id(self) -> str:
+        return self._experiment_id
+
+    def status(self) -> dict:
+        return self._client.experiment_status(self._experiment_id)
+
+    def document(self) -> dict:
+        return dict(self.status()["document"])
+
+    def cancel(self) -> dict:
+        return self._client.cancel_experiment(self._experiment_id)
+
+    def close(self) -> None:
+        status = self.status()
+        session_id = status.get("sessionId")
+        if session_id:
+            self._client._request(
+                {
+                    "type": "session_close",
+                    "sessionId": session_id,
+                }
+            )
 
 
 class ExternalRecordingSession:

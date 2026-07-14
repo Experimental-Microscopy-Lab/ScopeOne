@@ -2,7 +2,7 @@
 
 from .client import FrameResult
 from .core import ScopeOne
-from .session import RecordingSession
+from .session import ExperimentSession, RecordingSession
 from .shm import (
     SharedFrameHeader,
     frame_to_ndarray,
@@ -15,6 +15,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "FrameResult",
+    "ExperimentSession",
     "RecordingSession",
     "ScopeOne",
     "SharedFrameHeader",
