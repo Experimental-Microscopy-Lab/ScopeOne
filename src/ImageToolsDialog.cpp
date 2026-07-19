@@ -137,9 +137,8 @@ namespace scopeone::ui
             ScopeOneCore& core,
             const ImageFrame& imageFrame)
         {
-            ScopeOneCore::RecordingCapturePlanData plan;
+            scopeone::core::ExperimentPlan plan;
             plan.cameraIds = {imageFrame.cameraId};
-            plan.captureAll = false;
             plan.streamToDisk = false;
             plan.format = RecordingFormat::Tiff;
             plan.saveDir = defaultGallerySaveDirectory();
@@ -412,7 +411,7 @@ namespace scopeone::ui
         m_settleMsSpinBox->setEnabled(false);
         m_returnToStartCheckBox->setEnabled(false);
         m_statusLabel->setText(tr("Starting mosaic capture"));
-        m_previewWidget->setSelectedLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
+        m_previewWidget->setVisibleLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         QTimer::singleShot(qMax(50, m_settleMsSpinBox->value()), this, &StageMosaicDialog::captureNextTile);
     }
@@ -651,7 +650,7 @@ namespace scopeone::ui
 
         m_previewWidget->setLayerColormap(layerKey, QStringLiteral("Gray"));
         m_previewWidget->setLayerBlending(layerKey, QStringLiteral("Opaque"));
-        m_previewWidget->setSelectedLayerKeys({layerKey});
+        m_previewWidget->setVisibleLayerKeys({layerKey});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         return true;
     }
@@ -877,7 +876,7 @@ namespace scopeone::ui
         m_previewWidget->setLayerOpacityPercent(maskLayer, 70);
         m_previewWidget->setLayerBlending(maskLayer, QStringLiteral("Additive"));
         m_previewWidget->setLayerVisible(scopeone::core::ScopeOneCore::rawLayerKey(cameraId), true);
-        m_previewWidget->setSelectedLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(cameraId), maskLayer});
+        m_previewWidget->setVisibleLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(cameraId), maskLayer});
         m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         m_statusLabel->setText(tr("Detected %1 particle(s)").arg(acceptedCount));
     }

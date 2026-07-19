@@ -150,37 +150,6 @@ namespace scopeone::core::internal
             return false;
         }
 
-        try
-        {
-            if (!event.configGroup.trimmed().isEmpty() && !event.configPreset.trimmed().isEmpty())
-            {
-                m_mmcore->setConfig(event.configGroup.toStdString().c_str(),
-                                    event.configPreset.toStdString().c_str());
-            }
-            for (auto it = event.deviceProperties.constBegin(); it != event.deviceProperties.constEnd(); ++it)
-            {
-                const int separator = it.key().indexOf(QLatin1Char('.'));
-                if (separator <= 0 || separator >= it.key().size() - 1)
-                {
-                    if (errorMessage)
-                    {
-                        *errorMessage = QStringLiteral("Invalid device property key: %1").arg(it.key());
-                    }
-                    return false;
-                }
-                const QString device = it.key().left(separator);
-                const QString property = it.key().mid(separator + 1);
-                m_mmcore->setProperty(device.toStdString().c_str(),
-                                      property.toStdString().c_str(),
-                                      it.value().toString().toStdString().c_str());
-            }
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
-            return false;
-        }
-
         if (event.exposureMs > 0.0 && !setExposure(event.exposureMs, errorMessage))
         {
             return false;

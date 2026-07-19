@@ -725,23 +725,16 @@ namespace scopeone::core::internal
         return result;
     }
 
-    // Returns the total frame count written by all writer threads
-    qint64 RecordingManager::totalFramesWritten() const
-    {
-        std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-        return m_writerState.status.framesWritten();
-    }
-
     // Builds the capture plan before recording starts
-    bool RecordingManager::buildCapturePlan(const Settings& settings,
+    bool RecordingManager::buildCapturePlan(const ExperimentPlan& requestedPlan,
                                             const QStringList& activeCameraIds,
-                                            CapturePlan& plan,
+                                            ExperimentPlan& plan,
                                             QString& errorMessage) const
     {
-        plan = settings;
+        plan = requestedPlan;
         plan.cameraIds.clear();
         const QStringList requestedCameraIds = activeCameraIds.isEmpty()
-                                                   ? settings.cameraIds
+                                                   ? requestedPlan.cameraIds
                                                    : activeCameraIds;
         for (const QString& cameraId : requestedCameraIds)
         {
@@ -760,12 +753,12 @@ namespace scopeone::core::internal
             errorMessage = QStringLiteral("No cameras available for recording");
             return false;
         }
-        if (settings.streamToDisk && settings.saveDir.trimmed().isEmpty())
+        if (requestedPlan.streamToDisk && requestedPlan.saveDir.trimmed().isEmpty())
         {
             errorMessage = QStringLiteral("Save directory is empty");
             return false;
         }
-        if (settings.streamToDisk && settings.baseName.trimmed().isEmpty())
+        if (requestedPlan.streamToDisk && requestedPlan.baseName.trimmed().isEmpty())
         {
             errorMessage = QStringLiteral("Base name is empty");
             return false;
@@ -774,10 +767,10 @@ namespace scopeone::core::internal
         {
             plan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         }
-        plan.targetBursts = settings.burstMode ? settings.targetBursts : 1;
-        plan.saveDir = settings.saveDir.trimmed();
-        plan.baseName = settings.baseName.trimmed();
-        plan.metadataFileName = settings.metadataFileName.trimmed();
+        plan.targetBursts = requestedPlan.burstMode ? requestedPlan.targetBursts : 1;
+        plan.saveDir = requestedPlan.saveDir.trimmed();
+        plan.baseName = requestedPlan.baseName.trimmed();
+        plan.metadataFileName = requestedPlan.metadataFileName.trimmed();
         if (!validateExperimentPlan(plan, &errorMessage))
         {
             return false;
@@ -791,19 +784,19 @@ namespace scopeone::core::internal
     }
 
     // Returns whether spatial axes require explicit MDA events
-    bool RecordingManager::planUsesMda(const CapturePlan& plan) const
+    bool RecordingManager::planUsesMda(const ExperimentPlan& plan) const
     {
         return !plan.positions.empty() || !plan.zPositions.empty();
     }
 
     // Returns whether native preview recording uses the requested frame interval
-    bool RecordingManager::planStreamsMda(const CapturePlan& plan) const
+    bool RecordingManager::planStreamsMda(const ExperimentPlan& plan) const
     {
         return m_mmcore && plan.cameraIds.size() == 1 && !planUsesMda(plan);
     }
 
     // Resets counters and MDA state for a new capture plan
-    void RecordingManager::resetCaptureState(const CapturePlan& plan)
+    void RecordingManager::resetCaptureState(const ExperimentPlan& plan)
     {
         m_captureState.activeCameraIds = plan.cameraIds;
         m_captureState.format = plan.format;
@@ -832,7 +825,7 @@ namespace scopeone::core::internal
     }
 
     // Prepares a fresh session object for the next recording
-    void RecordingManager::resetSessionState(const CapturePlan& plan,
+    void RecordingManager::resetSessionState(const ExperimentPlan& plan,
                                              const QJsonObject& deviceProperties)
     {
         m_sessionState.activeSession = std::make_shared<RecordingSessionData>();
@@ -921,7 +914,7 @@ namespace scopeone::core::internal
     }
 
     // Starts one writer thread per active camera output
-    bool RecordingManager::startStreamingOutputs(const CapturePlan& plan)
+    bool RecordingManager::startStreamingOutputs(const ExperimentPlan& plan)
     {
         stopStreamingOutputs();
 
@@ -1249,8 +1242,8 @@ namespace scopeone::core::internal
         return recordingFormatName(format);
     }
 
-    // Starts a recording session using the requested settings
-    bool RecordingManager::start(const Settings& settings,
+    // Starts a recording session using the requested plan
+    bool RecordingManager::start(const ExperimentPlan& requestedPlan,
                                  const QStringList& activeCameraIds,
                                  const QJsonObject& deviceProperties)
     {
@@ -1260,9 +1253,9 @@ namespace scopeone::core::internal
             return false;
         }
 
-        CapturePlan plan;
+        ExperimentPlan plan;
         QString errorMessage;
-        if (!buildCapturePlan(settings, activeCameraIds, plan, errorMessage))
+        if (!buildCapturePlan(requestedPlan, activeCameraIds, plan, errorMessage))
         {
             qWarning().noquote() << errorMessage;
             return false;
@@ -2064,10 +2057,23 @@ namespace scopeone::core::internal
         {
             return QStringLiteral("Error: Missing recording session");
         }
-        CapturePlan capturePlan = session->capturePlan();
+        ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.cameraIds.isEmpty())
         {
             return updateSessionResult(session, QStringLiteral("Error: No cameras to save"), false);
+        }
+        if (capturePlan.saveDir.trimmed().isEmpty())
+        {
+            return updateSessionResult(session, QStringLiteral("Error: Save directory is empty"), false);
+        }
+        if (capturePlan.baseName.trimmed().isEmpty())
+        {
+            return updateSessionResult(session, QStringLiteral("Error: Base name is empty"), false);
+        }
+        QString planError;
+        if (!validateExperimentPlan(capturePlan, &planError))
+        {
+            return updateSessionResult(session, QStringLiteral("Error: %1").arg(planError), false);
         }
 
         if (!session->hasAnyFrames())

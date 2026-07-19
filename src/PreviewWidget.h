@@ -45,7 +45,6 @@ namespace scopeone::ui
             bool processed{false};
         };
 
-        explicit PreviewWidget(QWidget* parent = nullptr);
         PreviewWidget(ImageSceneModel* sceneModel, QWidget* parent);
         ~PreviewWidget() override;
 
@@ -57,7 +56,7 @@ namespace scopeone::ui
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
-        void setSelectedLayerKeys(const QStringList& layerKeys);
+        void setVisibleLayerKeys(const QStringList& layerKeys);
         void setLayerVisible(const QString& layerKey, bool visible);
         void setLayerOpacityPercent(const QString& layerKey, int percent);
         void setLayerGamma(const QString& layerKey, double gamma);
@@ -75,7 +74,7 @@ namespace scopeone::ui
         void clearStaticLayers();
         QStringList availableCameraIds() const;
         QStringList availableLayerKeys() const;
-        QStringList selectedLayerKeys() const;
+        QStringList visibleLayerKeys() const;
         int layerOpacityPercent(const QString& layerKey) const;
         double layerGamma(const QString& layerKey) const;
         QString layerColormap(const QString& layerKey) const;
@@ -112,7 +111,7 @@ namespace scopeone::ui
 signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
-        void selectedLayerKeysChanged(const QStringList& layerKeys);
+        void visibleLayerKeysChanged(const QStringList& layerKeys);
         void layerLayoutModeChanged(LayerLayoutMode mode);
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
@@ -146,13 +145,6 @@ signals:
         void keyPressEvent(QKeyEvent* event) override;
 
     private:
-        struct LayerInfo
-        {
-            int width{0};
-            int height{0};
-            double fps{0.0};
-        };
-
         struct FpsState
         {
             QElapsedTimer intervalTimer;
@@ -226,7 +218,7 @@ signals:
         QStringList m_availableCameraIds;
         QSet<QString> m_staticSourceIds;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
-        QMap<QString, LayerInfo> m_layerInfos;
+        QMap<QString, double> m_layerFps;
         QString m_layerInfoText{QStringLiteral("No image loaded")};
         QMap<QString, FpsState> m_fpsStates;
         QTimer m_fpsUpdateTimer;

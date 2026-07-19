@@ -43,11 +43,8 @@ namespace scopeone::core
         using RecordingAxis = scopeone::core::RecordingAxis;
         using ProcessingModuleKind = scopeone::core::ProcessingModuleKind;
         using ProcessingBitDepth = scopeone::core::ProcessingBitDepth;
-        using RecordingSettings = scopeone::core::ExperimentPlan;
-        using RecordingCapturePlanData = scopeone::core::ExperimentPlan;
         using RecordingFileManifest = scopeone::core::RecordingFileManifest;
         using RecordingOutputManifest = scopeone::core::RecordingOutputManifest;
-        using RecordingManifest = scopeone::core::ExperimentDocument;
 
         struct RecordingSaveOptions
         {
@@ -56,7 +53,6 @@ namespace scopeone::core
             int compressionLevel{6};
             QString saveDir;
             QString baseName;
-            QString metadataFileName;
         };
 
         struct LoadConfigResult
@@ -194,7 +190,7 @@ namespace scopeone::core
         {
         public:
             const QStringList& cameraIds() const { return m_manifest.plan.cameraIds; }
-            const RecordingCapturePlanData& capturePlan() const { return m_manifest.plan; }
+            const ExperimentPlan& capturePlan() const { return m_manifest.plan; }
             const ExperimentDocument& experimentDocument() const { return m_manifest; }
             ExperimentRunState runState() const { return m_manifest.runState; }
             const QString& errorMessage() const { return m_manifest.errorMessage; }
@@ -340,9 +336,9 @@ namespace scopeone::core
                 resetSaveResult();
                 resetWriterStatus(maxPendingWriteBytes);
             }
-            void setCapturePlan(const RecordingCapturePlanData& planData)
+            void setCapturePlan(const ExperimentPlan& plan)
             {
-                m_manifest.plan = planData;
+                m_manifest.plan = plan;
                 QStringList cameraIds;
                 for (const QString& cameraId : m_manifest.plan.cameraIds)
                 {
@@ -397,7 +393,7 @@ namespace scopeone::core
             }
             static std::shared_ptr<RecordingSessionData> fromImageFrames(
                 const QList<ImageFrame>& frames,
-                const RecordingCapturePlanData& capturePlan);
+                const ExperimentPlan& capturePlan);
             void clearFrames() { m_frames.clear(); }
             void clearOutputFiles() { m_manifest.clearOutput(); }
             RecordingFileManifest& ensureFileManifest(const QString& cameraId)
@@ -437,7 +433,7 @@ namespace scopeone::core
             ImageFrame outputImageFrameAt(const QString& cameraId, int index) const;
             const ImageFrame* frameAt(const QString& cameraId, int index) const;
 
-            RecordingManifest m_manifest;
+            ExperimentDocument m_manifest;
             QHash<QString, std::vector<ImageFrame>> m_frames;
             RecordingSaveResult m_saveResult;
             RecordingWriterStatus m_writerStatus;
@@ -543,7 +539,7 @@ namespace scopeone::core
         void removeSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session);
         std::shared_ptr<RecordingSessionData> createFrameSession(
             const QList<ImageFrame>& frames,
-            const RecordingCapturePlanData& capturePlan);
+            const ExperimentPlan& capturePlan);
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
@@ -609,7 +605,7 @@ namespace scopeone::core
 
         void setRecordingMaxPendingWriteBytes(qint64 bytes);
         qint64 recordingMaxPendingWriteBytes() const;
-        bool startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds);
+        bool startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds);
         void stopRecording();
         bool isRecording() const;
         bool setRecordingSessionPresentation(

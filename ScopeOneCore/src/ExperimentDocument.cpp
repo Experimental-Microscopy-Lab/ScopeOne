@@ -74,6 +74,42 @@ namespace scopeone::core
             return true;
         }
 
+        bool validateFileNameComponent(const QString& name,
+                                       const QString& path,
+                                       QString* errorMessage)
+        {
+            if (name.isEmpty())
+            {
+                return true;
+            }
+            if (!validateIdentifier(name, path, errorMessage))
+            {
+                return false;
+            }
+            if (name == QStringLiteral(".") || name == QStringLiteral(".."))
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1 must be a file name, not a directory reference").arg(path));
+            }
+
+            static const QString invalidCharacters = QStringLiteral("<>:\"/\\|?*");
+            for (const QChar character : name)
+            {
+                if (invalidCharacters.contains(character))
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1 contains a character that is not allowed in a file name")
+                                    .arg(path));
+                }
+            }
+            if (name.endsWith(QLatin1Char('.')))
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1 must not end with a period").arg(path));
+            }
+            return true;
+        }
+
         bool checkObjectFields(const QJsonObject& object,
                                std::initializer_list<QString> fields,
                                const QString& path,
@@ -735,11 +771,6 @@ namespace scopeone::core
                 kind = DocumentLayerKind::Gallery;
                 return true;
             }
-            if (name == QStringLiteral("External"))
-            {
-                kind = DocumentLayerKind::External;
-                return true;
-            }
             return false;
         }
 
@@ -851,6 +882,10 @@ namespace scopeone::core
                 const QString cameraPath = elementPath(memberPath(path, QStringLiteral("cameraIds")), index);
                 const QString& cameraId = plan.cameraIds.at(index);
                 if (!validateIdentifier(cameraId, cameraPath, errorMessage))
+                {
+                    return false;
+                }
+                if (!validateFileNameComponent(cameraId, cameraPath, errorMessage))
                 {
                     return false;
                 }
@@ -992,6 +1027,15 @@ namespace scopeone::core
             {
                 return fail(errorMessage,
                             QStringLiteral("%1.baseName must not be empty when streamToDisk is true").arg(path));
+            }
+            if (!validateFileNameComponent(plan.baseName,
+                                           memberPath(path, QStringLiteral("baseName")),
+                                           errorMessage)
+                || !validateFileNameComponent(plan.metadataFileName,
+                                               memberPath(path, QStringLiteral("metadataFileName")),
+                                               errorMessage))
+            {
+                return false;
             }
             if (!plan.configSha256.isEmpty())
             {
@@ -1262,19 +1306,6 @@ namespace scopeone::core
                 eventCameraIds.insert(cameraId);
             }
 
-            if (event.configGroup.isEmpty() != event.configPreset.isEmpty())
-            {
-                return fail(errorMessage,
-                            QStringLiteral("%1.configGroup and configPreset must either both be set or both be empty")
-                                .arg(path));
-            }
-            if (!validateVariantMap(event.deviceProperties,
-                                    memberPath(path, QStringLiteral("deviceProperties")),
-                                    errorMessage)
-                || !validateVariantMap(event.tags, memberPath(path, QStringLiteral("tags")), errorMessage))
-            {
-                return false;
-            }
             return true;
         }
 
@@ -1415,7 +1446,6 @@ namespace scopeone::core
         {
             QJsonObject object;
             object.insert(QStringLiteral("visible"), display.visible);
-            object.insert(QStringLiteral("selected"), display.selected);
             object.insert(QStringLiteral("opacityPercent"), display.opacityPercent);
             object.insert(QStringLiteral("gamma"), display.gamma);
             object.insert(QStringLiteral("colormap"), display.colormap);
@@ -1442,10 +1472,6 @@ namespace scopeone::core
             object.insert(QStringLiteral("exposureMs"), event.exposureMs);
             object.insert(QStringLiteral("minimumStartTimeMs"), QString::number(event.minimumStartTimeMs));
             object.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(event.cameraIds));
-            object.insert(QStringLiteral("configGroup"), event.configGroup);
-            object.insert(QStringLiteral("configPreset"), event.configPreset);
-            object.insert(QStringLiteral("deviceProperties"), variantMapToJson(event.deviceProperties));
-            object.insert(QStringLiteral("tags"), variantMapToJson(event.tags));
             return canonicalJsonObject(object);
         }
 
@@ -1585,7 +1611,6 @@ namespace scopeone::core
             object.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(plan.cameraIds));
             object.insert(QStringLiteral("format"), recordingFormatName(plan.format));
             object.insert(QStringLiteral("streamToDisk"), plan.streamToDisk);
-            object.insert(QStringLiteral("captureAll"), plan.captureAll);
             object.insert(QStringLiteral("enableCompression"), plan.enableCompression);
             object.insert(QStringLiteral("compressionLevel"), plan.compressionLevel);
             object.insert(QStringLiteral("framesPerBurst"), plan.framesPerBurst);
@@ -1692,7 +1717,6 @@ namespace scopeone::core
         {
             if (!checkObjectFields(object,
                                    {QStringLiteral("visible"),
-                                    QStringLiteral("selected"),
                                     QStringLiteral("opacityPercent"),
                                     QStringLiteral("gamma"),
                                     QStringLiteral("colormap"),
@@ -1706,7 +1730,6 @@ namespace scopeone::core
                 return false;
             }
             return readBool(object, QStringLiteral("visible"), display.visible, path, errorMessage)
-                && readBool(object, QStringLiteral("selected"), display.selected, path, errorMessage)
                 && readInt(object,
                            QStringLiteral("opacityPercent"),
                            display.opacityPercent,
@@ -1755,7 +1778,6 @@ namespace scopeone::core
                                     QStringLiteral("cameraIds"),
                                     QStringLiteral("format"),
                                     QStringLiteral("streamToDisk"),
-                                    QStringLiteral("captureAll"),
                                     QStringLiteral("enableCompression"),
                                     QStringLiteral("compressionLevel"),
                                     QStringLiteral("framesPerBurst"),
@@ -1825,11 +1847,6 @@ namespace scopeone::core
                           parsed.streamToDisk,
                           path,
                           errorMessage)
-                || !readBool(object,
-                             QStringLiteral("captureAll"),
-                             parsed.captureAll,
-                             path,
-                             errorMessage)
                 || !readBool(object,
                              QStringLiteral("enableCompression"),
                              parsed.enableCompression,
@@ -2099,11 +2116,7 @@ namespace scopeone::core
                                     QStringLiteral("hasZ"),
                                     QStringLiteral("exposureMs"),
                                     QStringLiteral("minimumStartTimeMs"),
-                                    QStringLiteral("cameraIds"),
-                                    QStringLiteral("configGroup"),
-                                    QStringLiteral("configPreset"),
-                                    QStringLiteral("deviceProperties"),
-                                    QStringLiteral("tags")},
+                                    QStringLiteral("cameraIds")},
                                    path,
                                    errorMessage))
             {
@@ -2152,34 +2165,14 @@ namespace scopeone::core
             }
 
             QJsonArray cameraIds;
-            QJsonObject deviceProperties;
-            QJsonObject tags;
             if (!readArray(object, QStringLiteral("cameraIds"), cameraIds, path, errorMessage)
                 || !parseStringArray(cameraIds,
                                      parsed.cameraIds,
                                      memberPath(path, QStringLiteral("cameraIds")),
-                                     errorMessage)
-                || !readString(object,
-                               QStringLiteral("configGroup"),
-                               parsed.configGroup,
-                               path,
-                               errorMessage)
-                || !readString(object,
-                               QStringLiteral("configPreset"),
-                               parsed.configPreset,
-                               path,
-                               errorMessage)
-                || !readObject(object,
-                               QStringLiteral("deviceProperties"),
-                               deviceProperties,
-                               path,
-                               errorMessage)
-                || !readObject(object, QStringLiteral("tags"), tags, path, errorMessage))
+                                     errorMessage))
             {
                 return false;
             }
-            parsed.deviceProperties = variantMapFromJson(deviceProperties);
-            parsed.tags = variantMapFromJson(tags);
             event = parsed;
             return true;
         }
@@ -2994,7 +2987,6 @@ namespace scopeone::core
                 case DocumentLayerKind::Processed:
                 case DocumentLayerKind::Static:
                 case DocumentLayerKind::Gallery:
-                case DocumentLayerKind::External:
                     break;
                 default:
                     return fail(errorMessage, QStringLiteral("%1.kind is invalid").arg(layerPath));
@@ -3198,8 +3190,6 @@ namespace scopeone::core
             return QStringLiteral("Static");
         case DocumentLayerKind::Gallery:
             return QStringLiteral("Gallery");
-        case DocumentLayerKind::External:
-            return QStringLiteral("External");
         }
         return QStringLiteral("Unknown");
     }

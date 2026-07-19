@@ -57,8 +57,8 @@ class ScopeOne:
     def set_layer_layout(self, layout: str):
         return self._client.set_layer_layout(layout)
 
-    def set_selected_layers(self, layer_keys: list[str]):
-        return self._client.set_selected_layers(layer_keys)
+    def set_visible_layers(self, layer_keys: list[str]):
+        return self._client.set_visible_layers(layer_keys)
 
     def set_layer_display(
         self,

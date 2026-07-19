@@ -369,7 +369,7 @@ class ExternalClient:
             "processingRealTime": bool(response.get("processingRealTime", False)),
             "processingModuleCount": int(response.get("processingModuleCount", 0)),
             "layers": list(response.get("layers", [])),
-            "selectedLayers": list(response.get("selectedLayers", [])),
+            "visibleLayers": list(response.get("visibleLayers", [])),
             "layerLayout": str(response.get("layerLayout", "")),
         }
 
@@ -408,14 +408,14 @@ class ExternalClient:
         )
         return str(response.get("layout", ""))
 
-    def set_selected_layers(self, layer_keys: list[str]) -> list[str]:
+    def set_visible_layers(self, layer_keys: list[str]) -> list[str]:
         response = self._request(
             {
-                "type": "set_selected_layers",
+                "type": "set_visible_layers",
                 "layerKeys": [str(layer_key) for layer_key in layer_keys],
             }
         )
-        return list(response.get("selectedLayers", []))
+        return list(response.get("visibleLayers", []))
 
     def set_layer_display(
         self,

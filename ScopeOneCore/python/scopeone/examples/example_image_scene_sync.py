@@ -11,7 +11,7 @@ def main() -> None:
         if not layers:
             raise RuntimeError("No image layers are available. Start a ScopeOne preview first.")
 
-        layer = next((item for item in layers if item.get("selected")), layers[0])
+        layer = next((item for item in layers if item.get("visible")), layers[0])
         layer_key = str(layer["layerKey"])
         print(f"Using layer: {layer_key}")
 

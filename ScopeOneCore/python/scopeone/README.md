@@ -95,7 +95,7 @@ scopeone.close()
 - `ScopeOne.list_layers()`
 - `ScopeOne.layer_options()`
 - `ScopeOne.set_layer_layout(layout)`
-- `ScopeOne.set_selected_layers(layer_keys)`
+- `ScopeOne.set_visible_layers(layer_keys)`
 - `ScopeOne.set_layer_display(layer_key, visible=None, opacity_percent=None, gamma=None, colormap=None, blending=None, levels=None)`
 - `ScopeOne.move_layer(layer_key, offset)`
 - `ScopeOne.config_groups()`
@@ -203,7 +203,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `list_layers`: response `layers`.
 - `layer_options`: response `layouts`, `colormaps`, `blendingModes`.
 - `set_layer_layout`: fields `layout`, accepts `side_by_side` or `overlay`.
-- `set_selected_layers`: fields `layerKeys`; response `selectedLayers`.
+- `set_visible_layers`: fields `layerKeys`; response `visibleLayers`.
 - `set_layer_display`: fields `layerKey`, optional `visible`, `opacityPercent`, `gamma`, `colormap`, `blending`, and display level fields `minLevel`, `maxLevel`, `maxPossible`.
 - `move_layer`: fields `layerKey`, `offset`; response ordered `layers`.
 - `config_groups`: response `groups`.

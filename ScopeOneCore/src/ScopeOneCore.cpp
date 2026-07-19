@@ -831,10 +831,10 @@ namespace scopeone::core
     // Build a frame-backed recording session for gallery and save sinks
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::RecordingSessionData::fromImageFrames(
         const QList<ImageFrame>& frames,
-        const RecordingCapturePlanData& capturePlan)
+        const ExperimentPlan& capturePlan)
     {
         auto session = std::make_shared<RecordingSessionData>();
-        RecordingCapturePlanData framePlan = capturePlan;
+        ExperimentPlan framePlan = capturePlan;
         framePlan.streamToDisk = false;
         framePlan.burstMode = false;
         framePlan.targetBursts = 1;
@@ -1762,9 +1762,9 @@ namespace scopeone::core
     // Build a graph-backed session source from frames
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::createFrameSession(
         const QList<ImageFrame>& frames,
-        const RecordingCapturePlanData& capturePlan)
+        const ExperimentPlan& capturePlan)
     {
-        RecordingCapturePlanData plan = capturePlan;
+        ExperimentPlan plan = capturePlan;
         plan.configPath = m_loadedConfigPath;
         plan.configSha256 = m_loadedConfigSha256;
         plan.processing = processingRecipe();
@@ -2980,10 +2980,10 @@ namespace scopeone::core
     }
 
     // Start recording and suspend preview during MDA motion
-    bool ScopeOneCore::startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds)
+    bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
     {
-        RecordingSettings settingsSnapshot = settings;
-        const bool useMda = !settingsSnapshot.positions.empty() || !settingsSnapshot.zPositions.empty();
+        ExperimentPlan planSnapshot = plan;
+        const bool useMda = !planSnapshot.positions.empty() || !planSnapshot.zPositions.empty();
         QStringList suspendedPreviewIds;
         if (useMda)
         {
@@ -2998,13 +2998,13 @@ namespace scopeone::core
             }
         }
 
-        if (settingsSnapshot.metadataFileName.trimmed().isEmpty())
+        if (planSnapshot.metadataFileName.trimmed().isEmpty())
         {
-            settingsSnapshot.metadataFileName = recordingMetadataFileName(settingsSnapshot.baseName);
+            planSnapshot.metadataFileName = recordingMetadataFileName(planSnapshot.baseName);
         }
-        settingsSnapshot.configPath = m_loadedConfigPath;
-        settingsSnapshot.configSha256 = m_loadedConfigSha256;
-        settingsSnapshot.processing = processingRecipe();
+        planSnapshot.configPath = m_loadedConfigPath;
+        planSnapshot.configSha256 = m_loadedConfigSha256;
+        planSnapshot.processing = processingRecipe();
         const QJsonObject deviceProperties = buildDevicePropertyMetadata(*this);
 
         QMetaObject::Connection restorePreviewConnection;
@@ -3024,7 +3024,7 @@ namespace scopeone::core
                 Qt::SingleShotConnection);
         }
 
-        const bool started = m_managers->recordingManager->start(settingsSnapshot,
+        const bool started = m_managers->recordingManager->start(planSnapshot,
                                                                   activeCameraIds,
                                                                   deviceProperties);
         if (!started)
@@ -3102,7 +3102,7 @@ namespace scopeone::core
         {
             return QStringLiteral("Error: no session data");
         }
-        RecordingCapturePlanData capturePlan = session->capturePlan();
+        ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.metadataFileName.trimmed().isEmpty())
         {
             capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
@@ -3121,8 +3121,8 @@ namespace scopeone::core
             return QStringLiteral("Error: no session data");
         }
 
-        const RecordingCapturePlanData& existingPlan = session->capturePlan();
-        RecordingCapturePlanData mergedPlan = existingPlan;
+        const ExperimentPlan& existingPlan = session->capturePlan();
+        ExperimentPlan mergedPlan = existingPlan;
         mergedPlan.format = saveOptions.format;
         mergedPlan.enableCompression = saveOptions.enableCompression;
         mergedPlan.compressionLevel = saveOptions.compressionLevel;
@@ -3133,10 +3133,6 @@ namespace scopeone::core
         if (!saveOptions.baseName.trimmed().isEmpty())
         {
             mergedPlan.baseName = saveOptions.baseName;
-        }
-        if (!saveOptions.metadataFileName.trimmed().isEmpty())
-        {
-            mergedPlan.metadataFileName = saveOptions.metadataFileName;
         }
         session->setCapturePlan(mergedPlan);
         return saveRecordingSession(session);
@@ -3155,7 +3151,7 @@ namespace scopeone::core
             return;
         }
 
-        RecordingCapturePlanData capturePlan = session->capturePlan();
+        ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.metadataFileName.trimmed().isEmpty())
         {
             capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);

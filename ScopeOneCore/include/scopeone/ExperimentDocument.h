@@ -63,8 +63,7 @@ namespace scopeone::core
         Raw,
         Processed,
         Static,
-        Gallery,
-        External
+        Gallery
     };
 
     enum class DocumentMarkupType
@@ -101,7 +100,6 @@ namespace scopeone::core
         QStringList cameraIds;
         RecordingFormat format{RecordingFormat::Tiff};
         bool streamToDisk{true};
-        bool captureAll{true};
         bool enableCompression{false};
         int compressionLevel{6};
         int framesPerBurst{1};
@@ -137,10 +135,6 @@ namespace scopeone::core
         double exposureMs{0.0};
         qint64 minimumStartTimeMs{0};
         QStringList cameraIds;
-        QString configGroup;
-        QString configPreset;
-        QVariantMap deviceProperties;
-        QVariantMap tags;
     };
 
     struct FrameRecord
@@ -209,7 +203,6 @@ namespace scopeone::core
     struct LayerDisplayState
     {
         bool visible{false};
-        bool selected{false};
         int opacityPercent{100};
         double gamma{1.0};
         QString colormap{QStringLiteral("Gray")};

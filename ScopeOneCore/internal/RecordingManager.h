@@ -34,8 +34,6 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
-        using Settings = ExperimentPlan;
-
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
@@ -47,7 +45,7 @@ namespace scopeone::core::internal
             m_latestFrameFetcher = std::move(fetcher);
         }
 
-        bool start(const Settings& settings,
+        bool start(const ExperimentPlan& requestedPlan,
                    const QStringList& activeCameraIds,
                    const QJsonObject& deviceProperties);
         void stop();
@@ -85,8 +83,6 @@ namespace scopeone::core::internal
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
 
     private:
-        using CapturePlan = ExperimentPlan;
-
         struct FramePacket
         {
             enum class Source
@@ -177,14 +173,14 @@ namespace scopeone::core::internal
             bool hasLastEvent{false};
         };
 
-        bool buildCapturePlan(const Settings& settings,
+        bool buildCapturePlan(const ExperimentPlan& requestedPlan,
                               const QStringList& activeCameraIds,
-                              CapturePlan& plan,
+                              ExperimentPlan& plan,
                               QString& errorMessage) const;
-        bool planUsesMda(const CapturePlan& plan) const;
-        bool planStreamsMda(const CapturePlan& plan) const;
-        void resetCaptureState(const CapturePlan& plan);
-        void resetSessionState(const CapturePlan& plan, const QJsonObject& deviceProperties);
+        bool planUsesMda(const ExperimentPlan& plan) const;
+        bool planStreamsMda(const ExperimentPlan& plan) const;
+        void resetCaptureState(const ExperimentPlan& plan);
+        void resetSessionState(const ExperimentPlan& plan, const QJsonObject& deviceProperties);
         void finalizeActiveSession(ExperimentRunState state, const QString& errorMessage);
         void finishRecording(ExperimentRunState state, const QString& errorMessage = QString());
         static bool writeSessionDocument(const std::shared_ptr<RecordingSessionData>& session,
@@ -192,7 +188,7 @@ namespace scopeone::core::internal
         void appendPreviewEventRecord(const ImageFrame& frame);
         void primeLastFrameIndices();
         void emitProgress();
-        bool startStreamingOutputs(const CapturePlan& plan);
+        bool startStreamingOutputs(const ExperimentPlan& plan);
         void stopStreamingOutputs(bool applyOutputManifest = false);
         void requestWriterStop();
         void writerLoop(const std::shared_ptr<CameraOutput>& output, quint64 generation);
@@ -206,7 +202,6 @@ namespace scopeone::core::internal
         static QString updateSessionResult(const std::shared_ptr<RecordingSessionData>& session,
                                            const QString& result,
                                            bool saved);
-        qint64 totalFramesWritten() const;
         bool enqueueFrame(const ImageFrame& frame);
         bool shouldAcceptFrame(const FramePacket& packet) const;
 

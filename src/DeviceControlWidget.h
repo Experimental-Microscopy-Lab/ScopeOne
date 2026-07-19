@@ -78,7 +78,7 @@ namespace scopeone::ui
         QWidget* createPreviewControlsGroup();
         void updatePreviewZoomControls();
         void rebuildPreviewLayerTable(const QStringList& layerKeys);
-        void applyPreviewSelection(const QStringList& layerKeys, bool notifyPreview);
+        void applyPreviewVisibility(const QStringList& layerKeys, bool notifyPreview);
         void refreshPreviewLayerSettings();
         void refreshLayerFrameControl();
         QString selectedLayerSourceId() const;

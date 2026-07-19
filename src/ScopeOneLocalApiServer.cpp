@@ -963,8 +963,8 @@ namespace scopeone::ui
                             static_cast<int>(m_scopeonecore->processingModules().size()));
             response.insert(QStringLiteral("layers"),
                             QJsonArray::fromStringList(m_previewWidget->availableLayerKeys()));
-            response.insert(QStringLiteral("selectedLayers"),
-                            QJsonArray::fromStringList(m_previewWidget->selectedLayerKeys()));
+            response.insert(QStringLiteral("visibleLayers"),
+                            QJsonArray::fromStringList(m_previewWidget->visibleLayerKeys()));
             response.insert(QStringLiteral("layerLayout"),
                             layerLayoutModeName(m_previewWidget->layerLayoutMode()));
             return response;
@@ -1043,7 +1043,7 @@ namespace scopeone::ui
 
         if (type == QStringLiteral("list_layers"))
         {
-            const QStringList selectedLayerKeys = m_previewWidget->selectedLayerKeys();
+            const QStringList visibleLayerKeys = m_previewWidget->visibleLayerKeys();
             QJsonArray layers;
             for (const QString& layerKey : m_previewWidget->availableLayerKeys())
             {
@@ -1053,8 +1053,7 @@ namespace scopeone::ui
                              scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey));
                 layer.insert(QStringLiteral("name"), m_previewWidget->layerName(layerKey));
                 layer.insert(QStringLiteral("info"), m_previewWidget->layerInfoText(layerKey));
-                layer.insert(QStringLiteral("selected"), selectedLayerKeys.contains(layerKey));
-                layer.insert(QStringLiteral("visible"), selectedLayerKeys.contains(layerKey));
+                layer.insert(QStringLiteral("visible"), visibleLayerKeys.contains(layerKey));
                 layer.insert(QStringLiteral("opacityPercent"), m_previewWidget->layerOpacityPercent(layerKey));
                 layer.insert(QStringLiteral("gamma"), m_previewWidget->layerGamma(layerKey));
                 layer.insert(QStringLiteral("colormap"), m_previewWidget->layerColormap(layerKey));
@@ -1110,7 +1109,7 @@ namespace scopeone::ui
             return response;
         }
 
-        if (type == QStringLiteral("set_selected_layers"))
+        if (type == QStringLiteral("set_visible_layers"))
         {
             QJsonObject response = makeResponse(type, false);
             if (!request.value(QStringLiteral("layerKeys")).isArray())
@@ -1130,10 +1129,10 @@ namespace scopeone::ui
                 }
             }
 
-            m_previewWidget->setSelectedLayerKeys(layerKeys);
+            m_previewWidget->setVisibleLayerKeys(layerKeys);
             response = makeResponse(type, true);
-            response.insert(QStringLiteral("selectedLayers"),
-                            QJsonArray::fromStringList(m_previewWidget->selectedLayerKeys()));
+            response.insert(QStringLiteral("visibleLayers"),
+                            QJsonArray::fromStringList(m_previewWidget->visibleLayerKeys()));
             return response;
         }
 
@@ -1214,7 +1213,7 @@ namespace scopeone::ui
 
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
-            response.insert(QStringLiteral("visible"), m_previewWidget->selectedLayerKeys().contains(layerKey));
+            response.insert(QStringLiteral("visible"), m_previewWidget->visibleLayerKeys().contains(layerKey));
             response.insert(QStringLiteral("opacityPercent"), m_previewWidget->layerOpacityPercent(layerKey));
             response.insert(QStringLiteral("gamma"), m_previewWidget->layerGamma(layerKey));
             response.insert(QStringLiteral("colormap"), m_previewWidget->layerColormap(layerKey));
@@ -2295,7 +2294,6 @@ namespace scopeone::ui
             plan.burstMode = false;
             plan.targetBursts = 1;
             plan.enableCompression = false;
-            plan.captureAll = true;
             const QJsonValue intervalValue = request.value(QStringLiteral("mdaIntervalMs"));
             if (!intervalValue.isUndefined()
                 && (!intervalValue.isDouble() || !std::isfinite(intervalValue.toDouble())))
@@ -2357,7 +2355,6 @@ namespace scopeone::ui
 
             const QString sessionId = plan.experimentId;
             m_sessions.insert(sessionId, session);
-            m_experiments.insert(sessionId, session->experimentDocument());
             response.insert(QStringLiteral("sessionId"), sessionId);
             response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(session->recordedCameraIds()));
             return response;
@@ -2671,11 +2668,10 @@ namespace scopeone::ui
                 return response;
             }
 
-            scopeone::core::ScopeOneCore::RecordingCapturePlanData capturePlan;
+            scopeone::core::ExperimentPlan capturePlan;
             capturePlan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
             capturePlan.cameraIds.append(graphFrame.cameraId);
             capturePlan.streamToDisk = false;
-            capturePlan.captureAll = false;
             capturePlan.processing = m_scopeonecore->processingRecipe();
             applySaveRequest(request, capturePlan);
             QList<scopeone::core::ImageFrame> frames;

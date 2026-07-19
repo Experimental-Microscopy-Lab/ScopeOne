@@ -21,7 +21,6 @@ namespace scopeone::ui
                            const scopeone::core::LayerDisplayState& right)
         {
             return left.visible == right.visible
-                && left.selected == right.selected
                 && left.opacityPercent == right.opacityPercent
                 && qFuzzyCompare(left.gamma, right.gamma)
                 && left.colormap == right.colormap
@@ -88,7 +87,6 @@ namespace scopeone::ui
             case scopeone::core::DocumentLayerKind::Gallery:
                 return ImageSceneModel::LayerKind::Gallery;
             case scopeone::core::DocumentLayerKind::Static:
-            case scopeone::core::DocumentLayerKind::External:
                 return ImageSceneModel::LayerKind::Static;
             }
             return ImageSceneModel::LayerKind::Unknown;

@@ -136,10 +136,10 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewAvailableCameraIdsChanged);
         connect(m_previewWidget, &PreviewWidget::availableLayerKeysChanged,
                 this, &DeviceControlWidget::onPreviewAvailableLayerKeysChanged);
-        connect(m_previewWidget, &PreviewWidget::selectedLayerKeysChanged,
+        connect(m_previewWidget, &PreviewWidget::visibleLayerKeysChanged,
                 this, [this](const QStringList& layerKeys)
                 {
-                    applyPreviewSelection(layerKeys, false);
+                    applyPreviewVisibility(layerKeys, false);
                 });
         connect(m_previewWidget, &PreviewWidget::layerLayoutModeChanged,
                 this, [this](PreviewWidget::LayerLayoutMode mode)
@@ -164,7 +164,7 @@ namespace scopeone::ui
 
         onPreviewAvailableCameraIdsChanged(m_previewWidget->availableCameraIds());
         onPreviewAvailableLayerKeysChanged(m_previewWidget->availableLayerKeys());
-        applyPreviewSelection(m_previewWidget->selectedLayerKeys(), false);
+        applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
         syncPreviewLayerLayoutCombo(layerLayoutComboIndex(m_previewWidget->layerLayoutMode()));
         onPreviewLayerInfoTextChanged(m_previewWidget->layerInfoSummaryText());
 
@@ -506,28 +506,28 @@ namespace scopeone::ui
         }
     }
 
-    // Applies a layer selection to layer rows and preview
-    void DeviceControlWidget::applyPreviewSelection(const QStringList& layerKeys, bool notifyPreview)
+    // Applies layer visibility to layer rows and preview
+    void DeviceControlWidget::applyPreviewVisibility(const QStringList& layerKeys, bool notifyPreview)
     {
-        QSet<QString> selectedLayerKeySet;
+        QSet<QString> visibleLayerKeySet;
         for (const QString& layerKey : layerKeys)
         {
-            selectedLayerKeySet.insert(layerKey);
+            visibleLayerKeySet.insert(layerKey);
         }
 
         for (auto it = m_layerRows.begin(); it != m_layerRows.end(); ++it)
         {
             QSignalBlocker blocker(it.value());
-            it.value()->setChecked(selectedLayerKeySet.contains(it.key()));
+            it.value()->setChecked(visibleLayerKeySet.contains(it.key()));
         }
 
         if (notifyPreview)
         {
-            m_previewWidget->setSelectedLayerKeys(layerKeys);
+            m_previewWidget->setVisibleLayerKeys(layerKeys);
         }
 
         const QString previousLayerKey = m_selectedLayerKey;
-        if (!layerKeys.isEmpty() && !selectedLayerKeySet.contains(m_selectedLayerKey))
+        if (!layerKeys.isEmpty() && !visibleLayerKeySet.contains(m_selectedLayerKey))
         {
             const QString nextLayerKey = layerKeys.first();
             for (int row = 0; row < m_layerTable->rowCount(); ++row)
@@ -655,7 +655,7 @@ namespace scopeone::ui
     void DeviceControlWidget::onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys)
     {
         rebuildPreviewLayerTable(layerKeys);
-        applyPreviewSelection(m_previewWidget->selectedLayerKeys(), false);
+        applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
         updateControlsState();
     }
 
