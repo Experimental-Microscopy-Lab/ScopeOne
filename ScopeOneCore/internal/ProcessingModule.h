@@ -4,12 +4,12 @@
 #include <QVariantMap>
 #include <memory>
 
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ExperimentDocument.h"
 
 namespace scopeone::core::internal
 {
     using ImageFrame = scopeone::core::ImageFrame;
-    using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
+    using ProcessingModuleKind = scopeone::core::ProcessingModuleKind;
 
     struct ProcessingResult
     {

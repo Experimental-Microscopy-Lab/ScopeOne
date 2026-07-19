@@ -10,8 +10,11 @@
 #include "internal/RecordingManager.h"
 #include "internal/SpatiotemporalBinningModule.h"
 #include "MMCore.h"
+#include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QFile>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -19,7 +22,9 @@
 #include <QJsonValue>
 #include <QList>
 #include <QStringList>
+#include <QSysInfo>
 #include <QTimer>
+#include <QUuid>
 #include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
@@ -547,58 +552,8 @@ namespace
         return facade;
     }
 
-    // Translate public recording settings into manager settings
-    scopeone::core::internal::RecordingManager::Settings toRecordingManagerSettings(
-        const scopeone::core::ScopeOneCore::RecordingSettings& settings)
-    {
-        scopeone::core::internal::RecordingManager::Settings managerSettings;
-        managerSettings.format = settings.format;
-        managerSettings.streamToDisk = settings.streamToDisk;
-        managerSettings.enableCompression = settings.enableCompression;
-        managerSettings.compressionLevel = settings.compressionLevel;
-        managerSettings.framesPerBurst = settings.framesPerBurst;
-        managerSettings.burstMode = settings.burstMode;
-        managerSettings.targetBursts = settings.targetBursts;
-        managerSettings.burstIntervalMs = settings.burstIntervalMs;
-        managerSettings.mdaIntervalMs = settings.mdaIntervalMs;
-        managerSettings.positions = settings.positions;
-        managerSettings.zPositions = settings.zPositions;
-
-        managerSettings.order.clear();
-        managerSettings.order.reserve(settings.order.size());
-        for (scopeone::core::ScopeOneCore::RecordingAxis axis : settings.order)
-        {
-            switch (axis)
-            {
-            case scopeone::core::ScopeOneCore::RecordingAxis::Time:
-                managerSettings.order.push_back(scopeone::core::internal::MDAAxis::Time);
-                break;
-            case scopeone::core::ScopeOneCore::RecordingAxis::Z:
-                managerSettings.order.push_back(scopeone::core::internal::MDAAxis::Z);
-                break;
-            case scopeone::core::ScopeOneCore::RecordingAxis::XY:
-                managerSettings.order.push_back(scopeone::core::internal::MDAAxis::XY);
-                break;
-            }
-        }
-        if (managerSettings.order.empty())
-        {
-            managerSettings.order = scopeone::core::internal::MDAOrder{
-                scopeone::core::internal::MDAAxis::Time,
-                scopeone::core::internal::MDAAxis::Z,
-                scopeone::core::internal::MDAAxis::XY
-            };
-        }
-        managerSettings.saveDir = settings.saveDir;
-        managerSettings.baseName = settings.baseName;
-        managerSettings.captureAll = settings.captureAll;
-        managerSettings.metadataFileName = settings.metadataFileName;
-        managerSettings.sessionMetadataJson = settings.sessionMetadataJson;
-        return managerSettings;
-    }
-
     // Capture current device properties for recording metadata
-    QByteArray buildDevicePropertyMetadataJson(const scopeone::core::ScopeOneCore& core)
+    QJsonObject buildDevicePropertyMetadata(const scopeone::core::ScopeOneCore& core)
     {
         QStringList deviceLabels = core.loadedDevices();
         deviceLabels.removeDuplicates();
@@ -629,9 +584,7 @@ namespace
             devicePropertiesObject.insert(trimmedDeviceLabel, propertyValuesObject);
         }
 
-        QJsonObject rootObject;
-        rootObject.insert(QStringLiteral("device_properties"), devicePropertiesObject);
-        return QJsonDocument(rootObject).toJson(QJsonDocument::Indented);
+        return devicePropertiesObject;
     }
 }
 
@@ -648,6 +601,50 @@ namespace scopeone::core
     using scopeone::core::internal::RecordingManager;
     using scopeone::core::internal::DifferentialRollingModule;
     using scopeone::core::internal::SpatiotemporalBinningModule;
+
+    static std::unique_ptr<ProcessingModule> createProcessingModule(ProcessingModuleKind kind)
+    {
+        switch (kind)
+        {
+        case ProcessingModuleKind::FFT:
+            return std::make_unique<FFTModule>();
+        case ProcessingModuleKind::BackgroundCalibration:
+            return std::make_unique<BackgroundCalibrationModule>();
+        case ProcessingModuleKind::SpatiotemporalBinning:
+            return std::make_unique<SpatiotemporalBinningModule>();
+        case ProcessingModuleKind::GaussianBlur:
+            return std::make_unique<GaussianBlurModule>();
+        case ProcessingModuleKind::DifferentialRolling:
+            return std::make_unique<DifferentialRollingModule>();
+        case ProcessingModuleKind::Unknown:
+            return {};
+        }
+        return {};
+    }
+
+    static bool equalCanonicalParameter(const QVariant& actual, const QVariant& expected)
+    {
+        return actual.metaType().id() == expected.metaType().id()
+            && actual == expected;
+    }
+
+    static bool equalCanonicalParameters(const QVariantMap& actual, const QVariantMap& expected)
+    {
+        if (actual.size() != expected.size())
+        {
+            return false;
+        }
+        for (auto it = expected.constBegin(); it != expected.constEnd(); ++it)
+        {
+            const auto actualIt = actual.constFind(it.key());
+            if (actualIt == actual.constEnd()
+                || !equalCanonicalParameter(actualIt.value(), it.value()))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     // Clear all live frame graph state
     void ScopeOneCore::FrameGraph::clear()
@@ -834,15 +831,75 @@ namespace scopeone::core
     // Build a frame-backed recording session for gallery and save sinks
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::RecordingSessionData::fromImageFrames(
         const QList<ImageFrame>& frames,
-        const RecordingCapturePlanData& capturePlan)
+        const ExperimentPlan& capturePlan)
     {
         auto session = std::make_shared<RecordingSessionData>();
-        RecordingCapturePlanData framePlan = capturePlan;
+        ExperimentPlan framePlan = capturePlan;
         framePlan.streamToDisk = false;
+        framePlan.burstMode = false;
+        framePlan.targetBursts = 1;
+        if (framePlan.experimentId.trimmed().isEmpty())
+        {
+            framePlan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+
+        QList<ImageFrame> normalizedFrames;
+        normalizedFrames.reserve(frames.size());
+        QHash<QString, int> cameraFrameCounts;
+        for (const ImageFrame& frame : frames)
+        {
+            const QString cameraId = frame.cameraId.trimmed();
+            if (!frame.isValid() || cameraId.isEmpty())
+            {
+                continue;
+            }
+            if (!framePlan.cameraIds.contains(cameraId))
+            {
+                framePlan.cameraIds.append(cameraId);
+            }
+            ImageFrame normalizedFrame(frame);
+            normalizedFrame.cameraId = cameraId;
+            if (normalizedFrame.timestampNs == 0)
+            {
+                normalizedFrame.timestampNs =
+                    static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            }
+            normalizedFrames.append(std::move(normalizedFrame));
+            cameraFrameCounts[cameraId] += 1;
+        }
+        for (auto it = cameraFrameCounts.constBegin(); it != cameraFrameCounts.constEnd(); ++it)
+        {
+            framePlan.framesPerBurst = qMax(framePlan.framesPerBurst, it.value());
+        }
         session->setCapturePlan(framePlan);
-        if (!session->appendImageFrames(frames))
+        if (!session->appendImageFrames(normalizedFrames))
         {
             return {};
+        }
+        QHash<QString, int> timeIndices;
+        quint64 sequenceIndex = 0;
+        quint64 firstTimestampNs = (std::numeric_limits<quint64>::max)();
+        quint64 lastTimestampNs = 0;
+        for (const ImageFrame& frame : normalizedFrames)
+        {
+            const QString& cameraId = frame.cameraId;
+            AcquisitionEventRecord record;
+            record.event.sequenceIndex = sequenceIndex++;
+            record.event.timeIndex = timeIndices[cameraId]++;
+            record.event.exposureMs = framePlan.exposureMs;
+            record.event.cameraIds = QStringList{cameraId};
+            record.startedTimestampNs = frame.timestampNs;
+            record.completedTimestampNs = record.startedTimestampNs;
+            record.succeeded = true;
+            record.frames.insert(cameraId, frameRecordFromImageFrame(frame));
+            session->appendEventRecord(record);
+            firstTimestampNs = (std::min)(firstTimestampNs, record.startedTimestampNs);
+            lastTimestampNs = (std::max)(lastTimestampNs, record.completedTimestampNs);
+        }
+        if (sequenceIndex > 0)
+        {
+            session->setStartedTimestampNs(firstTimestampNs);
+            session->setRunState(ExperimentRunState::Completed, lastTimestampNs);
         }
         session->prepareForSave(false);
         return session;
@@ -1299,6 +1356,17 @@ namespace scopeone::core
             *result = facadeResult;
         }
         m_cameraIds = facadeResult.cameraIds;
+        const QFileInfo configFile(configPath);
+        m_loadedConfigPath = configPath.trimmed().isEmpty()
+                                 ? QString()
+                                 : configFile.absoluteFilePath();
+        m_loadedConfigSha256.clear();
+        QFile file(m_loadedConfigPath);
+        if (file.open(QIODevice::ReadOnly))
+        {
+            m_loadedConfigSha256 = QString::fromLatin1(
+                QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+        }
         return true;
     }
 
@@ -1341,6 +1409,8 @@ namespace scopeone::core
         {
         }
         m_cameraIds.clear();
+        m_loadedConfigPath.clear();
+        m_loadedConfigSha256.clear();
         m_frameGraph.clear();
         m_previewRawFlushQueued = false;
         m_previewProcessedFlushQueued = false;
@@ -1692,9 +1762,26 @@ namespace scopeone::core
     // Build a graph-backed session source from frames
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::createFrameSession(
         const QList<ImageFrame>& frames,
-        const RecordingCapturePlanData& capturePlan)
+        const ExperimentPlan& capturePlan)
     {
-        auto session = RecordingSessionData::fromImageFrames(frames, capturePlan);
+        ExperimentPlan plan = capturePlan;
+        plan.configPath = m_loadedConfigPath;
+        plan.configSha256 = m_loadedConfigSha256;
+        plan.processing = processingRecipe();
+        const QJsonObject deviceProperties = buildDevicePropertyMetadata(*this);
+        auto session = RecordingSessionData::fromImageFrames(frames, plan);
+        if (session)
+        {
+            SoftwareSnapshot software;
+            software.applicationVersion = QCoreApplication::applicationVersion();
+            software.coreVersion = getVersion();
+            software.mmCoreVersion = getMMCoreVersion();
+            software.libTiffVersion = getLibTiffVersion();
+            software.zlibVersion = getZlibVersion();
+            software.operatingSystem = QSysInfo::prettyProductName();
+            session->setSoftwareSnapshot(software);
+            session->setDeviceProperties(deviceProperties);
+        }
         publishSessionFrameSource(session);
         return session;
     }
@@ -2665,6 +2752,94 @@ namespace scopeone::core
         return true;
     }
 
+    // Captures the ordered processing pipeline as a replayable recipe
+    ProcessingRecipe ScopeOneCore::processingRecipe() const
+    {
+        ProcessingRecipe recipe;
+        recipe.bitDepth = processingBitDepth();
+        const QList<ProcessingModuleInfo> modules = processingModules();
+        recipe.modules.reserve(modules.size());
+        for (const ProcessingModuleInfo& module : modules)
+        {
+            ProcessingModuleRecipe entry;
+            entry.kind = module.kind();
+            entry.schemaVersion = kProcessingModuleSchemaVersion;
+            entry.parameters = module.parameters();
+            recipe.modules.append(std::move(entry));
+        }
+        return recipe;
+    }
+
+    // Replaces the current pipeline from a validated recipe
+    bool ScopeOneCore::applyProcessingRecipe(const ProcessingRecipe& recipe, QString* errorMessage)
+    {
+        if (errorMessage) errorMessage->clear();
+        if (recipe.bitDepth != ProcessingBitDepth::Bit8
+            && recipe.bitDepth != ProcessingBitDepth::Bit16)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Unsupported processing bit depth");
+            return false;
+        }
+
+        std::vector<std::unique_ptr<ProcessingModule>> modules;
+        modules.reserve(static_cast<size_t>(recipe.modules.size()));
+        for (const ProcessingModuleRecipe& entry : recipe.modules)
+        {
+            if (entry.schemaVersion != kProcessingModuleSchemaVersion)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unsupported processing module schema version: %1")
+                                        .arg(entry.schemaVersion);
+                }
+                return false;
+            }
+            std::unique_ptr<ProcessingModule> module = createProcessingModule(entry.kind);
+            if (!module)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unsupported processing module: %1")
+                                        .arg(processingModuleKindName(entry.kind));
+                }
+                return false;
+            }
+            module->setParameters(entry.parameters);
+            if (!equalCanonicalParameters(module->parameters(), entry.parameters))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral(
+                        "Processing module %1 (%2) parameters are not canonical; a key or value was ignored, clamped, converted, or normalized")
+                                        .arg(static_cast<qulonglong>(modules.size()))
+                                        .arg(module->name());
+                }
+                return false;
+            }
+            modules.push_back(std::move(module));
+        }
+
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        while (definition.moduleCount() > 0)
+        {
+            definition.removeModule(definition.moduleCount() - 1);
+        }
+        for (auto& module : modules)
+        {
+            definition.addModule(std::move(module));
+        }
+        m_managers->imageProcessingManager->setProcessingBitDepth(
+            recipe.bitDepth == ProcessingBitDepth::Bit16 ? 16 : 8);
+        m_managers->imageProcessingManager->clearRuntimePipelines();
+        if (definition.moduleCount() == 0)
+        {
+            m_managers->imageProcessingManager->enableRealTimeProcessing(false);
+        }
+        emit processingModulesChanged();
+        emit processingSettingsChanged();
+        return true;
+    }
+
     // Queue one graph raw frame for asynchronous live processing
     void ScopeOneCore::processGraphRawFrameAsync(const ImageFrame& frame)
     {
@@ -2730,28 +2905,8 @@ namespace scopeone::core
     bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
     {
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
-
-        std::unique_ptr<ProcessingModule> module;
-        switch (kind)
-        {
-        case ProcessingModuleKind::FFT:
-            module = std::make_unique<FFTModule>();
-            break;
-        case ProcessingModuleKind::BackgroundCalibration:
-            module = std::make_unique<BackgroundCalibrationModule>();
-            break;
-        case ProcessingModuleKind::SpatiotemporalBinning:
-            module = std::make_unique<SpatiotemporalBinningModule>();
-            break;
-        case ProcessingModuleKind::GaussianBlur:
-            module = std::make_unique<GaussianBlurModule>();
-            break;
-        case ProcessingModuleKind::DifferentialRolling:
-            module = std::make_unique<DifferentialRollingModule>();
-            break;
-        case ProcessingModuleKind::Unknown:
-            return false;
-        }
+        std::unique_ptr<ProcessingModule> module = createProcessingModule(kind);
+        if (!module) return false;
 
         definition.addModule(std::move(module));
         m_managers->imageProcessingManager->clearRuntimePipelines();
@@ -2825,10 +2980,10 @@ namespace scopeone::core
     }
 
     // Start recording and suspend preview during MDA motion
-    bool ScopeOneCore::startRecording(const RecordingSettings& settings, const QStringList& activeCameraIds)
+    bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
     {
-        RecordingSettings settingsSnapshot = settings;
-        const bool useMda = !settingsSnapshot.positions.empty() || !settingsSnapshot.zPositions.empty();
+        ExperimentPlan planSnapshot = plan;
+        const bool useMda = !planSnapshot.positions.empty() || !planSnapshot.zPositions.empty();
         QStringList suspendedPreviewIds;
         if (useMda)
         {
@@ -2843,14 +2998,14 @@ namespace scopeone::core
             }
         }
 
-        if (settingsSnapshot.metadataFileName.trimmed().isEmpty())
+        if (planSnapshot.metadataFileName.trimmed().isEmpty())
         {
-            settingsSnapshot.metadataFileName = recordingMetadataFileName(settingsSnapshot.baseName);
+            planSnapshot.metadataFileName = recordingMetadataFileName(planSnapshot.baseName);
         }
-        if (settingsSnapshot.sessionMetadataJson.isEmpty())
-        {
-            settingsSnapshot.sessionMetadataJson = buildDevicePropertyMetadataJson(*this);
-        }
+        planSnapshot.configPath = m_loadedConfigPath;
+        planSnapshot.configSha256 = m_loadedConfigSha256;
+        planSnapshot.processing = processingRecipe();
+        const QJsonObject deviceProperties = buildDevicePropertyMetadata(*this);
 
         QMetaObject::Connection restorePreviewConnection;
         if (!suspendedPreviewIds.isEmpty())
@@ -2869,9 +3024,9 @@ namespace scopeone::core
                 Qt::SingleShotConnection);
         }
 
-        const bool started = m_managers->recordingManager->start(
-            toRecordingManagerSettings(settingsSnapshot),
-            activeCameraIds);
+        const bool started = m_managers->recordingManager->start(planSnapshot,
+                                                                  activeCameraIds,
+                                                                  deviceProperties);
         if (!started)
         {
             if (restorePreviewConnection)
@@ -2897,6 +3052,49 @@ namespace scopeone::core
         return m_managers->recordingManager->isRecording();
     }
 
+    // Attaches shared layer and markup state to one completed recording
+    bool ScopeOneCore::setRecordingSessionPresentation(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const ExperimentDocument& presentation,
+        QString* errorMessage) const
+    {
+        if (!session)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Missing recording session");
+            return false;
+        }
+
+        ExperimentDocument candidate = session->experimentDocument();
+        candidate.layers = presentation.layers;
+        candidate.markups = presentation.markups;
+        if (!validateExperimentDocument(candidate, errorMessage))
+        {
+            return false;
+        }
+
+        session->setPresentationState(candidate.layers, candidate.markups);
+
+        if (session->streamedToDisk())
+        {
+            const ExperimentPlan& plan = candidate.plan;
+            QString metadataName = plan.metadataFileName.trimmed();
+            if (metadataName.isEmpty())
+            {
+                metadataName = recordingMetadataFileName(plan.baseName);
+            }
+            else if (!metadataName.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
+            {
+                metadataName += QStringLiteral(".json");
+            }
+            const QString outputDir = QDir(plan.saveDir).filePath(plan.baseName.trimmed());
+            if (!saveExperimentDocument(QDir(outputDir).filePath(metadataName), candidate, errorMessage))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // Save a completed session with device metadata attached
     QString ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session) const
     {
@@ -2904,14 +3102,10 @@ namespace scopeone::core
         {
             return QStringLiteral("Error: no session data");
         }
-        RecordingCapturePlanData capturePlan = session->capturePlan();
+        ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.metadataFileName.trimmed().isEmpty())
         {
             capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
-        }
-        if (capturePlan.sessionMetadataJson.isEmpty())
-        {
-            capturePlan.sessionMetadataJson = buildDevicePropertyMetadataJson(*this);
         }
         session->setCapturePlan(capturePlan);
         return RecordingManager::saveSessionToDisk(session);
@@ -2920,14 +3114,27 @@ namespace scopeone::core
     // Save a completed session with an updated capture plan
     QString ScopeOneCore::saveRecordingSession(
         const std::shared_ptr<RecordingSessionData>& session,
-        const RecordingCapturePlanData& capturePlan) const
+        const RecordingSaveOptions& saveOptions) const
     {
         if (!session)
         {
             return QStringLiteral("Error: no session data");
         }
 
-        session->setCapturePlan(capturePlan);
+        const ExperimentPlan& existingPlan = session->capturePlan();
+        ExperimentPlan mergedPlan = existingPlan;
+        mergedPlan.format = saveOptions.format;
+        mergedPlan.enableCompression = saveOptions.enableCompression;
+        mergedPlan.compressionLevel = saveOptions.compressionLevel;
+        if (!saveOptions.saveDir.trimmed().isEmpty())
+        {
+            mergedPlan.saveDir = saveOptions.saveDir;
+        }
+        if (!saveOptions.baseName.trimmed().isEmpty())
+        {
+            mergedPlan.baseName = saveOptions.baseName;
+        }
+        session->setCapturePlan(mergedPlan);
         return saveRecordingSession(session);
     }
 
@@ -2939,16 +3146,33 @@ namespace scopeone::core
             emit recordingSessionSaveFinished(session);
             return;
         }
-        auto* watcher = new QFutureWatcher<QString>(this);
-        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, session]()
+        if (m_sessionsSaving.contains(session.get()))
         {
+            return;
+        }
+
+        ExperimentPlan capturePlan = session->capturePlan();
+        if (capturePlan.metadataFileName.trimmed().isEmpty())
+        {
+            capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
+            session->setCapturePlan(capturePlan);
+        }
+        const std::shared_ptr<RecordingSessionData> saveSession = session->cloneForSave();
+        m_sessionsSaving.insert(session.get());
+        auto* watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished,
+                this,
+                [this, watcher, session, saveSession]()
+        {
+            session->applySaveStateFrom(*saveSession);
+            m_sessionsSaving.remove(session.get());
             emit recordingSessionSaveFinished(session);
             watcher->deleteLater();
         });
 
-        const auto future = QtConcurrent::run([this, session]()
+        const auto future = QtConcurrent::run([saveSession]()
         {
-            return saveRecordingSession(session);
+            return RecordingManager::saveSessionToDisk(saveSession);
         });
         watcher->setFuture(future);
     }

@@ -4,6 +4,7 @@
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QMap>
 #include <QString>
@@ -12,9 +13,10 @@
 #include <QPoint>
 #include <QRect>
 #include <QSize>
+#include <QTimer>
 #include <QVector>
 #include <vector>
-#include "ImageMarkupModel.h"
+#include "ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
 class QEvent;
@@ -43,16 +45,18 @@ namespace scopeone::ui
             bool processed{false};
         };
 
-        explicit PreviewWidget(QWidget* parent = nullptr);
+        PreviewWidget(ImageSceneModel* sceneModel, QWidget* parent);
         ~PreviewWidget() override;
 
-        void setMarkupModel(ImageMarkupModel* model);
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
+        void trackProcessedFrameRate(const scopeone::core::ImageFrame& frame);
+        void trackRawFrameRate(const scopeone::core::ImageFrame& frame);
+        void resetLiveFrameRates();
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
-        void setSelectedLayerKeys(const QStringList& layerKeys);
+        void setVisibleLayerKeys(const QStringList& layerKeys);
         void setLayerVisible(const QString& layerKey, bool visible);
         void setLayerOpacityPercent(const QString& layerKey, int percent);
         void setLayerGamma(const QString& layerKey, double gamma);
@@ -70,7 +74,7 @@ namespace scopeone::ui
         void clearStaticLayers();
         QStringList availableCameraIds() const;
         QStringList availableLayerKeys() const;
-        QStringList selectedLayerKeys() const;
+        QStringList visibleLayerKeys() const;
         int layerOpacityPercent(const QString& layerKey) const;
         double layerGamma(const QString& layerKey) const;
         QString layerColormap(const QString& layerKey) const;
@@ -107,7 +111,7 @@ namespace scopeone::ui
 signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
-        void selectedLayerKeysChanged(const QStringList& layerKeys);
+        void visibleLayerKeysChanged(const QStringList& layerKeys);
         void layerLayoutModeChanged(LayerLayoutMode mode);
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
@@ -141,24 +145,10 @@ signals:
         void keyPressEvent(QKeyEvent* event) override;
 
     private:
-        struct LayerInfo
-        {
-            int width{0};
-            int height{0};
-            double fps{0.0};
-        };
-
         struct FpsState
         {
-            quint64 acquisitionStartFrameIndex{0};
-            quint64 acquisitionStartTimestampNs{0};
-            double lastFps{0.0};
-        };
-
-        struct FpsUpdate
-        {
-            double fps{0.0};
-            bool changed{false};
+            QElapsedTimer intervalTimer;
+            quint64 framesSinceUpdate{0};
         };
 
         enum class Colormap { Gray = 0, Green, Magenta, Cyan, Red, Blue, Yellow, Fire };
@@ -226,15 +216,13 @@ signals:
 
     private:
         QStringList m_availableCameraIds;
-        QMap<QString, LayerDisplaySettings> m_layers;
-        QStringList m_layerOrder;
         QSet<QString> m_staticSourceIds;
-        QMap<QString, QString> m_layerNames;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
-        QMap<QString, LayerInfo> m_layerInfos;
+        QMap<QString, double> m_layerFps;
         QString m_layerInfoText{QStringLiteral("No image loaded")};
         QMap<QString, FpsState> m_fpsStates;
-        ImageMarkupModel* m_markupModel{nullptr};
+        QTimer m_fpsUpdateTimer;
+        ImageSceneModel* m_sceneModel{nullptr};
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
@@ -275,19 +263,19 @@ signals:
         QPoint m_crossSectionEnd;
         bool m_crossSectionDragging{false};
         QString m_dragMarkupId;
-        ImageMarkupModel::Markup m_dragMarkupOriginal;
+        ImageSceneModel::Markup m_dragMarkupOriginal;
         QPoint m_dragMarkupStartImagePos;
         MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
         bool m_markupDragging{false};
         void updateImageDisplay();
-        FpsUpdate updateFpsOnFrame(const QString& layerKey, const scopeone::core::ImageFrame& frame);
+        void updateLayerFps(const QString& layerKey);
+        void updateFrameRates();
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
                               const scopeone::core::ImageFrame& frame,
                               bool& hadFrame);
         void updateLayerInfoForFrame(const QString& layerKey,
-                                     const scopeone::core::ImageFrame& frame,
-                                     bool updateFps);
+                                     const scopeone::core::ImageFrame& frame);
         void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
@@ -340,12 +328,12 @@ signals:
                                       QPoint& widgetPos) const;
         void paintPlaceholder(const QString& text);
         bool drawMarkup(QPainter& painter,
-                        const ImageMarkupModel::Markup& markup,
+                        const ImageSceneModel::Markup& markup,
                         const RenderItem& item) const;
         void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
-                                    ImageMarkupModel::Markup& outMarkup,
+                                    ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,
                                     MarkupEditMode& outEditMode) const;
         void clearSelectedMarkups();

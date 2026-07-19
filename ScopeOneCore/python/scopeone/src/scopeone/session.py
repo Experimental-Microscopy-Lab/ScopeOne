@@ -1,8 +1,28 @@
-"""Thin session wrapper for recorded ScopeOne data."""
+"""Thin wrappers for ScopeOne experiment and recording sessions."""
 
 from __future__ import annotations
 
 from .client import FrameResult
+
+
+class ExperimentSession:
+    def __init__(self, native_session) -> None:
+        self._session = native_session
+
+    def experiment_id(self) -> str:
+        return self._session.experiment_id()
+
+    def status(self) -> dict:
+        return self._session.status()
+
+    def document(self) -> dict:
+        return self._session.document()
+
+    def cancel(self) -> dict:
+        return self._session.cancel()
+
+    def close(self) -> None:
+        self._session.close()
 
 
 class RecordingSession:

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.706 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.712 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -94,6 +94,7 @@ function(scopeone_add_runtime_copy_commands target destination)
 endfunction()
 
 set(CORE_SOURCES
+        src/ExperimentDocument.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
         src/ImageProcessingFramework.cpp
@@ -109,6 +110,7 @@ set(CORE_SOURCES
 )
 
 set(CORE_HEADERS
+        include/scopeone/ExperimentDocument.h
         internal/MMCoreManager.h
         internal/FrameBufferUtils.h
         internal/ImageProcessingFramework.h

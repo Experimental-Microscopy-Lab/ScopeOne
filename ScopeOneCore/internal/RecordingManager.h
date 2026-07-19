@@ -19,6 +19,8 @@ class CMMCore;
 namespace scopeone::core::internal
 {
     using scopeone::core::RecordingFormat;
+    using scopeone::core::ExperimentPlan;
+    using scopeone::core::ExperimentRunState;
     using scopeone::core::ImageFrame;
     using scopeone::core::kRecordingPhaseIdle;
     using RecordingSessionData = scopeone::core::ScopeOneCore::RecordingSessionData;
@@ -32,27 +34,6 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
-        struct Settings
-        {
-            RecordingFormat format{RecordingFormat::Tiff};
-            bool streamToDisk{true};
-            bool enableCompression{false};
-            int compressionLevel{6};
-            int framesPerBurst{1};
-            bool burstMode{false};
-            int targetBursts{1};
-            double burstIntervalMs{0.0};
-            double mdaIntervalMs{0.0};
-            std::vector<QPointF> positions;
-            std::vector<double> zPositions;
-            MDAOrder order{MDAAxis::Time, MDAAxis::Z, MDAAxis::XY};
-            QString saveDir;
-            QString baseName;
-            bool captureAll{true};
-            QString metadataFileName;
-            QByteArray sessionMetadataJson;
-        };
-
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
@@ -64,7 +45,9 @@ namespace scopeone::core::internal
             m_latestFrameFetcher = std::move(fetcher);
         }
 
-        bool start(const Settings& settings, const QStringList& activeCameraIds);
+        bool start(const ExperimentPlan& requestedPlan,
+                   const QStringList& activeCameraIds,
+                   const QJsonObject& deviceProperties);
         void stop();
         void setRecordedMaxBytes(qint64 bytes);
         qint64 recordedMaxBytes() const;
@@ -100,30 +83,6 @@ namespace scopeone::core::internal
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
 
     private:
-        struct CapturePlan
-        {
-            QStringList activeCameraIds;
-            RecordingFormat format{RecordingFormat::Tiff};
-            bool streamToDisk{true};
-            bool enableCompression{false};
-            int compressionLevel{6};
-            int framesPerBurst{1};
-            bool burstMode{false};
-            int targetBursts{1};
-            double burstIntervalMs{0.0};
-            double mdaIntervalMs{0.0};
-            std::vector<QPointF> positions;
-            std::vector<double> zPositions;
-            MDAOrder order{MDAAxis::Time, MDAAxis::Z, MDAAxis::XY};
-            QString saveDir;
-            QString baseName;
-            bool captureAll{true};
-            QString metadataFileName;
-            QByteArray sessionMetadataJson;
-            bool useMda{false};
-            bool streamMda{false};
-        };
-
         struct FramePacket
         {
             enum class Source
@@ -158,6 +117,7 @@ namespace scopeone::core::internal
             std::condition_variable writeCondition;
             std::thread writerThread;
             bool stopRequested{false};
+            qint64 framesWritten{0};
         };
 
         struct SessionState
@@ -195,6 +155,7 @@ namespace scopeone::core::internal
             bool streamToDisk{true};
             bool enableCompression{false};
             int compressionLevel{6};
+            quint64 generation{0};
         };
 
         struct MdaState
@@ -204,48 +165,50 @@ namespace scopeone::core::internal
             bool streamMda{false};
             double streamIntervalMs{0.0};
             qint64 lastStreamCaptureMs{0};
-            bool signalsConnected{false};
             QString cameraId;
             quint64 frameIndex{0};
-            std::vector<QPointF> positions;
-            std::vector<double> zPositions;
-            int timePoints{0};
-            double intervalMs{0.0};
             int burstsRemaining{0};
-            MDAOrder order{MDAAxis::Time, MDAAxis::Z, MDAAxis::XY};
-            MDAEvent lastEvent{};
+            ExperimentPlan plan;
+            AcquisitionEvent lastEvent{};
             bool hasLastEvent{false};
         };
 
-        bool buildCapturePlan(const Settings& settings,
+        bool buildCapturePlan(const ExperimentPlan& requestedPlan,
                               const QStringList& activeCameraIds,
-                              CapturePlan& plan,
+                              ExperimentPlan& plan,
                               QString& errorMessage) const;
-        void resetCaptureState(const CapturePlan& plan);
-        void resetSessionState(const CapturePlan& plan);
-        void finalizeActiveSession();
+        bool planUsesMda(const ExperimentPlan& plan) const;
+        bool planStreamsMda(const ExperimentPlan& plan) const;
+        void resetCaptureState(const ExperimentPlan& plan);
+        void resetSessionState(const ExperimentPlan& plan, const QJsonObject& deviceProperties);
+        void finalizeActiveSession(ExperimentRunState state, const QString& errorMessage);
+        void finishRecording(ExperimentRunState state, const QString& errorMessage = QString());
+        static bool writeSessionDocument(const std::shared_ptr<RecordingSessionData>& session,
+                                         QString& errorMessage);
+        void appendPreviewEventRecord(const ImageFrame& frame);
         void primeLastFrameIndices();
         void emitProgress();
-        bool startStreamingOutputs(const CapturePlan& plan);
-        void stopStreamingOutputs();
+        bool startStreamingOutputs(const ExperimentPlan& plan);
+        void stopStreamingOutputs(bool applyOutputManifest = false);
         void requestWriterStop();
-        void writerLoop(const std::shared_ptr<CameraOutput>& output);
+        void writerLoop(const std::shared_ptr<CameraOutput>& output, quint64 generation);
         bool writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage);
         QString formatName(RecordingFormat format) const;
         void emitBufferUsageChanged(qint64 pendingWriteBytes);
         void emitWriterStatus();
         void setWriterStatus(RecordingWriterPhase phase, const QString& errorMessage = QString());
+        QString writerErrorSnapshot() const;
+        void setWriterError(const QString& errorMessage);
         static QString updateSessionResult(const std::shared_ptr<RecordingSessionData>& session,
                                            const QString& result,
                                            bool saved);
-        qint64 totalFramesWritten() const;
         bool enqueueFrame(const ImageFrame& frame);
         bool shouldAcceptFrame(const FramePacket& packet) const;
 
         void ingestFrame(const FramePacket& packet);
-        void handleMdaFrame(const MDAOutput& frame);
-        bool startMdaCapture();
-        void startMdaRun();
+        void handleMdaOutput(const MDAOutput& output);
+        bool startMdaCapture(QString* errorMessage = nullptr);
+        bool startMdaRun(QString* errorMessage = nullptr);
 
         bool shouldCaptureCamera(const QString& cameraId) const;
         bool allCamerasReachedTarget() const;

@@ -1,40 +1,41 @@
 #include "internal/MDAManager.h"
+
 #include "internal/MultiProcessCameraManager.h"
 #include "MMCore.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QThread>
-#include <QThreadPool>
-#include <QDateTime>
 #include <algorithm>
-#include <functional>
 #include <future>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace scopeone::core::internal
 {
+    namespace
+    {
+        quint64 currentTimestampNs()
+        {
+            return static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+        }
+    }
+
     // Creates the MDA manager and registers queued signal types
     MDAManager::MDAManager(std::shared_ptr<CMMCore> core, QObject* parent)
         : QObject(parent)
-          , m_mmcore(std::move(core))
+        , m_mmcore(std::move(core))
     {
-        qRegisterMetaType<scopeone::core::internal::MDAEvent>("scopeone::core::internal::MDAEvent");
         qRegisterMetaType<scopeone::core::internal::MDAOutput>("scopeone::core::internal::MDAOutput");
+        m_threadPool.setMaxThreadCount(1);
     }
 
-    // Sets the camera list used for sequence acquisition
-    void MDAManager::setCameras(const QStringList& cameraIds)
+    // Cancels and joins the acquisition worker before teardown
+    MDAManager::~MDAManager()
     {
-        m_cameraIds.clear();
-        for (const QString& cameraId : cameraIds)
-        {
-            const QString trimmedCameraId = cameraId.trimmed();
-            if (!trimmedCameraId.isEmpty() && !m_cameraIds.contains(trimmedCameraId))
-            {
-                m_cameraIds.append(trimmedCameraId);
-            }
-        }
+        requestCancel();
+        m_threadPool.waitForDone();
     }
 
     // Connects MDA capture to the active camera backend
@@ -43,35 +44,33 @@ namespace scopeone::core::internal
         m_mpcm = mpcm;
     }
 
-    // Starts one MDA run on demand
-    void MDAManager::start(int timePoints,
-                           double timeIntervalMs,
-                           double exposureMs,
-                           const std::vector<QPointF>& positions,
-                           const std::vector<double>& zPositions,
-                           const MDAOrder& order,
-                           bool block)
+    // Starts one immutable acquisition event sequence
+    bool MDAManager::start(const QList<AcquisitionEvent>& events, bool block)
     {
-        if (m_running.load())
+        if (m_running.exchange(true))
         {
             emit sequenceError(QStringLiteral("MDA already running"));
-            return;
+            return false;
+        }
+        if (events.isEmpty())
+        {
+            m_running.store(false);
+            emit sequenceError(QStringLiteral("MDA event list is empty"));
+            return false;
         }
 
         m_cancelRequested.store(false);
-        m_running.store(true);
-
         if (block)
         {
-            runSequence(timePoints, timeIntervalMs, exposureMs, positions, zPositions, order);
-            return;
+            runSequence(events);
+            return true;
         }
 
-        QThreadPool::globalInstance()->start(
-            [this, timePoints, timeIntervalMs, exposureMs, positions, zPositions, order]()
-            {
-                runSequence(timePoints, timeIntervalMs, exposureMs, positions, zPositions, order);
-            });
+        m_threadPool.start([this, events]()
+        {
+            runSequence(events);
+        });
+        return true;
     }
 
     // Requests cancellation for the active MDA run
@@ -80,160 +79,70 @@ namespace scopeone::core::internal
         m_cancelRequested.store(true);
     }
 
-    // Expands the requested axis order into timed acquisition events
-    void MDAManager::runSequence(int timePoints,
-                                 double timeIntervalMs,
-                                 double exposureMs,
-                                 std::vector<QPointF> positions,
-                                 std::vector<double> zPositions,
-                                 MDAOrder order)
+    // Executes a precomputed event sequence in order
+    void MDAManager::runSequence(QList<AcquisitionEvent> events)
     {
-        QString error;
-
         if (!m_mmcore)
         {
-            emit sequenceError(QStringLiteral("MMCore not available"));
             m_running.store(false);
+            emit sequenceError(QStringLiteral("MMCore not available"));
             return;
         }
 
         QElapsedTimer timer;
         timer.start();
+        const qint64 sequenceOriginMs = events.first().minimumStartTimeMs;
 
-        const int tCount = (timePoints < 1) ? 1 : timePoints;
-        const bool hasXY = !positions.empty();
-        const bool hasZ = !zPositions.empty();
-        const int posCount = hasXY ? positions.size() : 1;
-        const int zCount = hasZ ? zPositions.size() : 1;
-        if (order.empty())
+        for (const AcquisitionEvent& event : events)
         {
-            order = MDAOrder{MDAAxis::Time, MDAAxis::Z, MDAAxis::XY};
-        }
+            const qint64 targetMs = event.minimumStartTimeMs - sequenceOriginMs;
+            while (timer.elapsed() < targetMs)
+            {
+                if (m_cancelRequested.load())
+                {
+                    m_running.store(false);
+                    emit sequenceCanceled();
+                    return;
+                }
+                const qint64 remaining = targetMs - timer.elapsed();
+                QThread::msleep(static_cast<unsigned long>((std::min<qint64>)(5, remaining)));
+            }
 
-        auto runEvent = [&](int t, int p, int z, const QPointF& pos, double zPos, qint64 tOffsetMs)
-        {
             if (m_cancelRequested.load())
             {
+                m_running.store(false);
                 emit sequenceCanceled();
+                return;
+            }
+
+            MDAOutput output;
+            output.event = event;
+            output.startedTimestampNs = currentTimestampNs();
+            QString errorMessage;
+            output.succeeded = setupEvent(event, &errorMessage)
+                && execEvent(event, output, &errorMessage);
+            output.completedTimestampNs = currentTimestampNs();
+            output.errorMessage = output.succeeded
+                                      ? QString()
+                                      : (errorMessage.isEmpty()
+                                             ? QStringLiteral("Failed to execute acquisition event")
+                                             : errorMessage);
+            emit eventFinished(output);
+
+            if (!output.succeeded)
+            {
                 m_running.store(false);
-                return false;
+                emit sequenceError(output.errorMessage);
+                return;
             }
-
-            const qint64 targetMs = tOffsetMs;
-            if (targetMs > 0)
-            {
-                while (timer.elapsed() < targetMs)
-                {
-                    if (m_cancelRequested.load())
-                    {
-                        emit sequenceCanceled();
-                        m_running.store(false);
-                        return false;
-                    }
-                    const qint64 remaining = targetMs - timer.elapsed();
-                    if (remaining > 0)
-                    {
-                        QThread::msleep(static_cast<unsigned long>((std::min<qint64>)(5, remaining)));
-                    }
-                }
-            }
-
-            MDAEvent ev;
-            ev.tIndex = t;
-            ev.positionIndex = p;
-            ev.zIndex = z;
-            ev.x = pos.x();
-            ev.y = pos.y();
-            ev.z = zPos;
-            ev.hasXY = hasXY && posCount > 1;
-            ev.hasZ = hasZ && zCount > 1;
-            ev.exposureMs = exposureMs;
-            ev.minStartTimeMs = tOffsetMs;
-
-            if (!setupEvent(ev, &error))
-            {
-                emit sequenceError(error.isEmpty() ? QStringLiteral("Failed to setup event") : error);
-                m_running.store(false);
-                return false;
-            }
-
-            MDAOutput frame;
-            if (!execEvent(ev, frame, &error))
-            {
-                emit sequenceError(error.isEmpty() ? QStringLiteral("Failed to execute event") : error);
-                m_running.store(false);
-                return false;
-            }
-            emit frameReady(frame);
-            return true;
-        };
-
-        int tIndex = 0;
-        int zIndex = 0;
-        int pIndex = 0;
-
-        auto axisCount = [&](MDAAxis axis) -> int
-        {
-            switch (axis)
-            {
-            case MDAAxis::Time:
-                return tCount;
-            case MDAAxis::Z:
-                return zCount;
-            case MDAAxis::XY:
-                return posCount;
-            default:
-                return 1;
-            }
-        };
-
-        std::function<bool(int)> loop = [&](int depth) -> bool
-        {
-            if (depth >= order.size())
-            {
-                const QPointF pos = hasXY ? positions.at(pIndex) : QPointF(0.0, 0.0);
-                const double zPos = hasZ ? zPositions.at(zIndex) : 0.0;
-                const qint64 tOffsetMs = static_cast<qint64>(tIndex * timeIntervalMs);
-                return runEvent(tIndex, pIndex, zIndex, pos, zPos, tOffsetMs);
-            }
-
-            const MDAAxis axis = order.at(depth);
-            const int count = axisCount(axis);
-            for (int i = 0; i < count; ++i)
-            {
-                switch (axis)
-                {
-                case MDAAxis::Time:
-                    tIndex = i;
-                    break;
-                case MDAAxis::Z:
-                    zIndex = i;
-                    break;
-                case MDAAxis::XY:
-                    pIndex = i;
-                    break;
-                default:
-                    break;
-                }
-                if (!loop(depth + 1))
-                {
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        if (!loop(0))
-        {
-            return;
         }
 
-        emit sequenceFinished();
         m_running.store(false);
+        emit sequenceFinished();
     }
 
     // Moves hardware into place before capture
-    bool MDAManager::setupEvent(const MDAEvent& event, QString* errorMessage)
+    bool MDAManager::setupEvent(const AcquisitionEvent& event, QString* errorMessage)
     {
         if (!m_mmcore)
         {
@@ -241,26 +150,17 @@ namespace scopeone::core::internal
             return false;
         }
 
-        if (event.exposureMs > 0.0)
+        if (event.exposureMs > 0.0 && !setExposure(event.exposureMs, errorMessage))
         {
-            if (!setExposure(event.exposureMs, errorMessage))
-            {
-                return false;
-            }
+            return false;
         }
-        if (event.hasXY)
+        if (event.hasXY && !moveXY(event.x, event.y, errorMessage))
         {
-            if (!moveXY(event.x, event.y, errorMessage))
-            {
-                return false;
-            }
+            return false;
         }
-        if (event.hasZ)
+        if (event.hasZ && !moveZ(event.z, errorMessage))
         {
-            if (!moveZ(event.z, errorMessage))
-            {
-                return false;
-            }
+            return false;
         }
 
         try
@@ -272,25 +172,28 @@ namespace scopeone::core::internal
             if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
             return false;
         }
-
         return true;
     }
 
     // Routes one event to the active capture implementation
-    bool MDAManager::execEvent(const MDAEvent& event, MDAOutput& outFrame, QString* errorMessage)
+    bool MDAManager::execEvent(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage)
     {
-        if (m_cameraIds.size() > 1 && m_mpcm)
+        if (event.cameraIds.size() > 1)
         {
-            return execEventMultiCamera(event, outFrame, errorMessage);
+            if (!m_mpcm)
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("MultiProcessCameraManager not available");
+                return false;
+            }
+            return execEventMultiCamera(event, output, errorMessage);
         }
-        else
-        {
-            return execEventSingleCamera(event, outFrame, errorMessage);
-        }
+        return execEventSingleCamera(event, output, errorMessage);
     }
 
-    // Captures one MDA event through the native MMCore camera path
-    bool MDAManager::execEventSingleCamera(const MDAEvent& event, MDAOutput& outFrame, QString* errorMessage)
+    // Captures one event through the native MMCore camera path
+    bool MDAManager::execEventSingleCamera(const AcquisitionEvent& event,
+                                           MDAOutput& output,
+                                           QString* errorMessage)
     {
         if (!m_mmcore)
         {
@@ -322,59 +225,46 @@ namespace scopeone::core::internal
                 if (errorMessage) *errorMessage = QStringLiteral("Image frame is too large");
                 return false;
             }
-            const int bitDepth = static_cast<int>(m_mmcore->getImageBitDepth());
 
             const unsigned char* ptr = static_cast<unsigned char*>(m_mmcore->getImage());
-            if (!ptr || byteCount == 0)
+            if (!ptr)
             {
                 if (errorMessage) *errorMessage = QStringLiteral("Empty image buffer");
                 return false;
             }
 
-            outFrame.event = event;
-            outFrame.timestampMs = QDateTime::currentMSecsSinceEpoch();
-            outFrame.frames.clear();
-
-            scopeone::core::ImageFrame imageFrame;
-            imageFrame.cameraId = m_cameraIds.isEmpty() ? QString() : m_cameraIds.first();
-            int sourceRoiX = 0;
-            int sourceRoiY = 0;
-            int sourceRoiWidth = static_cast<int>(width);
-            int sourceRoiHeight = static_cast<int>(height);
-            if (!imageFrame.cameraId.isEmpty())
+            ImageFrame frame;
+            frame.cameraId = event.cameraIds.isEmpty() ? QString() : event.cameraIds.first();
+            frame.width = static_cast<int>(width);
+            frame.height = static_cast<int>(height);
+            frame.stride = static_cast<int>(stride);
+            frame.pixelFormat = bytesPerPixel == 2 ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
+            frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(
+                frame.pixelFormat,
+                static_cast<int>(m_mmcore->getImageBitDepth()));
+            frame.timestampNs = currentTimestampNs();
+            frame.sourceRoiWidth = frame.width;
+            frame.sourceRoiHeight = frame.height;
+            if (!frame.cameraId.isEmpty())
             {
                 try
                 {
-                    m_mmcore->getROI(imageFrame.cameraId.toStdString().c_str(),
-                                     sourceRoiX,
-                                     sourceRoiY,
-                                     sourceRoiWidth,
-                                     sourceRoiHeight);
+                    m_mmcore->getROI(frame.cameraId.toStdString().c_str(),
+                                     frame.sourceRoiX,
+                                     frame.sourceRoiY,
+                                     frame.sourceRoiWidth,
+                                     frame.sourceRoiHeight);
                 }
                 catch (const CMMError&)
                 {
-                    sourceRoiX = 0;
-                    sourceRoiY = 0;
-                    sourceRoiWidth = static_cast<int>(width);
-                    sourceRoiHeight = static_cast<int>(height);
+                    frame.sourceRoiX = 0;
+                    frame.sourceRoiY = 0;
+                    frame.sourceRoiWidth = frame.width;
+                    frame.sourceRoiHeight = frame.height;
                 }
             }
-            imageFrame.width = static_cast<int>(width);
-            imageFrame.height = static_cast<int>(height);
-            imageFrame.stride = static_cast<int>(stride);
-            imageFrame.pixelFormat = bytesPerPixel == 2
-                                         ? scopeone::core::ImagePixelFormat::Mono16
-                                         : scopeone::core::ImagePixelFormat::Mono8;
-            imageFrame.bitsPerSample = scopeone::core::ImageFrame::normalizedBitsPerSample(
-                imageFrame.pixelFormat,
-                bitDepth > 0 ? bitDepth : static_cast<int>(bytesPerPixel * 8));
-            imageFrame.timestampNs = static_cast<quint64>(outFrame.timestampMs) * 1000000ull;
-            imageFrame.sourceRoiX = sourceRoiX;
-            imageFrame.sourceRoiY = sourceRoiY;
-            imageFrame.sourceRoiWidth = sourceRoiWidth;
-            imageFrame.sourceRoiHeight = sourceRoiHeight;
-            imageFrame.bytes = QByteArray(reinterpret_cast<const char*>(ptr), static_cast<qsizetype>(byteCount));
-            outFrame.frames.insert(imageFrame.cameraId, imageFrame);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(ptr), static_cast<qsizetype>(byteCount));
+            output.frames.insert(frame.cameraId, frame);
             return true;
         }
         catch (const CMMError& e)
@@ -384,32 +274,24 @@ namespace scopeone::core::internal
         }
     }
 
-    // Captures one MDA event across active camera processes
-    bool MDAManager::execEventMultiCamera(const MDAEvent& event, MDAOutput& outFrame, QString* errorMessage)
+    // Captures one event across active camera processes
+    bool MDAManager::execEventMultiCamera(const AcquisitionEvent& event,
+                                          MDAOutput& output,
+                                          QString* errorMessage)
     {
-        if (!m_mpcm)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MultiProcessCameraManager not available");
-            return false;
-        }
-
-        outFrame.event = event;
-        outFrame.timestampMs = QDateTime::currentMSecsSinceEpoch();
-        outFrame.frames.clear();
         const int captureTimeoutMs = static_cast<int>((std::max)(1500.0, event.exposureMs * 4.0 + 500.0));
 
         struct CaptureResult
         {
             QString cameraId;
-            scopeone::core::ImageFrame frame;
+            ImageFrame frame;
             bool ok{false};
             QString error;
         };
 
         std::vector<std::future<CaptureResult>> futures;
-        futures.reserve(static_cast<size_t>(m_cameraIds.size()));
-
-        for (const QString& cameraId : m_cameraIds)
+        futures.reserve(static_cast<size_t>(event.cameraIds.size()));
+        for (const QString& cameraId : event.cameraIds)
         {
             futures.emplace_back(std::async(std::launch::async, [this, cameraId, captureTimeoutMs]()
             {
@@ -417,12 +299,12 @@ namespace scopeone::core::internal
                 result.cameraId = cameraId;
                 if (!m_mpcm->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
                 {
-                    result.error = QString("Failed to capture frame from camera: %1").arg(cameraId);
+                    result.error = QStringLiteral("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;
                 }
                 if (!result.frame.isValid())
                 {
-                    result.error = QString("Empty frame from camera: %1").arg(cameraId);
+                    result.error = QStringLiteral("Empty frame from camera: %1").arg(cameraId);
                     return result;
                 }
                 result.ok = true;
@@ -432,22 +314,19 @@ namespace scopeone::core::internal
 
         for (auto& future : futures)
         {
-            const CaptureResult result = future.get();
+            CaptureResult result = future.get();
             if (!result.ok)
             {
                 if (errorMessage) *errorMessage = result.error;
                 return false;
             }
-
-            scopeone::core::ImageFrame frame = result.frame;
-            frame.cameraId = result.cameraId;
-            outFrame.frames.insert(result.cameraId, frame);
+            result.frame.cameraId = result.cameraId;
+            output.frames.insert(result.cameraId, std::move(result.frame));
         }
-
         return true;
     }
 
-    // Applies exposure for the next MDA event
+    // Applies exposure for the next event
     bool MDAManager::setExposure(double exposureMs, QString* errorMessage)
     {
         try
@@ -467,13 +346,13 @@ namespace scopeone::core::internal
     {
         try
         {
-            const std::string xyStage = m_mmcore->getXYStageDevice();
-            if (xyStage.empty())
+            const std::string stage = m_mmcore->getXYStageDevice();
+            if (stage.empty())
             {
                 if (errorMessage) *errorMessage = QStringLiteral("No XY stage device configured");
                 return false;
             }
-            m_mmcore->setXYPosition(xyStage.c_str(), x, y);
+            m_mmcore->setXYPosition(stage.c_str(), x, y);
             return true;
         }
         catch (const CMMError& e)

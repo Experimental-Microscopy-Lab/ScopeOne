@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <memory>
 
 #include "scopeone/ScopeOneCore.h"
@@ -14,7 +15,7 @@ class QLocalSocket;
 
 namespace scopeone::ui
 {
-    class ImageMarkupModel;
+    class ImageSceneModel;
     class PreviewWidget;
 
     class ScopeOneLocalApiServer : public QObject
@@ -24,7 +25,7 @@ namespace scopeone::ui
     public:
         explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
                                         PreviewWidget* previewWidget,
-                                        ImageMarkupModel* markupModel,
+                                        ImageSceneModel* sceneModel,
                                         QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
 
@@ -34,9 +35,16 @@ namespace scopeone::ui
         void handleSocketDisconnected(QLocalSocket* socket);
         void sendResponse(QLocalSocket* socket, const QJsonObject& response);
         QJsonObject processRequest(const QJsonObject& request);
+        scopeone::core::ExperimentDocument createExperimentDocument();
+        QJsonObject experimentStatusResponse(const QString& type,
+                                             const QString& experimentId) const;
+        bool startRecordingPlan(const scopeone::core::ExperimentPlan& plan,
+                                QStringList& startedPreviewCameraIds,
+                                QString& errorMessage);
+        void handleExperimentRecordingStopped(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> runRecording(
-            const scopeone::core::ScopeOneCore::RecordingSettings& settings,
-            const QString& cameraIdOrAll,
+            const scopeone::core::ExperimentPlan& plan,
             int timeoutMs,
             QString& errorMessage);
         bool exportFrameToSharedMemory(const scopeone::core::ImageFrame& frame,
@@ -48,10 +56,14 @@ namespace scopeone::ui
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
-        ImageMarkupModel* m_markupModel{nullptr};
+        ImageSceneModel* m_sceneModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;
         QHash<QString, std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_sessions;
+        QHash<QString, scopeone::core::ExperimentDocument> m_experiments;
+        QString m_activeExperimentId;
+        QStringList m_experimentStartedPreviewCameraIds;
+        bool m_experimentCancelRequested{false};
         QString m_frameMappingCameraId;
 
         void* m_frameMappingHandle{nullptr};

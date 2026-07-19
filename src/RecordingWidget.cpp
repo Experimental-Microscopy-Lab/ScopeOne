@@ -773,42 +773,41 @@ namespace scopeone::ui
             m_fileNameLineEdit->setText(baseName);
         }
 
-        scopeone::core::ScopeOneCore::RecordingSettings settings;
-        settings.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
-        settings.enableCompression =
-            settings.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
-        settings.compressionLevel = m_compressionLevelSpin->value();
-        settings.framesPerBurst = m_framesSpin->value();
-        settings.burstMode = m_burstModeCheck->isChecked();
-        settings.targetBursts = settings.burstMode ? m_burstCountSpin->value() : 1;
-        settings.burstIntervalMs = intervalToMs(m_burstIntervalSpin->value(), m_burstIntervalUnitCombo->currentText());
-        settings.mdaIntervalMs = m_mdaIntervalSpin->value();
-        settings.saveDir = saveDir;
-        settings.baseName = baseName;
-        settings.captureAll = (m_detectorCombo->currentText().trimmed().compare("All", Qt::CaseInsensitive) == 0);
-        settings.order.clear();
+        scopeone::core::ExperimentPlan plan;
+        plan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
+        plan.enableCompression =
+            plan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
+        plan.compressionLevel = m_compressionLevelSpin->value();
+        plan.framesPerBurst = m_framesSpin->value();
+        plan.burstMode = m_burstModeCheck->isChecked();
+        plan.targetBursts = plan.burstMode ? m_burstCountSpin->value() : 1;
+        plan.burstIntervalMs = intervalToMs(m_burstIntervalSpin->value(), m_burstIntervalUnitCombo->currentText());
+        plan.mdaIntervalMs = m_mdaIntervalSpin->value();
+        plan.saveDir = saveDir;
+        plan.baseName = baseName;
+        plan.order.clear();
         for (int i = 0; i < m_mdaOrderList->count(); ++i)
         {
             auto* item = m_mdaOrderList->item(i);
             switch (item->data(Qt::UserRole).toInt())
             {
             case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time):
-                settings.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Time);
+                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Time);
                 break;
             case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z):
-                settings.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Z);
+                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Z);
                 break;
             case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY):
-                settings.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::XY);
+                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::XY);
                 break;
             default:
                 break;
             }
         }
-        std::reverse(settings.order.begin(), settings.order.end());
-        if (settings.order.empty())
+        std::reverse(plan.order.begin(), plan.order.end());
+        if (plan.order.empty())
         {
-            settings.order = {
+            plan.order = {
                 scopeone::core::ScopeOneCore::RecordingAxis::Time,
                 scopeone::core::ScopeOneCore::RecordingAxis::Z,
                 scopeone::core::ScopeOneCore::RecordingAxis::XY
@@ -818,10 +817,10 @@ namespace scopeone::ui
         if (m_mdaEnableZCheck->isChecked())
         {
             const int count = qMax(1, m_mdaZCountSpin->value());
-            settings.zPositions.reserve(count);
+            plan.zPositions.reserve(count);
             for (int i = 0; i < count; ++i)
             {
-                settings.zPositions.push_back(m_mdaZStartSpin->value()
+                plan.zPositions.push_back(m_mdaZStartSpin->value()
                     + static_cast<double>(i) * m_mdaZStepSpin->value());
             }
         }
@@ -830,7 +829,7 @@ namespace scopeone::ui
         {
             const int xCount = qMax(1, m_mdaXCountSpin->value());
             const int yCount = qMax(1, m_mdaYCountSpin->value());
-            settings.positions.reserve(static_cast<size_t>(xCount) * static_cast<size_t>(yCount));
+            plan.positions.reserve(static_cast<size_t>(xCount) * static_cast<size_t>(yCount));
             for (int yIndex = 0; yIndex < yCount; ++yIndex)
             {
                 const double y = m_mdaYStartSpin->value()
@@ -839,12 +838,12 @@ namespace scopeone::ui
                 {
                     const double x = m_mdaXStartSpin->value()
                         + static_cast<double>(xIndex) * m_mdaXStepSpin->value();
-                    settings.positions.push_back(QPointF(x, y));
+                    plan.positions.push_back(QPointF(x, y));
                 }
             }
         }
 
-        if (!m_scopeonecore->startRecording(settings, selectedCameraIds()))
+        if (!m_scopeonecore->startRecording(plan, selectedCameraIds()))
         {
             qWarning().noquote() << QStringLiteral("Failed to start recording");
             return false;
@@ -862,9 +861,7 @@ namespace scopeone::ui
             return false;
         }
 
-        scopeone::core::ScopeOneCore::RecordingCapturePlanData capturedPlan;
-        capturedPlan.captureAll =
-            m_detectorCombo->currentText().trimmed().compare("All", Qt::CaseInsensitive) == 0;
+        scopeone::core::ExperimentPlan capturedPlan;
         capturedPlan.streamToDisk = false;
         capturedPlan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
         capturedPlan.enableCompression =

@@ -1,16 +1,18 @@
 #pragma once
 
+#include "scopeone/ExperimentDocument.h"
+
 #include <QList>
-#include <QMap>
 #include <QObject>
 #include <QPoint>
 #include <QRect>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
 namespace scopeone::ui
 {
-    class ImageMarkupModel : public QObject
+    class ImageSceneModel : public QObject
     {
         Q_OBJECT
 
@@ -54,7 +56,24 @@ namespace scopeone::ui
             bool selected{false};
         };
 
-        explicit ImageMarkupModel(QObject* parent = nullptr);
+        explicit ImageSceneModel(QObject* parent = nullptr);
+
+        const scopeone::core::ExperimentDocument& document() const;
+        bool setDocument(const scopeone::core::ExperimentDocument& document,
+                         QString* errorMessage = nullptr);
+
+        QStringList layerIds() const;
+        bool findLayer(const QString& layerId,
+                       scopeone::core::DocumentLayer& outLayer) const;
+        bool ensureLayer(const scopeone::core::DocumentLayer& layer);
+        bool setLayerName(const QString& layerId, const QString& name);
+        bool setLayerDisplay(const QString& layerId,
+                             const scopeone::core::LayerDisplayState& display);
+        bool updateLayerFrame(const QString& layerId,
+                              const scopeone::core::ImageFrame& frame);
+        bool moveLayer(const QString& layerId, int offset);
+        bool removeLayer(const QString& layerId);
+        void removeLayersNotIn(const QSet<QString>& validLayerIds);
 
         QString createLine(const QString& layerKey,
                            const QPoint& start,
@@ -75,22 +94,25 @@ namespace scopeone::ui
         bool selectOnly(const QString& id);
         bool updateLine(const QString& id, const QPoint& start, const QPoint& end);
         bool updateRect(const QString& id, const QRect& rect);
-        static QString typeName(MarkupType type);
-        static QString roleName(MarkupRole role);
-        static QString layerKindName(LayerKind layerKind);
-        static LayerKind layerKindForLayerKey(const QString& layerKey);
         bool remove(const QString& id);
         void clear(const QString& layerKey = QString());
         void clearRole(MarkupRole role, const QString& layerKey = QString());
 
+        static QString typeName(MarkupType type);
+        static QString roleName(MarkupRole role);
+        static QString layerKindName(LayerKind layerKind);
+
     signals:
-        void changed();
+        void documentReplaced();
+        void layersChanged();
+        void markupsChanged();
 
     private:
         QString addMarkup(Markup markup);
+        int layerIndex(const QString& layerId) const;
+        int markupIndex(const QString& markupId) const;
 
-        QMap<QString, Markup> m_markups;
-        QStringList m_markupOrder;
+        scopeone::core::ExperimentDocument m_document;
         int m_nextMarkupId{1};
     };
 } // namespace scopeone::ui
