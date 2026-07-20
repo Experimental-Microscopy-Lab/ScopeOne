@@ -62,14 +62,15 @@ if [[ -e "$MMCORE_LINK" && ! -L "$MMCORE_LINK" ]]; then
 fi
 run ln -sfn micro-manager/mmCoreAndDevices "$MMCORE_LINK"
 
-step "Building Micro-Manager"
+step "Building required Micro-Manager components"
 (
   cd "$MM_REPO_DIR"
   run git submodule update --init --recursive
   run ./autogen.sh
   run ./configure --without-java --enable-static
   run make fetchdeps
-  run make -j "$JOBS"
+  run make -C "$MMCORE_LINK/MMDevice" -j "$JOBS"
+  run make -C "$MMCORE_LINK/MMCore" -j "$JOBS"
 )
 
 step "Building and installing ScopeOneCore"
@@ -80,23 +81,6 @@ run cmake --install "$CORE_DIR/build"
 step "Building ScopeOne GUI"
 run cmake -S "$ROOT_DIR" -B "$ROOT_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 run cmake --build "$ROOT_DIR/build" --parallel "$JOBS"
-
-step "Creating Linux runtime symlinks"
-agent_src="$CORE_DIR/install/bin/ScopeOne_Agent"
-agent_dst="$ROOT_DIR/build/ScopeOne_Agent.exe"
-if [[ -f "$agent_src" ]]; then
-  run ln -sfn "$agent_src" "$agent_dst"
-else
-  echo "Skipping agent symlink; missing: $agent_src" >&2
-fi
-
-demo_adapter_src="$MMCORE_LINK/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera.so"
-demo_adapter_dst="$ROOT_DIR/build/libmmgr_dal_DemoCamera.so"
-if [[ -f "$demo_adapter_src" ]]; then
-  run ln -sfn "$demo_adapter_src" "$demo_adapter_dst"
-else
-  echo "Skipping DemoCamera adapter symlink; missing: $demo_adapter_src" >&2
-fi
 
 step "Done"
 echo "GUI executable: $ROOT_DIR/build/ScopeOne"

@@ -99,13 +99,15 @@ cmake --build build --config Release --parallel
 
 **Linux Build Steps (experimental):**
 
-On Linux, build Micro-Manager from the top-level `micro-manager` repository, then create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
+On Linux, use the top-level `micro-manager` repository to configure the native build, then compile only `MMDevice` and `MMCore`. Create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
+
+Run `./scripts/build-linux.sh` from the ScopeOne repository root to automate the complete sequence below.
 
 1. Install common build dependencies:
 ```bash
 sudo apt install \
   git subversion build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config swig libboost-all-dev qt6-base-dev libopencv-dev libtiff-dev zlib1g-dev
+  pkg-config libboost-all-dev qt6-base-dev libopencv-dev libtiff-dev zlib1g-dev
 ```
 
 2. Clone Micro-Manager and create the `mmCoreAndDevices` symlink:
@@ -121,21 +123,26 @@ cd micro-manager
 git submodule update --init --recursive
 ```
 
-3. Build Micro-Manager without the Java application layer:
+3. Configure Micro-Manager without the Java application layer and fetch its build dependencies:
 ```bash
 ./autogen.sh
 ./configure --without-java --enable-static
 make fetchdeps
-make -j"$(nproc)"
 ```
 
-ScopeOne currently links Linux MMCore from:
+4. Build the native core components:
+```bash
+make -C mmCoreAndDevices/MMDevice -j"$(nproc)"
+make -C mmCoreAndDevices/MMCore -j"$(nproc)"
+```
+
+Device adapters are runtime plugins and are not required for this compile verification. Build the required adapters separately in their own directories when running ScopeOne with hardware or a demo configuration. ScopeOne currently links Linux MMCore from:
 
 ```text
 ScopeOneCore/external/mmCoreAndDevices/MMCore/.libs/libMMCore.a
 ```
 
-4. Build and install `ScopeOneCore`:
+5. Build and install `ScopeOneCore`:
 ```bash
 cd /path/to/ScopeOne
 cmake -S ScopeOneCore -B ScopeOneCore/build -DCMAKE_BUILD_TYPE=Release
@@ -143,7 +150,7 @@ cmake --build ScopeOneCore/build --parallel
 cmake --install ScopeOneCore/build
 ```
 
-5. Build the GUI application:
+6. Build the GUI application:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel

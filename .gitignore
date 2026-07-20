@@ -10,6 +10,9 @@ ScopeOneCore/python/**
 !scripts/
 !scripts/**
 
+!.github/
+!.github/**
+
 !resources/
 !resources/**
 
