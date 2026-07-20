@@ -1,4 +1,5 @@
 #include "scopeone/ScopeOneCore.h"
+#include "scopeone/ImageSceneModel.h"
 
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/DifferentialRollingModule.h"
@@ -7,8 +8,10 @@
 #include "internal/ImageProcessingFramework.h"
 #include "internal/MMCoreManager.h"
 #include "internal/MultiProcessCameraManager.h"
+#include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
 #include "internal/SpatiotemporalBinningModule.h"
+#include "internal/StageMosaicManager.h"
 #include "MMCore.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -359,6 +362,27 @@ namespace
         return trimmedBaseName + QStringLiteral("_metadata.json");
     }
 
+    bool processingRecipesEqual(const scopeone::core::ProcessingRecipe& left,
+                                const scopeone::core::ProcessingRecipe& right)
+    {
+        if (left.bitDepth != right.bitDepth || left.modules.size() != right.modules.size())
+        {
+            return false;
+        }
+        for (qsizetype index = 0; index < left.modules.size(); ++index)
+        {
+            const auto& leftModule = left.modules.at(index);
+            const auto& rightModule = right.modules.at(index);
+            if (leftModule.kind != rightModule.kind
+                || leftModule.schemaVersion != rightModule.schemaVersion
+                || leftModule.parameters != rightModule.parameters)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     template <typename Operation>
     // Run an MMCore operation only after validating the device label
     bool runWithTrimmedLabel(const QString& rawLabel, Operation&& operation)
@@ -601,6 +625,7 @@ namespace scopeone::core
     using scopeone::core::internal::RecordingManager;
     using scopeone::core::internal::DifferentialRollingModule;
     using scopeone::core::internal::SpatiotemporalBinningModule;
+    using scopeone::core::internal::StageMosaicManager;
 
     static std::unique_ptr<ProcessingModule> createProcessingModule(ProcessingModuleKind kind)
     {
@@ -1147,6 +1172,12 @@ namespace scopeone::core
         MultiProcessCameraManager* mpcm{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
+        StageMosaicManager* stageMosaicManager{nullptr};
+        QHash<QString, ExperimentDocument> experiments;
+        QHash<QString, std::shared_ptr<RecordingSessionData>> sessions;
+        QString activeExperimentId;
+        QStringList experimentStartedPreviewCameraIds;
+        bool experimentCancelRequested{false};
     };
 
     // Return the compiled core version string
@@ -1219,6 +1250,23 @@ namespace scopeone::core
         return layerKey.trimmed().startsWith(QStringLiteral("static:"));
     }
 
+    void ScopeOneCore::ensureSceneLayer(const QString& layerKey,
+                                        const QString& sourceId,
+                                        const QString& name,
+                                        DocumentLayerKind kind)
+    {
+        DocumentLayer layer;
+        layer.id = layerKey.trimmed();
+        layer.sourceId = sourceId.trimmed();
+        layer.name = name.trimmed();
+        layer.kind = kind;
+        if (kind == DocumentLayerKind::Processed)
+        {
+            layer.display.colormap = QStringLiteral("Green");
+        }
+        m_imageSceneModel->ensureLayer(layer);
+    }
+
     // Wire core managers and public signals into one facade object
     ScopeOneCore::ScopeOneCore(QObject* parent)
         : QObject(parent)
@@ -1231,10 +1279,14 @@ namespace scopeone::core
         qRegisterMetaType<scopeone::core::ScopeOneCore::HistogramStats>(
             "scopeone::core::ScopeOneCore::HistogramStats");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
+        m_imageSceneModel = new ImageSceneModel(this);
+        connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
+                this, &ScopeOneCore::syncLineProfileFromScene);
         m_managers->mmcoreManager = new MMCoreManager(this);
         m_managers->mpcm = new MultiProcessCameraManager(this);
         m_managers->recordingManager = new RecordingManager(this);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
+        m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingManager->setMultiProcessCameraManager(m_managers->mpcm);
         m_managers->recordingManager->setMMCore(m_managers->mmcoreManager->getCore());
         m_managers->recordingManager->setLatestFrameFetcher(
@@ -1266,9 +1318,16 @@ namespace scopeone::core
         connect(m_managers->recordingManager, &RecordingManager::recordingStopped,
                 this, [this](const std::shared_ptr<RecordingSessionData>& session)
                 {
+                    finalizeActiveExperiment(session);
                     publishSessionFrameSource(session);
                     emit recordingStopped(session);
                 });
+        connect(m_managers->stageMosaicManager, &StageMosaicManager::progressChanged,
+                this, &ScopeOneCore::stageMosaicProgress);
+        connect(m_managers->stageMosaicManager, &StageMosaicManager::frameUpdated,
+                this, &ScopeOneCore::stageMosaicFrameUpdated);
+        connect(m_managers->stageMosaicManager, &StageMosaicManager::finished,
+                this, &ScopeOneCore::stageMosaicFinished);
 
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::imageProcessed,
                 this, [this](const ImageFrame& frame)
@@ -1277,6 +1336,12 @@ namespace scopeone::core
                     {
                         return;
                     }
+                    const QString layerKey = processedLayerKey(frame.cameraId);
+                    ensureSceneLayer(layerKey,
+                                     frame.cameraId,
+                                     QStringLiteral("%1 Processed").arg(frame.cameraId),
+                                     DocumentLayerKind::Processed);
+                    m_imageSceneModel->updateLayerFrame(layerKey, frame);
                     m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
                     emit processedFrameReady(frame);
                     queuePreviewProcessedFrame(frame);
@@ -1356,6 +1421,17 @@ namespace scopeone::core
             *result = facadeResult;
         }
         m_cameraIds = facadeResult.cameraIds;
+        for (const QString& cameraId : m_cameraIds)
+        {
+            ensureSceneLayer(rawLayerKey(cameraId),
+                             cameraId,
+                             QStringLiteral("%1 Raw").arg(cameraId),
+                             DocumentLayerKind::Raw);
+            ensureSceneLayer(processedLayerKey(cameraId),
+                             cameraId,
+                             QStringLiteral("%1 Processed").arg(cameraId),
+                             DocumentLayerKind::Processed);
+        }
         const QFileInfo configFile(configPath);
         m_loadedConfigPath = configPath.trimmed().isEmpty()
                                  ? QString()
@@ -1367,6 +1443,7 @@ namespace scopeone::core
             m_loadedConfigSha256 = QString::fromLatin1(
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
+        emit hardwareConfigurationChanged();
         return true;
     }
 
@@ -1383,12 +1460,18 @@ namespace scopeone::core
         {
             unloadConfiguration();
         }
-        return loadConfigurationInternal(configPath, result, errorMessage);
+        if (loadConfigurationInternal(configPath, result, errorMessage))
+        {
+            return true;
+        }
+        unloadConfiguration();
+        return false;
     }
 
     // Stop cameras and clear all cached runtime state
     void ScopeOneCore::unloadConfiguration()
     {
+        m_managers->stageMosaicManager->cancel();
         const QStringList cameraIds = m_cameraIds;
         m_managers->mpcm->stopPreview();
         m_managers->mpcm->stopAgents();
@@ -1416,44 +1499,39 @@ namespace scopeone::core
         m_previewProcessedFlushQueued = false;
         m_histogramJobStates.clear();
         m_latestHistogramStats.clear();
-        clearLineProfile();
+        m_imageSceneModel->reset();
+        emit hardwareConfigurationChanged();
     }
 
     // Start preview for one camera or the full camera set
-    void ScopeOneCore::startPreview(const QString& cameraIdOrAll)
+    bool ScopeOneCore::startPreview(const QString& cameraIdOrAll)
     {
         // Route preview to one camera or all cameras
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
-            return;
+            return false;
         }
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            m_managers->mpcm->startPreview();
+            return m_managers->mpcm->startPreview();
         }
-        else
-        {
-            m_managers->mpcm->startPreviewFor(target);
-        }
+        return m_managers->mpcm->startPreviewFor(target);
     }
 
     // Stop preview for one camera or the full camera set
-    void ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
+    bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
     {
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
-            return;
+            return false;
         }
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            m_managers->mpcm->stopPreview();
+            return m_managers->mpcm->stopPreview();
         }
-        else
-        {
-            m_managers->mpcm->stopPreviewFor(target);
-        }
+        return m_managers->mpcm->stopPreviewFor(target);
     }
 
     // Submit exposure changes through the active camera manager
@@ -1464,7 +1542,12 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->mpcm->setExposure(target, exposureMs);
+        const bool ok = m_managers->mpcm->setExposure(target, exposureMs);
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
     }
 
     // Apply an ROI rectangle to a camera
@@ -1475,7 +1558,46 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->mpcm->setROI(target, x, y, width, height);
+        const bool ok = m_managers->mpcm->setROI(target, x, y, width, height);
+        if (ok)
+        {
+            clearLiveFrames(target);
+            emit deviceStateChanged();
+        }
+        return ok;
+    }
+
+    // Apply a centered ROI with half the current width and height
+    bool ScopeOneCore::setHalfROI(const QString& cameraId)
+    {
+        const QString target = cameraId.trimmed();
+        if (target.isEmpty() || target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        {
+            return false;
+        }
+
+        int originX = 0;
+        int originY = 0;
+        int sourceWidth = 0;
+        int sourceHeight = 0;
+        if (!getROI(target, originX, originY, sourceWidth, sourceHeight)
+            || sourceWidth <= 0
+            || sourceHeight <= 0)
+        {
+            const ImageFrame frame = graphFrame(rawLayerKey(target));
+            if (!frame.isValid())
+            {
+                return false;
+            }
+            sourceWidth = frame.width;
+            sourceHeight = frame.height;
+        }
+
+        const int width = qMax(1, sourceWidth / 2);
+        const int height = qMax(1, sourceHeight / 2);
+        const int x = originX + (sourceWidth - width) / 2;
+        const int y = originY + (sourceHeight - height) / 2;
+        return setROI(target, x, y, width, height);
     }
 
     bool ScopeOneCore::clearROI(const QString& cameraId)
@@ -1485,7 +1607,31 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->mpcm->clearROI(target);
+        const QStringList targets = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0
+                                        ? m_cameraIds
+                                        : QStringList{target};
+        if (targets.isEmpty())
+        {
+            return false;
+        }
+
+        bool ok = true;
+        bool changed = false;
+        for (const QString& cameraId : targets)
+        {
+            if (!m_managers->mpcm->clearROI(cameraId))
+            {
+                ok = false;
+                continue;
+            }
+            clearLiveFrames(cameraId);
+            changed = true;
+        }
+        if (changed)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
     }
 
     // Read the active hardware ROI rectangle from a camera
@@ -1568,12 +1714,40 @@ namespace scopeone::core
 
     void ScopeOneCore::clearLineProfile()
     {
-        if (!m_activeLineProfile.active)
+        const bool wasActive = m_activeLineProfile.active;
+        m_activeLineProfile = ActiveLineProfile{};
+        m_imageSceneModel->clearRole(DocumentMarkupRole::CrossSection);
+        if (wasActive)
         {
+            emit lineProfileCleared();
+        }
+    }
+
+    // Keep line profile analysis synchronized with the active scene markup
+    void ScopeOneCore::syncLineProfileFromScene()
+    {
+        for (const ImageSceneModel::Markup& markup : m_imageSceneModel->markups())
+        {
+            if (markup.role != DocumentMarkupRole::CrossSection
+                || markup.type != DocumentMarkupType::Line)
+            {
+                continue;
+            }
+            if (markup.layerKind == DocumentLayerKind::Static
+                || markup.layerKind == DocumentLayerKind::Gallery)
+            {
+                setStaticLineProfile(markup.sourceId, markup.start, markup.end);
+            }
+            else
+            {
+                setLineProfile(markup.sourceId,
+                               markup.start,
+                               markup.end,
+                               markup.layerKind == DocumentLayerKind::Processed);
+            }
             return;
         }
-        m_activeLineProfile = ActiveLineProfile{};
-        emit lineProfileCleared();
+        clearLineProfile();
     }
 
     // Publish raw frames and start dependent processing work
@@ -1591,6 +1765,12 @@ namespace scopeone::core
 
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
+        const QString layerKey = rawLayerKey(cameraId);
+        ensureSceneLayer(layerKey,
+                         cameraId,
+                         QStringLiteral("%1 Raw").arg(cameraId),
+                         DocumentLayerKind::Raw);
+        m_imageSceneModel->updateLayerFrame(layerKey, normalizedFrame);
         m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
         queuePreviewRawFrame(normalizedFrame);
@@ -1781,6 +1961,7 @@ namespace scopeone::core
             software.operatingSystem = QSysInfo::prettyProductName();
             session->setSoftwareSnapshot(software);
             session->setDeviceProperties(deviceProperties);
+            registerRecordingSession(session);
         }
         publishSessionFrameSource(session);
         return session;
@@ -1824,11 +2005,28 @@ namespace scopeone::core
             return {};
         }
         const ImageFrame storedFrame = graphFrame(staticLayerKey(sourceId));
+        const QString layerKey = staticLayerKey(storedFrame.cameraId);
+        const DocumentLayerKind kind = storedFrame.cameraId.startsWith(QStringLiteral("gallery:"))
+                                           ? DocumentLayerKind::Gallery
+                                           : DocumentLayerKind::Static;
+        ensureSceneLayer(layerKey,
+                         storedFrame.cameraId,
+                         displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed(),
+                         kind);
+        m_imageSceneModel->setLayerName(
+            layerKey,
+            displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed());
+        m_imageSceneModel->updateLayerFrame(layerKey, storedFrame);
+        m_imageSceneModel->setLayerVisible(layerKey, true);
         HistogramStats stats;
         if (computeHistogramStats(storedFrame, stats))
         {
-            const QString layerKey = staticLayerKey(storedFrame.cameraId);
             m_latestHistogramStats.insert(layerKey, stats);
+            if (m_imageSceneModel->layerAutoStretchEnabled(layerKey))
+            {
+                m_imageSceneModel->setLayerDisplayLevels(
+                    layerKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
+            }
             emit layerHistogramReady(layerKey, stats);
         }
         if (!updateStaticLineProfile(storedFrame.cameraId, storedFrame))
@@ -1860,6 +2058,7 @@ namespace scopeone::core
 
         const QString layerKey = staticLayerKey(trimmedSourceId);
         m_frameGraph.remove(FrameGraphStream::Static, trimmedSourceId);
+        m_imageSceneModel->removeLayer(layerKey);
         clearLayerAnalysis(layerKey);
         if (m_activeLineProfile.active
             && m_activeLineProfile.staticSource
@@ -1874,6 +2073,16 @@ namespace scopeone::core
     void ScopeOneCore::clearStaticFrames()
     {
         m_frameGraph.clear(FrameGraphStream::Static);
+        for (const QString& layerId : m_imageSceneModel->layerIds())
+        {
+            DocumentLayer layer;
+            if (m_imageSceneModel->findLayer(layerId, layer)
+                && (layer.kind == DocumentLayerKind::Static
+                    || layer.kind == DocumentLayerKind::Gallery))
+            {
+                m_imageSceneModel->removeLayer(layerId);
+            }
+        }
         clearLayerAnalysisByPrefix(QStringLiteral("static:"));
         if (m_activeLineProfile.active && m_activeLineProfile.staticSource)
         {
@@ -1949,6 +2158,8 @@ namespace scopeone::core
         m_pendingPreviewProcessedFrames.remove(trimmedCameraId);
         const QString rawLayerKey = histogramLayerKey(trimmedCameraId, false);
         const QString processedLayerKey = histogramLayerKey(trimmedCameraId, true);
+        m_imageSceneModel->clear(rawLayerKey);
+        m_imageSceneModel->clear(processedLayerKey);
         clearLayerAnalysis(rawLayerKey);
         clearLayerAnalysis(processedLayerKey);
         if (m_activeLineProfile.active
@@ -1965,6 +2176,12 @@ namespace scopeone::core
     {
         m_frameGraph.clear(FrameGraphStream::Processed);
         m_pendingPreviewProcessedFrames.clear();
+        for (const QString& cameraId : m_cameraIds)
+        {
+            const QString layerKey = processedLayerKey(cameraId);
+            m_imageSceneModel->clear(layerKey);
+            m_imageSceneModel->setLayerVisible(layerKey, false);
+        }
         clearLayerAnalysisByPrefix(QStringLiteral("proc:"));
         if (m_activeLineProfile.active
             && !m_activeLineProfile.staticSource
@@ -1997,6 +2214,109 @@ namespace scopeone::core
             return false;
         }
         return computeHistogramStats(frame, stats);
+    }
+
+    // Return histogram statistics for any current frame graph layer
+    bool ScopeOneCore::getLayerHistogram(const QString& layerKey, HistogramStats& stats) const
+    {
+        const QString key = layerKey.trimmed();
+        const auto cached = m_latestHistogramStats.constFind(key);
+        if (cached != m_latestHistogramStats.constEnd() && cached->hasData())
+        {
+            stats = cached.value();
+            return true;
+        }
+        return computeHistogramStats(graphFrame(key), stats);
+    }
+
+    bool ScopeOneCore::autoLayerLevels(const QString& layerKey)
+    {
+        HistogramStats stats;
+        if (!getLayerHistogram(layerKey, stats))
+        {
+            return false;
+        }
+        return m_imageSceneModel->setLayerDisplayLevels(
+            layerKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
+    }
+
+    bool ScopeOneCore::fullLayerLevels(const QString& layerKey)
+    {
+        HistogramStats stats;
+        if (!getLayerHistogram(layerKey, stats))
+        {
+            return false;
+        }
+        m_imageSceneModel->setLayerAutoStretchEnabled(layerKey, false);
+        return m_imageSceneModel->setLayerDisplayLevels(layerKey, 0, stats.maxValue, stats.maxValue);
+    }
+
+    bool ScopeOneCore::setLayerAutoStretchEnabled(const QString& layerKey, bool enabled)
+    {
+        if (!m_imageSceneModel->setLayerAutoStretchEnabled(layerKey, enabled))
+        {
+            return false;
+        }
+        if (enabled)
+        {
+            autoLayerLevels(layerKey);
+        }
+        return true;
+    }
+
+    bool ScopeOneCore::layerAutoStretchEnabled(const QString& layerKey) const
+    {
+        return m_imageSceneModel->layerAutoStretchEnabled(layerKey);
+    }
+
+    // Sample an image-space line from any current frame graph layer
+    bool ScopeOneCore::getLineProfile(const QString& layerKey,
+                                      const QPoint& start,
+                                      const QPoint& end,
+                                      QVector<int>& values) const
+    {
+        values.clear();
+        const ImageFrame frame = graphFrame(layerKey);
+        if (!frame.isValid())
+        {
+            return false;
+        }
+        return sampleLine(start, end, values,
+                          [&frame](const QPoint& point, int& value)
+                          {
+                              return sampleFrameValue(frame, point, value);
+                          });
+    }
+
+    bool ScopeOneCore::detectParticles(const QString& layerKey,
+                                       int threshold,
+                                       int minArea,
+                                       int maxArea,
+                                       ParticleDetectionResult& result,
+                                       int maxParticles) const
+    {
+        return internal::detectParticles(graphFrame(layerKey),
+                                         threshold,
+                                         minArea,
+                                         maxArea,
+                                         result,
+                                         maxParticles);
+    }
+
+    bool ScopeOneCore::startStageMosaic(const StageMosaicPlan& plan,
+                                        QString* errorMessage)
+    {
+        return m_managers->stageMosaicManager->start(plan, errorMessage);
+    }
+
+    void ScopeOneCore::cancelStageMosaic()
+    {
+        m_managers->stageMosaicManager->cancel();
+    }
+
+    bool ScopeOneCore::isStageMosaicRunning() const
+    {
+        return m_managers->stageMosaicManager->isRunning();
     }
 
     // Schedule throttled histogram work for a layer
@@ -2043,6 +2363,11 @@ namespace scopeone::core
                         if (stats.hasData())
                         {
                             m_latestHistogramStats.insert(cacheKey, stats);
+                            if (m_imageSceneModel->layerAutoStretchEnabled(cacheKey))
+                            {
+                                m_imageSceneModel->setLayerDisplayLevels(
+                                    cacheKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
+                            }
                             emit imageHistogramReady(trimmedCameraId, processed, stats);
                             emit layerHistogramReady(cacheKey, stats);
                         }
@@ -2229,44 +2554,64 @@ namespace scopeone::core
     bool ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
         auto handle = core();
-        return runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
+        const bool ok = runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
         {
             handle->setRelativeXYPosition(label.c_str(), dx, dy);
             handle->waitForDevice(label.c_str());
         });
+        if (ok)
+        {
+            emit stagePositionChanged();
+        }
+        return ok;
     }
 
     // Move a Z stage by a relative offset and wait for completion
     bool ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
         auto handle = core();
-        return runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
+        const bool ok = runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
         {
             handle->setRelativePosition(label.c_str(), dz);
             handle->waitForDevice(label.c_str());
         });
+        if (ok)
+        {
+            emit stagePositionChanged();
+        }
+        return ok;
     }
 
     // Move an XY stage to an absolute position and wait for completion
     bool ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
         auto handle = core();
-        return runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
+        const bool ok = runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
         {
             handle->setXYPosition(label.c_str(), x, y);
             handle->waitForDevice(label.c_str());
         });
+        if (ok)
+        {
+            emit stagePositionChanged();
+        }
+        return ok;
     }
 
     // Move a Z stage to an absolute position and wait for completion
     bool ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
     {
         auto handle = core();
-        return runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
+        const bool ok = runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
         {
             handle->setPosition(label.c_str(), z);
             handle->waitForDevice(label.c_str());
         });
+        if (ok)
+        {
+            emit stagePositionChanged();
+        }
+        return ok;
     }
 
     // List available Micro Manager configuration groups
@@ -2340,7 +2685,7 @@ namespace scopeone::core
             return false;
         }
         const QStringList runningPreviewIds = runningPreviewCameraIds();
-        return withSuspendedPreviews(this, runningPreviewIds, [&]()
+        const bool ok = withSuspendedPreviews(this, runningPreviewIds, [&]()
         {
             try
             {
@@ -2354,6 +2699,11 @@ namespace scopeone::core
                 return false;
             }
         });
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
     }
 
     // Read exposure from the active camera path
@@ -2679,6 +3029,7 @@ namespace scopeone::core
                 }
                 return false;
             }
+            emit deviceStateChanged();
             return true;
         }
 
@@ -2705,9 +3056,14 @@ namespace scopeone::core
                 return false;
             }
         };
-        return isCamera
-                   ? withSuspendedPreviews(this, runningPreviewIds, applyProperty)
-                   : applyProperty();
+        const bool ok = isCamera
+                            ? withSuspendedPreviews(this, runningPreviewIds, applyProperty)
+                            : applyProperty();
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
     }
 
     bool ScopeOneCore::isRealTimeProcessingEnabled() const
@@ -2716,18 +3072,27 @@ namespace scopeone::core
     }
 
     // Toggle live processing without changing the module list
-    void ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
+    bool ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
         if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
         {
-            return;
+            return false;
         }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
-            return;
+            if (!enabled)
+            {
+                clearProcessedFrames();
+            }
+            return true;
         }
         m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
+        if (!enabled)
+        {
+            clearProcessedFrames();
+        }
         emit processingSettingsChanged();
+        return true;
     }
 
     // Return the configured processing precision exposed to the UI
@@ -2741,6 +3106,10 @@ namespace scopeone::core
     // Change processing precision and rebuild runtime pipelines
     bool ScopeOneCore::setProcessingBitDepth(ProcessingBitDepth bitDepth)
     {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
         const int nextBitDepth = bitDepth == ProcessingBitDepth::Bit16 ? 16 : 8;
         if (m_managers->imageProcessingManager->processingBitDepth() == nextBitDepth)
         {
@@ -2774,6 +3143,11 @@ namespace scopeone::core
     bool ScopeOneCore::applyProcessingRecipe(const ProcessingRecipe& recipe, QString* errorMessage)
     {
         if (errorMessage) errorMessage->clear();
+        if (isRealTimeProcessingEnabled())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Stop real-time processing before editing the pipeline");
+            return false;
+        }
         if (recipe.bitDepth != ProcessingBitDepth::Bit8
             && recipe.bitDepth != ProcessingBitDepth::Bit16)
         {
@@ -2904,6 +3278,10 @@ namespace scopeone::core
     // Add a processing module to the editable pipeline
     bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
     {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
         std::unique_ptr<ProcessingModule> module = createProcessingModule(kind);
         if (!module) return false;
@@ -2917,6 +3295,10 @@ namespace scopeone::core
     // Remove a processing module and drop stale runtime clones
     bool ScopeOneCore::removeProcessingModule(int index)
     {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
         if (!definition.removeModule(index))
         {
@@ -2934,6 +3316,10 @@ namespace scopeone::core
     // Update module parameters and rebuild per camera runtime modules
     bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
     {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
         const bool updated = definition.withModule(index, [&parameters](ProcessingModule* module)
         {
@@ -2951,6 +3337,10 @@ namespace scopeone::core
     // Reset module state when the selected module owns runtime buffers
     bool ScopeOneCore::resetProcessingModuleState(int index)
     {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
         bool resetRuntimeState = false;
         const bool found = definition.withModule(index, [&resetRuntimeState](ProcessingModule* module)
@@ -2982,7 +3372,34 @@ namespace scopeone::core
     // Start recording and suspend preview during MDA motion
     bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
     {
+        if (m_managers->recordingManager->isRecording()
+            || !m_managers->activeExperimentId.isEmpty())
+        {
+            return false;
+        }
+
         ExperimentPlan planSnapshot = plan;
+        if (planSnapshot.experimentId.trimmed().isEmpty())
+        {
+            planSnapshot.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+        else
+        {
+            planSnapshot.experimentId = planSnapshot.experimentId.trimmed();
+        }
+        if (m_managers->experiments.contains(planSnapshot.experimentId))
+        {
+            return false;
+        }
+        for (const QString& cameraId : activeCameraIds)
+        {
+            const QString normalizedCameraId = cameraId.trimmed();
+            if (!normalizedCameraId.isEmpty() && !planSnapshot.cameraIds.contains(normalizedCameraId))
+            {
+                planSnapshot.cameraIds.append(normalizedCameraId);
+            }
+        }
+
         const bool useMda = !planSnapshot.positions.empty() || !planSnapshot.zPositions.empty();
         QStringList suspendedPreviewIds;
         if (useMda)
@@ -3006,6 +3423,18 @@ namespace scopeone::core
         planSnapshot.configSha256 = m_loadedConfigSha256;
         planSnapshot.processing = processingRecipe();
         const QJsonObject deviceProperties = buildDevicePropertyMetadata(*this);
+
+        ExperimentDocument runningDocument;
+        runningDocument.plan = planSnapshot;
+        runningDocument.runState = ExperimentRunState::Running;
+        runningDocument.startedTimestampNs =
+            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+        const ExperimentDocument& currentPresentation = m_imageSceneModel->document();
+        runningDocument.layers = currentPresentation.layers;
+        runningDocument.markups = currentPresentation.markups;
+        m_managers->activeExperimentId = planSnapshot.experimentId;
+        m_managers->experimentCancelRequested = false;
+        m_managers->experiments.insert(planSnapshot.experimentId, runningDocument);
 
         QMetaObject::Connection restorePreviewConnection;
         if (!suspendedPreviewIds.isEmpty())
@@ -3037,6 +3466,12 @@ namespace scopeone::core
             {
                 startPreview(cameraId);
             }
+            if (m_managers->activeExperimentId == planSnapshot.experimentId)
+            {
+                m_managers->experiments.remove(planSnapshot.experimentId);
+                m_managers->activeExperimentId.clear();
+                m_managers->experimentCancelRequested = false;
+            }
             return false;
         }
         return true;
@@ -3052,11 +3487,277 @@ namespace scopeone::core
         return m_managers->recordingManager->isRecording();
     }
 
+    // Start one validated document through the shared recording lifecycle
+    bool ScopeOneCore::startExperiment(const ExperimentDocument& document,
+                                       QString* errorMessage)
+    {
+        if (!validateExperimentDocument(document, errorMessage))
+        {
+            return false;
+        }
+        if (document.runState != ExperimentRunState::Draft)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Only a Draft experiment can be started");
+            return false;
+        }
+
+        const QString experimentId = document.plan.experimentId.trimmed();
+        if (isRecording() || !m_managers->activeExperimentId.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Another recording is already running");
+            return false;
+        }
+        if (m_managers->experiments.contains(experimentId))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Experiment ID already exists: %1").arg(experimentId);
+            }
+            return false;
+        }
+
+        for (const QString& cameraId : document.plan.cameraIds)
+        {
+            if (!m_cameraIds.contains(cameraId))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Experiment camera is not available: %1").arg(cameraId);
+                }
+                return false;
+            }
+        }
+        if (!document.plan.configSha256.isEmpty()
+            && document.plan.configSha256 != m_loadedConfigSha256)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral(
+                    "Experiment configuration hash does not match the loaded configuration");
+            }
+            return false;
+        }
+        if (!processingRecipesEqual(processingRecipe(), document.plan.processing)
+            && !applyProcessingRecipe(document.plan.processing, errorMessage))
+        {
+            return false;
+        }
+
+        QStringList startedPreviewCameraIds;
+        const bool useMda = !document.plan.positions.empty() || !document.plan.zPositions.empty();
+        if (!useMda)
+        {
+            const QStringList runningCameraIds = runningPreviewCameraIds();
+            for (const QString& cameraId : document.plan.cameraIds)
+            {
+                if (runningCameraIds.contains(cameraId))
+                {
+                    continue;
+                }
+                if (!startPreview(cameraId))
+                {
+                    for (const QString& startedCameraId : startedPreviewCameraIds)
+                    {
+                        stopPreview(startedCameraId);
+                    }
+                    if (errorMessage)
+                    {
+                        *errorMessage = QStringLiteral("Failed to start preview for %1").arg(cameraId);
+                    }
+                    return false;
+                }
+                startedPreviewCameraIds.append(cameraId);
+            }
+        }
+
+        m_managers->experimentStartedPreviewCameraIds = startedPreviewCameraIds;
+        if (!startRecording(document.plan, document.plan.cameraIds))
+        {
+            for (const QString& cameraId : startedPreviewCameraIds)
+            {
+                stopPreview(cameraId);
+            }
+            m_managers->experimentStartedPreviewCameraIds.clear();
+            if (errorMessage && errorMessage->isEmpty())
+            {
+                *errorMessage = useMda
+                                    ? QStringLiteral("Failed to start MDA experiment")
+                                    : QStringLiteral("Failed to start preview-frame experiment");
+            }
+            return false;
+        }
+
+        ExperimentDocument runningDocument = document;
+        const auto registered = m_managers->experiments.constFind(experimentId);
+        if (registered != m_managers->experiments.constEnd())
+        {
+            runningDocument.plan = registered->plan;
+            runningDocument.startedTimestampNs = registered->startedTimestampNs;
+        }
+        runningDocument.runState = ExperimentRunState::Running;
+        runningDocument.completedTimestampNs = 0;
+        runningDocument.errorMessage.clear();
+        runningDocument.events.clear();
+        runningDocument.output = RecordingOutputManifest{};
+        runningDocument.software = SoftwareSnapshot{};
+        runningDocument.deviceProperties = QJsonObject{};
+        m_managers->experiments.insert(experimentId, runningDocument);
+        m_imageSceneModel->setDocument(runningDocument);
+        return true;
+    }
+
+    bool ScopeOneCore::cancelExperiment(const QString& experimentId,
+                                        QString* errorMessage)
+    {
+        const QString id = experimentId.trimmed();
+        const auto experiment = m_managers->experiments.constFind(id);
+        if (id.isEmpty() || experiment == m_managers->experiments.constEnd())
+        {
+            if (errorMessage) *errorMessage = id.isEmpty()
+                                                  ? QStringLiteral("Missing experimentId")
+                                                  : QStringLiteral("Unknown experiment");
+            return false;
+        }
+        if (m_managers->activeExperimentId != id
+            || experiment->runState != ExperimentRunState::Running)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Experiment is not running");
+            return false;
+        }
+        m_managers->experimentCancelRequested = true;
+        stopRecording();
+        return true;
+    }
+
+    QString ScopeOneCore::activeExperimentId() const
+    {
+        return m_managers->activeExperimentId;
+    }
+
+    bool ScopeOneCore::experimentCancelRequested() const
+    {
+        return m_managers->experimentCancelRequested;
+    }
+
+    QStringList ScopeOneCore::experimentIds() const
+    {
+        return m_managers->experiments.keys();
+    }
+
+    bool ScopeOneCore::experimentDocument(const QString& experimentId,
+                                          ExperimentDocument& document) const
+    {
+        const auto experiment = m_managers->experiments.constFind(experimentId.trimmed());
+        if (experiment == m_managers->experiments.constEnd())
+        {
+            return false;
+        }
+        document = experiment.value();
+        return true;
+    }
+
+    QStringList ScopeOneCore::recordingSessionIds() const
+    {
+        return m_managers->sessions.keys();
+    }
+
+    std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::recordingSession(
+        const QString& sessionId) const
+    {
+        return m_managers->sessions.value(sessionId.trimmed());
+    }
+
+    bool ScopeOneCore::closeRecordingSession(const QString& sessionId)
+    {
+        const QString id = sessionId.trimmed();
+        const auto session = m_managers->sessions.value(id);
+        if (!session)
+        {
+            return false;
+        }
+        removeSessionFrameSource(session);
+        m_managers->sessions.remove(id);
+        emit recordingSessionClosed(id);
+        return true;
+    }
+
+    void ScopeOneCore::registerRecordingSession(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        if (!session)
+        {
+            return;
+        }
+        const QString experimentId = session->capturePlan().experimentId.trimmed();
+        if (experimentId.isEmpty())
+        {
+            return;
+        }
+        m_managers->sessions.insert(experimentId, session);
+        m_managers->experiments.insert(experimentId, session->experimentDocument());
+    }
+
+    // Finalize the shared experiment state before notifying API and UI clients
+    void ScopeOneCore::finalizeActiveExperiment(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        const QString activeExperimentId = m_managers->activeExperimentId;
+        if (activeExperimentId.isEmpty())
+        {
+            registerRecordingSession(session);
+            return;
+        }
+
+        const ExperimentDocument currentPresentation = m_imageSceneModel->document();
+        ExperimentDocument completedDocument;
+        if (session)
+        {
+            QString presentationError;
+            if (!setRecordingSessionPresentation(session,
+                                                 currentPresentation,
+                                                 &presentationError))
+            {
+                qWarning().noquote()
+                    << QStringLiteral("Failed to persist completed experiment presentation: %1")
+                           .arg(presentationError);
+            }
+            registerRecordingSession(session);
+            completedDocument = session->experimentDocument();
+        }
+        else
+        {
+            completedDocument = m_managers->experiments.value(activeExperimentId);
+            completedDocument.runState = ExperimentRunState::Failed;
+            completedDocument.completedTimestampNs =
+                static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            completedDocument.errorMessage = QStringLiteral("Experiment stopped without session data");
+            m_managers->experiments.insert(activeExperimentId, completedDocument);
+        }
+
+        if (currentPresentation.plan.experimentId == activeExperimentId)
+        {
+            QString documentError;
+            if (!m_imageSceneModel->setDocument(completedDocument, &documentError))
+            {
+                qWarning().noquote()
+                    << QStringLiteral("Failed to publish completed experiment: %1").arg(documentError);
+            }
+        }
+
+        for (const QString& cameraId : m_managers->experimentStartedPreviewCameraIds)
+        {
+            stopPreview(cameraId);
+        }
+        m_managers->experimentStartedPreviewCameraIds.clear();
+        m_managers->activeExperimentId.clear();
+        m_managers->experimentCancelRequested = false;
+    }
+
     // Attaches shared layer and markup state to one completed recording
     bool ScopeOneCore::setRecordingSessionPresentation(
         const std::shared_ptr<RecordingSessionData>& session,
         const ExperimentDocument& presentation,
-        QString* errorMessage) const
+        QString* errorMessage)
     {
         if (!session)
         {
@@ -3065,14 +3766,31 @@ namespace scopeone::core
         }
 
         ExperimentDocument candidate = session->experimentDocument();
-        candidate.layers = presentation.layers;
-        candidate.markups = presentation.markups;
+        candidate.layers.clear();
+        candidate.markups.clear();
+        QSet<QString> layerIds;
+        for (const DocumentLayer& layer : presentation.layers)
+        {
+            if (layer.width > 0 && layer.height > 0)
+            {
+                candidate.layers.append(layer);
+                layerIds.insert(layer.id);
+            }
+        }
+        for (const DocumentMarkup& markup : presentation.markups)
+        {
+            if (layerIds.contains(markup.layerId))
+            {
+                candidate.markups.append(markup);
+            }
+        }
         if (!validateExperimentDocument(candidate, errorMessage))
         {
             return false;
         }
 
         session->setPresentationState(candidate.layers, candidate.markups);
+        registerRecordingSession(session);
 
         if (session->streamedToDisk())
         {
@@ -3096,10 +3814,11 @@ namespace scopeone::core
     }
 
     // Save a completed session with device metadata attached
-    QString ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session) const
+    QString ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session)
     {
         if (!session)
         {
+            emit recordingSessionSaveFinished(session);
             return QStringLiteral("Error: no session data");
         }
         ExperimentPlan capturePlan = session->capturePlan();
@@ -3108,17 +3827,20 @@ namespace scopeone::core
             capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
         }
         session->setCapturePlan(capturePlan);
-        return RecordingManager::saveSessionToDisk(session);
+        const QString result = RecordingManager::saveSessionToDisk(session);
+        registerRecordingSession(session);
+        emit recordingSessionSaveFinished(session);
+        return result;
     }
 
     // Save a completed session with an updated capture plan
     QString ScopeOneCore::saveRecordingSession(
         const std::shared_ptr<RecordingSessionData>& session,
-        const RecordingSaveOptions& saveOptions) const
+        const RecordingSaveOptions& saveOptions)
     {
         if (!session)
         {
-            return QStringLiteral("Error: no session data");
+            return saveRecordingSession(session);
         }
 
         const ExperimentPlan& existingPlan = session->capturePlan();
@@ -3165,6 +3887,7 @@ namespace scopeone::core
                 [this, watcher, session, saveSession]()
         {
             session->applySaveStateFrom(*saveSession);
+            registerRecordingSession(session);
             m_sessionsSaving.remove(session.get());
             emit recordingSessionSaveFinished(session);
             watcher->deleteLater();

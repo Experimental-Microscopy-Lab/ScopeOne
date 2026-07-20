@@ -338,6 +338,7 @@ def _add_stage_fields(
 class ExternalClient:
     def __init__(self, server_name: str = LOCAL_SERVER_NAME) -> None:
         self._transport = _make_transport(server_name)
+        self._next_request_id = 1
         self._request({"type": "ping"})
 
     def __enter__(self):
@@ -361,6 +362,7 @@ class ExternalClient:
         response = self._request({"type": "status"})
         return {
             "version": str(response.get("version", "")),
+            "coreVersion": str(response.get("coreVersion", "")),
             "apiVersion": int(response.get("apiVersion", 0)),
             "cameraIds": list(response.get("cameraIds", [])),
             "loadedDevices": list(response.get("loadedDevices", [])),
@@ -373,6 +375,14 @@ class ExternalClient:
             "layerLayout": str(response.get("layerLayout", "")),
         }
 
+    def capabilities(self) -> dict:
+        response = self._request({"type": "capabilities"})
+        return dict(response.get("capabilities", {}))
+
+    def state_snapshot(self) -> dict:
+        response = self._request({"type": "state_snapshot"})
+        return dict(response.get("snapshot", {}))
+
     def camera_ids(self) -> list[str]:
         response = self._request({"type": "camera_ids"})
         return list(response.get("cameraIds", []))
@@ -381,15 +391,46 @@ class ExternalClient:
         response = self._request({"type": "loaded_devices"})
         return list(response.get("devices", []))
 
-    def start_preview(self, camera: str = "All") -> None:
+    def start_preview(self, camera: str = "All") -> bool:
         self._request({"type": "start_preview", "camera": camera})
+        return True
 
-    def stop_preview(self, camera: str = "All") -> None:
+    def stop_preview(self, camera: str = "All") -> bool:
         self._request({"type": "stop_preview", "camera": camera})
+        return True
 
     def list_layers(self) -> list[dict]:
         response = self._request({"type": "list_layers"})
         return list(response.get("layers", []))
+
+    def get_layer_histogram(self, layer_key: str) -> dict:
+        response = self._request(
+            {
+                "type": "get_layer_histogram",
+                "layerKey": layer_key,
+            }
+        )
+        return dict(response["histogram"])
+
+    def get_line_profile(
+        self,
+        layer_key: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> list[int]:
+        response = self._request(
+            {
+                "type": "get_line_profile",
+                "layerKey": layer_key,
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+            }
+        )
+        return [int(value) for value in response.get("values", [])]
 
     def layer_options(self) -> dict:
         response = self._request({"type": "layer_options"})
@@ -446,6 +487,72 @@ class ExternalClient:
             request["minLevel"] = int(min_level)
             request["maxLevel"] = int(max_level)
             request["maxPossible"] = int(max_possible)
+        return dict(self._request(request))
+
+    def auto_layer_levels(self, layer_key: str) -> dict:
+        return dict(
+            self._request(
+                {
+                    "type": "auto_layer_levels",
+                    "layerKey": layer_key,
+                }
+            )
+        )
+
+    def full_layer_levels(self, layer_key: str) -> dict:
+        return dict(
+            self._request(
+                {
+                    "type": "full_layer_levels",
+                    "layerKey": layer_key,
+                }
+            )
+        )
+
+    def set_layer_auto_stretch(self, layer_key: str, enabled: bool) -> dict:
+        return dict(
+            self._request(
+                {
+                    "type": "set_layer_auto_stretch",
+                    "layerKey": layer_key,
+                    "enabled": bool(enabled),
+                }
+            )
+        )
+
+    def get_source_display_transform(self, source_id: str) -> dict:
+        return dict(
+            self._request(
+                {
+                    "type": "get_source_display_transform",
+                    "sourceId": source_id,
+                }
+            )
+        )
+
+    def set_source_display_transform(
+        self,
+        source_id: str,
+        offset_x: int | None = None,
+        offset_y: int | None = None,
+        zoom_percent: int | None = None,
+        flip_x: bool | None = None,
+        flip_y: bool | None = None,
+    ) -> dict:
+        request = {
+            "type": "set_source_display_transform",
+            "sourceId": source_id,
+        }
+        if offset_x is not None:
+            request["offsetX"] = int(offset_x)
+        if offset_y is not None:
+            request["offsetY"] = int(offset_y)
+        if zoom_percent is not None:
+            request["zoomPercent"] = int(zoom_percent)
+        if flip_x is not None:
+            request["flipX"] = bool(flip_x)
+        if flip_y is not None:
+            request["flipY"] = bool(flip_y)
         return dict(self._request(request))
 
     def move_layer(self, layer_key: str, offset: int) -> list[str]:
@@ -679,7 +786,21 @@ class ExternalClient:
             int(response["height"]),
         )
 
-    def clear_roi(self, camera: str) -> None:
+    def set_half_roi(self, camera: str) -> tuple[int, int, int, int]:
+        response = self._request(
+            {
+                "type": "set_half_roi",
+                "camera": camera,
+            }
+        )
+        return (
+            int(response["x"]),
+            int(response["y"]),
+            int(response["width"]),
+            int(response["height"]),
+        )
+
+    def clear_roi(self, camera: str = "All") -> None:
         self._request(
             {
                 "type": "clear_roi",
@@ -778,13 +899,14 @@ class ExternalClient:
             }
         )
 
-    def set_realtime_processing(self, enabled: bool) -> None:
+    def set_realtime_processing(self, enabled: bool) -> bool:
         self._request(
             {
                 "type": "set_realtime_processing",
                 "enabled": bool(enabled),
             }
         )
+        return True
 
     def add_processing_module(
         self,
@@ -1063,7 +1185,11 @@ class ExternalClient:
         self._transport.close()
 
     def _request(self, message: dict):
-        payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+        request = dict(message)
+        request_id = self._next_request_id
+        self._next_request_id += 1
+        request["requestId"] = request_id
+        payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
         if not payload or len(payload) > MAX_MESSAGE_BYTES:
             raise RuntimeError("ScopeOne control message is invalid or too large")
 
@@ -1076,6 +1202,10 @@ class ExternalClient:
             self._transport.close()
             raise RuntimeError("ScopeOne control response has invalid size")
         response = json.loads(self._transport.recv_exact(payload_size).decode("utf-8"))
+
+        if response.get("requestId") != request_id:
+            self._transport.close()
+            raise RuntimeError("ScopeOne control response requestId mismatch")
 
         if not response.get("ok", False):
             error = response.get("error", "ScopeOne request failed")

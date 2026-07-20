@@ -35,8 +35,8 @@ namespace scopeone::core::internal
                            double exposureMs = 0.0);
         bool stopAgentFor(const QString& cameraId);
 
-        void startPreview();
-        void stopPreview();
+        bool startPreview();
+        bool stopPreview();
         void setPollingPaused(bool paused);
 
         bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;

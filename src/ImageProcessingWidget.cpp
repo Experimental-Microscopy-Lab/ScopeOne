@@ -764,13 +764,12 @@ namespace scopeone::ui
     // Starts real time image processing
     void ImageProcessingWidget::onStartProcessing()
     {
-        if (m_scopeonecore->processingModules().isEmpty())
+        if (!m_scopeonecore->setRealTimeProcessingEnabled(true))
         {
             QMessageBox::information(this, "Information", "Please add a processing module first");
             updateRunButtons();
             return;
         }
-        m_scopeonecore->setRealTimeProcessingEnabled(true);
         updateRunButtons();
         qInfo().noquote() << "Processing started";
     }
@@ -778,7 +777,11 @@ namespace scopeone::ui
     // Stops real time image processing
     void ImageProcessingWidget::onStopProcessing()
     {
-        m_scopeonecore->setRealTimeProcessingEnabled(false);
+        if (!m_scopeonecore->setRealTimeProcessingEnabled(false))
+        {
+            QMessageBox::warning(this, "Warning", "Failed to stop image processing");
+            return;
+        }
         updateRunButtons();
         qInfo().noquote() << "Processing stopped";
     }

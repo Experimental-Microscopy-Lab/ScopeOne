@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.712 LANGUAGES CXX)
+project(ScopeOne VERSION 1.3.719 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -66,7 +66,6 @@ set(SCOPEONE_UI_SOURCES
         src/ImageProcessingWidget.cpp
         src/ImageGalleryWidget.cpp
         src/ImageToolsDialog.cpp
-        src/ImageSceneModel.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
@@ -85,7 +84,6 @@ set(SCOPEONE_UI_HEADERS
         src/ImageProcessingWidget.h
         src/ImageGalleryWidget.h
         src/ImageToolsDialog.h
-        src/ImageSceneModel.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
         src/AboutDialog.h
@@ -106,6 +104,9 @@ qt_add_executable(ScopeOne
         ${SCOPEONE_UI_SOURCES}
         ${SCOPEONE_UI_HEADERS}
 )
+qt_add_executable(ScopeOneMcpServer
+        src/ScopeOneMcpServer.cpp
+)
 target_link_libraries(ScopeOne PRIVATE
         scopeone::ScopeOneCore
         Qt::Widgets
@@ -115,13 +116,20 @@ target_link_libraries(ScopeOne PRIVATE
         Qt::Concurrent
         ${OpenCV_LIBS}
 )
+target_link_libraries(ScopeOneMcpServer PRIVATE
+        Qt::Core
+        Qt::Network
+)
 target_include_directories(ScopeOne PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_BINARY_DIR}/include
         ${OpenCV_INCLUDE_DIRS}
 )
+target_include_directories(ScopeOneMcpServer PRIVATE
+        ${CMAKE_BINARY_DIR}/include
+)
 
-install(TARGETS ScopeOne
+install(TARGETS ScopeOne ScopeOneMcpServer
         RUNTIME DESTINATION .
 )
 

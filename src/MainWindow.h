@@ -20,6 +20,7 @@ class QTimer;
 
 namespace scopeone::core
 {
+    class ImageSceneModel;
     class ScopeOneCore;
 }
 
@@ -27,7 +28,6 @@ namespace scopeone::ui
 {
     class DevicePropertyWidget;
     class ConfigPresetWidget;
-    class ImageSceneModel;
     class ImageGalleryWidget;
     class ImageProcessingWidget;
     class InspectWidget;
@@ -68,7 +68,7 @@ namespace scopeone::ui
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
         void applyLoadedCameraState(const QStringList& cameraIds);
-        void applyUnloadedCameraState(const QStringList& cameraIds);
+        void applyNoCameraState();
         void refreshDevicePanels(bool fromCache = false);
         void applyStoredApplicationSettings();
         void logStartupSummary();
@@ -104,13 +104,12 @@ namespace scopeone::ui
                                              int skippedCameraCount,
                                              const QString& errorMessage);
         void handleConfigurationUnloadFinished(bool success,
-                                               const QStringList& cameraIds,
                                                const QString& errorMessage);
         void loadConfigurationFromDialog();
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
 
-        ImageSceneModel* m_imageSceneModel{nullptr};
+        scopeone::core::ImageSceneModel* m_imageSceneModel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
         QDockWidget* m_consoleDockWidget{nullptr};
         ConsoleWidget* m_consoleWidget{nullptr};

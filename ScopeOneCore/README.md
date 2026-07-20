@@ -4,6 +4,62 @@
 
 The desktop app currently assumes `ScopeOneCore` is checked out under the `ScopeOne` repository root.
 
+## Source Layout
+
+```text
+ScopeOneCore/
+|-- include/scopeone/   Public C++ headers installed for consumers
+|-- internal/           Private headers used only while building ScopeOneCore
+|-- src/                C++ implementations for both public and private types
+|-- python/scopeone/    External Python client for a running ScopeOne app
+|-- cmake/              CMake package configuration templates
+|-- external/           Third-party dependencies and device adapter sources
+|-- build/              Generated build tree
+`-- install/            Generated local installation consumed by the desktop app
+```
+
+`include/scopeone` defines the installed C++ contract. A header belongs here only when the desktop app or another external consumer must compile against it. Consumers include these files with the installed prefix, for example:
+
+```cpp
+#include <scopeone/ScopeOneCore.h>
+#include <scopeone/ImageFrame.h>
+```
+
+`internal` contains implementation contracts between Core managers, processing modules and the camera agent. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
+
+`src` contains implementations. A public class such as `ScopeOneCore`, `ImageSceneModel` or `ExperimentDocument` still has its `.cpp` file in `src`; being public is determined by its header location and exported API, not by the location of its implementation.
+
+Use this placement rule:
+
+- Put a stable type or function required by consumers in `include/scopeone`.
+- Put a Core-only manager, algorithm or protocol detail in `internal`.
+- Put executable implementation in `src`.
+- Keep desktop widgets and Qt UI behavior in the top-level ScopeOne `src` directory, outside `ScopeOneCore`.
+
+`build` and `install` are generated directories and should not be edited. The desktop app consumes the package from `install` through the exported CMake target instead of reaching into `internal`.
+
+## Namespace Conventions
+
+| Namespace | Purpose | Examples |
+|---|---|---|
+| `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
+| `scopeone::core::internal` | Core-only managers and processing implementations | `MMCoreManager`, `RecordingManager`, processing modules |
+| `scopeone::core::internal::agent` | Private camera-agent protocol details | Agent request, response and frame transport types |
+| `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
+
+Code in `src` that implements a public type remains in `scopeone::core`. Code that implements an `internal` header remains in `scopeone::core::internal`. The Python package named `scopeone` is an external client package and is not an embedded form of the C++ namespace.
+
+The CMake target `scopeone::ScopeOneCore` is a namespaced CMake alias, not a C++ namespace. A consumer normally uses both forms as follows:
+
+```cmake
+find_package(ScopeOneCore CONFIG REQUIRED)
+target_link_libraries(MyApp PRIVATE scopeone::ScopeOneCore)
+```
+
+```cpp
+scopeone::core::ScopeOneCore core;
+```
+
 ## Build
 
 Run from the `ScopeOneCore` repository root.
@@ -40,78 +96,16 @@ Outputs:
 
 ## Public API
 
+The installed headers are the source of truth for the public API:
 
-- `ScopeOneCore::getVersion()`
-- `loadConfiguration(...)`
-- `unloadConfiguration()`
-- `cameraIds()`
-- `rawLayerKey(...)`
-- `processedLayerKey(...)`
-- `staticLayerKey(...)`
-- `sourceIdFromLayerKey(...)`
-- `isRawLayerKey(...)`
-- `isProcessedLayerKey(...)`
-- `isStaticLayerKey(...)`
-- `startPreview(...)`
-- `stopPreview(...)`
-- `setExposure(...)`
-- `readExposure(...)`
-- `setROI(...)`
-- `clearROI(...)`
-- `graphFrame(...)`
-- `graphFrames(...)`
-- `graphPixelValue(...)`
-- `sessionFrameAt(...)`
-- `firstSessionFrames(...)`
-- `createFrameSession(...)`
-- `publishStaticFrame(...)`
-- `publishExternalFrame(...)`
-- `removeStaticFrame(...)`
-- `clearStaticFrames(...)`
-- `clearLiveFrames(...)`
-- `clearProcessedFrames(...)`
-- `getRawImageStatistics(...)`
-- `computeHistogramStats(...)`
-- `setLineProfile(...)`
-- `setStaticLineProfile(...)`
-- `clearLineProfile()`
-- `xyStageDevices()`
-- `zStageDevices()`
-- `currentXYStageDevice()`
-- `currentFocusDevice()`
-- `readXYPosition(...)`
-- `readZPosition(...)`
-- `moveXYRelative(...)`
-- `moveZRelative(...)`
-- `loadedDevices()`
-- `deviceProperties(...)`
-- `devicePropertyNames(...)`
-- `getPropertyValue(...)`
-- `propertyTypeString(...)`
-- `isPropertyReadOnly(...)`
-- `getAllowedPropertyValues(...)`
-- `getPropertyLimits(...)`
-- `setPropertyValue(...)`
-- `isRealTimeProcessingEnabled()`
-- `setRealTimeProcessingEnabled(...)`
-- `processFrame(...)`
-- `processFrameFrom(...)`
-- `processFrameThrough(...)`
-- `processingModules()`
-- `processingRecipe()`
-- `applyProcessingRecipe(...)`
-- `addProcessingModule(...)`
-- `removeProcessingModule(...)`
-- `setProcessingModuleParameters(...)`
-- `resetProcessingModuleState(...)`
-- `setRecordingMaxPendingWriteBytes(...)`
-- `recordingMaxPendingWriteBytes()`
-- `startRecording(...)`
-- `stopRecording()`
-- `isRecording()`
-- `setRecordingSessionPresentation(...)`
-- `saveRecordingSession(...)`
-- `saveRecordingSessionAsync(...)`
+- `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
+- `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
+- `ExperimentDocument.h` defines experiment plans, results, persistence and provenance.
+- `ImageSceneModel.h` defines shared image-layer, display-state and markup state.
+- `SharedFrame.h` defines the language-neutral shared-memory frame layout.
+- `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
+
+External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
 ## Processing Data Flow
 

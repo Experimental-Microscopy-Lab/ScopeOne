@@ -8,6 +8,7 @@
 #include <QMetaType>
 #include <QPoint>
 #include <QPointF>
+#include <QRect>
 #include <QSet>
 #include <QVariantMap>
 #include <QVector>
@@ -23,9 +24,12 @@ class CMMCore;
 
 namespace scopeone::core
 {
+    class ImageSceneModel;
+
     namespace internal
     {
         class RecordingManager;
+        class StageMosaicManager;
     }
 
     constexpr int kRecordingPhaseIdle = 0;
@@ -78,6 +82,34 @@ namespace scopeone::core
             int autoMaxLevel{255};
 
             bool hasData() const { return totalPixels > 0; }
+        };
+
+        struct ParticleMeasurement
+        {
+            int area{0};
+            QRect bounds;
+            QPointF centroid;
+        };
+
+        struct ParticleDetectionResult
+        {
+            QList<ParticleMeasurement> particles;
+            ImageFrame mask;
+            bool truncated{false};
+        };
+
+        struct StageMosaicPlan
+        {
+            QString cameraId;
+            QString xyStageId;
+            int rows{1};
+            int columns{1};
+            double pixelSizeUm{1.0};
+            double stepXUm{0.0};
+            double stepYUm{0.0};
+            int settleMs{150};
+            bool returnToStart{true};
+            QString gallerySaveDir;
         };
 
         class RecordingSaveResult
@@ -507,6 +539,7 @@ namespace scopeone::core
         static bool isRawLayerKey(const QString& layerKey);
         static bool isProcessedLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
+        ImageSceneModel* imageSceneModel() const { return m_imageSceneModel; }
 
         bool loadConfiguration(const QString& configPath,
                                LoadConfigResult* result,
@@ -518,15 +551,13 @@ namespace scopeone::core
         QStringList cameraIds() const { return m_cameraIds; }
         QStringList runningPreviewCameraIds() const;
 
-        void startPreview(const QString& cameraIdOrAll);
-        void stopPreview(const QString& cameraIdOrAll);
+        bool startPreview(const QString& cameraIdOrAll);
+        bool stopPreview(const QString& cameraIdOrAll);
         bool setExposure(const QString& cameraIdOrAll, double exposureMs);
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
+        bool setHalfROI(const QString& cameraId);
         bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
-        void setLineProfile(const QString& cameraId, const QPoint& start, const QPoint& end, bool processed);
-        void setStaticLineProfile(const QString& sourceId, const QPoint& start, const QPoint& end);
-        void clearLineProfile();
         ImageFrame graphFrame(const QString& layerKey) const;
         QList<ImageFrame> graphFrames(const QStringList& layerKeys) const;
         bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
@@ -549,7 +580,27 @@ namespace scopeone::core
         void clearLiveFrames(const QString& cameraId);
         void clearProcessedFrames();
         bool getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const;
+        bool getLayerHistogram(const QString& layerKey, HistogramStats& stats) const;
+        bool autoLayerLevels(const QString& layerKey);
+        bool fullLayerLevels(const QString& layerKey);
+        bool setLayerAutoStretchEnabled(const QString& layerKey, bool enabled);
+        bool layerAutoStretchEnabled(const QString& layerKey) const;
+        bool getLineProfile(const QString& layerKey,
+                            const QPoint& start,
+                            const QPoint& end,
+                            QVector<int>& values) const;
+        bool detectParticles(const QString& layerKey,
+                             int threshold,
+                             int minArea,
+                             int maxArea,
+                             ParticleDetectionResult& result,
+                             int maxParticles = 10000) const;
         static bool computeHistogramStats(const ImageFrame& frame, HistogramStats& stats);
+
+        bool startStageMosaic(const StageMosaicPlan& plan,
+                              QString* errorMessage = nullptr);
+        void cancelStageMosaic();
+        bool isStageMosaicRunning() const;
 
 
         QStringList xyStageDevices() const;
@@ -588,7 +639,7 @@ namespace scopeone::core
 
 
         bool isRealTimeProcessingEnabled() const;
-        void setRealTimeProcessingEnabled(bool enabled);
+        bool setRealTimeProcessingEnabled(bool enabled);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         ProcessingRecipe processingRecipe() const;
@@ -608,16 +659,31 @@ namespace scopeone::core
         bool startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds);
         void stopRecording();
         bool isRecording() const;
+        bool startExperiment(const ExperimentDocument& document,
+                             QString* errorMessage = nullptr);
+        bool cancelExperiment(const QString& experimentId,
+                              QString* errorMessage = nullptr);
+        QString activeExperimentId() const;
+        bool experimentCancelRequested() const;
+        QStringList experimentIds() const;
+        bool experimentDocument(const QString& experimentId,
+                                ExperimentDocument& document) const;
+        QStringList recordingSessionIds() const;
+        std::shared_ptr<RecordingSessionData> recordingSession(const QString& sessionId) const;
+        bool closeRecordingSession(const QString& sessionId);
         bool setRecordingSessionPresentation(
             const std::shared_ptr<RecordingSessionData>& session,
             const ExperimentDocument& presentation,
-            QString* errorMessage = nullptr) const;
-        QString saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session) const;
+            QString* errorMessage = nullptr);
+        QString saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session);
         QString saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session,
-                                     const RecordingSaveOptions& saveOptions) const;
+                                     const RecordingSaveOptions& saveOptions);
         void saveRecordingSessionAsync(const std::shared_ptr<RecordingSessionData>& session);
 
     signals:
+        void hardwareConfigurationChanged();
+        void deviceStateChanged();
+        void stagePositionChanged();
         void newRawFrameReady(const ImageFrame& frame);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
@@ -637,6 +703,12 @@ namespace scopeone::core
         void lineProfileUpdated(const QString& cameraId, bool processed, const QVector<int>& values);
         void layerLineProfileUpdated(const QString& layerKey, const QVector<int>& values);
         void lineProfileCleared();
+        void stageMosaicProgress(int completedTiles, int totalTiles, const QString& message);
+        void stageMosaicFrameUpdated(const ImageFrame& frame);
+        void stageMosaicFinished(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const QString& message,
+            bool canceled);
         void processingError(const QString& errorMessage);
         void processingModulesChanged();
         void processingModuleParametersChanged(int index);
@@ -663,6 +735,7 @@ namespace scopeone::core
         void recordingStateChanged(bool isRecording);
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
         void recordingSessionSaveFinished(const std::shared_ptr<RecordingSessionData>& session);
+        void recordingSessionClosed(const QString& sessionId);
 
     private:
         struct Managers;
@@ -723,6 +796,10 @@ namespace scopeone::core
         bool isAgentCamera(const QString& deviceLabel) const;
         bool isNativeCamera(const QString& deviceLabel) const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
+        void ensureSceneLayer(const QString& layerKey,
+                              const QString& sourceId,
+                              const QString& name,
+                              DocumentLayerKind kind);
         void handleIncomingRawFrame(const ImageFrame& frame);
         void processGraphRawFrameAsync(const ImageFrame& frame);
         void queuePreviewRawFrame(const ImageFrame& frame);
@@ -740,6 +817,17 @@ namespace scopeone::core
                                bool processed,
                                const ImageFrame& frame);
         bool updateStaticLineProfile(const QString& sourceId, const ImageFrame& frame);
+        void setLineProfile(const QString& cameraId,
+                            const QPoint& start,
+                            const QPoint& end,
+                            bool processed);
+        void setStaticLineProfile(const QString& sourceId,
+                                  const QPoint& start,
+                                  const QPoint& end);
+        void clearLineProfile();
+        void syncLineProfileFromScene();
+        void registerRecordingSession(const std::shared_ptr<RecordingSessionData>& session);
+        void finalizeActiveExperiment(const std::shared_ptr<RecordingSessionData>& session);
 
         struct ActiveLineProfile
         {
@@ -752,6 +840,7 @@ namespace scopeone::core
         };
 
         std::unique_ptr<Managers> m_managers;
+        ImageSceneModel* m_imageSceneModel{nullptr};
         QStringList m_cameraIds;
         QString m_loadedConfigPath;
         QString m_loadedConfigSha256;

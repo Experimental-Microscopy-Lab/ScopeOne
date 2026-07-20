@@ -86,12 +86,31 @@ namespace scopeone::ui
     }
 
     // Create the image gallery panel
-    ImageGalleryWidget::ImageGalleryWidget(QWidget* parent)
-        : QWidget(parent)
+    ImageGalleryWidget::ImageGalleryWidget(scopeone::core::ScopeOneCore* core,
+                                           QWidget* parent)
+        : QWidget(parent),
+          m_core(core)
     {
+        if (!core)
+        {
+            qFatal("ImageGalleryWidget requires ScopeOneCore");
+        }
         setupUI();
         updateButtons();
         updateEmptyState();
+        connect(m_core, &scopeone::core::ScopeOneCore::recordingSessionClosed,
+                this, [this](const QString& sessionId)
+                {
+                    for (int row = m_sessionList->count() - 1; row >= 0; --row)
+                    {
+                        if (m_sessionList->item(row)->data(kSessionIdRole).toString() == sessionId)
+                        {
+                            delete m_sessionList->takeItem(row);
+                        }
+                    }
+                    updateButtons();
+                    updateEmptyState();
+                });
     }
 
     // Add one acquired image session to the gallery
@@ -104,8 +123,19 @@ namespace scopeone::ui
             return;
         }
 
-        const QString id = sessionId();
-        m_sessions.insert(id, session);
+        const QString id = session->capturePlan().experimentId.trimmed();
+        if (id.isEmpty() || m_core->recordingSession(id) != session)
+        {
+            return;
+        }
+        for (int row = 0; row < m_sessionList->count(); ++row)
+        {
+            if (m_sessionList->item(row)->data(kSessionIdRole).toString() == id)
+            {
+                m_sessionList->setCurrentRow(row);
+                return;
+            }
+        }
 
         auto* item = new QListWidgetItem(m_sessionList);
         item->setText(displayTitle(*session, title) + QLatin1Char('\n') + itemSubtitle(*session));
@@ -125,11 +155,16 @@ namespace scopeone::ui
     void ImageGalleryWidget::markSessionSaved(
         const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
     {
+        if (!session)
+        {
+            return;
+        }
+        const QString sessionId = session->capturePlan().experimentId.trimmed();
         for (int row = 0; row < m_sessionList->count(); ++row)
         {
             QListWidgetItem* item = m_sessionList->item(row);
             const QString id = item->data(kSessionIdRole).toString();
-            if (m_sessions.value(id) != session)
+            if (id != sessionId)
             {
                 continue;
             }
@@ -146,9 +181,11 @@ namespace scopeone::ui
         const
     {
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> sessions;
-        for (const auto& session : m_sessions)
+        for (int row = 0; row < m_sessionList->count(); ++row)
         {
-            if (!session->isSaved())
+            const auto session = m_core->recordingSession(
+                m_sessionList->item(row)->data(kSessionIdRole).toString());
+            if (session && !session->isSaved())
             {
                 sessions.append(session);
             }
@@ -220,9 +257,16 @@ namespace scopeone::ui
                 [this]()
                 {
                     QListWidgetItem* item = m_sessionList->currentItem();
-                    auto session = m_sessions.take(item->data(kSessionIdRole).toString());
+                    if (!item)
+                    {
+                        return;
+                    }
+                    auto session = m_core->recordingSession(item->data(kSessionIdRole).toString());
                     delete m_sessionList->takeItem(m_sessionList->row(item));
-                    emit sessionRemoved(session);
+                    if (session)
+                    {
+                        emit sessionRemoved(session);
+                    }
                     updateButtons();
                     updateEmptyState();
                 });
@@ -244,12 +288,6 @@ namespace scopeone::ui
         const bool empty = m_sessionList->count() == 0;
         m_emptyLabel->setVisible(empty);
         m_sessionList->setVisible(!empty);
-    }
-
-    // Allocate a unique runtime id for one gallery item
-    QString ImageGalleryWidget::sessionId()
-    {
-        return QStringLiteral("session_%1").arg(m_nextSessionId++);
     }
 
     // Build the visible title for one gallery item
@@ -306,7 +344,7 @@ namespace scopeone::ui
         {
             return {};
         }
-        return m_sessions.value(item->data(kSessionIdRole).toString());
+        return m_core->recordingSession(item->data(kSessionIdRole).toString());
     }
 
     // Collect checked sessions for batch saving
@@ -321,8 +359,8 @@ namespace scopeone::ui
             {
                 continue;
             }
-            auto session = m_sessions.value(item->data(kSessionIdRole).toString());
-            if (!session->isSaved())
+            auto session = m_core->recordingSession(item->data(kSessionIdRole).toString());
+            if (session && !session->isSaved())
             {
                 sessions.append(session);
             }

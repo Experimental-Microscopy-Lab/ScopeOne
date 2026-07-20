@@ -1,6 +1,6 @@
 # ScopeOne Python API
 
-Minimal external Python API for controlling a running ScopeOne app, loading a Micro-Manager config, running experiment documents, previewing, recording, and saving.
+Python client for ScopeOne's language-neutral Local API. It controls a running ScopeOne app and can be used by scripts, notebooks, or Python-based agent tool adapters.
 
 ## Project layout
 
@@ -24,6 +24,8 @@ scopeone = ScopeOne()
 print(scopeone.version())
 scopeone.load_config(r"C:\path\to\MMConfig.cfg")
 print(scopeone.status())
+print(scopeone.capabilities())
+print(scopeone.state_snapshot())
 print(scopeone.camera_ids())
 print(scopeone.loaded_devices())
 scopeone.start_preview("Camera")
@@ -32,6 +34,9 @@ preview_image = np.flipud(live.image)
 layer_key = scopeone.show_frame(live, image=preview_image, layer_id="python_live", name="Python Live")
 scopeone.set_layer_layout("overlay")
 scopeone.set_layer_display(layer_key, colormap="Fire", opacity_percent=80)
+scopeone.auto_layer_levels(layer_key)
+print(scopeone.get_layer_histogram(layer_key)["mean"])
+print(scopeone.get_line_profile(layer_key, 0, 0, 100, 100))
 synthetic = np.zeros_like(live.image)
 scopeone.show_image(synthetic, layer_id="python_synthetic", name="Python Synthetic")
 markup_id = scopeone.create_rect_markup(layer_key, 10, 10, 100, 80, "Region")
@@ -81,6 +86,16 @@ scopeone.unload_config()
 scopeone.close()
 ```
 
+## Agent adapters
+
+The standalone C++ `ScopeOneMcpServer` included with the desktop app is the default integration for MCP-compatible agents. It does not use this Python package. This package remains available for scripts, notebooks, and custom Python-based adapters that intentionally use the Local API directly.
+
+`capabilities()` returns `operationGroups`, `longRunningOperations`, `hardwareMutationOperations`, `filesystemMutationOperations`, and `destructiveOperations`. `state_snapshot()` returns application and configuration identity, hardware inventory, preview state, processing modules, image layers, markups, acquisition state, retained experiments, and recording sessions. It intentionally does not poll every hardware property; use `get_property(..., from_cache=False)`, position reads, exposure reads, or ROI reads when an action requires a fresh hardware value.
+
+The Python client assigns a numeric `requestId` to every control request. The desktop app echoes it, and the client rejects a mismatched response. Raw protocol clients may provide their own string or numeric `requestId`.
+
+A control connection is synchronous and processes one request at a time. Agent adapters should serialize calls made through one `ScopeOne` instance, especially frame operations because all clients share the same exported frame mapping.
+
 ## Available methods
 
 - `ScopeOne.load_config(config_path)`
@@ -88,15 +103,24 @@ scopeone.close()
 - `ScopeOne.close()`
 - `ScopeOne.version()`
 - `ScopeOne.status()`
+- `ScopeOne.capabilities()`
+- `ScopeOne.state_snapshot()`
 - `ScopeOne.camera_ids()`
 - `ScopeOne.loaded_devices()`
 - `ScopeOne.start_preview(camera="All")`
 - `ScopeOne.stop_preview(camera="All")`
 - `ScopeOne.list_layers()`
+- `ScopeOne.get_layer_histogram(layer_key)`
+- `ScopeOne.get_line_profile(layer_key, x1, y1, x2, y2)`
 - `ScopeOne.layer_options()`
 - `ScopeOne.set_layer_layout(layout)`
 - `ScopeOne.set_visible_layers(layer_keys)`
 - `ScopeOne.set_layer_display(layer_key, visible=None, opacity_percent=None, gamma=None, colormap=None, blending=None, levels=None)`
+- `ScopeOne.auto_layer_levels(layer_key)`
+- `ScopeOne.full_layer_levels(layer_key)`
+- `ScopeOne.set_layer_auto_stretch(layer_key, enabled)`
+- `ScopeOne.get_source_display_transform(source_id)`
+- `ScopeOne.set_source_display_transform(source_id, offset_x=None, offset_y=None, zoom_percent=None, flip_x=None, flip_y=None)`
 - `ScopeOne.move_layer(layer_key, offset)`
 - `ScopeOne.config_groups()`
 - `ScopeOne.configs(group)`
@@ -118,7 +142,8 @@ scopeone.close()
 - `ScopeOne.set_exposure(exposure_ms, camera="All")`
 - `ScopeOne.get_roi(camera)`
 - `ScopeOne.set_roi(camera, x, y, width, height)`
-- `ScopeOne.clear_roi(camera)`
+- `ScopeOne.set_half_roi(camera)`
+- `ScopeOne.clear_roi(camera="All")`
 - `ScopeOne.xy_stage_devices()`
 - `ScopeOne.z_stage_devices()`
 - `ScopeOne.current_xy_stage_device()`
@@ -185,14 +210,18 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Control endpoint on Linux/Unix: `<tempdir>/ScopeOne.Api.local`
 - Message framing: 4-byte little-endian unsigned payload size, followed by UTF-8 JSON.
 - Maximum JSON payload: 64 MiB.
-- Success response: `{"type": "<request type>", "ok": true, ...}`
-- Error response: `{"type": "<request type>", "ok": false, "error": "..."}`
+- Local API version: `2`.
+- Requests may include a string or numeric `requestId`; every response echoes it.
+- Success response: `{"type": "<request type>", "requestId": 1, "ok": true, ...}`
+- Error response: `{"type": "<request type>", "requestId": 1, "ok": false, "error": "..."}`
 
 ### Control requests
 
 - `ping`: health check.
-- `version`: response `version`, `apiVersion`.
-- `status`: response `version`, `apiVersion`, cameras, devices, running previews, processing state, and layer keys.
+- `version`: response `version` for ScopeOne, `coreVersion` for ScopeOneCore, and `apiVersion`.
+- `status`: response `version`, `coreVersion`, `apiVersion`, cameras, devices, running previews, processing state, and layer keys.
+- `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
+- `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
 - `load_config`: fields `configPath`; response `cameraIds`.
 - `unload_config`: unload current Micro-Manager config.
@@ -201,10 +230,17 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `start_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `list_layers`: response `layers`.
+- `get_layer_histogram`: fields `layerKey`; response `histogram` with summary statistics and 256 `bins`.
+- `get_line_profile`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`; response `values`.
 - `layer_options`: response `layouts`, `colormaps`, `blendingModes`.
 - `set_layer_layout`: fields `layout`, accepts `side_by_side` or `overlay`.
 - `set_visible_layers`: fields `layerKeys`; response `visibleLayers`.
 - `set_layer_display`: fields `layerKey`, optional `visible`, `opacityPercent`, `gamma`, `colormap`, `blending`, and display level fields `minLevel`, `maxLevel`, `maxPossible`.
+- `auto_layer_levels`: fields `layerKey`; computes and applies histogram-based display levels.
+- `full_layer_levels`: fields `layerKey`; restores the full intensity range.
+- `set_layer_auto_stretch`: fields `layerKey`, `enabled`; continuously updates display levels from new histograms.
+- `get_source_display_transform`: fields `sourceId`; returns source offset, zoom, and flip state.
+- `set_source_display_transform`: fields `sourceId` and optional `offsetX`, `offsetY`, `zoomPercent`, `flipX`, `flipY`.
 - `move_layer`: fields `layerKey`, `offset`; response ordered `layers`.
 - `config_groups`: response `groups`.
 - `configs`: fields `group`; response `configs`.
@@ -226,7 +262,8 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `set_exposure`: fields `exposureMs`, optional field `camera`; response may include the read-back `exposureMs`.
 - `get_roi`: fields `camera`; response `x`, `y`, `width`, `height`.
 - `set_roi`: fields `camera`, `x`, `y`, `width`, `height`; response may include read-back ROI geometry.
-- `clear_roi`: fields `camera`.
+- `set_half_roi`: fields `camera`; response includes read-back ROI geometry.
+- `clear_roi`: optional field `camera`, defaults to `All`.
 - `xy_stage_devices`: response `devices`.
 - `z_stage_devices`: response `devices`.
 - `current_xy_stage_device`: response `device`.

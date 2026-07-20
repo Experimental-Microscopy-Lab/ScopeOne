@@ -8,7 +8,7 @@
 #include "DevicePropertyWidget.h"
 #include "ConfigPresetWidget.h"
 #include "PreviewWidget.h"
-#include "ImageSceneModel.h"
+#include "scopeone/ImageSceneModel.h"
 #include "ImageGalleryWidget.h"
 #include "ImageToolsDialog.h"
 #include "ImageProcessingWidget.h"
@@ -32,7 +32,6 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QSettings>
-#include <QSet>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTimer>
@@ -43,6 +42,8 @@
 
 namespace scopeone::ui
 {
+    using ImageSceneModel = scopeone::core::ImageSceneModel;
+
     namespace
     {
         // Build raw layer keys for all camera ids
@@ -173,7 +174,7 @@ namespace scopeone::ui
 
             if (!openedLayerKeys.isEmpty())
             {
-                previewWidget.setVisibleLayerKeys(visibleLayerKeys);
+                core.imageSceneModel()->setVisibleLayers(visibleLayerKeys);
                 previewWidget.setLayerLayoutMode(visibleLayerKeys.size() > 1
                                                      ? PreviewWidget::LayerLayoutMode::SideBySide
                                                      : PreviewWidget::LayerLayoutMode::Overlay);
@@ -201,7 +202,7 @@ namespace scopeone::ui
 
         void updateSessionPresentation(
             scopeone::core::ScopeOneCore& core,
-            const scopeone::ui::ImageSceneModel& sceneModel,
+            const scopeone::core::ImageSceneModel& sceneModel,
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
         {
             if (!session)
@@ -209,30 +210,8 @@ namespace scopeone::ui
                 return;
             }
 
-            scopeone::core::ExperimentDocument presentation = sceneModel.document();
-            QSet<QString> validLayerIds;
-            for (int index = presentation.layers.size() - 1; index >= 0; --index)
-            {
-                const auto& layer = presentation.layers.at(index);
-                if (layer.width <= 0 || layer.height <= 0)
-                {
-                    presentation.layers.removeAt(index);
-                }
-                else
-                {
-                    validLayerIds.insert(layer.id);
-                }
-            }
-            for (int index = presentation.markups.size() - 1; index >= 0; --index)
-            {
-                if (!validLayerIds.contains(presentation.markups.at(index).layerId))
-                {
-                    presentation.markups.removeAt(index);
-                }
-            }
-
             QString errorMessage;
-            if (!core.setRecordingSessionPresentation(session, presentation, &errorMessage))
+            if (!core.setRecordingSessionPresentation(session, sceneModel.document(), &errorMessage))
             {
                 qWarning().noquote() << QStringLiteral("Failed to persist image presentation: %1")
                                           .arg(errorMessage);
@@ -243,7 +222,7 @@ namespace scopeone::ui
     // Build the main shell around the shared core facade
     MainWindow::MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent)
         : QMainWindow(parent)
-          , m_imageSceneModel(new ImageSceneModel(this))
+          , m_imageSceneModel(core ? core->imageSceneModel() : nullptr)
           , m_scopeonecore(core)
     {
         if (!core)
@@ -252,8 +231,8 @@ namespace scopeone::ui
         }
 
         setupUI();
-        new ScopeOneLocalApiServer(m_scopeonecore, m_previewWidget, m_imageSceneModel, this);
         setupSignalWiring();
+        new ScopeOneLocalApiServer(m_scopeonecore, m_previewWidget, this);
         applyStoredApplicationSettings();
         logStartupSummary();
 
@@ -301,7 +280,6 @@ namespace scopeone::ui
                     event->ignore();
                     return;
                 }
-                m_imageGalleryWidget->markSessionSaved(session);
             }
         }
 
@@ -311,17 +289,39 @@ namespace scopeone::ui
     // Connect core events and panel actions into one UI flow
     void MainWindow::setupSignalWiring()
     {
-        const auto clearLayerMarkups = [this](const QString& layerKey)
-        {
-            const bool clearedCrossSection = m_imageSceneModel->hasRole(
-                ImageSceneModel::MarkupRole::CrossSection,
-                layerKey);
-            m_imageSceneModel->clear(layerKey);
-            if (clearedCrossSection)
-            {
-                m_scopeonecore->clearLineProfile();
-            }
-        };
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::hardwareConfigurationChanged,
+                this, [this]()
+                {
+                    const QStringList cameraIds = m_scopeonecore->cameraIds();
+                    if (cameraIds.isEmpty())
+                    {
+                        applyNoCameraState();
+                    }
+                    else
+                    {
+                        applyLoadedCameraState(cameraIds);
+                    }
+                    refreshDevicePanels(false);
+
+                    if (m_scopeonecore->loadedConfigurationPath().isEmpty())
+                    {
+                        showStatusMessage(tr("Configuration unloaded"), 3000);
+                    }
+                    else if (cameraIds.isEmpty())
+                    {
+                        showStatusMessage(tr("Configuration loaded without cameras"), 5000);
+                    }
+                    else
+                    {
+                        showStatusMessage(tr("%1 camera(s) ready").arg(cameraIds.size()), 5000);
+                    }
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::deviceStateChanged,
+                this, [this]()
+                {
+                    refreshDevicePanels(false);
+                },
+                Qt::QueuedConnection);
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewStateChanged,
                 this, [this](bool running)
@@ -339,36 +339,6 @@ namespace scopeone::ui
                 this, &MainWindow::handlePreviewMousePosition);
         connect(m_previewWidget, &PreviewWidget::roiDrawn,
                 this, &MainWindow::handleRoiDrawn);
-        connect(m_previewWidget, &PreviewWidget::crossSectionDrawn,
-                this, [this](const QString& layerKey,
-                             const QString& sourceId,
-                             int startX,
-                             int startY,
-                             int endX,
-                             int endY,
-                             bool processed)
-                {
-                    const QPoint start(startX, startY);
-                    const QPoint end(endX, endY);
-                    if (scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey))
-                    {
-                        m_scopeonecore->setStaticLineProfile(sourceId, start, end);
-                        return;
-                    }
-
-                    m_scopeonecore->setLineProfile(sourceId,
-                                                   start,
-                                                   end,
-                                                   processed);
-                });
-        connect(m_previewWidget, &PreviewWidget::crossSectionClearedByUser,
-                m_scopeonecore, &scopeone::core::ScopeOneCore::clearLineProfile);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
-                this, [this]()
-                {
-                    m_imageSceneModel->clearRole(ImageSceneModel::MarkupRole::CrossSection);
-                });
-
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::newRawFrameReady,
                 m_previewWidget, &PreviewWidget::trackRawFrameRate);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
@@ -392,31 +362,23 @@ namespace scopeone::ui
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramePublished,
                 this, [this](const QString& sourceId,
-                             const QString& displayName,
+                             const QString&,
                              const scopeone::core::ImageFrame& frame)
                 {
-                    m_previewWidget->setGraphStaticLayerFrame(sourceId, displayName, frame);
+                    m_previewWidget->setGraphStaticLayerFrame(sourceId, frame);
                     refreshPreviewCursorStatus();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFrameRemoved,
-                this, [this, clearLayerMarkups](const QString& sourceId)
+                this, [this](const QString& sourceId)
                 {
                     const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
                     m_galleryLayerFrameControls.remove(layerKey);
                     m_deviceControlWidget->removeLayerFrameControl(layerKey);
-                    clearLayerMarkups(layerKey);
                     m_previewWidget->removeStaticLayer(layerKey);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
-                this, [this, clearLayerMarkups]()
+                this, [this]()
                 {
-                    for (const QString& layerKey : m_previewWidget->availableLayerKeys())
-                    {
-                        if (scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey))
-                        {
-                            clearLayerMarkups(layerKey);
-                        }
-                    }
                     for (const QString& layerKey : m_galleryLayerFrameControls.keys())
                     {
                         m_deviceControlWidget->removeLayerFrameControl(layerKey);
@@ -425,32 +387,36 @@ namespace scopeone::ui
                     m_previewWidget->clearStaticLayers();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::liveFramesCleared,
-                this, [this, clearLayerMarkups](const QString& sourceId)
+                this, [this](const QString& sourceId)
                 {
-                    clearLayerMarkups(scopeone::core::ScopeOneCore::rawLayerKey(sourceId));
-                    clearLayerMarkups(scopeone::core::ScopeOneCore::processedLayerKey(sourceId));
                     m_previewWidget->clearSourceFrames(sourceId);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCleared,
-                this, [this, clearLayerMarkups]()
+                this, [this]()
                 {
-                    for (const QString& cameraId : m_scopeonecore->cameraIds())
-                    {
-                        clearLayerMarkups(scopeone::core::ScopeOneCore::processedLayerKey(cameraId));
-                    }
                     m_previewWidget->clearProcessedFrames();
                 });
 
         connect(m_deviceControlWidget, &DeviceControlWidget::startPreviewRequested,
                 this, [this]()
                 {
-                    m_scopeonecore->startPreview(m_currentControlTarget);
+                    if (!m_scopeonecore->startPreview(m_currentControlTarget))
+                    {
+                        showStatusMessage(tr("Failed to start preview"), 5000);
+                        qWarning().noquote() << QStringLiteral("Failed to start preview for %1")
+                                                  .arg(m_currentControlTarget);
+                    }
                 });
 
         connect(m_deviceControlWidget, &DeviceControlWidget::stopPreviewRequested,
                 this, [this]()
                 {
-                    m_scopeonecore->stopPreview(m_currentControlTarget);
+                    if (!m_scopeonecore->stopPreview(m_currentControlTarget))
+                    {
+                        showStatusMessage(tr("Failed to stop preview"), 5000);
+                        qWarning().noquote() << QStringLiteral("Failed to stop preview for %1")
+                                                  .arg(m_currentControlTarget);
+                    }
                 });
 
         connect(m_deviceControlWidget, &DeviceControlWidget::requestDrawROI,
@@ -462,41 +428,15 @@ namespace scopeone::ui
         connect(m_deviceControlWidget, &DeviceControlWidget::requestHalfROI,
                 this, [this](const QString& cameraId)
                 {
-                    int originX = 0;
-                    int originY = 0;
-                    int sourceWidth = 0;
-                    int sourceHeight = 0;
-                    if (!m_scopeonecore->getROI(cameraId, originX, originY, sourceWidth, sourceHeight)
-                        || sourceWidth <= 0
-                        || sourceHeight <= 0)
+                    if (m_scopeonecore->setHalfROI(cameraId))
                     {
-                        const scopeone::core::ImageFrame latestFrame =
-                            m_scopeonecore->graphFrame(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
-                        if (!latestFrame.isValid())
-                        {
-                            qWarning().noquote() << QString("Failed to set half ROI for %1: no raw frame").arg(cameraId);
-                            showStatusMessage(tr("No raw frame available for Half ROI"), 5000);
-                            return;
-                        }
-                        originX = 0;
-                        originY = 0;
-                        sourceWidth = latestFrame.width;
-                        sourceHeight = latestFrame.height;
-                    }
-
-                    const int roiWidth = qMax(1, sourceWidth / 2);
-                    const int roiHeight = qMax(1, sourceHeight / 2);
-                    const int x = originX + (sourceWidth - roiWidth) / 2;
-                    const int y = originY + (sourceHeight - roiHeight) / 2;
-                    if (m_scopeonecore->setROI(cameraId, x, y, roiWidth, roiHeight))
-                    {
-                        m_scopeonecore->clearLiveFrames(cameraId);
+                        int x = 0;
+                        int y = 0;
+                        int width = 0;
+                        int height = 0;
+                        m_scopeonecore->getROI(cameraId, x, y, width, height);
                         qInfo().noquote() << QString("Half ROI set for %1: %2x%3 at (%4,%5)")
-                                             .arg(cameraId)
-                                             .arg(roiWidth)
-                                             .arg(roiHeight)
-                                             .arg(x)
-                                             .arg(y);
+                                             .arg(cameraId).arg(width).arg(height).arg(x).arg(y);
                     }
                     else
                     {
@@ -513,28 +453,14 @@ namespace scopeone::ui
                     {
                         return;
                     }
-                    QStringList cameraIds;
-                    if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+                    if (m_scopeonecore->clearROI(target))
                     {
-                        cameraIds = m_scopeonecore->cameraIds();
+                        qInfo().noquote() << QString("ROI restored for %1").arg(target);
                     }
                     else
                     {
-                        cameraIds << target;
-                    }
-
-                    for (const QString& id : cameraIds)
-                    {
-                        if (m_scopeonecore->clearROI(id))
-                        {
-                            m_scopeonecore->clearLiveFrames(id);
-                            qInfo().noquote() << QString("ROI restored for %1").arg(id);
-                        }
-                        else
-                        {
-                            showStatusMessage(tr("Failed to restore ROI"), 5000);
-                            qWarning().noquote() << QString("Failed to restore ROI for %1").arg(id);
-                        }
+                        showStatusMessage(tr("Failed to restore ROI"), 5000);
+                        qWarning().noquote() << QString("Failed to restore ROI for %1").arg(target);
                     }
                 });
 
@@ -553,9 +479,8 @@ namespace scopeone::ui
                     {
                         showStatusMessage(tr("Failed to set exposure"), 5000);
                         qWarning().noquote() << QString("Failed to set exposure: %1 ms").arg(ms);
+                        m_deviceControlWidget->refreshCameraParameters();
                     }
-                    m_deviceControlWidget->refreshCameraParameters();
-                    m_propertyBrowser->refresh(false);
                 });
 
         connect(m_inspectWidget, &InspectWidget::requestDrawCrossSectionLayer,
@@ -569,11 +494,7 @@ namespace scopeone::ui
                 this, [this]()
                 {
                     m_previewWidget->clearCrossSection();
-                    m_scopeonecore->clearLineProfile();
                 });
-
-        connect(m_inspectWidget, &InspectWidget::displayRangeChanged,
-                m_previewWidget, &PreviewWidget::setLayerDisplayLevels);
 
         m_inspectWidget->setAvailableLayers(m_previewWidget->availableLayerKeys());
         m_inspectWidget->setCurrentLayer(m_deviceControlWidget->currentLayerKey());
@@ -614,7 +535,7 @@ namespace scopeone::ui
                         }
                     }
 
-                    m_previewWidget->setVisibleLayerKeys(visibleLayerKeys);
+                    m_imageSceneModel->setVisibleLayers(visibleLayerKeys);
                     m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::SideBySide);
                 });
         connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStopped,
@@ -629,8 +550,7 @@ namespace scopeone::ui
                     {
                         visibleLayerKeys = rawLayerKeys(m_previewWidget->availableCameraIds());
                     }
-                    m_previewWidget->setVisibleLayerKeys(visibleLayerKeys);
-                    m_scopeonecore->clearProcessedFrames();
+                    m_imageSceneModel->setVisibleLayers(visibleLayerKeys);
                 });
 
         connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
@@ -663,6 +583,8 @@ namespace scopeone::ui
                 {
                     updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
+                    m_deviceControlWidget->refreshCameraParameters();
+                    refreshDevicePanels(false);
                     const QString result = recordingSessionMessage(session);
                     if (!result.isEmpty())
                     {
@@ -717,7 +639,8 @@ namespace scopeone::ui
                 {
                     removeGallerySessionFrameControls(session);
                     removeGallerySessionPreview(*m_scopeonecore, session);
-                    m_scopeonecore->removeSessionFrameSource(session);
+                    m_scopeonecore->closeRecordingSession(
+                        session->capturePlan().experimentId);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionsRequested,
                 this,
@@ -746,7 +669,6 @@ namespace scopeone::ui
                                             .arg(device, property, value);
                     showStatusMessage(message, 3000);
                     qInfo().noquote() << message;
-                    m_deviceControlWidget->refreshCameraParameters();
                 });
         connect(m_propertyBrowser, &DevicePropertyWidget::errorOccurred,
                 this, [this](const QString& message)
@@ -944,7 +866,7 @@ namespace scopeone::ui
             QDockWidget::DockWidgetFloatable |
             QDockWidget::DockWidgetClosable);
 
-        m_imageGalleryWidget = new ImageGalleryWidget(this);
+        m_imageGalleryWidget = new ImageGalleryWidget(m_scopeonecore, this);
         m_imageGalleryDockWidget->setWidget(m_imageGalleryWidget);
 
         addDockWidget(Qt::LeftDockWidgetArea, m_imageGalleryDockWidget);
@@ -979,7 +901,7 @@ namespace scopeone::ui
 
         if (m_currentControlTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            m_previewWidget->setVisibleLayerKeys(rawLayerKeys(cameraIds));
+            m_imageSceneModel->setVisibleLayers(rawLayerKeys(cameraIds));
             m_previewWidget->setLayerLayoutMode(cameraIds.size() > 1
                                                     ? PreviewWidget::LayerLayoutMode::SideBySide
                                                     : PreviewWidget::LayerLayoutMode::Overlay);
@@ -988,12 +910,13 @@ namespace scopeone::ui
 
         if (cameraIds.contains(m_currentControlTarget))
         {
-            m_previewWidget->setVisibleLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(m_currentControlTarget)});
+            m_imageSceneModel->setVisibleLayers(
+                {scopeone::core::ScopeOneCore::rawLayerKey(m_currentControlTarget)});
             m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
             return;
         }
 
-        m_previewWidget->setVisibleLayerKeys(rawLayerKeys(cameraIds));
+        m_imageSceneModel->setVisibleLayers(rawLayerKeys(cameraIds));
         m_previewWidget->setLayerLayoutMode(cameraIds.size() > 1
                                                 ? PreviewWidget::LayerLayoutMode::SideBySide
                                                 : PreviewWidget::LayerLayoutMode::Overlay);
@@ -1057,40 +980,29 @@ namespace scopeone::ui
     // Push loaded camera ids into every dependent panel
     void MainWindow::applyLoadedCameraState(const QStringList& cameraIds)
     {
-        m_deviceControlWidget->onCameraInitialized(true);
-        m_deviceControlWidget->setControlTargets(cameraIds);
-        m_inspectWidget->onCameraInitialized(true);
-        m_inspectWidget->setAvailableCameras(cameraIds);
-
-        m_imageSceneModel->clear();
-        m_scopeonecore->clearLineProfile();
         m_previewWidget->setAvailableCameraIds(cameraIds);
-        setStatusLabelText(m_statusTargetLabel,
-                           tr("Target: All"),
-                           tr("Current control target: All"));
+        m_deviceControlWidget->setControlTargets(cameraIds);
+        m_deviceControlWidget->onCameraInitialized(true);
+        m_inspectWidget->setAvailableCameras(cameraIds);
+        m_inspectWidget->onCameraInitialized(true);
 
         if (cameraIds.size() > 1)
         {
-            m_previewWidget->setVisibleLayerKeys(rawLayerKeys(cameraIds));
+            m_imageSceneModel->setVisibleLayers(rawLayerKeys(cameraIds));
         }
         else if (!cameraIds.isEmpty())
         {
-            m_previewWidget->setVisibleLayerKeys({scopeone::core::ScopeOneCore::rawLayerKey(cameraIds.first())});
+            m_imageSceneModel->setVisibleLayers(
+                {scopeone::core::ScopeOneCore::rawLayerKey(cameraIds.first())});
         }
 
         m_recordingWidget->setAvailableCameras(cameraIds);
     }
 
-    // Clear preview and panel state after devices unload
-    void MainWindow::applyUnloadedCameraState(const QStringList& cameraIds)
+    // Clear preview and panel state when no camera is available
+    void MainWindow::applyNoCameraState()
     {
-        (void)cameraIds;
-        m_imageSceneModel->clear();
-        m_scopeonecore->clearLineProfile();
         m_previewWidget->setAvailableCameraIds({});
-        setStatusLabelText(m_statusTargetLabel,
-                           tr("Target: All"),
-                           tr("Current control target: All"));
         setStatusLabelText(m_statusPreviewLabel,
                            tr("Preview: Idle"),
                            tr("Preview is idle"));
@@ -1103,7 +1015,6 @@ namespace scopeone::ui
         m_inspectWidget->clearCrossSectionProfile();
 
         m_recordingWidget->setAvailableCameras({});
-        showStatusMessage(tr("Configuration unloaded"), 3000);
     }
 
     // Refresh panels that mirror device state
@@ -1388,7 +1299,6 @@ namespace scopeone::ui
         // Backend restarts preview for ROI
         if (m_scopeonecore->setROI(cameraId, x, y, width, height))
         {
-            m_scopeonecore->clearLiveFrames(cameraId);
             showStatusMessage(tr("ROI applied"), 3000);
             qInfo().noquote() << QString("ROI set for %1: %2x%3 at (%4,%5)")
                                  .arg(cameraId)
@@ -1442,7 +1352,6 @@ namespace scopeone::ui
 
         if (!cameraIds.isEmpty())
         {
-            applyLoadedCameraState(cameraIds);
             if (failCount > 0)
             {
                 showStatusMessage(
@@ -1466,14 +1375,11 @@ namespace scopeone::ui
             qWarning().noquote() << "No camera devices in configuration";
         }
 
-        refreshDevicePanels(false);
-
         qInfo().noquote() << QString("Configuration loaded successfully: %1").arg(configPath);
     }
 
     // Apply UI state after a configuration unload attempt
     void MainWindow::handleConfigurationUnloadFinished(bool success,
-                                                       const QStringList& cameraIds,
                                                        const QString& errorMessage)
     {
         if (!success)
@@ -1485,8 +1391,6 @@ namespace scopeone::ui
             return;
         }
 
-        applyUnloadedCameraState(cameraIds);
-        refreshDevicePanels();
         qInfo().noquote() << "Configuration unload completed successfully";
     }
 
@@ -1512,14 +1416,6 @@ namespace scopeone::ui
 
         settings.setValue(QStringLiteral("LastConfigDirectory"), QFileInfo(fileName).absolutePath());
         closeLoadConfigProgress();
-
-        const QStringList previousCameraIds = m_scopeonecore->cameraIds();
-        if (!m_scopeonecore->loadedDevices().isEmpty())
-        {
-            m_scopeonecore->unloadConfiguration();
-            applyUnloadedCameraState(previousCameraIds);
-            refreshDevicePanels();
-        }
 
         m_loadConfigProgress = new QProgressDialog(tr("Loading configuration..."),
                                                    QString(),
@@ -1561,9 +1457,8 @@ namespace scopeone::ui
 
         if (reply == QMessageBox::Yes)
         {
-            const QStringList cameraIds = m_scopeonecore->cameraIds();
             m_scopeonecore->unloadConfiguration();
-            handleConfigurationUnloadFinished(true, cameraIds, QString{});
+            handleConfigurationUnloadFinished(true, QString{});
         }
     }
 

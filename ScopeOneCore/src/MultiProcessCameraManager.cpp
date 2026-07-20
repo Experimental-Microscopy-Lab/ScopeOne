@@ -2216,21 +2216,15 @@ namespace scopeone::core::internal
     }
 
     // Starts preview on the active camera backend
-    void MultiProcessCameraManager::startPreview()
+    bool MultiProcessCameraManager::startPreview()
     {
-        if (m_runtime)
-        {
-            m_runtime->startPreview();
-        }
+        return m_runtime && m_runtime->startPreview();
     }
 
     // Stops preview on the active camera backend
-    void MultiProcessCameraManager::stopPreview()
+    bool MultiProcessCameraManager::stopPreview()
     {
-        if (m_runtime)
-        {
-            m_runtime->stopPreview();
-        }
+        return m_runtime && m_runtime->stopPreview();
     }
 
     // Sets exposure through the active camera backend

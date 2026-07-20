@@ -16,7 +16,7 @@
 #include <QTimer>
 #include <QVector>
 #include <vector>
-#include "ImageSceneModel.h"
+#include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
 class QEvent;
@@ -28,6 +28,8 @@ class QWheelEvent;
 
 namespace scopeone::ui
 {
+    using ImageSceneModel = scopeone::core::ImageSceneModel;
+
     class PreviewWidget : public QOpenGLWidget, protected QOpenGLFunctions
     {
         Q_OBJECT
@@ -56,30 +58,14 @@ namespace scopeone::ui
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
-        void setVisibleLayerKeys(const QStringList& layerKeys);
-        void setLayerVisible(const QString& layerKey, bool visible);
-        void setLayerOpacityPercent(const QString& layerKey, int percent);
-        void setLayerGamma(const QString& layerKey, double gamma);
-        void setLayerColormap(const QString& layerKey, const QString& colormap);
-        void setLayerBlending(const QString& layerKey, const QString& blending);
-        void setLayerDisplayLevels(const QString& layerKey,
-                                   int minLevel,
-                                   int maxLevel,
-                                   int maxPossible);
-        void moveLayer(const QString& layerKey, int offset);
         QString setGraphStaticLayerFrame(const QString& layerId,
-                                         const QString& displayName,
                                          const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
         void clearStaticLayers();
         QStringList availableCameraIds() const;
         QStringList availableLayerKeys() const;
         QStringList visibleLayerKeys() const;
-        int layerOpacityPercent(const QString& layerKey) const;
-        double layerGamma(const QString& layerKey) const;
-        QString layerColormap(const QString& layerKey) const;
         QStringList supportedLayerColormaps() const;
-        QString layerBlending(const QString& layerKey) const;
         QStringList supportedLayerBlendingModes() const;
         QString layerName(const QString& layerKey) const;
         QString layerInfoText(const QString& layerKey) const;
@@ -90,16 +76,6 @@ namespace scopeone::ui
         int zoomPercent() const;
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
-        bool sourceDisplayTransform(const QString& sourceId,
-                                    int& offsetX,
-                                    int& offsetY,
-                                    int& zoomPercent,
-                                    bool& flipX,
-                                    bool& flipY) const;
-        void setSourceOffset(const QString& sourceId, int offsetX, int offsetY);
-        void setSourceFlip(const QString& sourceId, bool flipX, bool flipY);
-        void setSourceZoomPercent(const QString& sourceId, int percent);
-
         void startROIDrawing(const QString& cameraId);
         void startCrossSectionDrawingForLayer(const QString& layerKey);
         void clearCrossSection();
@@ -124,14 +100,6 @@ signals:
                       int height,
                       int sourceRoiX,
                       int sourceRoiY);
-        void crossSectionClearedByUser();
-        void crossSectionDrawn(const QString& layerKey,
-                               const QString& sourceId,
-                               int startX,
-                               int startY,
-                               int endX,
-                               int endY,
-                               bool processed);
 
     protected:
         void initializeGL() override;
@@ -273,9 +241,8 @@ signals:
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
                               const scopeone::core::ImageFrame& frame,
-                              bool& hadFrame);
-        void updateLayerInfoForFrame(const QString& layerKey,
-                                     const scopeone::core::ImageFrame& frame);
+                              bool* replacedFrame = nullptr);
+        void initializeLayerInfo(const QString& layerKey);
         void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
@@ -284,10 +251,7 @@ signals:
         QString colormapName(Colormap colormap) const;
         Blending blendingFromName(const QString& name) const;
         QString blendingName(Blending blending) const;
-        void ensureLayer(const QString& layerKey);
-        void ensureLayersForCamera(const QString& cameraId);
         void removeStaticLayerData(const QString& sourceId);
-        void removeInvalidLayers(const QSet<QString>& validKeys);
         QSet<QString> validLayerKeys() const;
         bool hasRawFrame(const FrameSourceState& frameState) const;
         QMap<QString, FrameSourceState> snapshotFrameSources() const;

@@ -1,8 +1,9 @@
-#include "ImageSceneModel.h"
+#include "scopeone/ImageSceneModel.h"
 
+#include <algorithm>
 #include <QtGlobal>
 
-namespace scopeone::ui
+namespace scopeone::core
 {
     namespace
     {
@@ -30,66 +31,27 @@ namespace scopeone::ui
                 && left.levelDomainMax == right.levelDomainMax;
         }
 
-        scopeone::core::DocumentMarkupType documentMarkupType(ImageSceneModel::MarkupType type)
+        QString canonicalName(const QString& value, const QStringList& supportedValues)
         {
-            return type == ImageSceneModel::MarkupType::Rect
-                       ? scopeone::core::DocumentMarkupType::Rect
-                       : scopeone::core::DocumentMarkupType::Line;
-        }
-
-        ImageSceneModel::MarkupType markupType(scopeone::core::DocumentMarkupType type)
-        {
-            return type == scopeone::core::DocumentMarkupType::Rect
-                       ? ImageSceneModel::MarkupType::Rect
-                       : ImageSceneModel::MarkupType::Line;
-        }
-
-        scopeone::core::DocumentMarkupRole documentMarkupRole(ImageSceneModel::MarkupRole role)
-        {
-            switch (role)
+            const QString trimmedValue = value.trimmed();
+            for (const QString& supportedValue : supportedValues)
             {
-            case ImageSceneModel::MarkupRole::CrossSection:
-                return scopeone::core::DocumentMarkupRole::CrossSection;
-            case ImageSceneModel::MarkupRole::Roi:
-                return scopeone::core::DocumentMarkupRole::Roi;
-            case ImageSceneModel::MarkupRole::Measurement:
-                return scopeone::core::DocumentMarkupRole::Measurement;
-            case ImageSceneModel::MarkupRole::Generic:
-                return scopeone::core::DocumentMarkupRole::Generic;
+                if (supportedValue.compare(trimmedValue, Qt::CaseInsensitive) == 0)
+                {
+                    return supportedValue;
+                }
             }
-            return scopeone::core::DocumentMarkupRole::Generic;
+            return {};
         }
 
-        ImageSceneModel::MarkupRole markupRole(scopeone::core::DocumentMarkupRole role)
+        bool sourceTransformsEqual(const ImageSceneModel::SourceDisplayTransform& left,
+                                   const ImageSceneModel::SourceDisplayTransform& right)
         {
-            switch (role)
-            {
-            case scopeone::core::DocumentMarkupRole::CrossSection:
-                return ImageSceneModel::MarkupRole::CrossSection;
-            case scopeone::core::DocumentMarkupRole::Roi:
-                return ImageSceneModel::MarkupRole::Roi;
-            case scopeone::core::DocumentMarkupRole::Measurement:
-                return ImageSceneModel::MarkupRole::Measurement;
-            case scopeone::core::DocumentMarkupRole::Generic:
-                return ImageSceneModel::MarkupRole::Generic;
-            }
-            return ImageSceneModel::MarkupRole::Generic;
-        }
-
-        ImageSceneModel::LayerKind sceneLayerKind(scopeone::core::DocumentLayerKind kind)
-        {
-            switch (kind)
-            {
-            case scopeone::core::DocumentLayerKind::Raw:
-                return ImageSceneModel::LayerKind::Raw;
-            case scopeone::core::DocumentLayerKind::Processed:
-                return ImageSceneModel::LayerKind::Processed;
-            case scopeone::core::DocumentLayerKind::Gallery:
-                return ImageSceneModel::LayerKind::Gallery;
-            case scopeone::core::DocumentLayerKind::Static:
-                return ImageSceneModel::LayerKind::Static;
-            }
-            return ImageSceneModel::LayerKind::Unknown;
+            return left.offsetX == right.offsetX
+                && left.offsetY == right.offsetY
+                && left.flipX == right.flipX
+                && left.flipY == right.flipY
+                && left.zoomPercent == right.zoomPercent;
         }
 
         ImageSceneModel::Markup markupFromDocument(
@@ -98,13 +60,13 @@ namespace scopeone::ui
         {
             ImageSceneModel::Markup markup;
             markup.id = documentMarkup.id;
-            markup.type = markupType(documentMarkup.type);
-            markup.role = markupRole(documentMarkup.role);
+            markup.type = documentMarkup.type;
+            markup.role = documentMarkup.role;
             markup.layerKey = documentMarkup.layerId;
             scopeone::core::DocumentLayer layer;
             if (sceneModel.findLayer(markup.layerKey, layer))
             {
-                markup.layerKind = sceneLayerKind(layer.kind);
+                markup.layerKind = layer.kind;
                 markup.sourceId = layer.sourceId;
             }
             markup.start = documentMarkup.start.toPoint();
@@ -122,6 +84,16 @@ namespace scopeone::ui
     {
     }
 
+    void ImageSceneModel::reset()
+    {
+        m_document = ExperimentDocument{};
+        m_sourceDisplayTransforms.clear();
+        m_autoStretchLayerIds.clear();
+        m_nextMarkupId = 1;
+        emit layersChanged();
+        emit markupsChanged();
+    }
+
     const scopeone::core::ExperimentDocument& ImageSceneModel::document() const
     {
         return m_document;
@@ -135,8 +107,9 @@ namespace scopeone::ui
             return false;
         }
         m_document = document;
+        m_sourceDisplayTransforms.clear();
+        m_autoStretchLayerIds.clear();
         m_nextMarkupId = 1;
-        emit documentReplaced();
         emit layersChanged();
         emit markupsChanged();
         return true;
@@ -151,6 +124,33 @@ namespace scopeone::ui
             ids.append(layer.id);
         }
         return ids;
+    }
+
+    QStringList ImageSceneModel::visibleLayerIds() const
+    {
+        QStringList ids;
+        for (const scopeone::core::DocumentLayer& layer : m_document.layers)
+        {
+            if (layer.display.visible)
+            {
+                ids.append(layer.id);
+            }
+        }
+        return ids;
+    }
+
+    bool ImageSceneModel::hasSource(const QString& sourceId) const
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (trimmedSourceId.isEmpty())
+        {
+            return false;
+        }
+        return std::any_of(m_document.layers.cbegin(), m_document.layers.cend(),
+                           [&trimmedSourceId](const scopeone::core::DocumentLayer& layer)
+                           {
+                               return layer.sourceId == trimmedSourceId;
+                           });
     }
 
     bool ImageSceneModel::findLayer(const QString& layerId,
@@ -216,8 +216,121 @@ namespace scopeone::ui
             return true;
         }
         layer.display = display;
-        emit layersChanged();
+        emit layerDisplayChanged(layer.id);
         return true;
+    }
+
+    bool ImageSceneModel::setVisibleLayers(const QStringList& layerIds)
+    {
+        QSet<QString> visibleIds;
+        for (const QString& layerId : layerIds)
+        {
+            const QString trimmedLayerId = layerId.trimmed();
+            if (layerIndex(trimmedLayerId) < 0)
+            {
+                return false;
+            }
+            visibleIds.insert(trimmedLayerId);
+        }
+
+        QStringList changedIds;
+        for (scopeone::core::DocumentLayer& layer : m_document.layers)
+        {
+            const bool visible = visibleIds.contains(layer.id);
+            if (layer.display.visible != visible)
+            {
+                layer.display.visible = visible;
+                changedIds.append(layer.id);
+            }
+        }
+        if (changedIds.isEmpty())
+        {
+            return true;
+        }
+        for (const QString& layerId : changedIds)
+        {
+            emit layerDisplayChanged(layerId);
+        }
+        return true;
+    }
+
+    bool ImageSceneModel::setLayerVisible(const QString& layerId, bool visible)
+    {
+        const int index = layerIndex(layerId);
+        if (index < 0)
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.visible = visible;
+        return setLayerDisplay(layerId, display);
+    }
+
+    bool ImageSceneModel::setLayerOpacityPercent(const QString& layerId, int percent)
+    {
+        const int index = layerIndex(layerId);
+        if (index < 0)
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.opacityPercent = qBound(0, percent, 100);
+        return setLayerDisplay(layerId, display);
+    }
+
+    bool ImageSceneModel::setLayerGamma(const QString& layerId, double gamma)
+    {
+        const int index = layerIndex(layerId);
+        if (index < 0)
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.gamma = std::clamp(gamma, 0.2, 2.0);
+        return setLayerDisplay(layerId, display);
+    }
+
+    bool ImageSceneModel::setLayerColormap(const QString& layerId, const QString& colormap)
+    {
+        const int index = layerIndex(layerId);
+        const QString name = canonicalName(colormap, supportedColormaps());
+        if (index < 0 || name.isEmpty())
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.colormap = name;
+        return setLayerDisplay(layerId, display);
+    }
+
+    bool ImageSceneModel::setLayerBlending(const QString& layerId, const QString& blending)
+    {
+        const int index = layerIndex(layerId);
+        const QString name = canonicalName(blending, supportedBlendingModes());
+        if (index < 0 || name.isEmpty())
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.blending = name;
+        return setLayerDisplay(layerId, display);
+    }
+
+    bool ImageSceneModel::setLayerDisplayLevels(const QString& layerId,
+                                                int minLevel,
+                                                int maxLevel,
+                                                int domainMax)
+    {
+        const int index = layerIndex(layerId);
+        if (index < 0)
+        {
+            return false;
+        }
+        scopeone::core::LayerDisplayState display = m_document.layers.at(index).display;
+        display.levelDomainMax = qMax(1, domainMax);
+        display.levelMin = qBound(0, minLevel, display.levelDomainMax - 1);
+        display.levelMax = qBound(display.levelMin + 1, maxLevel, display.levelDomainMax);
+        return setLayerDisplay(layerId, display);
     }
 
     bool ImageSceneModel::updateLayerFrame(const QString& layerId,
@@ -231,16 +344,45 @@ namespace scopeone::ui
         scopeone::core::DocumentLayer& layer = m_document.layers[index];
         const scopeone::core::ImageTransform2D pixelToSensor =
             scopeone::core::imagePixelToSensorTransform(frame);
-        if (layer.width == frame.width
-            && layer.height == frame.height
-            && transformsEqual(layer.pixelToSensor, pixelToSensor))
+        const bool metadataChanged = layer.width != frame.width
+                                     || layer.height != frame.height
+                                     || !transformsEqual(layer.pixelToSensor, pixelToSensor);
+        const int domainMax = qMax(1, frame.maxValue());
+        const bool displayChanged = layer.display.levelDomainMax != domainMax;
+        if (!metadataChanged && !displayChanged)
         {
             return true;
         }
         layer.width = frame.width;
         layer.height = frame.height;
         layer.pixelToSensor = pixelToSensor;
-        emit layersChanged();
+        if (displayChanged)
+        {
+            const int previousDomainMax = qMax(1, layer.display.levelDomainMax);
+            const bool usedFullRange = layer.display.levelMin == 0
+                                       && layer.display.levelMax == previousDomainMax;
+            layer.display.levelDomainMax = domainMax;
+            if (usedFullRange)
+            {
+                layer.display.levelMin = 0;
+                layer.display.levelMax = domainMax;
+            }
+            else
+            {
+                layer.display.levelMin = qBound(0, layer.display.levelMin, domainMax - 1);
+                layer.display.levelMax = qBound(layer.display.levelMin + 1,
+                                                layer.display.levelMax,
+                                                domainMax);
+            }
+        }
+        if (metadataChanged)
+        {
+            emit layersChanged();
+        }
+        if (displayChanged)
+        {
+            emit layerDisplayChanged(layer.id);
+        }
         return true;
     }
 
@@ -271,7 +413,13 @@ namespace scopeone::ui
         {
             return false;
         }
+        const QString sourceId = m_document.layers.at(index).sourceId;
+        m_autoStretchLayerIds.remove(trimmedLayerId);
         m_document.layers.removeAt(index);
+        if (!hasSource(sourceId))
+        {
+            m_sourceDisplayTransforms.remove(sourceId);
+        }
         bool removedMarkup = false;
         for (int markupIndex = m_document.markups.size() - 1; markupIndex >= 0; --markupIndex)
         {
@@ -289,36 +437,90 @@ namespace scopeone::ui
         return true;
     }
 
-    void ImageSceneModel::removeLayersNotIn(const QSet<QString>& validLayerIds)
+    bool ImageSceneModel::layerAutoStretchEnabled(const QString& layerId) const
     {
-        QSet<QString> removedLayerIds;
-        for (int index = m_document.layers.size() - 1; index >= 0; --index)
+        return m_autoStretchLayerIds.contains(layerId.trimmed());
+    }
+
+    bool ImageSceneModel::setLayerAutoStretchEnabled(const QString& layerId, bool enabled)
+    {
+        const QString trimmedLayerId = layerId.trimmed();
+        if (layerIndex(trimmedLayerId) < 0)
         {
-            const QString layerId = m_document.layers.at(index).id;
-            if (!validLayerIds.contains(layerId))
-            {
-                removedLayerIds.insert(layerId);
-                m_document.layers.removeAt(index);
-            }
+            return false;
         }
-        if (removedLayerIds.isEmpty())
+        const bool current = m_autoStretchLayerIds.contains(trimmedLayerId);
+        if (current == enabled)
         {
-            return;
+            return true;
         }
-        bool removedMarkup = false;
-        for (int index = m_document.markups.size() - 1; index >= 0; --index)
+        if (enabled)
         {
-            if (removedLayerIds.contains(m_document.markups.at(index).layerId))
-            {
-                m_document.markups.removeAt(index);
-                removedMarkup = true;
-            }
+            m_autoStretchLayerIds.insert(trimmedLayerId);
         }
-        emit layersChanged();
-        if (removedMarkup)
+        else
         {
-            emit markupsChanged();
+            m_autoStretchLayerIds.remove(trimmedLayerId);
         }
+        emit layerAutoStretchChanged(trimmedLayerId, enabled);
+        return true;
+    }
+
+    ImageSceneModel::SourceDisplayTransform ImageSceneModel::sourceDisplayTransform(
+        const QString& sourceId) const
+    {
+        return m_sourceDisplayTransforms.value(sourceId.trimmed());
+    }
+
+    bool ImageSceneModel::setSourceDisplayTransform(
+        const QString& sourceId,
+        const SourceDisplayTransform& transform)
+    {
+        const QString trimmedSourceId = sourceId.trimmed();
+        if (!hasSource(trimmedSourceId))
+        {
+            return false;
+        }
+        SourceDisplayTransform normalized = transform;
+        normalized.zoomPercent = qBound(10, normalized.zoomPercent, 500);
+        const SourceDisplayTransform current = m_sourceDisplayTransforms.value(trimmedSourceId);
+        if (sourceTransformsEqual(current, normalized))
+        {
+            return true;
+        }
+        m_sourceDisplayTransforms.insert(trimmedSourceId, normalized);
+        emit sourceDisplayTransformChanged(trimmedSourceId);
+        return true;
+    }
+
+    bool ImageSceneModel::resetSourceDisplayTransform(const QString& sourceId)
+    {
+        return setSourceDisplayTransform(sourceId, SourceDisplayTransform{});
+    }
+
+    QStringList ImageSceneModel::supportedColormaps()
+    {
+        return {
+            QStringLiteral("Gray"),
+            QStringLiteral("Green"),
+            QStringLiteral("Magenta"),
+            QStringLiteral("Cyan"),
+            QStringLiteral("Red"),
+            QStringLiteral("Blue"),
+            QStringLiteral("Yellow"),
+            QStringLiteral("Fire"),
+        };
+    }
+
+    QStringList ImageSceneModel::supportedBlendingModes()
+    {
+        return {
+            QStringLiteral("Translucent"),
+            QStringLiteral("Additive"),
+            QStringLiteral("Minimum"),
+            QStringLiteral("Opaque"),
+            QStringLiteral("Multiplicative"),
+        };
     }
 
     QString ImageSceneModel::createLine(const QString& layerKey,
@@ -368,8 +570,8 @@ namespace scopeone::ui
     {
         scopeone::core::DocumentMarkup documentMarkup;
         documentMarkup.id = markup.id.trimmed();
-        documentMarkup.type = documentMarkupType(markup.type);
-        documentMarkup.role = documentMarkupRole(markup.role);
+        documentMarkup.type = markup.type;
+        documentMarkup.role = markup.role;
         documentMarkup.layerId = markup.layerKey.trimmed();
         documentMarkup.label = markup.label.trimmed();
         documentMarkup.start = markup.start;
@@ -392,6 +594,16 @@ namespace scopeone::ui
         else if (markupIndex(documentMarkup.id) >= 0)
         {
             return {};
+        }
+        if (documentMarkup.role == DocumentMarkupRole::CrossSection)
+        {
+            for (int index = m_document.markups.size() - 1; index >= 0; --index)
+            {
+                if (m_document.markups.at(index).role == DocumentMarkupRole::CrossSection)
+                {
+                    m_document.markups.removeAt(index);
+                }
+            }
         }
         m_document.markups.append(documentMarkup);
         emit markupsChanged();
@@ -427,21 +639,6 @@ namespace scopeone::ui
         }
         outMarkup = markupFromDocument(m_document.markups.at(index), *this);
         return true;
-    }
-
-    bool ImageSceneModel::hasRole(MarkupRole role, const QString& layerKey) const
-    {
-        const QString trimmedLayerKey = layerKey.trimmed();
-        const scopeone::core::DocumentMarkupRole requestedRole = documentMarkupRole(role);
-        for (const scopeone::core::DocumentMarkup& markup : m_document.markups)
-        {
-            if (markup.role == requestedRole
-                && (trimmedLayerKey.isEmpty() || markup.layerId == trimmedLayerKey))
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     bool ImageSceneModel::setLabel(const QString& id, const QString& label)
@@ -594,12 +791,11 @@ namespace scopeone::ui
     void ImageSceneModel::clearRole(MarkupRole role, const QString& layerKey)
     {
         const QString trimmedLayerKey = layerKey.trimmed();
-        const scopeone::core::DocumentMarkupRole requestedRole = documentMarkupRole(role);
         bool removed = false;
         for (int index = m_document.markups.size() - 1; index >= 0; --index)
         {
             const scopeone::core::DocumentMarkup& markup = m_document.markups.at(index);
-            if (markup.role == requestedRole
+            if (markup.role == role
                 && (trimmedLayerKey.isEmpty() || markup.layerId == trimmedLayerKey))
             {
                 m_document.markups.removeAt(index);
@@ -614,48 +810,17 @@ namespace scopeone::ui
 
     QString ImageSceneModel::typeName(MarkupType type)
     {
-        switch (type)
-        {
-        case MarkupType::Line:
-            return QStringLiteral("line");
-        case MarkupType::Rect:
-            return QStringLiteral("rect");
-        }
-        return {};
+        return documentMarkupTypeName(type);
     }
 
     QString ImageSceneModel::roleName(MarkupRole role)
     {
-        switch (role)
-        {
-        case MarkupRole::Generic:
-            return QStringLiteral("generic");
-        case MarkupRole::CrossSection:
-            return QStringLiteral("cross_section");
-        case MarkupRole::Roi:
-            return QStringLiteral("roi");
-        case MarkupRole::Measurement:
-            return QStringLiteral("measurement");
-        }
-        return {};
+        return documentMarkupRoleName(role);
     }
 
     QString ImageSceneModel::layerKindName(LayerKind layerKind)
     {
-        switch (layerKind)
-        {
-        case LayerKind::Raw:
-            return QStringLiteral("raw");
-        case LayerKind::Processed:
-            return QStringLiteral("processed");
-        case LayerKind::Static:
-            return QStringLiteral("static");
-        case LayerKind::Gallery:
-            return QStringLiteral("gallery");
-        case LayerKind::Unknown:
-            return QStringLiteral("unknown");
-        }
-        return QStringLiteral("unknown");
+        return documentLayerKindName(layerKind);
     }
 
     int ImageSceneModel::layerIndex(const QString& layerId) const
@@ -683,4 +848,4 @@ namespace scopeone::ui
         }
         return -1;
     }
-} // namespace scopeone::ui
+} // namespace scopeone::core

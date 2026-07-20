@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.712 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.719 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -95,8 +95,11 @@ endfunction()
 
 set(CORE_SOURCES
         src/ExperimentDocument.cpp
+        src/ImageSceneModel.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
+        src/ParticleAnalysis.cpp
+        src/StageMosaicManager.cpp
         src/ImageProcessingFramework.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
@@ -111,8 +114,11 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
+        include/scopeone/ImageSceneModel.h
         internal/MMCoreManager.h
         internal/FrameBufferUtils.h
+        internal/ParticleAnalysis.h
+        internal/StageMosaicManager.h
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
         internal/AgentProtocol.h

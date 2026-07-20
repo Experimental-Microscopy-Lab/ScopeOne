@@ -36,6 +36,12 @@ class ScopeOne:
     def status(self):
         return self._client.status()
 
+    def capabilities(self):
+        return self._client.capabilities()
+
+    def state_snapshot(self):
+        return self._client.state_snapshot()
+
     def camera_ids(self):
         return self._client.camera_ids()
 
@@ -43,13 +49,26 @@ class ScopeOne:
         return self._client.loaded_devices()
 
     def start_preview(self, camera: str = "All"):
-        self._client.start_preview(camera)
+        return self._client.start_preview(camera)
 
     def stop_preview(self, camera: str = "All"):
-        self._client.stop_preview(camera)
+        return self._client.stop_preview(camera)
 
     def list_layers(self):
         return self._client.list_layers()
+
+    def get_layer_histogram(self, layer_key: str):
+        return self._client.get_layer_histogram(layer_key)
+
+    def get_line_profile(
+        self,
+        layer_key: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ):
+        return self._client.get_line_profile(layer_key, x1, y1, x2, y2)
 
     def layer_options(self):
         return self._client.layer_options()
@@ -78,6 +97,36 @@ class ScopeOne:
             colormap,
             blending,
             levels,
+        )
+
+    def auto_layer_levels(self, layer_key: str):
+        return self._client.auto_layer_levels(layer_key)
+
+    def full_layer_levels(self, layer_key: str):
+        return self._client.full_layer_levels(layer_key)
+
+    def set_layer_auto_stretch(self, layer_key: str, enabled: bool):
+        return self._client.set_layer_auto_stretch(layer_key, enabled)
+
+    def get_source_display_transform(self, source_id: str):
+        return self._client.get_source_display_transform(source_id)
+
+    def set_source_display_transform(
+        self,
+        source_id: str,
+        offset_x: int | None = None,
+        offset_y: int | None = None,
+        zoom_percent: int | None = None,
+        flip_x: bool | None = None,
+        flip_y: bool | None = None,
+    ):
+        return self._client.set_source_display_transform(
+            source_id,
+            offset_x,
+            offset_y,
+            zoom_percent,
+            flip_x,
+            flip_y,
         )
 
     def move_layer(self, layer_key: str, offset: int):
@@ -168,8 +217,11 @@ class ScopeOne:
     def set_roi(self, camera: str, x: int, y: int, width: int, height: int):
         return self._client.set_roi(camera, x, y, width, height)
 
-    def clear_roi(self, camera: str):
-        self._client.clear_roi(camera)
+    def set_half_roi(self, camera: str):
+        return self._client.set_half_roi(camera)
+
+    def clear_roi(self, camera: str = "All"):
+        return self._client.clear_roi(camera)
 
     def xy_stage_devices(self):
         return self._client.xy_stage_devices()
@@ -211,7 +263,7 @@ class ScopeOne:
         self._client.set_processing_bit_depth(bit_depth)
 
     def set_realtime_processing(self, enabled: bool):
-        self._client.set_realtime_processing(enabled)
+        return self._client.set_realtime_processing(enabled)
 
     def start_processing(self):
         self.set_realtime_processing(True)

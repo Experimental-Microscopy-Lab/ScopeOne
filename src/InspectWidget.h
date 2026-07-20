@@ -29,15 +29,8 @@ namespace scopeone::ui
         struct LayerInspectState
         {
             QString layerKey;
-            QString cameraId;
-            bool processed{false};
             scopeone::core::ScopeOneCore::HistogramStats stats;
             bool hasStats{false};
-            bool autoStretchEnabled{false};
-            bool displayRangeValid{false};
-            int displayMin{0};
-            int displayMax{255};
-            int maxDisplayValue{255};
         };
 
         explicit InspectWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
@@ -56,10 +49,6 @@ namespace scopeone::ui
         void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
 
     signals:
-        void displayRangeChanged(const QString& layerKey,
-                                 int minLevel,
-                                 int maxLevel,
-                                 int maxDisplayValue);
         void requestDrawCrossSectionLayer(const QString& layerKey);
         void requestClearCrossSection();
 
@@ -67,8 +56,6 @@ namespace scopeone::ui
         struct LayerInfoGroup
         {
             QString layerKey;
-            QString cameraId;
-            bool processed{false};
             QGroupBox* groupBox{nullptr};
             InspectHistogramWidget* histogramWidget{nullptr};
             QPushButton* autoButton{nullptr};
@@ -101,8 +88,7 @@ namespace scopeone::ui
                                      const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void updateControlsState();
         void updateLayerVisibility();
-        void applyAutoStretch(LayerInspectState& state);
-        LayerInspectState& getOrCreateLayerState(const QString& layerKey, const QString& cameraId, bool processed);
+        LayerInspectState& getOrCreateLayerState(const QString& layerKey);
         QColor getLayerColor(const QString& layerKey) const;
         void onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue);
         QString currentLayerCameraId() const;

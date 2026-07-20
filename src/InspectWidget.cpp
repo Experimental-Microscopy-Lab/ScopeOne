@@ -1,4 +1,5 @@
 #include "InspectWidget.h"
+#include "scopeone/ImageSceneModel.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -403,6 +404,23 @@ namespace scopeone::ui
                 this, &InspectWidget::setLayerCrossSectionProfile);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
                 this, &InspectWidget::clearCrossSectionProfile);
+        const auto refreshLayerDisplay = [this](const QString& layerKey)
+        {
+            const auto state = m_layerStates.constFind(layerKey);
+            if (state != m_layerStates.constEnd() && state->hasStats)
+            {
+                updateLayerInspect(layerKey, state->stats);
+            }
+        };
+        connect(m_scopeonecore->imageSceneModel(),
+                &scopeone::core::ImageSceneModel::layerDisplayChanged,
+                this, refreshLayerDisplay);
+        connect(m_scopeonecore->imageSceneModel(),
+                &scopeone::core::ImageSceneModel::layerAutoStretchChanged,
+                this, [refreshLayerDisplay](const QString& layerKey, bool)
+                {
+                    refreshLayerDisplay(layerKey);
+                });
     }
 
     // Enable inspect controls when camera state changes
@@ -629,15 +647,12 @@ namespace scopeone::ui
     {
         const QString normalizedLayerKey = layerKey.trimmed();
         const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey);
-        const bool processed = scopeone::core::ScopeOneCore::isProcessedLayerKey(normalizedLayerKey);
         auto* group = new QGroupBox(
             QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(normalizedLayerKey)),
             this);
         auto* layout = new QVBoxLayout(group);
         LayerInfoGroup infoGroup;
         infoGroup.layerKey = normalizedLayerKey;
-        infoGroup.cameraId = cameraId;
-        infoGroup.processed = processed;
         infoGroup.groupBox = group;
 
         auto* histLabel = new QLabel(QStringLiteral("Histogram"), group);
@@ -823,29 +838,16 @@ namespace scopeone::ui
         }
         LayerInfoGroup& infoGroup = it.value();
 
-        const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey);
-        const bool processed = scopeone::core::ScopeOneCore::isProcessedLayerKey(normalizedLayerKey);
-        LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey, cameraId, processed);
+        LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey);
         state.stats = stats;
         state.hasStats = stats.hasData();
-        if (state.hasStats && !state.displayRangeValid)
-        {
-            state.maxDisplayValue = stats.maxValue > 0 ? stats.maxValue : 255;
-            state.displayMin = 0;
-            state.displayMax = state.maxDisplayValue;
-            state.displayRangeValid = true;
-        }
-
-        if (state.hasStats && state.autoStretchEnabled)
-        {
-            applyAutoStretch(state);
-        }
-        else if (state.hasStats)
-        {
-            state.maxDisplayValue = stats.maxValue > 0 ? stats.maxValue : 255;
-        }
-
         if (!state.hasStats)
+        {
+            return;
+        }
+
+        scopeone::core::DocumentLayer layer;
+        if (!m_scopeonecore->imageSceneModel()->findLayer(normalizedLayerKey, layer))
         {
             return;
         }
@@ -853,17 +855,24 @@ namespace scopeone::ui
         const QColor layerColor = getLayerColor(normalizedLayerKey);
         infoGroup.histogramWidget->updateLayerHistogram(normalizedLayerKey, stats, layerColor);
 
-        const int maxValue = state.maxDisplayValue > 0 ? state.maxDisplayValue : 255;
+        const int maxValue = qMax(1, layer.display.levelDomainMax);
+        const int displayMin = qBound(0, layer.display.levelMin, maxValue - 1);
+        const int displayMax = qBound(displayMin + 1, layer.display.levelMax, maxValue);
         infoGroup.minSlider->setRange(0, maxValue);
         infoGroup.maxSlider->setRange(0, maxValue);
         {
             QSignalBlocker minBlocker(infoGroup.minSlider);
             QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(state.displayMin);
-            infoGroup.maxSlider->setValue(state.displayMax);
+            infoGroup.minSlider->setValue(displayMin);
+            infoGroup.maxSlider->setValue(displayMax);
         }
-        infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
-        infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
+        infoGroup.minSliderValueLabel->setText(QString::number(displayMin));
+        infoGroup.maxSliderValueLabel->setText(QString::number(displayMax));
+        {
+            QSignalBlocker blocker(infoGroup.autoStretchCheckBox);
+            infoGroup.autoStretchCheckBox->setChecked(
+                m_scopeonecore->layerAutoStretchEnabled(normalizedLayerKey));
+        }
 
         updateStatisticsDisplay(normalizedLayerKey, stats);
         updateControlsState();
@@ -872,117 +881,19 @@ namespace scopeone::ui
     // Apply the computed auto display range once
     void InspectWidget::onAutoButtonClicked(const QString& layerKey)
     {
-        auto stateIt = m_layerStates.find(layerKey);
-        if (stateIt == m_layerStates.end())
-        {
-            return;
-        }
-        LayerInspectState& state = stateIt.value();
-        if (!state.hasStats)
-        {
-            return;
-        }
-
-        auto it = m_layerInfoGroups.find(layerKey);
-        if (it == m_layerInfoGroups.end())
-        {
-            return;
-        }
-        LayerInfoGroup& infoGroup = it.value();
-
-        state.displayMin = state.stats.autoMinLevel;
-        state.displayMax = state.stats.autoMaxLevel;
-        state.maxDisplayValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
-        state.displayRangeValid = true;
-
-        {
-            QSignalBlocker minBlocker(infoGroup.minSlider);
-            QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(state.displayMin);
-            infoGroup.maxSlider->setValue(state.displayMax);
-        }
-        infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
-        infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
-
-        emit displayRangeChanged(state.layerKey,
-                                 state.displayMin,
-                                 state.displayMax,
-                                 state.maxDisplayValue);
+        m_scopeonecore->autoLayerLevels(layerKey);
     }
 
     // Expand the display range to the full pixel range
     void InspectWidget::onFullButtonClicked(const QString& layerKey)
     {
-        auto stateIt = m_layerStates.find(layerKey);
-        if (stateIt == m_layerStates.end())
-        {
-            return;
-        }
-        LayerInspectState& state = stateIt.value();
-        if (!state.hasStats)
-        {
-            return;
-        }
-
-        auto it = m_layerInfoGroups.find(layerKey);
-        if (it == m_layerInfoGroups.end())
-        {
-            return;
-        }
-        LayerInfoGroup& infoGroup = it.value();
-
-        const int maxValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
-        state.displayMin = 0;
-        state.displayMax = maxValue;
-        state.maxDisplayValue = maxValue;
-        state.displayRangeValid = true;
-
-        {
-            QSignalBlocker minBlocker(infoGroup.minSlider);
-            QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(0);
-            infoGroup.maxSlider->setValue(maxValue);
-        }
-        infoGroup.minSliderValueLabel->setText(QString::number(0));
-        infoGroup.maxSliderValueLabel->setText(QString::number(maxValue));
-
-        onLayerSliderChanged(layerKey, 0, maxValue);
+        m_scopeonecore->fullLayerLevels(layerKey);
     }
 
     // Toggle continuous auto stretch for one layer
     void InspectWidget::onAutoStretchChanged(const QString& layerKey, bool checked)
     {
-        auto stateIt = m_layerStates.find(layerKey);
-        if (stateIt == m_layerStates.end())
-        {
-            return;
-        }
-        LayerInspectState& state = stateIt.value();
-        state.autoStretchEnabled = checked;
-
-        if (!checked || !state.hasStats)
-        {
-            return;
-        }
-
-        applyAutoStretch(state);
-
-        auto it = m_layerInfoGroups.find(layerKey);
-        if (it != m_layerInfoGroups.end())
-        {
-            LayerInfoGroup& infoGroup = it.value();
-            QSignalBlocker minBlocker(infoGroup.minSlider);
-            QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(state.displayMin);
-            infoGroup.maxSlider->setValue(state.displayMax);
-            infoGroup.minSliderValueLabel->setText(QString::number(state.displayMin));
-            infoGroup.maxSliderValueLabel->setText(QString::number(state.displayMax));
-        }
-
-        emit displayRangeChanged(state.layerKey,
-                                 state.displayMin,
-                                 state.displayMax,
-                                 state.maxDisplayValue);
+        m_scopeonecore->setLayerAutoStretchEnabled(layerKey, checked);
     }
 
     // Toggle logarithmic histogram scaling for one layer
@@ -1064,61 +975,14 @@ namespace scopeone::ui
         }
     }
 
-    // Push auto range back into sliders and preview
-    void InspectWidget::applyAutoStretch(LayerInspectState& state)
-    {
-        if (!state.hasStats)
-        {
-            return;
-        }
-
-        const int minLevel = state.stats.autoMinLevel;
-        const int maxLevel = state.stats.autoMaxLevel;
-        const int maxDisplayValue = state.stats.maxValue > 0 ? state.stats.maxValue : 255;
-        if (state.displayRangeValid
-            && state.displayMin == minLevel
-            && state.displayMax == maxLevel
-            && state.maxDisplayValue == maxDisplayValue)
-        {
-            return;
-        }
-
-        state.displayMin = minLevel;
-        state.displayMax = maxLevel;
-        state.maxDisplayValue = maxDisplayValue;
-        state.displayRangeValid = true;
-
-        auto it = m_layerInfoGroups.find(state.layerKey);
-        if (it != m_layerInfoGroups.end())
-        {
-            LayerInfoGroup& infoGroup = it.value();
-            QSignalBlocker minBlocker(infoGroup.minSlider);
-            QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(minLevel);
-            infoGroup.maxSlider->setValue(maxLevel);
-            infoGroup.minSliderValueLabel->setText(QString::number(minLevel));
-            infoGroup.maxSliderValueLabel->setText(QString::number(maxLevel));
-        }
-
-        emit displayRangeChanged(state.layerKey,
-                                 minLevel,
-                                 maxLevel,
-                                 state.maxDisplayValue);
-    }
-
     // Return persistent inspect state for one preview layer
-    InspectWidget::LayerInspectState& InspectWidget::getOrCreateLayerState(
-        const QString& layerKey,
-        const QString& cameraId,
-        bool processed)
+    InspectWidget::LayerInspectState& InspectWidget::getOrCreateLayerState(const QString& layerKey)
     {
         auto it = m_layerStates.find(layerKey);
         if (it == m_layerStates.end())
         {
             LayerInspectState state;
             state.layerKey = layerKey;
-            state.cameraId = cameraId;
-            state.processed = processed;
             it = m_layerStates.insert(layerKey, state);
         }
         return it.value();
@@ -1146,29 +1010,14 @@ namespace scopeone::ui
         {
             return;
         }
-        LayerInspectState& state = stateIt.value();
-        state.displayMin = minValue;
-        state.displayMax = maxValue;
-        state.displayRangeValid = true;
-        state.autoStretchEnabled = false;
-
-        auto it = m_layerInfoGroups.find(layerKey);
-        if (it == m_layerInfoGroups.end())
+        const LayerInspectState& state = stateIt.value();
+        if (!state.hasStats)
         {
             return;
         }
-        LayerInfoGroup& infoGroup = it.value();
-
-        if (infoGroup.autoStretchCheckBox)
-        {
-            QSignalBlocker blocker(infoGroup.autoStretchCheckBox);
-            infoGroup.autoStretchCheckBox->setChecked(false);
-        }
-
-        emit displayRangeChanged(state.layerKey,
-                                 minValue,
-                                 maxValue,
-                                 state.maxDisplayValue);
+        m_scopeonecore->setLayerAutoStretchEnabled(layerKey, false);
+        m_scopeonecore->imageSceneModel()->setLayerDisplayLevels(
+            layerKey, minValue, maxValue, qMax(1, state.stats.maxValue));
     }
 
     QString InspectWidget::currentLayerCameraId() const

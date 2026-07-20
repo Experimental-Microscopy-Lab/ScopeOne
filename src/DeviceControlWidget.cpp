@@ -1,4 +1,5 @@
 #include "DeviceControlWidget.h"
+#include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include "PreviewWidget.h"
 
@@ -78,6 +79,15 @@ namespace scopeone::ui
         setWindowTitle("Control");
 
         setupUI();
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::deviceStateChanged,
+                this, &DeviceControlWidget::refreshCameraParameters,
+                Qt::QueuedConnection);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stagePositionChanged,
+                this, [this]()
+                {
+                    updateStagePositions();
+                },
+                Qt::QueuedConnection);
         updateControlsState();
         refreshStageDevices();
         m_currentTarget = m_cameraSelectCombo->currentText();
@@ -160,6 +170,23 @@ namespace scopeone::ui
                     const QSignalBlocker blocker(m_fitToWindowCheckBox);
                     m_fitToWindowCheckBox->setChecked(enabled);
                     updatePreviewZoomControls();
+                });
+        connect(m_scopeonecore->imageSceneModel(), &scopeone::core::ImageSceneModel::layerDisplayChanged,
+                this, [this](const QString& layerKey)
+                {
+                    if (layerKey == m_selectedLayerKey)
+                    {
+                        refreshPreviewLayerSettings();
+                    }
+                });
+        connect(m_scopeonecore->imageSceneModel(),
+                &scopeone::core::ImageSceneModel::sourceDisplayTransformChanged,
+                this, [this](const QString& sourceId)
+                {
+                    if (sourceId == selectedLayerSourceId())
+                    {
+                        refreshPreviewLayerSettings();
+                    }
                 });
 
         onPreviewAvailableCameraIdsChanged(m_previewWidget->availableCameraIds());
@@ -358,56 +385,31 @@ namespace scopeone::ui
         connect(m_layerFrameSlider, &QSlider::valueChanged,
                 this, &DeviceControlWidget::onPreviewLayerFrameSliderChanged);
 
+        const auto applySourceTransform = [this]()
+        {
+            const QString sourceId = selectedLayerSourceId();
+            if (sourceId.isEmpty())
+            {
+                return;
+            }
+            scopeone::core::ImageSceneModel::SourceDisplayTransform transform;
+            transform.offsetX = m_alignXSpinBox->value();
+            transform.offsetY = m_alignYSpinBox->value();
+            transform.zoomPercent = m_alignZoomSpinBox->value();
+            transform.flipX = m_alignFlipXCheckBox->isChecked();
+            transform.flipY = m_alignFlipYCheckBox->isChecked();
+            m_scopeonecore->imageSceneModel()->setSourceDisplayTransform(sourceId, transform);
+        };
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, [this](int x)
-                {
-                    const QString sourceId = selectedLayerSourceId();
-                    if (sourceId.isEmpty())
-                    {
-                        return;
-                    }
-                    m_previewWidget->setSourceOffset(sourceId, x, m_alignYSpinBox->value());
-                });
+                this, [applySourceTransform](int) { applySourceTransform(); });
         connect(m_alignYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, [this](int y)
-                {
-                    const QString sourceId = selectedLayerSourceId();
-                    if (sourceId.isEmpty())
-                    {
-                        return;
-                    }
-                    m_previewWidget->setSourceOffset(sourceId, m_alignXSpinBox->value(), y);
-                });
+                this, [applySourceTransform](int) { applySourceTransform(); });
         connect(m_alignZoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, [this](int percent)
-                {
-                    const QString sourceId = selectedLayerSourceId();
-                    if (sourceId.isEmpty())
-                    {
-                        return;
-                    }
-                    m_previewWidget->setSourceZoomPercent(sourceId, percent);
-                });
+                this, [applySourceTransform](int) { applySourceTransform(); });
         connect(m_alignFlipXCheckBox, &QCheckBox::toggled,
-                this, [this](bool enabled)
-                {
-                    const QString sourceId = selectedLayerSourceId();
-                    if (sourceId.isEmpty())
-                    {
-                        return;
-                    }
-                    m_previewWidget->setSourceFlip(sourceId, enabled, m_alignFlipYCheckBox->isChecked());
-                });
+                this, [applySourceTransform](bool) { applySourceTransform(); });
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
-                this, [this](bool enabled)
-                {
-                    const QString sourceId = selectedLayerSourceId();
-                    if (sourceId.isEmpty())
-                    {
-                        return;
-                    }
-                    m_previewWidget->setSourceFlip(sourceId, m_alignFlipXCheckBox->isChecked(), enabled);
-                });
+                this, [applySourceTransform](bool) { applySourceTransform(); });
         connect(m_alignResetButton, &QPushButton::clicked,
                 this, [this]()
                 {
@@ -523,7 +525,7 @@ namespace scopeone::ui
 
         if (notifyPreview)
         {
-            m_previewWidget->setVisibleLayerKeys(layerKeys);
+            m_scopeonecore->imageSceneModel()->setVisibleLayers(layerKeys);
         }
 
         const QString previousLayerKey = m_selectedLayerKey;
@@ -566,22 +568,24 @@ namespace scopeone::ui
         m_selectedLayerLabel->setText(m_previewWidget->layerName(m_selectedLayerKey));
         refreshLayerFrameControl();
 
+        scopeone::core::DocumentLayer layer;
+        m_scopeonecore->imageSceneModel()->findLayer(m_selectedLayerKey, layer);
         {
             QSignalBlocker blocker(m_layerOpacitySpinBox);
-            m_layerOpacitySpinBox->setValue(m_previewWidget->layerOpacityPercent(m_selectedLayerKey));
+            m_layerOpacitySpinBox->setValue(layer.display.opacityPercent);
         }
         {
             QSignalBlocker blocker(m_layerGammaSpinBox);
-            m_layerGammaSpinBox->setValue(m_previewWidget->layerGamma(m_selectedLayerKey));
+            m_layerGammaSpinBox->setValue(layer.display.gamma);
         }
         {
             QSignalBlocker blocker(m_layerColormapComboBox);
-            const int index = m_layerColormapComboBox->findText(m_previewWidget->layerColormap(m_selectedLayerKey));
+            const int index = m_layerColormapComboBox->findText(layer.display.colormap);
             m_layerColormapComboBox->setCurrentIndex(index);
         }
         {
             QSignalBlocker blocker(m_layerBlendingComboBox);
-            const int index = m_layerBlendingComboBox->findText(m_previewWidget->layerBlending(m_selectedLayerKey));
+            const int index = m_layerBlendingComboBox->findText(layer.display.blending);
             m_layerBlendingComboBox->setCurrentIndex(index);
         }
 
@@ -591,35 +595,28 @@ namespace scopeone::ui
         m_layerRemoveButton->setEnabled(scopeone::core::ScopeOneCore::isStaticLayerKey(m_selectedLayerKey));
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
 
-        int offsetX = 0;
-        int offsetY = 0;
-        int zoomPercent = 100;
-        bool flipX = false;
-        bool flipY = false;
         const QString sourceId = selectedLayerSourceId();
-        if (!sourceId.isEmpty())
-        {
-            m_previewWidget->sourceDisplayTransform(sourceId, offsetX, offsetY, zoomPercent, flipX, flipY);
-        }
+        const scopeone::core::ImageSceneModel::SourceDisplayTransform transform =
+            m_scopeonecore->imageSceneModel()->sourceDisplayTransform(sourceId);
         {
             QSignalBlocker blocker(m_alignXSpinBox);
-            m_alignXSpinBox->setValue(offsetX);
+            m_alignXSpinBox->setValue(transform.offsetX);
         }
         {
             QSignalBlocker blocker(m_alignYSpinBox);
-            m_alignYSpinBox->setValue(offsetY);
+            m_alignYSpinBox->setValue(transform.offsetY);
         }
         {
             QSignalBlocker blocker(m_alignZoomSpinBox);
-            m_alignZoomSpinBox->setValue(zoomPercent);
+            m_alignZoomSpinBox->setValue(transform.zoomPercent);
         }
         {
             QSignalBlocker blocker(m_alignFlipXCheckBox);
-            m_alignFlipXCheckBox->setChecked(flipX);
+            m_alignFlipXCheckBox->setChecked(transform.flipX);
         }
         {
             QSignalBlocker blocker(m_alignFlipYCheckBox);
-            m_alignFlipYCheckBox->setChecked(flipY);
+            m_alignFlipYCheckBox->setChecked(transform.flipY);
         }
     }
 
@@ -699,27 +696,29 @@ namespace scopeone::ui
                 break;
             }
         }
-        m_previewWidget->setLayerVisible(layerKey, checkBox->isChecked());
+        m_scopeonecore->imageSceneModel()->setLayerVisible(layerKey, checkBox->isChecked());
     }
 
     void DeviceControlWidget::onPreviewLayerOpacityChanged(int value)
     {
-        m_previewWidget->setLayerOpacityPercent(m_selectedLayerKey, value);
+        m_scopeonecore->imageSceneModel()->setLayerOpacityPercent(m_selectedLayerKey, value);
     }
 
     void DeviceControlWidget::onPreviewLayerGammaChanged(double value)
     {
-        m_previewWidget->setLayerGamma(m_selectedLayerKey, value);
+        m_scopeonecore->imageSceneModel()->setLayerGamma(m_selectedLayerKey, value);
     }
 
     void DeviceControlWidget::onPreviewLayerColormapChanged(int)
     {
-        m_previewWidget->setLayerColormap(m_selectedLayerKey, m_layerColormapComboBox->currentText());
+        m_scopeonecore->imageSceneModel()->setLayerColormap(
+            m_selectedLayerKey, m_layerColormapComboBox->currentText());
     }
 
     void DeviceControlWidget::onPreviewLayerBlendingChanged(int)
     {
-        m_previewWidget->setLayerBlending(m_selectedLayerKey, m_layerBlendingComboBox->currentText());
+        m_scopeonecore->imageSceneModel()->setLayerBlending(
+            m_selectedLayerKey, m_layerBlendingComboBox->currentText());
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
     }
 
@@ -757,12 +756,12 @@ namespace scopeone::ui
 
     void DeviceControlWidget::onPreviewLayerMoveUpClicked()
     {
-        m_previewWidget->moveLayer(m_selectedLayerKey, -1);
+        m_scopeonecore->imageSceneModel()->moveLayer(m_selectedLayerKey, -1);
     }
 
     void DeviceControlWidget::onPreviewLayerMoveDownClicked()
     {
-        m_previewWidget->moveLayer(m_selectedLayerKey, 1);
+        m_scopeonecore->imageSceneModel()->moveLayer(m_selectedLayerKey, 1);
     }
 
     void DeviceControlWidget::onPreviewLayerRemoveClicked()
@@ -807,9 +806,7 @@ namespace scopeone::ui
         const QString sourceId = selectedLayerSourceId();
         if (!sourceId.isEmpty())
         {
-            m_previewWidget->setSourceOffset(sourceId, 0, 0);
-            m_previewWidget->setSourceFlip(sourceId, false, false);
-            m_previewWidget->setSourceZoomPercent(sourceId, 100);
+            m_scopeonecore->imageSceneModel()->resetSourceDisplayTransform(sourceId);
         }
     }
 
@@ -1229,12 +1226,9 @@ namespace scopeone::ui
         }
         if (m_scopeonecore->moveXYRelative(xyLabel, dx, dy))
         {
-            updateStagePositions();
+            return;
         }
-        else
-        {
-            qWarning().noquote() << QString("Failed to move XY stage: %1").arg(xyLabel);
-        }
+        qWarning().noquote() << QString("Failed to move XY stage: %1").arg(xyLabel);
     }
 
     // Moves the selected Z stage by a relative offset
@@ -1247,12 +1241,9 @@ namespace scopeone::ui
         }
         if (m_scopeonecore->moveZRelative(zLabel, dz))
         {
-            updateStagePositions();
+            return;
         }
-        else
-        {
-            qWarning().noquote() << QString("Failed to move Z stage: %1").arg(zLabel);
-        }
+        qWarning().noquote() << QString("Failed to move Z stage: %1").arg(zLabel);
     }
 
     // Updates control state when cameras initialize

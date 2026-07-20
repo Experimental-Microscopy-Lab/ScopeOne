@@ -1,6 +1,6 @@
 #include "PreviewWidget.h"
 
-#include "ImageSceneModel.h"
+#include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QSurfaceFormat>
 #include <QPainter>
@@ -153,15 +153,22 @@ namespace scopeone::ui
         : QOpenGLWidget(parent),
           m_sceneModel(sceneModel)
     {
-        connect(m_sceneModel, &ImageSceneModel::documentReplaced,
+        connect(m_sceneModel, &ImageSceneModel::layersChanged,
                 this, [this]()
                 {
                     emit availableLayerKeysChanged(availableLayerKeys());
                     emit visibleLayerKeysChanged(visibleLayerKeys());
+                    updateLayerInfoDisplay();
                     updateImageDisplay();
                 });
-        connect(m_sceneModel, &ImageSceneModel::layersChanged,
-                this, [this]()
+        connect(m_sceneModel, &ImageSceneModel::layerDisplayChanged,
+                this, [this](const QString&)
+                {
+                    emit visibleLayerKeysChanged(visibleLayerKeys());
+                    updateImageDisplay();
+                });
+        connect(m_sceneModel, &ImageSceneModel::sourceDisplayTransformChanged,
+                this, [this](const QString&)
                 {
                     update();
                 });
@@ -197,59 +204,54 @@ namespace scopeone::ui
     bool PreviewWidget::storeSourceFrame(const QString& sourceId,
                                          FrameRole role,
                                          const ImageFrame& frame,
-                                         bool& hadFrame)
+                                         bool* replacedFrame)
     {
         const QString normalizedId = normalizedSourceId(sourceId);
         if (normalizedId.isEmpty())
         {
-            hadFrame = false;
+            if (replacedFrame)
+            {
+                *replacedFrame = false;
+            }
             return false;
         }
 
         const QString frameSourceId = normalizedSourceId(frame.cameraId);
         if (!frame.isValid() || frameSourceId != normalizedId)
         {
-            hadFrame = false;
+            if (replacedFrame)
+            {
+                *replacedFrame = false;
+            }
             return false;
         }
 
-        ImageFrame storedFrame = frame;
         QMutexLocker lock(&m_mutex);
         FrameSourceState& frameState = m_frameSources[normalizedId];
+        bool hadFrame = false;
         if (role == FrameRole::Processed)
         {
             hadFrame = frameState.processedFrame.isValid();
-            frameState.processedFrame = storedFrame;
+            frameState.processedFrame = frame;
         }
         else
         {
             hadFrame = frameState.rawFrame.isValid();
-            frameState.rawFrame = storedFrame;
+            frameState.rawFrame = frame;
         }
-        return storedFrame.isValid();
+        if (replacedFrame)
+        {
+            *replacedFrame = hadFrame;
+        }
+        return true;
     }
 
-    // Updates dimensions for one displayed layer frame
-    void PreviewWidget::updateLayerInfoForFrame(const QString& layerKey,
-                                                const ImageFrame& frame)
+    // Initializes display statistics for one layer
+    void PreviewWidget::initializeLayerInfo(const QString& layerKey)
     {
-        if (!frame.isValid())
-        {
-            return;
-        }
-
-        scopeone::core::DocumentLayer layer;
-        const bool sizeChanged = !m_sceneModel->findLayer(layerKey, layer)
-                                 || layer.width != frame.width
-                                 || layer.height != frame.height;
-        const bool firstFrame = !m_layerFps.contains(layerKey);
-        m_sceneModel->updateLayerFrame(layerKey, frame);
-        if (firstFrame)
+        if (!m_layerFps.contains(layerKey))
         {
             m_layerFps.insert(layerKey, 0.0);
-        }
-        if (sizeChanged || firstFrame)
-        {
             updateLayerInfoDisplay();
         }
     }
@@ -273,11 +275,11 @@ namespace scopeone::ui
         {
             return;
         }
-        ensureLayersForCamera(sourceId);
         bool hadProcessedFrame = false;
-        const bool stored = storeSourceFrame(sourceId, FrameRole::Processed, frame, hadProcessedFrame);
+        const bool stored = storeSourceFrame(
+            sourceId, FrameRole::Processed, frame, &hadProcessedFrame);
         const QString layerKey = previewLayerKey(sourceId, true);
-        updateLayerInfoForFrame(layerKey, frame);
+        initializeLayerInfo(layerKey);
 
         const bool registeredCamera = stored && registerAvailableCamera(sourceId);
         if (stored && !hadProcessedFrame)
@@ -300,12 +302,9 @@ namespace scopeone::ui
         {
             return;
         }
-        ensureLayersForCamera(sourceId);
-        bool hadRawFrame = false;
-        const bool stored = storeSourceFrame(sourceId, FrameRole::Raw, frame, hadRawFrame);
-        (void)hadRawFrame;
+        const bool stored = storeSourceFrame(sourceId, FrameRole::Raw, frame);
         const QString layerKey = previewLayerKey(sourceId, false);
-        updateLayerInfoForFrame(layerKey, frame);
+        initializeLayerInfo(layerKey);
         if (stored && registerAvailableCamera(sourceId))
         {
             return;
@@ -373,230 +372,8 @@ namespace scopeone::ui
     // Replaces the available camera list and keeps valid visible layers
     void PreviewWidget::setAvailableCameraIds(const QStringList& cameraIds)
     {
-        const QStringList previousVisibleLayerKeys = visibleLayerKeys();
         m_availableCameraIds = normalizedSourceIds(cameraIds);
         emit availableCameraIdsChanged(m_availableCameraIds);
-
-        const QSet<QString> validKeys = validLayerKeys();
-        removeInvalidLayers(validKeys);
-        for (const QString& cameraId : m_availableCameraIds)
-        {
-            ensureLayersForCamera(cameraId);
-        }
-
-        QSet<QString> nextVisibleLayerKeys;
-        for (const QString& layerKey : previousVisibleLayerKeys)
-        {
-            if (validKeys.contains(layerKey))
-            {
-                nextVisibleLayerKeys.insert(layerKey);
-            }
-        }
-        for (const QString& layerId : m_sceneModel->layerIds())
-        {
-            scopeone::core::DocumentLayer layer;
-            if (!m_sceneModel->findLayer(layerId, layer))
-            {
-                continue;
-            }
-            const bool visible = validKeys.contains(layerId) && nextVisibleLayerKeys.contains(layerId);
-            layer.display.visible = visible;
-            m_sceneModel->setLayerDisplay(layerId, layer.display);
-        }
-        emit visibleLayerKeysChanged(visibleLayerKeys());
-        emit availableLayerKeysChanged(availableLayerKeys());
-        updateImageDisplay();
-    }
-
-    // Sets the visible preview layers
-    void PreviewWidget::setVisibleLayerKeys(const QStringList& layerKeys)
-    {
-        const QSet<QString> validKeys = validLayerKeys();
-        QSet<QString> nextVisibleLayerKeys;
-        for (const QString& layerKey : layerKeys)
-        {
-            if (validKeys.contains(layerKey))
-            {
-                nextVisibleLayerKeys.insert(layerKey);
-            }
-        }
-        removeInvalidLayers(validKeys);
-        for (const QString& cameraId : m_availableCameraIds)
-        {
-            ensureLayersForCamera(cameraId);
-        }
-        for (const QString& layerId : m_sceneModel->layerIds())
-        {
-            scopeone::core::DocumentLayer layer;
-            if (!m_sceneModel->findLayer(layerId, layer))
-            {
-                continue;
-            }
-            const bool visible = validKeys.contains(layerId) && nextVisibleLayerKeys.contains(layerId);
-            layer.display.visible = visible;
-            m_sceneModel->setLayerDisplay(layerId, layer.display);
-        }
-        emit visibleLayerKeysChanged(visibleLayerKeys());
-        updateImageDisplay();
-    }
-
-    // Sets visibility for one preview layer
-    void PreviewWidget::setLayerVisible(const QString& layerKey, bool visible)
-    {
-        const QSet<QString> validKeys = validLayerKeys();
-        if (!validKeys.contains(layerKey))
-        {
-            return;
-        }
-
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        if (layer.display.visible == visible)
-        {
-            return;
-        }
-
-        layer.display.visible = visible;
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        emit visibleLayerKeysChanged(visibleLayerKeys());
-        updateImageDisplay();
-    }
-
-    // Sets opacity for one preview layer
-    void PreviewWidget::setLayerOpacityPercent(const QString& layerKey, int percent)
-    {
-        if (!validLayerKeys().contains(layerKey))
-        {
-            return;
-        }
-
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        const int nextPercent = qBound(0, percent, 100);
-        if (layer.display.opacityPercent == nextPercent)
-        {
-            return;
-        }
-
-        layer.display.opacityPercent = nextPercent;
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        update();
-    }
-
-    // Sets gamma for one preview layer
-    void PreviewWidget::setLayerGamma(const QString& layerKey, double gamma)
-    {
-        if (!validLayerKeys().contains(layerKey))
-        {
-            return;
-        }
-
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        const double nextGamma = std::clamp(gamma, 0.2, 2.0);
-        if (qFuzzyCompare(layer.display.gamma, nextGamma))
-        {
-            return;
-        }
-
-        layer.display.gamma = nextGamma;
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        update();
-    }
-
-    // Sets colormap for one preview layer
-    void PreviewWidget::setLayerColormap(const QString& layerKey, const QString& colormap)
-    {
-        if (!validLayerKeys().contains(layerKey)
-            || !supportedLayerColormaps().contains(colormap, Qt::CaseInsensitive))
-        {
-            return;
-        }
-
-        const Colormap nextColormap = colormapFromName(colormap);
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        const QString nextColormapName = colormapName(nextColormap);
-        if (layer.display.colormap == nextColormapName)
-        {
-            return;
-        }
-
-        layer.display.colormap = nextColormapName;
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        update();
-    }
-
-    // Sets blending for one preview layer
-    void PreviewWidget::setLayerBlending(const QString& layerKey, const QString& blending)
-    {
-        const QString normalized = blending.trimmed().toLower().replace(QStringLiteral("_"), QStringLiteral(" "));
-        const bool supported = normalized == QStringLiteral("translucent")
-                               || normalized == QStringLiteral("additive")
-                               || normalized == QStringLiteral("minimum")
-                               || normalized == QStringLiteral("opaque")
-                               || normalized == QStringLiteral("multiplicative");
-        if (!validLayerKeys().contains(layerKey) || !supported)
-        {
-            return;
-        }
-
-        const Blending nextBlending = blendingFromName(blending);
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        const QString nextBlendingName = blendingName(nextBlending);
-        if (layer.display.blending == nextBlendingName)
-        {
-            return;
-        }
-
-        layer.display.blending = nextBlendingName;
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        update();
-    }
-
-    // Sets display intensity levels for one preview layer
-    void PreviewWidget::setLayerDisplayLevels(const QString& layerKey,
-                                              int minLevel,
-                                              int maxLevel,
-                                              int maxPossible)
-    {
-        if (!validLayerKeys().contains(layerKey))
-        {
-            return;
-        }
-
-        ensureLayer(layerKey);
-        scopeone::core::DocumentLayer layer;
-        m_sceneModel->findLayer(layerKey, layer);
-        layer.display.levelDomainMax = qMax(1, maxPossible);
-        layer.display.levelMin = qBound(0, minLevel, layer.display.levelDomainMax);
-        layer.display.levelMax = qBound(layer.display.levelMin + 1,
-                                        maxLevel,
-                                        layer.display.levelDomainMax);
-        m_sceneModel->setLayerDisplay(layerKey, layer.display);
-        update();
-    }
-
-    // Moves one layer in draw order
-    void PreviewWidget::moveLayer(const QString& layerKey, int offset)
-    {
-        if (offset == 0 || !validLayerKeys().contains(layerKey))
-        {
-            return;
-        }
-
-        ensureLayer(layerKey);
-        if (!m_sceneModel->moveLayer(layerKey, offset))
-        {
-            return;
-        }
-
         emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
@@ -604,7 +381,6 @@ namespace scopeone::ui
 
     // Adds a graph static image frame as a preview layer
     QString PreviewWidget::setGraphStaticLayerFrame(const QString& layerId,
-                                                    const QString& displayName,
                                                     const ImageFrame& frame)
     {
         const QString normalizedId = layerId.trimmed();
@@ -619,36 +395,19 @@ namespace scopeone::ui
         {
             return {};
         }
-        ImageFrame staticFrame = frame;
         const bool hadStaticLayer = m_staticSourceIds.contains(sourceId);
-        scopeone::core::DocumentLayer documentLayer;
-        const bool wasVisible = m_sceneModel->findLayer(layerKey, documentLayer)
-                                && documentLayer.display.visible;
-
         m_staticSourceIds.insert(sourceId);
-        ensureLayer(layerKey);
-        m_sceneModel->setLayerName(
-            layerKey,
-            displayName.trimmed().isEmpty() ? frame.cameraId : displayName.trimmed());
-        m_sceneModel->findLayer(layerKey, documentLayer);
-        documentLayer.display.visible = true;
-        m_sceneModel->setLayerDisplay(layerKey, documentLayer.display);
 
-        bool hadStaticFrame = false;
-        if (!storeSourceFrame(sourceId, FrameRole::Raw, staticFrame, hadStaticFrame))
+        if (!storeSourceFrame(sourceId, FrameRole::Raw, frame))
         {
             return {};
         }
-        (void)hadStaticFrame;
-        updateLayerInfoForFrame(layerKey, staticFrame);
+        initializeLayerInfo(layerKey);
 
         updateLayerInfoDisplay();
         if (!hadStaticLayer)
         {
             emit availableLayerKeysChanged(availableLayerKeys());
-        }
-        if (!wasVisible)
-        {
             emit visibleLayerKeysChanged(visibleLayerKeys());
         }
         updateImageDisplay();
@@ -725,6 +484,11 @@ namespace scopeone::ui
         for (const QString& sourceId : m_staticSourceIds)
         {
             const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
+            scopeone::core::DocumentLayer layer;
+            if (!m_sceneModel->findLayer(layerKey, layer))
+            {
+                continue;
+            }
             availableKeys.append(layerKey);
             availableSet.insert(layerKey);
         }
@@ -765,49 +529,14 @@ namespace scopeone::ui
         return visibleLayers;
     }
 
-    int PreviewWidget::layerOpacityPercent(const QString& layerKey) const
-    {
-        return layerDisplaySettings(layerKey).opacityPercent;
-    }
-
-    double PreviewWidget::layerGamma(const QString& layerKey) const
-    {
-        return layerDisplaySettings(layerKey).gamma;
-    }
-
-    QString PreviewWidget::layerColormap(const QString& layerKey) const
-    {
-        return colormapName(layerDisplaySettings(layerKey).colormap);
-    }
-
     QStringList PreviewWidget::supportedLayerColormaps() const
     {
-        return {
-            QStringLiteral("Gray"),
-            QStringLiteral("Green"),
-            QStringLiteral("Magenta"),
-            QStringLiteral("Cyan"),
-            QStringLiteral("Red"),
-            QStringLiteral("Blue"),
-            QStringLiteral("Yellow"),
-            QStringLiteral("Fire"),
-        };
-    }
-
-    QString PreviewWidget::layerBlending(const QString& layerKey) const
-    {
-        return blendingName(layerDisplaySettings(layerKey).blending);
+        return ImageSceneModel::supportedColormaps();
     }
 
     QStringList PreviewWidget::supportedLayerBlendingModes() const
     {
-        return {
-            QStringLiteral("Translucent"),
-            QStringLiteral("Additive"),
-            QStringLiteral("Minimum"),
-            QStringLiteral("Opaque"),
-            QStringLiteral("Multiplicative"),
-        };
+        return ImageSceneModel::supportedBlendingModes();
     }
 
     QString PreviewWidget::layerName(const QString& layerKey) const
@@ -891,28 +620,13 @@ namespace scopeone::ui
         emit availableLayerKeysChanged(availableLayerKeys());
     }
 
-    // Clears all processed preview frames and removes their layers
+    // Clears all processed preview frame caches
     void PreviewWidget::clearProcessedFrames()
     {
         for (const QString& cameraId : m_availableCameraIds)
         {
             m_layerFps.remove(previewLayerKey(cameraId, true));
             m_fpsStates.remove(previewLayerKey(cameraId, true));
-            const QString layerKey = previewLayerKey(cameraId, true);
-            scopeone::core::DocumentLayer layer;
-            if (m_sceneModel->findLayer(layerKey, layer))
-            {
-                const LayerDisplaySettings defaults = defaultLayerDisplaySettings(true);
-                layer.display.visible = defaults.visible;
-                layer.display.opacityPercent = defaults.opacityPercent;
-                layer.display.gamma = defaults.gamma;
-                layer.display.colormap = colormapName(defaults.colormap);
-                layer.display.blending = blendingName(defaults.blending);
-                layer.display.levelMin = defaults.levelMin;
-                layer.display.levelMax = defaults.levelMax;
-                layer.display.levelDomainMax = defaults.levelDomainMax;
-                m_sceneModel->setLayerDisplay(layerKey, layer.display);
-            }
         }
         updateLayerInfoDisplay();
 
@@ -936,7 +650,6 @@ namespace scopeone::ui
         }
         doneCurrent();
 
-        emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
         updateImageDisplay();
     }
@@ -1055,62 +768,6 @@ namespace scopeone::ui
         return QStringLiteral("Translucent");
     }
 
-    // Ensures one layer id has display settings
-    void PreviewWidget::ensureLayer(const QString& layerKey)
-    {
-        if (layerKey.isEmpty())
-        {
-            return;
-        }
-
-        const bool processed = ScopeOneCore::isProcessedLayerKey(layerKey);
-        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
-        const LayerDisplaySettings defaults = defaultLayerDisplaySettings(processed);
-        scopeone::core::DocumentLayer layer;
-        layer.id = layerKey;
-        layer.sourceId = sourceId;
-        layer.name = processed
-                         ? QStringLiteral("%1 Processed").arg(sourceId)
-                         : QStringLiteral("%1 Raw").arg(sourceId);
-        if (ScopeOneCore::isRawLayerKey(layerKey))
-        {
-            layer.kind = scopeone::core::DocumentLayerKind::Raw;
-        }
-        else if (processed)
-        {
-            layer.kind = scopeone::core::DocumentLayerKind::Processed;
-        }
-        else if (sourceId.startsWith(QStringLiteral("gallery:")))
-        {
-            layer.kind = scopeone::core::DocumentLayerKind::Gallery;
-        }
-        else
-        {
-            layer.kind = scopeone::core::DocumentLayerKind::Static;
-        }
-        layer.display.visible = defaults.visible;
-        layer.display.opacityPercent = defaults.opacityPercent;
-        layer.display.gamma = defaults.gamma;
-        layer.display.colormap = colormapName(defaults.colormap);
-        layer.display.blending = blendingName(defaults.blending);
-        layer.display.levelMin = defaults.levelMin;
-        layer.display.levelMax = defaults.levelMax;
-        layer.display.levelDomainMax = defaults.levelDomainMax;
-        m_sceneModel->ensureLayer(layer);
-    }
-
-    // Ensures raw and processed layers exist for one camera
-    void PreviewWidget::ensureLayersForCamera(const QString& cameraId)
-    {
-        const QString sourceId = normalizedSourceId(cameraId);
-        if (sourceId.isEmpty())
-        {
-            return;
-        }
-        ensureLayer(previewLayerKey(sourceId, false));
-        ensureLayer(previewLayerKey(sourceId, true));
-    }
-
     // Removes stored state for one static image source
     void PreviewWidget::removeStaticLayerData(const QString& sourceId)
     {
@@ -1118,7 +775,6 @@ namespace scopeone::ui
         m_staticSourceIds.remove(sourceId);
         m_layerFps.remove(layerKey);
         m_fpsStates.remove(layerKey);
-        m_sceneModel->removeLayer(layerKey);
 
         {
             QMutexLocker lock(&m_mutex);
@@ -1134,23 +790,6 @@ namespace scopeone::ui
             doneCurrent();
             m_textureCache.erase(textureIt);
         }
-    }
-
-    // Removes layers that are no longer valid for the current camera list
-    void PreviewWidget::removeInvalidLayers(const QSet<QString>& validKeys)
-    {
-        QSet<QString> retainedLayerIds = validKeys;
-        for (const QString& layerId : m_sceneModel->layerIds())
-        {
-            scopeone::core::DocumentLayer layer;
-            if (m_sceneModel->findLayer(layerId, layer)
-                && layer.kind != scopeone::core::DocumentLayerKind::Raw
-                && layer.kind != scopeone::core::DocumentLayerKind::Processed)
-            {
-                retainedLayerIds.insert(layerId);
-            }
-        }
-        m_sceneModel->removeLayersNotIn(retainedLayerIds);
     }
 
     QSet<QString> PreviewWidget::validLayerKeys() const
@@ -1200,89 +839,6 @@ namespace scopeone::ui
     bool PreviewWidget::isFitToWindow() const
     {
         return m_fitToWindow;
-    }
-
-    // Sets manual pixel offset for one preview source
-    void PreviewWidget::setSourceOffset(const QString& sourceId, int offsetX, int offsetY)
-    {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            return;
-        }
-        QMutexLocker lock(&m_mutex);
-        FrameSourceState& frameState = m_frameSources[normalizedId];
-        frameState.offsetX = offsetX;
-        frameState.offsetY = offsetY;
-        update();
-    }
-
-    // Reads the display transform stored for one preview source
-    bool PreviewWidget::sourceDisplayTransform(const QString& sourceId,
-                                               int& offsetX,
-                                               int& offsetY,
-                                               int& zoomPercent,
-                                               bool& flipX,
-                                               bool& flipY) const
-    {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            offsetX = 0;
-            offsetY = 0;
-            zoomPercent = 100;
-            flipX = false;
-            flipY = false;
-            return false;
-        }
-        QMutexLocker lock(&m_mutex);
-        auto it = m_frameSources.constFind(normalizedId);
-        if (it == m_frameSources.constEnd())
-        {
-            offsetX = 0;
-            offsetY = 0;
-            zoomPercent = 100;
-            flipX = false;
-            flipY = false;
-            return false;
-        }
-
-        const FrameSourceState& frameState = it.value();
-        offsetX = frameState.offsetX;
-        offsetY = frameState.offsetY;
-        zoomPercent = frameState.zoomPercent;
-        flipX = frameState.flipX;
-        flipY = frameState.flipY;
-        return true;
-    }
-
-    // Sets preview flips for one preview source
-    void PreviewWidget::setSourceFlip(const QString& sourceId, bool flipX, bool flipY)
-    {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            return;
-        }
-        QMutexLocker lock(&m_mutex);
-        FrameSourceState& frameState = m_frameSources[normalizedId];
-        frameState.flipX = flipX;
-        frameState.flipY = flipY;
-        update();
-    }
-
-    // Sets per source preview zoom percentage
-    void PreviewWidget::setSourceZoomPercent(const QString& sourceId, int percent)
-    {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            return;
-        }
-        QMutexLocker lock(&m_mutex);
-        FrameSourceState& frameState = m_frameSources[normalizedId];
-        frameState.zoomPercent = qBound(10, percent, 500);
-        update();
     }
 
     // Refreshes placeholder state and schedules repaint
@@ -1351,8 +907,22 @@ namespace scopeone::ui
     // Copies frame source state under the preview mutex
     QMap<QString, PreviewWidget::FrameSourceState> PreviewWidget::snapshotFrameSources() const
     {
-        QMutexLocker lock(&m_mutex);
-        return m_frameSources;
+        QMap<QString, FrameSourceState> frameSources;
+        {
+            QMutexLocker lock(&m_mutex);
+            frameSources = m_frameSources;
+        }
+        for (auto it = frameSources.begin(); it != frameSources.end(); ++it)
+        {
+            const ImageSceneModel::SourceDisplayTransform transform =
+                m_sceneModel->sourceDisplayTransform(it.key());
+            it->offsetX = transform.offsetX;
+            it->offsetY = transform.offsetY;
+            it->flipX = transform.flipX;
+            it->flipY = transform.flipY;
+            it->zoomPercent = transform.zoomPercent;
+        }
+        return frameSources;
     }
 
     // Builds render metadata for sources with displayable frames
@@ -1955,7 +1525,6 @@ namespace scopeone::ui
             return;
         }
 
-        bool removedCrossSection = false;
         const QList<ImageSceneModel::Markup> markups = m_sceneModel->markups();
         for (const ImageSceneModel::Markup& markup : markups)
         {
@@ -1963,13 +1532,7 @@ namespace scopeone::ui
             {
                 continue;
             }
-            removedCrossSection = removedCrossSection
-                                  || markup.role == ImageSceneModel::MarkupRole::CrossSection;
             m_sceneModel->remove(markup.id);
-        }
-        if (removedCrossSection)
-        {
-            emit crossSectionClearedByUser();
         }
     }
 
@@ -2967,17 +2530,11 @@ namespace scopeone::ui
             m_crossSectionDrawingMode = false;
             m_crossSectionDragging = false;
             unsetCursor();
-            m_sceneModel->clearRole(ImageSceneModel::MarkupRole::CrossSection);
             m_sceneModel->createLine(m_crossSectionTargetLayerKey,
                                      imgStart,
                                      imgEnd,
                                      QString(),
                                      ImageSceneModel::MarkupRole::CrossSection);
-            emit crossSectionDrawn(m_crossSectionTargetLayerKey,
-                                   m_crossSectionTargetSourceId,
-                                   imgStart.x(), imgStart.y(),
-                                   imgEnd.x(), imgEnd.y(),
-                                   processed);
             update();
             return;
         }
@@ -3054,19 +2611,6 @@ namespace scopeone::ui
 
         if (m_markupDragging && event->button() == Qt::LeftButton)
         {
-            ImageSceneModel::Markup markup;
-            if (m_sceneModel->findMarkup(m_dragMarkupId, markup)
-                && markup.role == ImageSceneModel::MarkupRole::CrossSection
-                && markup.type == ImageSceneModel::MarkupType::Line)
-            {
-                emit crossSectionDrawn(markup.layerKey,
-                                       markup.sourceId,
-                                       markup.start.x(),
-                                       markup.start.y(),
-                                       markup.end.x(),
-                                       markup.end.y(),
-                                       markup.layerKind == ImageSceneModel::LayerKind::Processed);
-            }
             m_markupDragging = false;
             m_dragMarkupId.clear();
             m_dragMarkupEditMode = MarkupEditMode::None;
@@ -3124,15 +2668,12 @@ namespace scopeone::ui
         if (hasAnchor)
         {
             FrameSourceState frameState;
-            bool hasFrameState = false;
+            const QMap<QString, FrameSourceState> frameSources = snapshotFrameSources();
+            const auto frameStateIt = frameSources.constFind(target.sourceId);
+            const bool hasFrameState = frameStateIt != frameSources.constEnd();
+            if (hasFrameState)
             {
-                QMutexLocker lock(&m_mutex);
-                const auto it = m_frameSources.constFind(target.sourceId);
-                if (it != m_frameSources.constEnd())
-                {
-                    frameState = it.value();
-                    hasFrameState = true;
-                }
+                frameState = frameStateIt.value();
             }
 
             if (hasFrameState)

@@ -26,7 +26,6 @@ namespace scopeone::ui
         StageMosaicDialog(scopeone::core::ScopeOneCore* core,
                           PreviewWidget* previewWidget,
                           QWidget* parent = nullptr);
-        ~StageMosaicDialog() override;
 
         void reject() override;
 
@@ -40,14 +39,7 @@ namespace scopeone::ui
         void refreshDevices();
         void startMosaic();
         void stopMosaic();
-        void captureNextTile();
-        void captureSettledTile();
-        void onRawFrameReady(const scopeone::core::ImageFrame& frame);
-        void finishMosaic(const QString& message, bool addToGallery = false);
-        bool initializeMosaicFrame(const scopeone::core::ImageFrame& frame);
-        bool appendTileFrame(const scopeone::core::ImageFrame& frame, int row, int column);
-        bool updatePreviewMosaic();
-        void publishMosaicToGallery();
+        void setMosaicRunning(bool running);
         QString selectedCameraId() const;
         QString selectedStageId() const;
 
@@ -66,20 +58,6 @@ namespace scopeone::ui
         QPushButton* m_stopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
         QString m_activeCameraId;
-        QString m_activeStageId;
-        double m_originX{0.0};
-        double m_originY{0.0};
-        bool m_originValid{false};
-        int m_currentTile{0};
-        bool m_running{false};
-        bool m_mosaicInitialized{false};
-        bool m_waitingForTileFrame{false};
-        int m_frameWaitSerial{0};
-        QString m_mosaicError;
-        scopeone::core::ImageFrame m_mosaicReferenceFrame;
-        bool m_gallerySessionPublished{false};
-        class MosaicStorage;
-        std::unique_ptr<MosaicStorage> m_mosaic;
     };
 
     class ParticleDetectionDialog : public QDialog
