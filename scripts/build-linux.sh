@@ -68,7 +68,6 @@ step "Building required Micro-Manager components"
   run git submodule update --init --recursive
   run ./autogen.sh
   run ./configure --without-java --enable-static
-  run make fetchdeps
   run make -C "$MMCORE_LINK/MMDevice" -j "$JOBS"
   run make -C "$MMCORE_LINK/MMCore" -j "$JOBS"
 )

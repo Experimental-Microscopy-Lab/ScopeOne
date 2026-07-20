@@ -123,11 +123,10 @@ cd micro-manager
 git submodule update --init --recursive
 ```
 
-3. Configure Micro-Manager without the Java application layer and fetch its build dependencies:
+3. Configure Micro-Manager without the Java application layer:
 ```bash
 ./autogen.sh
 ./configure --without-java --enable-static
-make fetchdeps
 ```
 
 4. Build the native core components:
