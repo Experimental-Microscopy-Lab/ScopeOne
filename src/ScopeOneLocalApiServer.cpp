@@ -37,7 +37,6 @@ namespace scopeone::ui
     namespace
     {
         constexpr quint32 kMaxMessageBytes = 64 * 1024 * 1024;
-        constexpr int kLocalApiVersion = 2;
 #if defined(_WIN32)
         const QString kServerName = QStringLiteral(R"(\\.\pipe\ScopeOne.Api.local)");
 #else
@@ -614,7 +613,6 @@ namespace scopeone::ui
             }));
 
             QJsonObject object;
-            object.insert(QStringLiteral("apiVersion"), kLocalApiVersion);
             object.insert(QStringLiteral("localOnly"), true);
             object.insert(QStringLiteral("requestId"), true);
             object.insert(QStringLiteral("requestMode"), QStringLiteral("sequential"));
@@ -1097,7 +1095,6 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
-            response.insert(QStringLiteral("apiVersion"), kLocalApiVersion);
             return response;
         }
 
@@ -1106,7 +1103,6 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
-            response.insert(QStringLiteral("apiVersion"), kLocalApiVersion);
             return response;
         }
 
@@ -1122,7 +1118,6 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
-            response.insert(QStringLiteral("apiVersion"), kLocalApiVersion);
             response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));
             response.insert(QStringLiteral("loadedDevices"),
                             QJsonArray::fromStringList(m_scopeonecore->loadedDevices()));
@@ -1148,7 +1143,6 @@ namespace scopeone::ui
             QJsonObject application;
             application.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             application.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
-            application.insert(QStringLiteral("apiVersion"), kLocalApiVersion);
 
             const QString configPath = m_scopeonecore->loadedConfigurationPath();
             QJsonObject configuration;

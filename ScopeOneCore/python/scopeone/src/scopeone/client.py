@@ -363,7 +363,6 @@ class ExternalClient:
         return {
             "version": str(response.get("version", "")),
             "coreVersion": str(response.get("coreVersion", "")),
-            "apiVersion": int(response.get("apiVersion", 0)),
             "cameraIds": list(response.get("cameraIds", [])),
             "loadedDevices": list(response.get("loadedDevices", [])),
             "runningPreviews": list(response.get("runningPreviews", [])),

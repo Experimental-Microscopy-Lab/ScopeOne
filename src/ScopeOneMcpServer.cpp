@@ -152,7 +152,7 @@ namespace
                 QStringLiteral("Check that the ScopeOne Local API is responding")),
             makeTool(
                 QStringLiteral("version"),
-                QStringLiteral("Read ScopeOne application, Core, and Local API versions")),
+                QStringLiteral("Read ScopeOne application and Core versions")),
             makeTool(
                 QStringLiteral("status"),
                 QStringLiteral("Read a compact ScopeOne runtime status summary")),

@@ -210,7 +210,6 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Control endpoint on Linux/Unix: `<tempdir>/ScopeOne.Api.local`
 - Message framing: 4-byte little-endian unsigned payload size, followed by UTF-8 JSON.
 - Maximum JSON payload: 64 MiB.
-- Local API version: `2`.
 - Requests may include a string or numeric `requestId`; every response echoes it.
 - Success response: `{"type": "<request type>", "requestId": 1, "ok": true, ...}`
 - Error response: `{"type": "<request type>", "requestId": 1, "ok": false, "error": "..."}`
@@ -218,8 +217,8 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 ### Control requests
 
 - `ping`: health check.
-- `version`: response `version` for ScopeOne, `coreVersion` for ScopeOneCore, and `apiVersion`.
-- `status`: response `version`, `coreVersion`, `apiVersion`, cameras, devices, running previews, processing state, and layer keys.
+- `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
+- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, and layer keys.
 - `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
 - `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
