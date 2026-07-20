@@ -12,7 +12,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QTextEdit>
-#include <QtLogging>
+#include <QtCore/qlogging.h>
 #include <atomic>
 
 namespace scopeone::ui
