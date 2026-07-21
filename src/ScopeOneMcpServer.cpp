@@ -350,6 +350,15 @@ namespace
                 {QStringLiteral("sourceId")},
                 ToolAccess::StateChanging),
             makeTool(
+                QStringLiteral("reset_source_display_transform"),
+                QStringLiteral("Reset preview alignment for one image source"),
+                inputProperties({
+                    {QStringLiteral("sourceId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Source ID from list_layers"))}
+                }),
+                {QStringLiteral("sourceId")},
+                ToolAccess::StateChanging),
+            makeTool(
                 QStringLiteral("move_layer"),
                 QStringLiteral("Move an image layer in display order"),
                 inputProperties({
@@ -384,6 +393,18 @@ namespace
                 }),
                 {QStringLiteral("layerKey")}),
             makeTool(
+                QStringLiteral("get_pixel_value"),
+                QStringLiteral("Read one image-space pixel value from a current layer"),
+                inputProperties({
+                    {QStringLiteral("layerKey"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Layer key from state_snapshot"))},
+                    {QStringLiteral("x"),
+                     inputProperty(QStringLiteral("integer"), QStringLiteral("Image X coordinate"))},
+                    {QStringLiteral("y"),
+                     inputProperty(QStringLiteral("integer"), QStringLiteral("Image Y coordinate"))}
+                }),
+                {QStringLiteral("layerKey"), QStringLiteral("x"), QStringLiteral("y")}),
+            makeTool(
                 QStringLiteral("get_line_profile"),
                 QStringLiteral("Sample pixel values along an image-space line in a current layer"),
                 inputProperties({
@@ -400,6 +421,42 @@ namespace
                 }),
                 {QStringLiteral("layerKey"), QStringLiteral("x1"), QStringLiteral("y1"),
                  QStringLiteral("x2"), QStringLiteral("y2")}),
+            makeTool(
+                QStringLiteral("detect_particles"),
+                QStringLiteral("Measure thresholded particles and optionally export or display their mask"),
+                inputProperties({
+                    {QStringLiteral("layerKey"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Layer key from state_snapshot"))},
+                    {QStringLiteral("threshold"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("integer"), QStringLiteral("Inclusive intensity threshold")),
+                         0.0)},
+                    {QStringLiteral("minArea"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("integer"), QStringLiteral("Minimum particle area in pixels")),
+                         1.0)},
+                    {QStringLiteral("maxArea"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("integer"), QStringLiteral("Maximum particle area in pixels")),
+                         1.0)},
+                    {QStringLiteral("maxParticles"),
+                     withMaximum(
+                         withMinimum(
+                             inputProperty(QStringLiteral("integer"),
+                                           QStringLiteral("Maximum returned particle count"),
+                                           1000),
+                             1.0),
+                         10000.0)},
+                    {QStringLiteral("exportMask"),
+                     inputProperty(QStringLiteral("boolean"),
+                                   QStringLiteral("Export the particle mask to shared memory"), false)},
+                    {QStringLiteral("publishMask"),
+                     inputProperty(QStringLiteral("boolean"),
+                                   QStringLiteral("Publish the particle mask as a preview layer"), false)}
+                }),
+                {QStringLiteral("layerKey"), QStringLiteral("threshold"),
+                 QStringLiteral("minArea"), QStringLiteral("maxArea")},
+                ToolAccess::StateChanging),
             makeTool(
                 QStringLiteral("create_line_markup"),
                 QStringLiteral("Create an image-space line markup"),
@@ -721,6 +778,60 @@ namespace
                 {QStringLiteral("z")},
                 ToolAccess::Confirmed),
             makeTool(
+                QStringLiteral("start_stage_mosaic"),
+                QStringLiteral("Start asynchronous XY stage mosaic acquisition"),
+                inputProperties({
+                    {QStringLiteral("cameraId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Camera ID"))},
+                    {QStringLiteral("xyStageId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("XY stage device label"))},
+                    {QStringLiteral("rows"),
+                     withMaximum(
+                         withMinimum(
+                             inputProperty(QStringLiteral("integer"), QStringLiteral("Mosaic row count"), 1),
+                             1.0),
+                         10000.0)},
+                    {QStringLiteral("columns"),
+                     withMaximum(
+                         withMinimum(
+                             inputProperty(QStringLiteral("integer"), QStringLiteral("Mosaic column count"), 1),
+                             1.0),
+                         10000.0)},
+                    {QStringLiteral("pixelSizeUm"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("number"), QStringLiteral("Image pixel size in micrometers"),
+                                       1.0),
+                         1e-12)},
+                    {QStringLiteral("stepXUm"),
+                     inputProperty(QStringLiteral("number"), QStringLiteral("Horizontal tile step in micrometers"),
+                                   0.0)},
+                    {QStringLiteral("stepYUm"),
+                     inputProperty(QStringLiteral("number"), QStringLiteral("Vertical tile step in micrometers"),
+                                   0.0)},
+                    {QStringLiteral("settleMs"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("integer"), QStringLiteral("Stage settle time in milliseconds"),
+                                       150),
+                         0.0)},
+                    {QStringLiteral("returnToStart"),
+                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Return the stage to its initial position"),
+                                   true)},
+                    {QStringLiteral("gallerySaveDir"),
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("Default directory for saving the resulting Gallery session"))}
+                }),
+                {QStringLiteral("cameraId"), QStringLiteral("xyStageId")},
+                ToolAccess::Confirmed),
+            makeTool(
+                QStringLiteral("stage_mosaic_status"),
+                QStringLiteral("Read current or last XY stage mosaic status")),
+            makeTool(
+                QStringLiteral("cancel_stage_mosaic"),
+                QStringLiteral("Cancel the running XY stage mosaic"),
+                {},
+                {},
+                ToolAccess::Destructive),
+            makeTool(
                 QStringLiteral("processing_modules"),
                 QStringLiteral("Read processing bit depth, real-time state, and pipeline modules")),
             makeTool(
@@ -910,6 +1021,14 @@ namespace
                      inputProperty(QStringLiteral("string"), QStringLiteral("Camera ID"))}
                 }),
                 {QStringLiteral("camera")}),
+            makeTool(
+                QStringLiteral("layer_frame"),
+                QStringLiteral("Export the current frame of any image layer to shared memory"),
+                inputProperties({
+                    {QStringLiteral("layerKey"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Layer key from state_snapshot"))}
+                }),
+                {QStringLiteral("layerKey")}),
             makeTool(
                 QStringLiteral("session_process_frame"),
                 QStringLiteral("Process one retained session frame and export it to shared memory"),

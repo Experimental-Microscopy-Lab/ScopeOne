@@ -4,7 +4,6 @@
 
 #include <QDialog>
 #include <QString>
-#include <memory>
 
 class QCheckBox;
 class QComboBox;
@@ -28,11 +27,6 @@ namespace scopeone::ui
                           QWidget* parent = nullptr);
 
         void reject() override;
-
-    signals:
-        void gallerySessionCreated(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            const QString& title);
 
     private:
         void setupUI();

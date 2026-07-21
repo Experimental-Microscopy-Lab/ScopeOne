@@ -17,7 +17,11 @@ namespace scopeone::core::internal
 
         bool start(const ScopeOneCore::StageMosaicPlan& plan, QString* errorMessage);
         void cancel();
-        bool isRunning() const { return m_running; }
+        bool isRunning() const
+        {
+            return m_status.state == ScopeOneCore::StageMosaicState::Running;
+        }
+        ScopeOneCore::StageMosaicStatus status() const { return m_status; }
 
     signals:
         void progressChanged(int completedTiles, int totalTiles, const QString& message);
@@ -36,6 +40,7 @@ namespace scopeone::core::internal
         bool initializeMosaic(const ImageFrame& frame, QString& errorMessage);
         bool appendTile(const ImageFrame& frame, int row, int column);
         ImageFrame publishMosaicFrame();
+        void reportProgress(int completedTiles, int totalTiles, const QString& message);
         void finish(bool success, bool canceled, const QString& message);
 
         ScopeOneCore* m_core{nullptr};
@@ -47,8 +52,8 @@ namespace scopeone::core::internal
         int m_currentTile{0};
         int m_frameWaitSerial{0};
         quint64 m_generation{0};
-        bool m_running{false};
         bool m_waitingForFrame{false};
         bool m_startedPreview{false};
+        ScopeOneCore::StageMosaicStatus m_status;
     };
 }

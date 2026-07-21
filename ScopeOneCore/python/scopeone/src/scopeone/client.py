@@ -372,6 +372,9 @@ class ExternalClient:
             "layers": list(response.get("layers", [])),
             "visibleLayers": list(response.get("visibleLayers", [])),
             "layerLayout": str(response.get("layerLayout", "")),
+            "stageMosaic": dict(response.get("stageMosaic", {})),
+            "recordingProgress": dict(response.get("recordingProgress", {})),
+            "recordingWriter": dict(response.get("recordingWriter", {})),
         }
 
     def capabilities(self) -> dict:
@@ -411,6 +414,17 @@ class ExternalClient:
         )
         return dict(response["histogram"])
 
+    def get_pixel_value(self, layer_key: str, x: int, y: int) -> int:
+        response = self._request(
+            {
+                "type": "get_pixel_value",
+                "layerKey": layer_key,
+                "x": int(x),
+                "y": int(y),
+            }
+        )
+        return int(response["value"])
+
     def get_line_profile(
         self,
         layer_key: str,
@@ -430,6 +444,43 @@ class ExternalClient:
             }
         )
         return [int(value) for value in response.get("values", [])]
+
+    def detect_particles(
+        self,
+        layer_key: str,
+        threshold: int,
+        min_area: int,
+        max_area: int,
+        max_particles: int = 1000,
+        export_mask: bool = False,
+        publish_mask: bool = False,
+    ) -> dict:
+        response = self._request(
+            {
+                "type": "detect_particles",
+                "layerKey": layer_key,
+                "threshold": int(threshold),
+                "minArea": int(min_area),
+                "maxArea": int(max_area),
+                "maxParticles": int(max_particles),
+                "exportMask": bool(export_mask),
+                "publishMask": bool(publish_mask),
+            }
+        )
+        result = {
+            "layerKey": str(response.get("layerKey", "")),
+            "threshold": int(response.get("threshold", 0)),
+            "minArea": int(response.get("minArea", 0)),
+            "maxArea": int(response.get("maxArea", 0)),
+            "particleCount": int(response.get("particleCount", 0)),
+            "truncated": bool(response.get("truncated", False)),
+            "particles": list(response.get("particles", [])),
+        }
+        if "maskLayerKey" in response:
+            result["maskLayerKey"] = str(response["maskLayerKey"])
+        if "mask" in response:
+            result["mask"] = self._frame_result_from_mapping_response(dict(response["mask"]))
+        return result
 
     def layer_options(self) -> dict:
         response = self._request({"type": "layer_options"})
@@ -553,6 +604,16 @@ class ExternalClient:
         if flip_y is not None:
             request["flipY"] = bool(flip_y)
         return dict(self._request(request))
+
+    def reset_source_display_transform(self, source_id: str) -> dict:
+        return dict(
+            self._request(
+                {
+                    "type": "reset_source_display_transform",
+                    "sourceId": source_id,
+                }
+            )
+        )
 
     def move_layer(self, layer_key: str, offset: int) -> list[str]:
         response = self._request(
@@ -879,6 +940,44 @@ class ExternalClient:
             }
         )
 
+    def start_stage_mosaic(
+        self,
+        camera_id: str,
+        xy_stage_id: str,
+        rows: int = 1,
+        columns: int = 1,
+        pixel_size_um: float = 1.0,
+        step_x_um: float = 0.0,
+        step_y_um: float = 0.0,
+        settle_ms: int = 150,
+        return_to_start: bool = True,
+        gallery_save_dir: str | None = None,
+    ) -> dict:
+        request = {
+            "type": "start_stage_mosaic",
+            "cameraId": camera_id,
+            "xyStageId": xy_stage_id,
+            "rows": int(rows),
+            "columns": int(columns),
+            "pixelSizeUm": float(pixel_size_um),
+            "stepXUm": float(step_x_um),
+            "stepYUm": float(step_y_um),
+            "settleMs": int(settle_ms),
+            "returnToStart": bool(return_to_start),
+        }
+        if gallery_save_dir is not None:
+            request["gallerySaveDir"] = gallery_save_dir
+        response = self._request(request)
+        return dict(response.get("status", {}))
+
+    def stage_mosaic_status(self) -> dict:
+        response = self._request({"type": "stage_mosaic_status"})
+        return dict(response.get("status", {}))
+
+    def cancel_stage_mosaic(self) -> dict:
+        response = self._request({"type": "cancel_stage_mosaic"})
+        return dict(response.get("status", {}))
+
     def processing_state(self) -> dict:
         response = self._request({"type": "processing_modules"})
         return {
@@ -1110,6 +1209,15 @@ class ExternalClient:
         )
         return self._frame_result_from_mapping_response(response)
 
+    def layer_frame(self, layer_key: str) -> FrameResult:
+        response = self._request(
+            {
+                "type": "layer_frame",
+                "layerKey": layer_key,
+            }
+        )
+        return self._frame_result_from_mapping_response(response)
+
     def show_frame_mapping_as_layer(
         self,
         layer_id: str = "python_result",
@@ -1223,6 +1331,10 @@ class ExternalClient:
             result["sessionId"] = str(response["sessionId"])
             result["cameraIds"] = list(response.get("cameraIds", []))
             result["frameCount"] = int(response.get("frameCount", 0))
+        if "progress" in response:
+            result["progress"] = dict(response["progress"])
+        if "writer" in response:
+            result["writer"] = dict(response["writer"])
         return result
 
     def _frame_result_from_mapping_response(self, response: dict) -> FrameResult:
