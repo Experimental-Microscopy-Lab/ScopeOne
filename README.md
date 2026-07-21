@@ -154,6 +154,20 @@ The API reports which operations mutate hardware, write files, remove state, or 
 
 `ScopeOneMcpServer` is a standalone C++ MCP server included with ScopeOne. It uses MCP protocol version `2025-06-18` over standard input and output and forwards validated tool calls to the running desktop app through the Local API. It does not embed a model, open a network port, or depend on Python.
 
+#### Claude Code plugin
+
+Install ScopeOne first, then run these commands inside Claude Code:
+
+```text
+/plugin marketplace add Experimental-Microscopy-Lab/ScopeOne
+/plugin install scopeone@scopeone
+/reload-plugins
+```
+
+When prompted, select `ScopeOneMcpServer.exe` from the same directory as `ScopeOne.exe`. Start ScopeOne before asking Claude to inspect or control it. The plugin supplies the MCP configuration and agent operating guidance, so no Python installation or manual MCP server launch is required.
+
+#### Other MCP hosts
+
 To use it:
 
 1. Start ScopeOne. Load the device configuration manually or ask the agent to load it after confirmation.
