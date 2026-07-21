@@ -60,6 +60,9 @@ class ScopeOne:
     def get_layer_histogram(self, layer_key: str):
         return self._client.get_layer_histogram(layer_key)
 
+    def get_pixel_value(self, layer_key: str, x: int, y: int):
+        return self._client.get_pixel_value(layer_key, x, y)
+
     def get_line_profile(
         self,
         layer_key: str,
@@ -69,6 +72,26 @@ class ScopeOne:
         y2: int,
     ):
         return self._client.get_line_profile(layer_key, x1, y1, x2, y2)
+
+    def detect_particles(
+        self,
+        layer_key: str,
+        threshold: int,
+        min_area: int,
+        max_area: int,
+        max_particles: int = 1000,
+        export_mask: bool = False,
+        publish_mask: bool = False,
+    ):
+        return self._client.detect_particles(
+            layer_key,
+            threshold,
+            min_area,
+            max_area,
+            max_particles,
+            export_mask,
+            publish_mask,
+        )
 
     def layer_options(self):
         return self._client.layer_options()
@@ -128,6 +151,9 @@ class ScopeOne:
             flip_x,
             flip_y,
         )
+
+    def reset_source_display_transform(self, source_id: str):
+        return self._client.reset_source_display_transform(source_id)
 
     def move_layer(self, layer_key: str, offset: int):
         return self._client.move_layer(layer_key, offset)
@@ -253,6 +279,38 @@ class ScopeOne:
     def move_z_to(self, z: float, device: str | None = None):
         self._client.move_z_to(z, device)
 
+    def start_stage_mosaic(
+        self,
+        camera_id: str,
+        xy_stage_id: str,
+        rows: int = 1,
+        columns: int = 1,
+        pixel_size_um: float = 1.0,
+        step_x_um: float = 0.0,
+        step_y_um: float = 0.0,
+        settle_ms: int = 150,
+        return_to_start: bool = True,
+        gallery_save_dir: str | None = None,
+    ):
+        return self._client.start_stage_mosaic(
+            camera_id,
+            xy_stage_id,
+            rows,
+            columns,
+            pixel_size_um,
+            step_x_um,
+            step_y_um,
+            settle_ms,
+            return_to_start,
+            gallery_save_dir,
+        )
+
+    def stage_mosaic_status(self):
+        return self._client.stage_mosaic_status()
+
+    def cancel_stage_mosaic(self):
+        return self._client.cancel_stage_mosaic()
+
     def processing_state(self):
         return self._client.processing_state()
 
@@ -332,6 +390,9 @@ class ScopeOne:
 
     def latest_raw_frame(self, camera: str):
         return self._client.latest_raw_frame(camera)
+
+    def layer_frame(self, layer_key: str):
+        return self._client.layer_frame(layer_key)
 
     def show_frame_mapping_as_layer(
         self,

@@ -90,7 +90,7 @@ scopeone.close()
 
 The standalone C++ `ScopeOneMcpServer` included with the desktop app is the default integration for MCP-compatible agents. It does not use this Python package. This package remains available for scripts, notebooks, and custom Python-based adapters that intentionally use the Local API directly.
 
-`capabilities()` returns `operationGroups`, `longRunningOperations`, `hardwareMutationOperations`, `filesystemMutationOperations`, and `destructiveOperations`. `state_snapshot()` returns application and configuration identity, hardware inventory, preview state, processing modules, image layers, markups, acquisition state, retained experiments, and recording sessions. It intentionally does not poll every hardware property; use `get_property(..., from_cache=False)`, position reads, exposure reads, or ROI reads when an action requires a fresh hardware value.
+`capabilities()` returns `operationGroups`, `longRunningOperations`, `hardwareMutationOperations`, `filesystemMutationOperations`, and `destructiveOperations`. `state_snapshot()` returns application and configuration identity, hardware inventory, preview state, processing modules, image layers, markups, live acquisition and writer progress, retained experiments, and recording sessions. It intentionally does not poll every hardware property; use `get_property(..., from_cache=False)`, position reads, exposure reads, or ROI reads when an action requires a fresh hardware value.
 
 The Python client assigns a numeric `requestId` to every control request. The desktop app echoes it, and the client rejects a mismatched response. Raw protocol clients may provide their own string or numeric `requestId`.
 
@@ -111,7 +111,9 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.stop_preview(camera="All")`
 - `ScopeOne.list_layers()`
 - `ScopeOne.get_layer_histogram(layer_key)`
+- `ScopeOne.get_pixel_value(layer_key, x, y)`
 - `ScopeOne.get_line_profile(layer_key, x1, y1, x2, y2)`
+- `ScopeOne.detect_particles(layer_key, threshold, min_area, max_area, max_particles=1000, export_mask=False, publish_mask=False)`
 - `ScopeOne.layer_options()`
 - `ScopeOne.set_layer_layout(layout)`
 - `ScopeOne.set_visible_layers(layer_keys)`
@@ -121,6 +123,7 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.set_layer_auto_stretch(layer_key, enabled)`
 - `ScopeOne.get_source_display_transform(source_id)`
 - `ScopeOne.set_source_display_transform(source_id, offset_x=None, offset_y=None, zoom_percent=None, flip_x=None, flip_y=None)`
+- `ScopeOne.reset_source_display_transform(source_id)`
 - `ScopeOne.move_layer(layer_key, offset)`
 - `ScopeOne.config_groups()`
 - `ScopeOne.configs(group)`
@@ -154,6 +157,9 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.move_z_relative(dz, device=None)`
 - `ScopeOne.move_xy_to(x, y, device=None)`
 - `ScopeOne.move_z_to(z, device=None)`
+- `ScopeOne.start_stage_mosaic(camera_id, xy_stage_id, rows=1, columns=1, pixel_size_um=1.0, step_x_um=0.0, step_y_um=0.0, settle_ms=150, return_to_start=True, gallery_save_dir=None)`
+- `ScopeOne.stage_mosaic_status()`
+- `ScopeOne.cancel_stage_mosaic()`
 - `ScopeOne.processing_state()`
 - `ScopeOne.processing_modules()`
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
@@ -181,6 +187,7 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.process_frame_mapping(camera=None, start_module_index=None, end_module_index=None)`
 - `ScopeOne.process_image(image, camera="python", bits_per_sample=None, start_module_index=None, end_module_index=None)`
 - `ScopeOne.latest_raw_frame(camera)`
+- `ScopeOne.layer_frame(layer_key)`
 - `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
 - `ScopeOne.save_frame_mapping(save_dir, base_name, format="tiff", compression=False, compression_level=6, camera=None)`
 - `ScopeOne.continue_pipeline(frame, image=None)`
@@ -218,9 +225,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 - `ping`: health check.
 - `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
-- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, and layer keys.
+- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status.
 - `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
-- `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, experiment, and session state.
+- `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, live acquisition and writer progress, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
 - `load_config`: fields `configPath`; response `cameraIds`.
 - `unload_config`: unload current Micro-Manager config.
@@ -230,7 +237,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `list_layers`: response `layers`.
 - `get_layer_histogram`: fields `layerKey`; response `histogram` with summary statistics and 256 `bins`.
+- `get_pixel_value`: fields `layerKey`, `x`, `y`; response `value`.
 - `get_line_profile`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`; response `values`.
+- `detect_particles`: fields `layerKey`, `threshold`, `minArea`, `maxArea`, optional `maxParticles`, `exportMask`, and `publishMask`; response `particleCount`, effective thresholds, truncation state, particle measurements, optional shared-memory `mask` metadata, and optional `maskLayerKey`.
 - `layer_options`: response `layouts`, `colormaps`, `blendingModes`.
 - `set_layer_layout`: fields `layout`, accepts `side_by_side` or `overlay`.
 - `set_visible_layers`: fields `layerKeys`; response `visibleLayers`.
@@ -240,6 +249,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `set_layer_auto_stretch`: fields `layerKey`, `enabled`; continuously updates display levels from new histograms.
 - `get_source_display_transform`: fields `sourceId`; returns source offset, zoom, and flip state.
 - `set_source_display_transform`: fields `sourceId` and optional `offsetX`, `offsetY`, `zoomPercent`, `flipX`, `flipY`.
+- `reset_source_display_transform`: fields `sourceId`; restores zero offset, 100 percent zoom, and no flips.
 - `move_layer`: fields `layerKey`, `offset`; response ordered `layers`.
 - `config_groups`: response `groups`.
 - `configs`: fields `group`; response `configs`.
@@ -273,6 +283,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `move_z_relative`: fields `device`, `dz`.
 - `move_xy_to`: fields `device`, `x`, `y`.
 - `move_z_to`: fields `device`, `z`.
+- `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `pixelSizeUm`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
+- `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
+- `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
 - `processing_modules`: response `bitDepth`, `realTime`, and `modules`.
 - `set_processing_bit_depth`: fields `bitDepth`, accepts `8` or `16`.
 - `set_realtime_processing`: fields `enabled`.
@@ -285,13 +298,14 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `save_experiment`: fields `filePath`, `document`; validates and atomically saves the document.
 - `load_experiment`: field `filePath`; replaces the shared UI document when no experiment is running and responds with `document`.
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
-- `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, and completed recording session details when available.
+- `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, live `progress` and `writer` state while active, and completed recording session details when available.
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
 - `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
 - `latest_raw_frame`: fields `camera`; response `mappingName`, `mappingSize`, and frame metadata.
+- `layer_frame`: field `layerKey`; exports the current raw, processed, static, mosaic, or Gallery layer frame and returns shared-memory metadata.
 - `session_process_frame`: fields `sessionId`, `camera`, `index`, optional `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `process_frame_mapping`: optional fields `camera`, `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `show_frame_mapping_as_layer`: optional fields `camera`, `layerId`, `name`; imports the current shared memory frame as a preview layer and returns `layerKey`.
@@ -330,9 +344,9 @@ Processing module editing follows the desktop UI rules: stop real-time processin
 - Python reads this through `scopeone.shm.frame_to_ndarray()`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
 - Session frames can come from memory, saved TIFF stacks, or saved binary streams.
-- `ScopeOne.latest_raw_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
+- `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
 
-`latest_raw_frame` exports the current live raw frame for Python processing. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported or explicitly imported camera id when `camera` is omitted. Provide `camera` the first time a mapping was written by an external client.
+`latest_raw_frame` exports the current live raw frame for Python processing, while `layer_frame` accepts any key returned by `list_layers`. Particle detection can return its mask as a `FrameResult` with `export_mask=True` or publish the mask directly with `publish_mask=True`. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported or explicitly imported camera id when `camera` is omitted. Provide `camera` the first time a mapping was written by an external client.
 
 Python can also publish a new numpy image without first requesting a ScopeOne frame. `ScopeOne.write_frame_mapping(...)` writes a 2D mono array into the shared frame mapping and returns a `FrameResult`; `ScopeOne.show_image(...)`, `ScopeOne.process_image(...)`, and `ScopeOne.save_image(...)` are convenience wrappers around that path.
 

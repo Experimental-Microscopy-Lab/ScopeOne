@@ -570,6 +570,37 @@ namespace scopeone::ui
         connect(m_settingsAction, &QAction::triggered,
                 this, &MainWindow::openSettingsDialog);
 
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMosaicFrameUpdated,
+                this, [this](const scopeone::core::ImageFrame&)
+                {
+                    const QString layerKey =
+                        scopeone::core::ScopeOneCore::staticLayerKey(QStringLiteral("stage_mosaic"));
+                    m_imageSceneModel->setLayerColormap(layerKey, QStringLiteral("Gray"));
+                    m_imageSceneModel->setLayerBlending(layerKey, QStringLiteral("Opaque"));
+                    m_imageSceneModel->setVisibleLayers({layerKey});
+                    m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMosaicFinished,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+                       const QString& message,
+                       bool)
+                {
+                    if (!session)
+                    {
+                        showStatusMessage(message, 8000);
+                        return;
+                    }
+                    const QString title = tr("Stage Mosaic %1").arg(session->cameraIds().value(0));
+                    m_imageGalleryWidget->addSession(session, title);
+                    m_scopeonecore->removeStaticFrame(QStringLiteral("stage_mosaic"));
+                    if (!previewGallerySession(*m_scopeonecore, *m_previewWidget, session).isEmpty())
+                    {
+                        registerGallerySessionFrameControls(session, 0);
+                    }
+                    showStatusMessage(tr("Mosaic added to Gallery"), 5000);
+                });
+
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
@@ -1235,20 +1266,6 @@ namespace scopeone::ui
         if (!m_stageMosaicDialog)
         {
             auto* dialog = new StageMosaicDialog(m_scopeonecore, m_previewWidget, this);
-            connect(dialog,
-                    &StageMosaicDialog::gallerySessionCreated,
-                    this,
-                    [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-                           const QString& title)
-                    {
-                        m_imageGalleryWidget->addSession(session, title);
-                        m_scopeonecore->removeStaticFrame(QStringLiteral("stage_mosaic"));
-                        if (!previewGallerySession(*m_scopeonecore, *m_previewWidget, session).isEmpty())
-                        {
-                            registerGallerySessionFrameControls(session, 0);
-                        }
-                        showStatusMessage(tr("Mosaic added to Gallery"), 5000);
-                    });
             dialog->setAttribute(Qt::WA_DeleteOnClose);
             dialog->setModal(false);
             m_stageMosaicDialog = dialog;

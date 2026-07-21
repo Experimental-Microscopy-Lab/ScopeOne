@@ -112,6 +112,45 @@ namespace scopeone::core
             QString gallerySaveDir;
         };
 
+        enum class StageMosaicState
+        {
+            Idle,
+            Running,
+            Completed,
+            Canceled,
+            Failed
+        };
+
+        struct StageMosaicStatus
+        {
+            StageMosaicState state{StageMosaicState::Idle};
+            int completedTiles{0};
+            int totalTiles{0};
+            QString message;
+            QString sessionId;
+        };
+
+        struct RecordingProgress
+        {
+            int phase{kRecordingPhaseIdle};
+            qint64 frameCurrent{0};
+            qint64 frameTarget{0};
+            int burstCurrent{0};
+            int burstTarget{0};
+            qint64 waitRemainingMs{0};
+            int timeIndex{0};
+            int timeCount{0};
+            int zIndex{0};
+            int zCount{0};
+            int positionIndex{0};
+            int positionCount{0};
+            bool hasXY{false};
+            double x{0.0};
+            double y{0.0};
+            bool hasZ{false};
+            double z{0.0};
+        };
+
         class RecordingSaveResult
         {
         public:
@@ -601,7 +640,7 @@ namespace scopeone::core
                               QString* errorMessage = nullptr);
         void cancelStageMosaic();
         bool isStageMosaicRunning() const;
-
+        StageMosaicStatus stageMosaicStatus() const;
 
         QStringList xyStageDevices() const;
         QStringList zStageDevices() const;
@@ -656,6 +695,8 @@ namespace scopeone::core
 
         void setRecordingMaxPendingWriteBytes(qint64 bytes);
         qint64 recordingMaxPendingWriteBytes() const;
+        RecordingProgress recordingProgress() const;
+        RecordingWriterStatus recordingWriterStatus() const;
         bool startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds);
         void stopRecording();
         bool isRecording() const;

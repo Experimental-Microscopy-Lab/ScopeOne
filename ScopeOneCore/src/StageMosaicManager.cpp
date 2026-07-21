@@ -56,9 +56,14 @@ namespace scopeone::core::internal
     bool StageMosaicManager::start(const ScopeOneCore::StageMosaicPlan& plan,
                                    QString* errorMessage)
     {
-        if (m_running)
+        if (isRunning())
         {
             if (errorMessage) *errorMessage = QStringLiteral("A stage mosaic is already running");
+            return false;
+        }
+        if (m_core->isRecording() || !m_core->activeExperimentId().isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Another acquisition is already running");
             return false;
         }
 
@@ -107,9 +112,10 @@ namespace scopeone::core::internal
         m_storage->count.release();
         m_storage->tileWidth = 0;
         m_storage->tileHeight = 0;
-        m_running = true;
+        m_status = ScopeOneCore::StageMosaicStatus{};
+        m_status.state = ScopeOneCore::StageMosaicState::Running;
         const quint64 generation = ++m_generation;
-        emit progressChanged(0, static_cast<int>(tileCount), QStringLiteral("Starting mosaic capture"));
+        reportProgress(0, static_cast<int>(tileCount), QStringLiteral("Starting mosaic capture"));
         QTimer::singleShot(qMax(50, m_plan.settleMs), this,
                            [this, generation]() { captureNextTile(generation); });
         return true;
@@ -117,7 +123,7 @@ namespace scopeone::core::internal
 
     void StageMosaicManager::cancel()
     {
-        if (m_running)
+        if (isRunning())
         {
             finish(false, true, QStringLiteral("Mosaic stopped"));
         }
@@ -125,7 +131,7 @@ namespace scopeone::core::internal
 
     void StageMosaicManager::captureNextTile(quint64 generation)
     {
-        if (!m_running || generation != m_generation)
+        if (!isRunning() || generation != m_generation)
         {
             return;
         }
@@ -140,11 +146,11 @@ namespace scopeone::core::internal
         const int column = m_currentTile % m_plan.columns;
         const double x = m_originX + column * m_plan.stepXUm;
         const double y = m_originY + row * m_plan.stepYUm;
-        emit progressChanged(m_currentTile,
-                             totalTiles,
-                             QStringLiteral("Moving to tile %1 of %2")
-                                 .arg(m_currentTile + 1)
-                                 .arg(totalTiles));
+        reportProgress(m_currentTile,
+                       totalTiles,
+                       QStringLiteral("Moving to tile %1 of %2")
+                           .arg(m_currentTile + 1)
+                           .arg(totalTiles));
         if (!m_core->moveXYTo(m_plan.xyStageId, x, y))
         {
             finish(false, false, QStringLiteral("Stage move failed"));
@@ -156,18 +162,18 @@ namespace scopeone::core::internal
 
     void StageMosaicManager::waitForTileFrame(quint64 generation)
     {
-        if (!m_running || generation != m_generation)
+        if (!isRunning() || generation != m_generation)
         {
             return;
         }
         m_waitingForFrame = true;
         const int waitSerial = ++m_frameWaitSerial;
-        emit progressChanged(m_currentTile,
-                             m_plan.rows * m_plan.columns,
-                             QStringLiteral("Waiting for camera frame"));
+        reportProgress(m_currentTile,
+                       m_plan.rows * m_plan.columns,
+                       QStringLiteral("Waiting for camera frame"));
         QTimer::singleShot(kFrameTimeoutMs, this, [this, generation, waitSerial]()
         {
-            if (m_running
+            if (isRunning()
                 && generation == m_generation
                 && m_waitingForFrame
                 && waitSerial == m_frameWaitSerial)
@@ -179,7 +185,7 @@ namespace scopeone::core::internal
 
     void StageMosaicManager::handleRawFrame(const ImageFrame& frame)
     {
-        if (!m_running || !m_waitingForFrame || frame.cameraId != m_plan.cameraId)
+        if (!isRunning() || !m_waitingForFrame || frame.cameraId != m_plan.cameraId)
         {
             return;
         }
@@ -207,11 +213,11 @@ namespace scopeone::core::internal
         }
         emit frameUpdated(mosaicFrame);
         ++m_currentTile;
-        emit progressChanged(m_currentTile,
-                             m_plan.rows * m_plan.columns,
-                             QStringLiteral("Captured tile %1 of %2")
-                                 .arg(m_currentTile)
-                                 .arg(m_plan.rows * m_plan.columns));
+        reportProgress(m_currentTile,
+                       m_plan.rows * m_plan.columns,
+                       QStringLiteral("Captured tile %1 of %2")
+                           .arg(m_currentTile)
+                           .arg(m_plan.rows * m_plan.columns));
         const quint64 generation = m_generation;
         QTimer::singleShot(0, this,
                            [this, generation]() { captureNextTile(generation); });
@@ -314,16 +320,36 @@ namespace scopeone::core::internal
             QStringLiteral("Stage Mosaic %1").arg(m_plan.cameraId));
     }
 
+    void StageMosaicManager::reportProgress(int completedTiles,
+                                            int totalTiles,
+                                            const QString& message)
+    {
+        m_status.completedTiles = completedTiles;
+        m_status.totalTiles = totalTiles;
+        m_status.message = message;
+        emit progressChanged(completedTiles, totalTiles, message);
+    }
+
     void StageMosaicManager::finish(bool success, bool canceled, const QString& message)
     {
-        if (!m_running)
+        if (!isRunning())
         {
             return;
         }
-        m_running = false;
         m_waitingForFrame = false;
         ++m_generation;
-
+        if (canceled)
+        {
+            m_status.state = ScopeOneCore::StageMosaicState::Canceled;
+        }
+        else if (success)
+        {
+            m_status.state = ScopeOneCore::StageMosaicState::Completed;
+        }
+        else
+        {
+            m_status.state = ScopeOneCore::StageMosaicState::Failed;
+        }
         std::shared_ptr<ScopeOneCore::RecordingSessionData> session;
         QString finalMessage = message;
         if (success)
@@ -341,6 +367,11 @@ namespace scopeone::core::internal
             if (!session)
             {
                 finalMessage = QStringLiteral("Mosaic completed but the gallery session could not be created");
+                m_status.state = ScopeOneCore::StageMosaicState::Failed;
+            }
+            else
+            {
+                m_status.sessionId = session->capturePlan().experimentId;
             }
         }
 
@@ -353,6 +384,7 @@ namespace scopeone::core::internal
             m_core->stopPreview(m_plan.cameraId);
         }
         m_startedPreview = false;
+        reportProgress(m_currentTile, m_plan.rows * m_plan.columns, finalMessage);
         emit finished(session, finalMessage, canceled);
     }
 }

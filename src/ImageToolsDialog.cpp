@@ -62,30 +62,19 @@ namespace scopeone::ui
                 {
                     m_statusLabel->setText(message);
                 });
-        connect(m_core, &ScopeOneCore::stageMosaicFrameUpdated,
-                this, [this](const ImageFrame&)
-                {
-                    const QString layerKey = ScopeOneCore::staticLayerKey(QStringLiteral("stage_mosaic"));
-                    m_core->imageSceneModel()->setLayerColormap(layerKey, QStringLiteral("Gray"));
-                    m_core->imageSceneModel()->setLayerBlending(layerKey, QStringLiteral("Opaque"));
-                    m_core->imageSceneModel()->setVisibleLayers({layerKey});
-                    m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
-                });
         connect(m_core, &ScopeOneCore::stageMosaicFinished,
-                this, [this](const std::shared_ptr<ScopeOneCore::RecordingSessionData>& session,
-                             const QString& message,
+                this, [this](const std::shared_ptr<ScopeOneCore::RecordingSessionData>&,
+                             const QString&,
                              bool)
                 {
                     setMosaicRunning(false);
-                    m_statusLabel->setText(message);
-                    if (session)
-                    {
-                        emit gallerySessionCreated(
-                            session,
-                            tr("Stage Mosaic %1").arg(m_activeCameraId));
-                        m_statusLabel->setText(tr("Mosaic complete and added to Gallery"));
-                    }
                 });
+        const ScopeOneCore::StageMosaicStatus status = m_core->stageMosaicStatus();
+        if (status.state == ScopeOneCore::StageMosaicState::Running)
+        {
+            setMosaicRunning(true);
+            m_statusLabel->setText(status.message);
+        }
     }
 
     // Stop active capture before closing the dialog

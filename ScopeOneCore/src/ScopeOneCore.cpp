@@ -1178,6 +1178,8 @@ namespace scopeone::core
         QString activeExperimentId;
         QStringList experimentStartedPreviewCameraIds;
         bool experimentCancelRequested{false};
+        RecordingProgress recordingProgress;
+        RecordingWriterStatus recordingWriterStatus;
     };
 
     // Return the compiled core version string
@@ -1287,6 +1289,8 @@ namespace scopeone::core
         m_managers->recordingManager = new RecordingManager(this);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
+        m_managers->recordingWriterStatus.reset(
+            m_managers->recordingManager->recordedMaxBytes());
         m_managers->recordingManager->setMultiProcessCameraManager(m_managers->mpcm);
         m_managers->recordingManager->setMMCore(m_managers->mmcoreManager->getCore());
         m_managers->recordingManager->setLatestFrameFetcher(
@@ -1310,9 +1314,67 @@ namespace scopeone::core
                 this, &ScopeOneCore::handleIncomingRawFrame, Qt::QueuedConnection);
 
         connect(m_managers->recordingManager, &RecordingManager::progressChanged,
-                this, &ScopeOneCore::recordingProgressChanged);
+                this,
+                [this](int phase,
+                       qint64 frameCurrent,
+                       qint64 frameTarget,
+                       int burstCurrent,
+                       int burstTarget,
+                       qint64 waitRemainingMs,
+                       int timeIndex,
+                       int timeCount,
+                       int zIndex,
+                       int zCount,
+                       int positionIndex,
+                       int positionCount,
+                       bool hasXY,
+                       double x,
+                       double y,
+                       bool hasZ,
+                       double z)
+                {
+                    RecordingProgress& progress = m_managers->recordingProgress;
+                    progress.phase = phase;
+                    progress.frameCurrent = frameCurrent;
+                    progress.frameTarget = frameTarget;
+                    progress.burstCurrent = burstCurrent;
+                    progress.burstTarget = burstTarget;
+                    progress.waitRemainingMs = waitRemainingMs;
+                    progress.timeIndex = timeIndex;
+                    progress.timeCount = timeCount;
+                    progress.zIndex = zIndex;
+                    progress.zCount = zCount;
+                    progress.positionIndex = positionIndex;
+                    progress.positionCount = positionCount;
+                    progress.hasXY = hasXY;
+                    progress.x = x;
+                    progress.y = y;
+                    progress.hasZ = hasZ;
+                    progress.z = z;
+                    emit recordingProgressChanged(phase,
+                                                  frameCurrent,
+                                                  frameTarget,
+                                                  burstCurrent,
+                                                  burstTarget,
+                                                  waitRemainingMs,
+                                                  timeIndex,
+                                                  timeCount,
+                                                  zIndex,
+                                                  zCount,
+                                                  positionIndex,
+                                                  positionCount,
+                                                  hasXY,
+                                                  x,
+                                                  y,
+                                                  hasZ,
+                                                  z);
+                });
         connect(m_managers->recordingManager, &RecordingManager::writerStatusChanged,
-                this, &ScopeOneCore::recordingWriterStatusChanged);
+                this, [this](const RecordingWriterStatus& status)
+                {
+                    m_managers->recordingWriterStatus = status;
+                    emit recordingWriterStatusChanged(status);
+                });
         connect(m_managers->recordingManager, &RecordingManager::recordingStateChanged,
                 this, &ScopeOneCore::recordingStateChanged);
         connect(m_managers->recordingManager, &RecordingManager::recordingStopped,
@@ -2317,6 +2379,11 @@ namespace scopeone::core
     bool ScopeOneCore::isStageMosaicRunning() const
     {
         return m_managers->stageMosaicManager->isRunning();
+    }
+
+    ScopeOneCore::StageMosaicStatus ScopeOneCore::stageMosaicStatus() const
+    {
+        return m_managers->stageMosaicManager->status();
     }
 
     // Schedule throttled histogram work for a layer
@@ -3362,6 +3429,9 @@ namespace scopeone::core
     void ScopeOneCore::setRecordingMaxPendingWriteBytes(qint64 bytes)
     {
         m_managers->recordingManager->setRecordedMaxBytes(bytes);
+        m_managers->recordingWriterStatus.setMaxPendingWriteBytes(
+            m_managers->recordingManager->recordedMaxBytes());
+        emit recordingWriterStatusChanged(m_managers->recordingWriterStatus);
     }
 
     qint64 ScopeOneCore::recordingMaxPendingWriteBytes() const
@@ -3369,11 +3439,24 @@ namespace scopeone::core
         return m_managers->recordingManager->recordedMaxBytes();
     }
 
+    // Return the latest recording progress snapshot
+    ScopeOneCore::RecordingProgress ScopeOneCore::recordingProgress() const
+    {
+        return m_managers->recordingProgress;
+    }
+
+    // Return the latest recording writer snapshot
+    ScopeOneCore::RecordingWriterStatus ScopeOneCore::recordingWriterStatus() const
+    {
+        return m_managers->recordingWriterStatus;
+    }
+
     // Start recording and suspend preview during MDA motion
     bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
     {
         if (m_managers->recordingManager->isRecording()
-            || !m_managers->activeExperimentId.isEmpty())
+            || !m_managers->activeExperimentId.isEmpty()
+            || isStageMosaicRunning())
         {
             return false;
         }
@@ -3391,6 +3474,9 @@ namespace scopeone::core
         {
             return false;
         }
+        m_managers->recordingProgress = RecordingProgress{};
+        m_managers->recordingWriterStatus.reset(recordingMaxPendingWriteBytes());
+        emit recordingWriterStatusChanged(m_managers->recordingWriterStatus);
         for (const QString& cameraId : activeCameraIds)
         {
             const QString normalizedCameraId = cameraId.trimmed();
@@ -3502,9 +3588,11 @@ namespace scopeone::core
         }
 
         const QString experimentId = document.plan.experimentId.trimmed();
-        if (isRecording() || !m_managers->activeExperimentId.isEmpty())
+        if (isRecording()
+            || !m_managers->activeExperimentId.isEmpty()
+            || isStageMosaicRunning())
         {
-            if (errorMessage) *errorMessage = QStringLiteral("Another recording is already running");
+            if (errorMessage) *errorMessage = QStringLiteral("Another acquisition is already running");
             return false;
         }
         if (m_managers->experiments.contains(experimentId))
