@@ -44,6 +44,6 @@ jobs:
             libtiff-dev \
             zlib1g-dev
 
-      - name: Compile MMCore and ScopeOne
+      - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
         run: ./scripts/build-linux.sh
