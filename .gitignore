@@ -13,12 +13,6 @@ ScopeOneCore/python/**
 !.github/
 !.github/**
 
-!.claude-plugin/
-!.claude-plugin/**
-
-!scopeone-skill/
-!scopeone-skill/**
-
 !resources/
 !resources/**
 

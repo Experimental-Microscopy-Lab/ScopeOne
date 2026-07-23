@@ -196,7 +196,7 @@ The API reports which operations mutate hardware, write files, remove state, or 
 Install ScopeOne first, then run these commands inside Claude Code:
 
 ```text
-/plugin marketplace add Experimental-Microscopy-Lab/ScopeOne
+/plugin marketplace add Experimental-Microscopy-Lab/ScopeOne-Skill
 /plugin install scopeone@scopeone
 /reload-plugins
 ```

@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "scopeone": {
-      "command": "${user_config.mcp_server}"
-    }
-  }
-}
