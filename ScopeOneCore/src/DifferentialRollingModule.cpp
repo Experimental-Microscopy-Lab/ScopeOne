@@ -2,12 +2,13 @@
 
 #include "internal/FrameBufferUtils.h"
 
+#include <limits>
+
 namespace scopeone::core::internal
 {
     namespace
     {
-        constexpr double kNormalizedDisplayScale = 4096.0;
-        constexpr double kNormalizationEpsilon = 1.0;
+        constexpr qint64 kNormalizedDisplayScale = 4096;
 
         qint64 pixelCountForSize(int width, int height)
         {
@@ -18,33 +19,57 @@ namespace scopeone::core::internal
             return static_cast<qint64>(width) * static_cast<qint64>(height);
         }
 
-        // Adds or removes one frame from a rolling pixel sum
-        void accumulateFrameSum(const ImageFrame& frame, std::vector<int>& sum, int sign)
-        {
-            dispatchFrameType(frame, [&]<typename Pixel>()
-            {
-                for (int y = 0; y < frame.height; ++y)
-                {
-                    const Pixel* row = frameRowData<Pixel>(frame, y);
-                    const qint64 rowOffset = static_cast<qint64>(y) * static_cast<qint64>(frame.width);
-                    for (int x = 0; x < frame.width; ++x)
-                    {
-                        sum[static_cast<size_t>(rowOffset + x)] += sign * static_cast<int>(row[x]);
-                    }
-                }
-            });
-        }
-
         // Adds one frame to a rolling pixel sum
         void addFrameToSum(const ImageFrame& frame, std::vector<int>& sum)
         {
-            accumulateFrameSum(frame, sum, 1);
+            dispatchFrameType(frame, [&]<typename Pixel>()
+            {
+                const char* sourceData = frame.bytes.constData();
+                int* sumData = sum.data();
+                parallelForImageRows(frame.width, frame.height, [&](int firstRow, int lastRow)
+                {
+                    for (int y = firstRow; y < lastRow; ++y)
+                    {
+                        const Pixel* row = reinterpret_cast<const Pixel*>(
+                            sourceData + static_cast<qint64>(y) * frame.stride);
+                        int* sumRow = sumData + static_cast<size_t>(y) * frame.width;
+                        for (int x = 0; x < frame.width; ++x)
+                        {
+                            sumRow[x] += static_cast<int>(row[x]);
+                        }
+                    }
+                });
+            });
         }
 
-        // Removes one frame from a rolling pixel sum
-        void subtractFrameFromSum(const ImageFrame& frame, std::vector<int>& sum)
+        qint64 roundedDivide(qint64 numerator, qint64 denominator)
         {
-            accumulateFrameSum(frame, sum, -1);
+            return numerator >= 0
+                       ? (numerator + denominator / 2) / denominator
+                       : (numerator - denominator / 2) / denominator;
+        }
+
+        // Maps rolling sums to one display pixel
+        int differentialDisplayValue(int sumA,
+                                     int sumB,
+                                     int batchSize,
+                                     bool normalize,
+                                     bool mono16)
+        {
+            const qint64 centerValue = mono16 ? 32768 : 128;
+            const qint64 difference = static_cast<qint64>(sumB) - sumA;
+            qint64 displayValue = centerValue + roundedDivide(difference, batchSize);
+            if (normalize)
+            {
+                const qint64 normalizationScale = mono16 ? 32767 : kNormalizedDisplayScale;
+                const qint64 denominator = sumA > batchSize ? sumA : batchSize;
+                displayValue = centerValue
+                    + roundedDivide(difference * normalizationScale, denominator);
+            }
+            return static_cast<int>(qBound(
+                static_cast<qint64>((std::numeric_limits<int>::min)()),
+                displayValue,
+                static_cast<qint64>((std::numeric_limits<int>::max)())));
         }
 
         // Resets rolling state for a new frame size
@@ -68,8 +93,7 @@ namespace scopeone::core::internal
                                           bool normalize)
         {
             const int maxValue = reference.maxValue();
-            const double centerValue = reference.isMono16() ? 32768.0 : 128.0;
-            const double normalizationScale = reference.isMono16() ? 32767.0 : kNormalizedDisplayScale;
+            const bool mono16 = reference.isMono16();
             const qint64 pixelCount = pixelCountForSize(width, height);
             if (pixelCount <= 0)
             {
@@ -83,26 +107,95 @@ namespace scopeone::core::internal
                     return outBytes;
                 }
                 auto* outData = reinterpret_cast<Pixel*>(outBytes.data());
-                for (qint64 i = 0; i < pixelCount; ++i)
+                parallelForImageRows(width, height, [&](int firstRow, int lastRow)
                 {
-                    const double sum1 = static_cast<double>(sumA[static_cast<size_t>(i)]);
-                    const double sum2 = static_cast<double>(sumB[static_cast<size_t>(i)]);
-                    const double averageDiff = (sum2 - sum1) / static_cast<double>(batchSize);
-                    double displayValue = averageDiff + centerValue;
-                    if (normalize)
+                    const qint64 firstPixel = static_cast<qint64>(firstRow) * width;
+                    const qint64 lastPixel = static_cast<qint64>(lastRow) * width;
+                    for (qint64 i = firstPixel; i < lastPixel; ++i)
                     {
-                        const double normalized = (sum2 - sum1)
-                            / (sum1 > static_cast<double>(batchSize)
-                                   ? sum1
-                                   : static_cast<double>(batchSize) * kNormalizationEpsilon);
-                        displayValue = centerValue + normalized * normalizationScale;
+                        outData[i] = clampPixelValue<Pixel>(
+                            differentialDisplayValue(sumA[static_cast<size_t>(i)],
+                                                     sumB[static_cast<size_t>(i)],
+                                                     batchSize,
+                                                     normalize,
+                                                     mono16),
+                            maxValue);
                     }
-                    outData[i] = clampPixelValue<Pixel>(qRound(displayValue), maxValue);
-                }
+                });
                 return outBytes;
             });
 
             return makeFrameLike(reference, width, height, std::move(bytes));
+        }
+
+        // Advances both rolling sums and builds the output in one image pass
+        ImageFrame advanceRollingAndBuildOutput(const ImageFrame& oldestA,
+                                                const ImageFrame& bridge,
+                                                const ImageFrame& current,
+                                                std::vector<int>& sumA,
+                                                std::vector<int>& sumB,
+                                                int batchSize,
+                                                bool normalize)
+        {
+            const qint64 pixelCount = pixelCountForSize(current.width, current.height);
+            if (pixelCount <= 0)
+            {
+                return {};
+            }
+
+            const int maxValue = current.maxValue();
+            const bool mono16 = current.isMono16();
+            QByteArray bytes = dispatchFrameType(current, [&]<typename Pixel>()
+            {
+                QByteArray outBytes = allocatePixelBytes<Pixel>(current.width, current.height);
+                if (outBytes.isEmpty())
+                {
+                    return outBytes;
+                }
+
+                const char* oldestData = oldestA.bytes.constData();
+                const char* bridgeData = bridge.bytes.constData();
+                const char* currentData = current.bytes.constData();
+                Pixel* outputData = reinterpret_cast<Pixel*>(outBytes.data());
+                int* sumAData = sumA.data();
+                int* sumBData = sumB.data();
+                parallelForImageRows(current.width, current.height, [&](int firstRow, int lastRow)
+                {
+                    for (int y = firstRow; y < lastRow; ++y)
+                    {
+                        const Pixel* oldestRow = reinterpret_cast<const Pixel*>(
+                            oldestData + static_cast<qint64>(y) * oldestA.stride);
+                        const Pixel* bridgeRow = reinterpret_cast<const Pixel*>(
+                            bridgeData + static_cast<qint64>(y) * bridge.stride);
+                        const Pixel* currentRow = reinterpret_cast<const Pixel*>(
+                            currentData + static_cast<qint64>(y) * current.stride);
+                        const size_t rowOffset = static_cast<size_t>(y) * current.width;
+                        Pixel* outputRow = outputData + rowOffset;
+                        int* sumARow = sumAData + rowOffset;
+                        int* sumBRow = sumBData + rowOffset;
+                        for (int x = 0; x < current.width; ++x)
+                        {
+                            sumARow[x] += static_cast<int>(bridgeRow[x])
+                                          - static_cast<int>(oldestRow[x]);
+                            sumBRow[x] += static_cast<int>(currentRow[x])
+                                          - static_cast<int>(bridgeRow[x]);
+                            outputRow[x] = clampPixelValue<Pixel>(
+                                differentialDisplayValue(sumARow[x],
+                                                         sumBRow[x],
+                                                         batchSize,
+                                                         normalize,
+                                                         mono16),
+                                maxValue);
+                        }
+                    }
+                });
+                return outBytes;
+            });
+
+            return makeFrameLike(current,
+                                 current.width,
+                                 current.height,
+                                 std::move(bytes));
         }
     } // namespace
 
@@ -170,25 +263,19 @@ namespace scopeone::core::internal
 
             const ImageFrame oldestA = m_state.batchA.front();
             const ImageFrame bridgeFrame = m_state.batchB.front();
-
-            subtractFrameFromSum(oldestA, m_state.sumA);
+            ImageFrame output = advanceRollingAndBuildOutput(oldestA,
+                                                             bridgeFrame,
+                                                             workingFrame,
+                                                             m_state.sumA,
+                                                             m_state.sumB,
+                                                             m_batchSize,
+                                                             m_normalize);
             m_state.batchA.pop_front();
             m_state.batchA.push_back(bridgeFrame);
-            addFrameToSum(bridgeFrame, m_state.sumA);
-
-            subtractFrameFromSum(bridgeFrame, m_state.sumB);
             m_state.batchB.pop_front();
             m_state.batchB.push_back(workingFrame);
-            addFrameToSum(workingFrame, m_state.sumB);
 
-            return {makeDifferentialOutput(workingFrame.width,
-                                           workingFrame.height,
-                                           workingFrame,
-                                           m_state.sumA,
-                                           m_state.sumB,
-                                           m_batchSize,
-                                           m_normalize),
-                    {}};
+            return {std::move(output), {}};
         }
         catch (const std::exception& e)
         {

@@ -1,9 +1,58 @@
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/FrameBufferUtils.h"
 #include <algorithm>
+#include <utility>
 
 namespace scopeone::core::internal
 {
+    namespace
+    {
+        // Applies one calibrated background sample to one source sample
+        int applyBackgroundOperation(int source,
+                                     int background,
+                                     int maxValue,
+                                     BackgroundOperation operation)
+        {
+            switch (operation)
+            {
+            case BackgroundOperation::Subtract:
+                return source - background;
+            case BackgroundOperation::Add:
+                return source + background;
+            case BackgroundOperation::Multiply:
+                return static_cast<int>((static_cast<qint64>(source) * background) / maxValue);
+            case BackgroundOperation::Divide:
+                return background > 0
+                           ? static_cast<int>((static_cast<qint64>(source) * maxValue) / background)
+                           : maxValue;
+            }
+            return source;
+        }
+
+        // Adds one frame to a full precision running pixel sum
+        void addFrameToRunningSum(const ImageFrame& frame, std::vector<qint64>& sum)
+        {
+            dispatchFrameType(frame, [&]<typename Pixel>()
+            {
+                const char* sourceData = frame.bytes.constData();
+                qint64* sumData = sum.data();
+                parallelForImageRows(frame.width, frame.height, [&](int firstRow, int lastRow)
+                {
+                    for (int y = firstRow; y < lastRow; ++y)
+                    {
+                        const Pixel* row = reinterpret_cast<const Pixel*>(
+                            sourceData + static_cast<qint64>(y) * frame.stride);
+                        qint64* sumRow = sumData + static_cast<size_t>(y) * frame.width;
+                        for (int x = 0; x < frame.width; ++x)
+                        {
+                            sumRow[x] += static_cast<int>(row[x]);
+                        }
+                    }
+                });
+            });
+        }
+    } // namespace
+
     // Creates an independent background calibration runtime
     std::unique_ptr<ProcessingModule> BackgroundCalibrationModule::createRuntime() const
     {
@@ -23,6 +72,7 @@ namespace scopeone::core::internal
     void BackgroundCalibrationModule::resetCalibration()
     {
         m_buffer.clear();
+        m_runningSum.clear();
         m_background = ImageFrame{};
         m_calibrated = false;
     }
@@ -33,6 +83,8 @@ namespace scopeone::core::internal
         const int w = m_buffer.front().width;
         const int h = m_buffer.front().height;
         const int maxValue = m_buffer.front().maxValue();
+        const qint64 workItemCount = static_cast<qint64>(w)
+                                       * h * static_cast<qint64>(m_buffer.size());
         QByteArray bgBytes = dispatchFrameType(m_buffer.front(), [&]<typename Pixel>()
         {
             QByteArray outBytes = allocatePixelBytes<Pixel>(w, h);
@@ -40,77 +92,110 @@ namespace scopeone::core::internal
             {
                 return outBytes;
             }
+            Pixel* outputData = reinterpret_cast<Pixel*>(outBytes.data());
             switch (m_method)
             {
             case BackgroundMethod::Median:
                 {
-                    std::vector<Pixel> vals(m_buffer.size());
-                    for (int y = 0; y < h; ++y)
+                    parallelForRows(workItemCount, h, [&](int firstRow, int lastRow)
                     {
-                        Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
-                        for (int x = 0; x < w; ++x)
+                        std::vector<Pixel> vals(m_buffer.size());
+                        std::vector<const Pixel*> rows(m_buffer.size());
+                        for (int y = firstRow; y < lastRow; ++y)
                         {
                             for (size_t k = 0; k < m_buffer.size(); ++k)
                             {
-                                vals[k] = frameRowData<Pixel>(m_buffer[k], y)[x];
+                                rows[k] = frameRowData<Pixel>(m_buffer[k], y);
                             }
-                            std::nth_element(vals.begin(), vals.begin() + vals.size() / 2, vals.end());
-                            dst[x] = vals[vals.size() / 2];
+                            Pixel* dst = outputData + static_cast<size_t>(y) * w;
+                            for (int x = 0; x < w; ++x)
+                            {
+                                for (size_t k = 0; k < m_buffer.size(); ++k)
+                                {
+                                    vals[k] = rows[k][x];
+                                }
+                                std::nth_element(vals.begin(), vals.begin() + vals.size() / 2, vals.end());
+                                dst[x] = vals[vals.size() / 2];
+                            }
                         }
-                    }
+                    });
                     break;
                 }
             case BackgroundMethod::Mean:
                 {
-                    for (int y = 0; y < h; ++y)
+                    parallelForRows(workItemCount, h, [&](int firstRow, int lastRow)
                     {
-                        Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
-                        for (int x = 0; x < w; ++x)
+                        std::vector<const Pixel*> rows(m_buffer.size());
+                        for (int y = firstRow; y < lastRow; ++y)
                         {
-                            qint64 sum = 0;
                             for (size_t k = 0; k < m_buffer.size(); ++k)
                             {
-                                sum += static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]);
+                                rows[k] = frameRowData<Pixel>(m_buffer[k], y);
                             }
-                            dst[x] = clampPixelValue<Pixel>(
-                                static_cast<int>(sum / static_cast<qint64>(m_buffer.size())),
-                                maxValue);
+                            Pixel* dst = outputData + static_cast<size_t>(y) * w;
+                            for (int x = 0; x < w; ++x)
+                            {
+                                qint64 sum = 0;
+                                for (size_t k = 0; k < m_buffer.size(); ++k)
+                                {
+                                    sum += static_cast<int>(rows[k][x]);
+                                }
+                                dst[x] = clampPixelValue<Pixel>(
+                                    static_cast<int>(sum / static_cast<qint64>(m_buffer.size())),
+                                    maxValue);
+                            }
                         }
-                    }
+                    });
                     break;
                 }
             case BackgroundMethod::Maximum:
                 {
-                    for (int y = 0; y < h; ++y)
+                    parallelForRows(workItemCount, h, [&](int firstRow, int lastRow)
                     {
-                        Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
-                        for (int x = 0; x < w; ++x)
+                        std::vector<const Pixel*> rows(m_buffer.size());
+                        for (int y = firstRow; y < lastRow; ++y)
                         {
-                            int best = 0;
                             for (size_t k = 0; k < m_buffer.size(); ++k)
                             {
-                                best = qMax(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
+                                rows[k] = frameRowData<Pixel>(m_buffer[k], y);
                             }
-                            dst[x] = clampPixelValue<Pixel>(best, maxValue);
+                            Pixel* dst = outputData + static_cast<size_t>(y) * w;
+                            for (int x = 0; x < w; ++x)
+                            {
+                                int best = 0;
+                                for (size_t k = 0; k < m_buffer.size(); ++k)
+                                {
+                                    best = qMax(best, static_cast<int>(rows[k][x]));
+                                }
+                                dst[x] = clampPixelValue<Pixel>(best, maxValue);
+                            }
                         }
-                    }
+                    });
                     break;
                 }
             case BackgroundMethod::Minimum:
                 {
-                    for (int y = 0; y < h; ++y)
+                    parallelForRows(workItemCount, h, [&](int firstRow, int lastRow)
                     {
-                        Pixel* dst = mutableRowData<Pixel>(outBytes, w, y);
-                        for (int x = 0; x < w; ++x)
+                        std::vector<const Pixel*> rows(m_buffer.size());
+                        for (int y = firstRow; y < lastRow; ++y)
                         {
-                            int best = maxValue;
                             for (size_t k = 0; k < m_buffer.size(); ++k)
                             {
-                                best = qMin(best, static_cast<int>(frameRowData<Pixel>(m_buffer[k], y)[x]));
+                                rows[k] = frameRowData<Pixel>(m_buffer[k], y);
                             }
-                            dst[x] = clampPixelValue<Pixel>(best, maxValue);
+                            Pixel* dst = outputData + static_cast<size_t>(y) * w;
+                            for (int x = 0; x < w; ++x)
+                            {
+                                int best = maxValue;
+                                for (size_t k = 0; k < m_buffer.size(); ++k)
+                                {
+                                    best = qMin(best, static_cast<int>(rows[k][x]));
+                                }
+                                dst[x] = clampPixelValue<Pixel>(best, maxValue);
+                            }
                         }
-                    }
+                    });
                     break;
                 }
             }
@@ -118,6 +203,89 @@ namespace scopeone::core::internal
         });
 
         m_background = makeFrameLike(m_buffer.front(), w, h, std::move(bgBytes));
+    }
+
+    // Updates a running mean background and applies it in one image pass
+    ProcessingResult BackgroundCalibrationModule::processRunningMean(
+        const ImageFrame& sourceFrame,
+        const ImageFrame& workingFrame)
+    {
+        const qint64 pixelCount = static_cast<qint64>(workingFrame.width) * workingFrame.height;
+        if (pixelCount <= 0)
+        {
+            return {{}, QStringLiteral("Invalid running background dimensions")};
+        }
+        if (m_runningSum.size() != static_cast<size_t>(pixelCount))
+        {
+            m_buffer.clear();
+            m_runningSum.assign(static_cast<size_t>(pixelCount), 0);
+            m_background = ImageFrame{};
+        }
+
+        if (static_cast<int>(m_buffer.size()) < m_calibrationFrames)
+        {
+            addFrameToRunningSum(workingFrame, m_runningSum);
+            m_buffer.push_back(workingFrame);
+            return {sourceFrame, {}};
+        }
+
+        const ImageFrame& oldestFrame = m_buffer.front();
+        const int maxValue = workingFrame.maxValue();
+        QByteArray outputBytes;
+        dispatchFrameType(workingFrame, [&]<typename Pixel>()
+        {
+            outputBytes = allocatePixelBytes<Pixel>(workingFrame.width, workingFrame.height);
+            if (outputBytes.isEmpty())
+            {
+                return;
+            }
+
+            const char* sourceData = workingFrame.bytes.constData();
+            const char* oldestData = oldestFrame.bytes.constData();
+            Pixel* outputData = reinterpret_cast<Pixel*>(outputBytes.data());
+            qint64* sumData = m_runningSum.data();
+            parallelForImageRows(workingFrame.width,
+                                 workingFrame.height,
+                                 [&](int firstRow, int lastRow)
+            {
+                for (int y = firstRow; y < lastRow; ++y)
+                {
+                    const Pixel* sourceRow = reinterpret_cast<const Pixel*>(
+                        sourceData + static_cast<qint64>(y) * workingFrame.stride);
+                    const Pixel* oldestRow = reinterpret_cast<const Pixel*>(
+                        oldestData + static_cast<qint64>(y) * oldestFrame.stride);
+                    const size_t rowOffset = static_cast<size_t>(y) * workingFrame.width;
+                    Pixel* outputRow = outputData + rowOffset;
+                    qint64* sumRow = sumData + rowOffset;
+                    for (int x = 0; x < workingFrame.width; ++x)
+                    {
+                        const int source = static_cast<int>(sourceRow[x]);
+                        const int background = static_cast<int>(
+                            sumRow[x] / static_cast<qint64>(m_calibrationFrames));
+                        outputRow[x] = clampPixelValue<Pixel>(
+                            applyBackgroundOperation(source,
+                                                     background,
+                                                     maxValue,
+                                                     m_operation),
+                            maxValue);
+                        sumRow[x] += source - static_cast<int>(oldestRow[x]);
+                    }
+                }
+            });
+        });
+
+        if (outputBytes.isEmpty())
+        {
+            return {{}, QStringLiteral("Failed to allocate running background output")};
+        }
+
+        ImageFrame output = makeFrameLike(workingFrame,
+                                          workingFrame.width,
+                                          workingFrame.height,
+                                          std::move(outputBytes));
+        m_buffer.pop_front();
+        m_buffer.push_back(workingFrame);
+        return {std::move(output), {}};
     }
 
     // Applies background calibration to one mono frame
@@ -140,6 +308,11 @@ namespace scopeone::core::internal
                 || (m_background.isValid() && !m_background.isCompatibleWith(workingFrame)))
             {
                 resetCalibration();
+            }
+
+            if (m_mode == BackgroundMode::Running && m_method == BackgroundMethod::Mean)
+            {
+                return processRunningMean(frame, workingFrame);
             }
 
             if (m_mode == BackgroundMode::Running)
@@ -185,34 +358,31 @@ namespace scopeone::core::internal
                     {
                         return bytes;
                     }
-                    for (int y = 0; y < workingFrame.height; ++y)
+                    const char* sourceData = workingFrame.bytes.constData();
+                    const char* backgroundData = m_background.bytes.constData();
+                    Pixel* outputData = reinterpret_cast<Pixel*>(bytes.data());
+                    parallelForImageRows(workingFrame.width,
+                                         workingFrame.height,
+                                         [&](int firstRow, int lastRow)
                     {
-                        const Pixel* s = frameRowData<Pixel>(workingFrame, y);
-                        const Pixel* b = frameRowData<Pixel>(m_background, y);
-                        Pixel* d = mutableRowData<Pixel>(bytes, workingFrame.width, y);
-                        for (int x = 0; x < workingFrame.width; ++x)
+                        for (int y = firstRow; y < lastRow; ++y)
                         {
-                            int result = 0;
-                            switch (m_operation)
+                            const Pixel* s = reinterpret_cast<const Pixel*>(
+                                sourceData + static_cast<qint64>(y) * workingFrame.stride);
+                            const Pixel* b = reinterpret_cast<const Pixel*>(
+                                backgroundData + static_cast<qint64>(y) * m_background.stride);
+                            Pixel* d = outputData + static_cast<size_t>(y) * workingFrame.width;
+                            for (int x = 0; x < workingFrame.width; ++x)
                             {
-                            case BackgroundOperation::Subtract:
-                                result = int(s[x]) - int(b[x]);
-                                break;
-                            case BackgroundOperation::Add:
-                                result = int(s[x]) + int(b[x]);
-                                break;
-                            case BackgroundOperation::Multiply:
-                                result = static_cast<int>((static_cast<qint64>(s[x]) * b[x]) / maxValue);
-                                break;
-                            case BackgroundOperation::Divide:
-                                result = (b[x] > 0)
-                                             ? static_cast<int>((static_cast<qint64>(s[x]) * maxValue) / b[x])
-                                             : maxValue;
-                                break;
+                                d[x] = clampPixelValue<Pixel>(
+                                    applyBackgroundOperation(static_cast<int>(s[x]),
+                                                             static_cast<int>(b[x]),
+                                                             maxValue,
+                                                             m_operation),
+                                    maxValue);
                             }
-                            d[x] = clampPixelValue<Pixel>(result, maxValue);
                         }
-                    }
+                    });
                     return bytes;
                 });
 

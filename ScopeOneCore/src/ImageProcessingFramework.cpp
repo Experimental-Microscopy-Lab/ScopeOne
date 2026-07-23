@@ -11,6 +11,8 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        constexpr int kProcessedOutputIntervalMs = 16;
+
         // Normalizes frame identity before it enters a runtime pipeline
         ImageFrame normalizedFrameSource(const ImageFrame& frame)
         {
@@ -169,6 +171,10 @@ namespace scopeone::core::internal
     {
         const int idealThreadCount = QThread::idealThreadCount();
         m_threadPool.setMaxThreadCount(qMax(2, idealThreadCount - 1));
+        m_outputTimer.setInterval(kProcessedOutputIntervalMs);
+        m_outputTimer.setTimerType(Qt::PreciseTimer);
+        connect(&m_outputTimer, &QTimer::timeout,
+                this, &ImageProcessingManager::flushProcessedOutputs);
     }
 
     // Waits for owned processing workers to finish
@@ -186,7 +192,29 @@ namespace scopeone::core::internal
     // Enables or disables real time processing for incoming frames
     void ImageProcessingManager::enableRealTimeProcessing(bool enabled)
     {
+        QMutexLocker locker(&m_frameMutex);
+        if (m_realTimeEnabled.load() == enabled)
+        {
+            return;
+        }
+
         m_realTimeEnabled = enabled;
+        if (enabled)
+        {
+            m_outputTimer.start();
+        }
+        else
+        {
+            m_outputTimer.stop();
+        }
+        ++m_liveGeneration;
+        for (CameraSlot& slot : m_cameraSlots)
+        {
+            slot.latestFrame = {};
+            slot.hasFrame = false;
+            slot.latestProcessedFrame = {};
+            slot.completedFrameCount = 0;
+        }
     }
 
     // Sets the processing bit depth and rebuilds runtime pipelines
@@ -202,16 +230,52 @@ namespace scopeone::core::internal
         QMutexLocker locker(&m_frameMutex);
         m_livePipelines.clear();
         m_offlinePipelines.clear();
+        ++m_liveGeneration;
+        for (CameraSlot& slot : m_cameraSlots)
+        {
+            slot.latestFrame = {};
+            slot.hasFrame = false;
+            slot.latestProcessedFrame = {};
+            slot.completedFrameCount = 0;
+        }
     }
 
-    // Queues one frame for asynchronous processing
+    // Stores the newest frame and starts a worker when needed
     void ImageProcessingManager::processFrameAsync(const ImageFrame& frame)
     {
         if (!m_realTimeEnabled || !frame.isValid())
         {
             return;
         }
-        submitFrame(frame);
+
+        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
+        const QString cameraKey = getCameraKey(normalizedFrame);
+        bool shouldStartWorker = false;
+
+        {
+            QMutexLocker locker(&m_frameMutex);
+            if (!m_realTimeEnabled.load())
+            {
+                return;
+            }
+            CameraSlot& slot = m_cameraSlots[cameraKey];
+            slot.latestFrame = normalizedFrame;
+            slot.latestFrameGeneration = m_liveGeneration;
+            slot.hasFrame = true;
+            if (!slot.processing)
+            {
+                slot.processing = true;
+                shouldStartWorker = true;
+            }
+        }
+
+        if (shouldStartWorker)
+        {
+            m_threadPool.start([this, cameraKey]()
+            {
+                processCameraQueue(cameraKey);
+            });
+        }
     }
 
     // Runs one frame through the runtime pipeline for its source
@@ -278,39 +342,6 @@ namespace scopeone::core::internal
         return key.isEmpty() ? QStringLiteral("__default__") : key;
     }
 
-    // Stores the newest frame and starts a worker when needed
-    void ImageProcessingManager::submitFrame(const ImageFrame& frame)
-    {
-        if (!m_realTimeEnabled || !frame.isValid())
-        {
-            return;
-        }
-
-        const ImageFrame normalizedFrame = normalizedFrameSource(frame);
-        const QString cameraKey = getCameraKey(normalizedFrame);
-        bool shouldStartWorker = false;
-
-        {
-            QMutexLocker locker(&m_frameMutex);
-            CameraSlot& slot = m_cameraSlots[cameraKey];
-            slot.latestFrame = normalizedFrame;
-            slot.hasFrame = true;
-            if (!slot.processing)
-            {
-                slot.processing = true;
-                shouldStartWorker = true;
-            }
-        }
-
-        if (shouldStartWorker)
-        {
-            m_threadPool.start([this, cameraKey]()
-            {
-                processCameraQueue(cameraKey);
-            });
-        }
-    }
-
     // Returns the live runtime pipeline owned by one camera preview stream
     std::shared_ptr<ProcessingPipelineRuntime> ImageProcessingManager::livePipelineForCamera(
         const QString& cameraKey)
@@ -348,6 +379,7 @@ namespace scopeone::core::internal
         while (true)
         {
             ImageFrame frame;
+            quint64 frameGeneration = 0;
 
             {
                 QMutexLocker locker(&m_frameMutex);
@@ -361,6 +393,7 @@ namespace scopeone::core::internal
                     return;
                 }
                 frame = it->latestFrame;
+                frameGeneration = it->latestFrameGeneration;
                 it->hasFrame = false;
             }
 
@@ -371,7 +404,15 @@ namespace scopeone::core::internal
                 ProcessingResult result = pipeline->process(frame, m_processingBitDepth.load());
                 if (result.succeeded())
                 {
-                    emit imageProcessed(result.frame);
+                    QMutexLocker locker(&m_frameMutex);
+                    auto it = m_cameraSlots.find(cameraKey);
+                    if (it != m_cameraSlots.end()
+                        && m_realTimeEnabled.load()
+                        && frameGeneration == m_liveGeneration)
+                    {
+                        it->latestProcessedFrame = std::move(result.frame);
+                        ++it->completedFrameCount;
+                    }
                 }
                 else
                 {
@@ -384,6 +425,31 @@ namespace scopeone::core::internal
             {
                 emit processingError(QString("Processing failed: %1").arg(e.what()));
             }
+        }
+    }
+
+    // Publishes the newest completed result per camera at a bounded rate
+    void ImageProcessingManager::flushProcessedOutputs()
+    {
+        std::vector<std::pair<ImageFrame, quint64>> outputs;
+
+        {
+            QMutexLocker locker(&m_frameMutex);
+            outputs.reserve(static_cast<size_t>(m_cameraSlots.size()));
+            for (CameraSlot& slot : m_cameraSlots)
+            {
+                if (slot.completedFrameCount == 0 || !slot.latestProcessedFrame.isValid())
+                {
+                    continue;
+                }
+                outputs.emplace_back(std::move(slot.latestProcessedFrame),
+                                     std::exchange(slot.completedFrameCount, quint64{0}));
+            }
+        }
+
+        for (const auto& [frame, completedFrameCount] : outputs)
+        {
+            emit imageProcessed(frame, completedFrameCount);
         }
     }
 } // namespace scopeone::core::internal

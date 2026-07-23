@@ -7,7 +7,7 @@
 #include "internal/GaussianBlurModule.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/MMCoreManager.h"
-#include "internal/MultiProcessCameraManager.h"
+#include "internal/CameraManager.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
 #include "internal/SpatiotemporalBinningModule.h"
@@ -26,6 +26,7 @@
 #include <QList>
 #include <QStringList>
 #include <QSysInfo>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
 #include <QtConcurrent>
@@ -46,17 +47,10 @@ namespace
     constexpr double kHistogramAutoStretchIgnoredQuantile = 0.001;
     // Histogram refresh is throttled to keep preview responsive
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
-
-    // Map a sample value into the shared histogram bin space
-    int histogramBinForValue(int value, int maxValue)
-    {
-        if (maxValue <= 0)
-        {
-            return 0;
-        }
-        const qint64 scaled = static_cast<qint64>(value) * (kHistogramBinCount - 1);
-        return qBound(0, static_cast<int>(scaled / maxValue), kHistogramBinCount - 1);
-    }
+    // Live line profiles update fast enough for interaction without following camera rate
+    constexpr qint64 kLineProfileRefreshIntervalMs = 50;
+    // Display delivery is bounded independently from acquisition and processing throughput
+    constexpr qint64 kPreviewRefreshIntervalMs = 16;
 
     // Convert a histogram bin to its lower source value
     int histogramBinLowerValue(int binIndex, int maxValue)
@@ -463,26 +457,30 @@ namespace
         stats.maxValue = (1 << stats.bitDepth) - 1;
         stats.histogram.assign(kHistogramBinCount, 0);
 
-        stats.minVal = static_cast<double>(stats.maxValue);
-        stats.maxVal = 0.0;
-
         const uchar* bytes = reinterpret_cast<const uchar*>(frame.bytes.constData());
-        double sum = 0.0;
-        double sumSq = 0.0;
+        quint64 sum = 0;
+        quint64 sumSq = 0;
+        int minimum = (std::numeric_limits<int>::max)();
+        int maximum = 0;
 
         if (mono16)
         {
+            const int histogramShift = stats.bitDepth - 8;
             for (int y = 0; y < frame.height; ++y)
             {
                 const quint16* row = reinterpret_cast<const quint16*>(bytes + static_cast<qint64>(y) * frame.stride);
                 for (int x = 0; x < frame.width; ++x)
                 {
                     const int value = static_cast<int>(row[x]);
-                    sum += value;
-                    sumSq += static_cast<double>(value) * value;
-                    stats.minVal = (std::min)(stats.minVal, static_cast<double>(value));
-                    stats.maxVal = (std::max)(stats.maxVal, static_cast<double>(value));
-                    stats.histogram[static_cast<size_t>(histogramBinForValue(value, stats.maxValue))] += 1;
+                    const int bin = histogramShift >= 0
+                                        ? value >> histogramShift
+                                        : value << -histogramShift;
+                    sum += static_cast<quint64>(value);
+                    sumSq += static_cast<quint64>(value) * static_cast<quint64>(value);
+                    minimum = (std::min)(minimum, value);
+                    maximum = (std::max)(maximum, value);
+                    stats.histogram[static_cast<size_t>(
+                        qBound(0, bin, kHistogramBinCount - 1))] += 1;
                 }
             }
         }
@@ -490,24 +488,26 @@ namespace
         {
             stats.bitDepth = 8;
             stats.maxValue = 255;
-            stats.histogram.assign(kHistogramBinCount, 0);
             for (int y = 0; y < frame.height; ++y)
             {
                 const uchar* row = bytes + static_cast<qint64>(y) * frame.stride;
                 for (int x = 0; x < frame.width; ++x)
                 {
                     const int value = static_cast<int>(row[x]);
-                    sum += value;
-                    sumSq += static_cast<double>(value) * value;
-                    stats.minVal = (std::min)(stats.minVal, static_cast<double>(value));
-                    stats.maxVal = (std::max)(stats.maxVal, static_cast<double>(value));
-                    stats.histogram[static_cast<size_t>(histogramBinForValue(value, stats.maxValue))] += 1;
+                    sum += static_cast<quint64>(value);
+                    sumSq += static_cast<quint64>(value) * static_cast<quint64>(value);
+                    minimum = (std::min)(minimum, value);
+                    maximum = (std::max)(maximum, value);
+                    stats.histogram[static_cast<size_t>(value)] += 1;
                 }
             }
         }
 
-        stats.mean = sum / (std::max)(1, totalPixels);
-        const double variance = (sumSq / (std::max)(1, totalPixels)) - (stats.mean * stats.mean);
+        stats.minVal = static_cast<double>(minimum);
+        stats.maxVal = static_cast<double>(maximum);
+        stats.mean = static_cast<double>(sum) / (std::max)(1, totalPixels);
+        const double variance = static_cast<double>(sumSq) / (std::max)(1, totalPixels)
+                                - (stats.mean * stats.mean);
         stats.stdDev = std::sqrt((std::max)(0.0, variance));
         computeAutoLevels(stats);
         return true;
@@ -619,7 +619,7 @@ namespace scopeone::core
     using scopeone::core::internal::GaussianBlurModule;
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::MMCoreManager;
-    using scopeone::core::internal::MultiProcessCameraManager;
+    using scopeone::core::internal::CameraManager;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipelineDefinition;
     using scopeone::core::internal::RecordingManager;
@@ -1169,7 +1169,7 @@ namespace scopeone::core
     struct ScopeOneCore::Managers
     {
         MMCoreManager* mmcoreManager{nullptr};
-        MultiProcessCameraManager* mpcm{nullptr};
+        CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         StageMosaicManager* stageMosaicManager{nullptr};
@@ -1281,17 +1281,24 @@ namespace scopeone::core
         qRegisterMetaType<scopeone::core::ScopeOneCore::HistogramStats>(
             "scopeone::core::ScopeOneCore::HistogramStats");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
+        m_histogramThreadPool = std::make_unique<QThreadPool>();
+        m_histogramThreadPool->setMaxThreadCount(1);
+        m_previewFlushTimer = new QTimer(this);
+        m_previewFlushTimer->setSingleShot(true);
+        m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_previewFlushTimer, &QTimer::timeout,
+                this, &ScopeOneCore::flushPreviewFrames);
         m_imageSceneModel = new ImageSceneModel(this);
         connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
                 this, &ScopeOneCore::syncLineProfileFromScene);
         m_managers->mmcoreManager = new MMCoreManager(this);
-        m_managers->mpcm = new MultiProcessCameraManager(this);
+        m_managers->cameraManager = new CameraManager(this);
         m_managers->recordingManager = new RecordingManager(this);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingWriterStatus.reset(
             m_managers->recordingManager->recordedMaxBytes());
-        m_managers->recordingManager->setMultiProcessCameraManager(m_managers->mpcm);
+        m_managers->recordingManager->setCameraManager(m_managers->cameraManager);
         m_managers->recordingManager->setMMCore(m_managers->mmcoreManager->getCore());
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)
@@ -1300,16 +1307,19 @@ namespace scopeone::core
                 return frame.isValid();
             });
 
-        connect(m_managers->mpcm, &MultiProcessCameraManager::newRawFrameReady,
+        connect(m_managers->cameraManager, &CameraManager::newRawFrameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
-        connect(m_managers->mpcm, &MultiProcessCameraManager::previewStateChanged,
+        connect(m_managers->cameraManager, &CameraManager::rawFramesAcquired,
+                this, &ScopeOneCore::rawFramesAcquired);
+        connect(m_managers->cameraManager, &CameraManager::recordingFramesReady,
+                m_managers->recordingManager, &RecordingManager::onRawFramesReady);
+        connect(m_managers->cameraManager, &CameraManager::frameDeliveryFailed,
+                m_managers->recordingManager, &RecordingManager::onFrameDeliveryFailed);
+        connect(m_managers->cameraManager, &CameraManager::previewStateChanged,
                 this, &ScopeOneCore::previewStateChanged);
-        connect(m_managers->mpcm, &MultiProcessCameraManager::agentControlServerListening,
+        connect(m_managers->cameraManager, &CameraManager::agentControlServerListening,
                 this, &ScopeOneCore::agentControlServerListening);
 
-        connect(this, &ScopeOneCore::newRawFrameReady,
-                m_managers->recordingManager, &RecordingManager::onNewRawFrameReady,
-                Qt::QueuedConnection);
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame, Qt::QueuedConnection);
 
@@ -1392,22 +1402,19 @@ namespace scopeone::core
                 this, &ScopeOneCore::stageMosaicFinished);
 
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::imageProcessed,
-                this, [this](const ImageFrame& frame)
+                this, [this](const ImageFrame& frame, quint64 completedFrameCount)
                 {
-                    if (!frame.isValid())
+                    if (!frame.isValid() || completedFrameCount == 0)
                     {
                         return;
                     }
                     const QString layerKey = processedLayerKey(frame.cameraId);
-                    ensureSceneLayer(layerKey,
-                                     frame.cameraId,
-                                     QStringLiteral("%1 Processed").arg(frame.cameraId),
-                                     DocumentLayerKind::Processed);
                     m_imageSceneModel->updateLayerFrame(layerKey, frame);
                     m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
+                    emit processedFramesCompleted(frame.cameraId, completedFrameCount);
                     emit processedFrameReady(frame);
                     queuePreviewProcessedFrame(frame);
-                    scheduleHistogramStats(frame.cameraId, true, frame);
+                    scheduleHistogramStats(layerKey, frame);
                     updateLineProfile(frame.cameraId, true, frame);
                 });
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
@@ -1418,6 +1425,7 @@ namespace scopeone::core
     ScopeOneCore::~ScopeOneCore()
     {
         unloadConfiguration();
+        m_histogramThreadPool->waitForDone();
     }
 
     // Expose the native MMCore handle for low level callers
@@ -1426,8 +1434,8 @@ namespace scopeone::core
         return m_managers->mmcoreManager->getCore();
     }
 
-    // Check whether a device is owned by the agent camera path
-    bool ScopeOneCore::isAgentCamera(const QString& deviceLabel) const
+    // Check whether a device is owned by the active camera backend
+    bool ScopeOneCore::isConfiguredCamera(const QString& deviceLabel) const
     {
         return m_cameraIds.contains(deviceLabel);
     }
@@ -1436,7 +1444,7 @@ namespace scopeone::core
     bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
     {
         const QString device = deviceLabel.trimmed();
-        if (device.isEmpty() || isAgentCamera(device))
+        if (device.isEmpty() || isConfiguredCamera(device))
         {
             return false;
         }
@@ -1458,7 +1466,7 @@ namespace scopeone::core
         QStringList running;
         for (const QString& cameraId : m_cameraIds)
         {
-            if (m_managers->mpcm->isPreviewRunning(cameraId))
+            if (m_managers->cameraManager->isPreviewRunning(cameraId))
             {
                 running.append(cameraId);
             }
@@ -1473,7 +1481,7 @@ namespace scopeone::core
     {
         MMCoreManager::LoadConfigResult mmResult;
         if (!m_managers->mmcoreManager->loadConfigurationAndStartCameras(
-            configPath, m_managers->mpcm, &mmResult, errorMessage))
+            configPath, m_managers->cameraManager, &mmResult, errorMessage))
         {
             return false;
         }
@@ -1535,8 +1543,8 @@ namespace scopeone::core
     {
         m_managers->stageMosaicManager->cancel();
         const QStringList cameraIds = m_cameraIds;
-        m_managers->mpcm->stopPreview();
-        m_managers->mpcm->stopAgents();
+        m_managers->cameraManager->stopPreview();
+        m_managers->cameraManager->shutdown();
 
         for (const QString& cameraId : cameraIds)
         {
@@ -1557,10 +1565,11 @@ namespace scopeone::core
         m_loadedConfigPath.clear();
         m_loadedConfigSha256.clear();
         m_frameGraph.clear();
-        m_previewRawFlushQueued = false;
-        m_previewProcessedFlushQueued = false;
+        m_previewFlushTimer->stop();
+        m_previewPublishTimer.invalidate();
         m_histogramJobStates.clear();
         m_latestHistogramStats.clear();
+        m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
         emit hardwareConfigurationChanged();
     }
@@ -1576,9 +1585,9 @@ namespace scopeone::core
         }
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            return m_managers->mpcm->startPreview();
+            return m_managers->cameraManager->startPreview();
         }
-        return m_managers->mpcm->startPreviewFor(target);
+        return m_managers->cameraManager->startPreviewFor(target);
     }
 
     // Stop preview for one camera or the full camera set
@@ -1591,9 +1600,9 @@ namespace scopeone::core
         }
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            return m_managers->mpcm->stopPreview();
+            return m_managers->cameraManager->stopPreview();
         }
-        return m_managers->mpcm->stopPreviewFor(target);
+        return m_managers->cameraManager->stopPreviewFor(target);
     }
 
     // Submit exposure changes through the active camera manager
@@ -1604,7 +1613,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->mpcm->setExposure(target, exposureMs);
+        const bool ok = m_managers->cameraManager->setExposure(target, exposureMs);
         if (ok)
         {
             emit deviceStateChanged();
@@ -1620,7 +1629,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->mpcm->setROI(target, x, y, width, height);
+        const bool ok = m_managers->cameraManager->setROI(target, x, y, width, height);
         if (ok)
         {
             clearLiveFrames(target);
@@ -1681,7 +1690,7 @@ namespace scopeone::core
         bool changed = false;
         for (const QString& cameraId : targets)
         {
-            if (!m_managers->mpcm->clearROI(cameraId))
+            if (!m_managers->cameraManager->clearROI(cameraId))
             {
                 ok = false;
                 continue;
@@ -1704,7 +1713,7 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->mpcm->getROI(target, x, y, width, height);
+        return m_managers->cameraManager->getROI(target, x, y, width, height);
     }
 
     // Track the active line profile request for future frames
@@ -1726,6 +1735,7 @@ namespace scopeone::core
         m_activeLineProfile.processed = processed;
         m_activeLineProfile.staticSource = false;
         m_activeLineProfile.active = true;
+        m_lineProfileUpdateTimer.invalidate();
 
         if (processed)
         {
@@ -1778,6 +1788,7 @@ namespace scopeone::core
     {
         const bool wasActive = m_activeLineProfile.active;
         m_activeLineProfile = ActiveLineProfile{};
+        m_lineProfileUpdateTimer.invalidate();
         m_imageSceneModel->clearRole(DocumentMarkupRole::CrossSection);
         if (wasActive)
         {
@@ -1828,15 +1839,11 @@ namespace scopeone::core
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
         const QString layerKey = rawLayerKey(cameraId);
-        ensureSceneLayer(layerKey,
-                         cameraId,
-                         QStringLiteral("%1 Raw").arg(cameraId),
-                         DocumentLayerKind::Raw);
         m_imageSceneModel->updateLayerFrame(layerKey, normalizedFrame);
         m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
         queuePreviewRawFrame(normalizedFrame);
-        scheduleHistogramStats(cameraId, false, normalizedFrame);
+        scheduleHistogramStats(layerKey, normalizedFrame);
         updateLineProfile(cameraId, false, normalizedFrame);
 
         if (isRealTimeProcessingEnabled())
@@ -1849,47 +1856,46 @@ namespace scopeone::core
     void ScopeOneCore::queuePreviewRawFrame(const ImageFrame& frame)
     {
         m_pendingPreviewRawFrames.insert(frame.cameraId, frame);
-        if (m_previewRawFlushQueued)
-        {
-            return;
-        }
-
-        m_previewRawFlushQueued = true;
-        QTimer::singleShot(0, this, [this]() { flushPreviewRawFrames(); });
+        schedulePreviewFlush();
     }
 
     // Queue the newest processed frame for the display path
     void ScopeOneCore::queuePreviewProcessedFrame(const ImageFrame& frame)
     {
         m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
-        if (m_previewProcessedFlushQueued)
+        schedulePreviewFlush();
+    }
+
+    // Schedule one latest frame display update without following camera rate
+    void ScopeOneCore::schedulePreviewFlush()
+    {
+        if (m_previewFlushTimer->isActive())
         {
             return;
         }
 
-        m_previewProcessedFlushQueued = true;
-        QTimer::singleShot(0, this, [this]() { flushPreviewProcessedFrames(); });
+        qint64 delayMs = 0;
+        if (m_previewPublishTimer.isValid())
+        {
+            delayMs = qMax(qint64{0},
+                           kPreviewRefreshIntervalMs - m_previewPublishTimer.elapsed());
+        }
+        m_previewFlushTimer->start(static_cast<int>(delayMs));
     }
 
-    // Flush latest only raw frames to preview consumers
-    void ScopeOneCore::flushPreviewRawFrames()
+    // Flush the newest raw and processed frames in one display update
+    void ScopeOneCore::flushPreviewFrames()
     {
-        m_previewRawFlushQueued = false;
-        QHash<QString, ImageFrame> frames;
-        frames.swap(m_pendingPreviewRawFrames);
-        for (auto it = frames.constBegin(); it != frames.constEnd(); ++it)
+        m_previewPublishTimer.restart();
+        QHash<QString, ImageFrame> rawFrames;
+        QHash<QString, ImageFrame> processedFrames;
+        rawFrames.swap(m_pendingPreviewRawFrames);
+        processedFrames.swap(m_pendingPreviewProcessedFrames);
+        for (auto it = rawFrames.constBegin(); it != rawFrames.constEnd(); ++it)
         {
             emit previewRawFrameReady(it.value());
         }
-    }
-
-    // Flush latest only processed frames to preview consumers
-    void ScopeOneCore::flushPreviewProcessedFrames()
-    {
-        m_previewProcessedFlushQueued = false;
-        QHash<QString, ImageFrame> frames;
-        frames.swap(m_pendingPreviewProcessedFrames);
-        for (auto it = frames.constBegin(); it != frames.constEnd(); ++it)
+        for (auto it = processedFrames.constBegin(); it != processedFrames.constEnd(); ++it)
         {
             emit previewProcessedFrameReady(it.value());
         }
@@ -2080,17 +2086,8 @@ namespace scopeone::core
             displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed());
         m_imageSceneModel->updateLayerFrame(layerKey, storedFrame);
         m_imageSceneModel->setLayerVisible(layerKey, true);
-        HistogramStats stats;
-        if (computeHistogramStats(storedFrame, stats))
-        {
-            m_latestHistogramStats.insert(layerKey, stats);
-            if (m_imageSceneModel->layerAutoStretchEnabled(layerKey))
-            {
-                m_imageSceneModel->setLayerDisplayLevels(
-                    layerKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
-            }
-            emit layerHistogramReady(layerKey, stats);
-        }
+        m_latestHistogramStats.remove(layerKey);
+        scheduleHistogramStats(layerKey, storedFrame);
         if (!updateStaticLineProfile(storedFrame.cameraId, storedFrame))
         {
             clearLineProfile();
@@ -2291,37 +2288,88 @@ namespace scopeone::core
         return computeHistogramStats(graphFrame(key), stats);
     }
 
+    // Select the layer whose live histogram is consumed by the frontend
+    void ScopeOneCore::setActiveHistogramLayer(const QString& layerKey)
+    {
+        const QString key = layerKey.trimmed();
+        if (m_activeHistogramLayerKey == key)
+        {
+            return;
+        }
+
+        const QString previousKey = m_activeHistogramLayerKey;
+        m_activeHistogramLayerKey = key;
+        if (!previousKey.isEmpty()
+            && !m_imageSceneModel->layerAutoStretchEnabled(previousKey))
+        {
+            m_latestHistogramStats.remove(previousKey);
+            auto it = m_histogramJobStates.find(previousKey);
+            if (it != m_histogramJobStates.end())
+            {
+                it->queuedFrame = ImageFrame{};
+            }
+        }
+        if (!key.isEmpty() && !m_imageSceneModel->layerAutoStretchEnabled(key))
+        {
+            m_latestHistogramStats.remove(key);
+        }
+
+        const ImageFrame frame = graphFrame(key);
+        if (frame.isValid())
+        {
+            scheduleHistogramStats(key, frame);
+        }
+    }
+
     bool ScopeOneCore::autoLayerLevels(const QString& layerKey)
     {
+        const QString key = layerKey.trimmed();
         HistogramStats stats;
-        if (!getLayerHistogram(layerKey, stats))
+        if (!computeHistogramStats(graphFrame(key), stats))
         {
             return false;
         }
+        m_latestHistogramStats.insert(key, stats);
         return m_imageSceneModel->setLayerDisplayLevels(
-            layerKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
+            key, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
     }
 
     bool ScopeOneCore::fullLayerLevels(const QString& layerKey)
     {
-        HistogramStats stats;
-        if (!getLayerHistogram(layerKey, stats))
+        const QString key = layerKey.trimmed();
+        const ImageFrame frame = graphFrame(key);
+        if (!frame.isValid())
         {
             return false;
         }
-        m_imageSceneModel->setLayerAutoStretchEnabled(layerKey, false);
-        return m_imageSceneModel->setLayerDisplayLevels(layerKey, 0, stats.maxValue, stats.maxValue);
+        const int maxValue = frame.maxValue();
+        m_imageSceneModel->setLayerAutoStretchEnabled(key, false);
+        return m_imageSceneModel->setLayerDisplayLevels(key, 0, maxValue, maxValue);
     }
 
     bool ScopeOneCore::setLayerAutoStretchEnabled(const QString& layerKey, bool enabled)
     {
-        if (!m_imageSceneModel->setLayerAutoStretchEnabled(layerKey, enabled))
+        const QString key = layerKey.trimmed();
+        if (!m_imageSceneModel->setLayerAutoStretchEnabled(key, enabled))
         {
             return false;
         }
         if (enabled)
         {
-            autoLayerLevels(layerKey);
+            autoLayerLevels(key);
+            const ImageFrame frame = graphFrame(key);
+            if (frame.isValid())
+            {
+                scheduleHistogramStats(key, frame);
+            }
+        }
+        else if (m_activeHistogramLayerKey != key)
+        {
+            auto it = m_histogramJobStates.find(key);
+            if (it != m_histogramJobStates.end())
+            {
+                it->queuedFrame = ImageFrame{};
+            }
         }
         return true;
     }
@@ -2386,73 +2434,111 @@ namespace scopeone::core
         return m_managers->stageMosaicManager->status();
     }
 
-    // Schedule throttled histogram work for a layer
-    void ScopeOneCore::scheduleHistogramStats(const QString& cameraId,
-                                              bool processed,
-                                              const ImageFrame& frame)
+    // Check whether one layer currently needs continuously refreshed statistics
+    bool ScopeOneCore::histogramUpdatesEnabled(const QString& layerKey) const
     {
-        // Throttle histogram work per layer
-        const QString trimmedCameraId = cameraId.trimmed();
-        if (trimmedCameraId.isEmpty() || !frame.isValid())
+        const QString key = layerKey.trimmed();
+        return !key.isEmpty()
+            && (key == m_activeHistogramLayerKey
+                || m_imageSceneModel->layerAutoStretchEnabled(key));
+    }
+
+    // Schedule rate limited histogram work for one graph layer
+    void ScopeOneCore::scheduleHistogramStats(const QString& layerKey, const ImageFrame& frame)
+    {
+        const QString key = layerKey.trimmed();
+        if (key.isEmpty() || !frame.isValid())
         {
             return;
         }
+        if (!histogramUpdatesEnabled(key))
+        {
+            m_latestHistogramStats.remove(key);
+            return;
+        }
 
-        const QString cacheKey = histogramLayerKey(trimmedCameraId, processed);
-        HistogramJobState& state = m_histogramJobStates[cacheKey];
+        HistogramJobState& state = m_histogramJobStates[key];
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (state.inFlight)
         {
             state.queuedFrame = frame;
             return;
         }
-        if (state.lastScheduledMs > 0 && (nowMs - state.lastScheduledMs) < kHistogramRefreshIntervalMs)
+
+        const qint64 elapsedMs = nowMs - state.lastScheduledMs;
+        if (state.lastScheduledMs > 0 && elapsedMs < kHistogramRefreshIntervalMs)
         {
+            state.queuedFrame = frame;
+            if (!state.retryScheduled)
+            {
+                state.retryScheduled = true;
+                const int delayMs = static_cast<int>(
+                    (std::max)(qint64{1}, kHistogramRefreshIntervalMs - elapsedMs));
+                QTimer::singleShot(delayMs, this, [this, key]()
+                {
+                    auto it = m_histogramJobStates.find(key);
+                    if (it == m_histogramJobStates.end())
+                    {
+                        return;
+                    }
+                    it->retryScheduled = false;
+                    const ImageFrame queuedFrame = it->queuedFrame;
+                    it->queuedFrame = ImageFrame{};
+                    if (queuedFrame.isValid())
+                    {
+                        scheduleHistogramStats(key, queuedFrame);
+                    }
+                });
+            }
             return;
         }
 
         state.inFlight = true;
+        state.queuedFrame = ImageFrame{};
         state.lastScheduledMs = nowMs;
         const quint64 sequence = ++m_nextHistogramSequence;
         state.activeSequence = sequence;
 
         auto* watcher = new QFutureWatcher<HistogramStats>(this);
         connect(watcher, &QFutureWatcher<HistogramStats>::finished, this,
-                [this, watcher, trimmedCameraId, processed, cacheKey, sequence]()
+                [this, watcher, key, sequence]()
                 {
                     HistogramStats stats = watcher->result();
                     ImageFrame queuedFrame;
 
-                    auto it = m_histogramJobStates.find(cacheKey);
+                    auto it = m_histogramJobStates.find(key);
                     if (it != m_histogramJobStates.end() && it->activeSequence == sequence)
                     {
                         it->inFlight = false;
-                        if (stats.hasData())
+                        if (histogramUpdatesEnabled(key) && stats.hasData())
                         {
-                            m_latestHistogramStats.insert(cacheKey, stats);
-                            if (m_imageSceneModel->layerAutoStretchEnabled(cacheKey))
+                            m_latestHistogramStats.insert(key, stats);
+                            if (m_imageSceneModel->layerAutoStretchEnabled(key))
                             {
                                 m_imageSceneModel->setLayerDisplayLevels(
-                                    cacheKey, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
+                                    key, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
                             }
-                            emit imageHistogramReady(trimmedCameraId, processed, stats);
-                            emit layerHistogramReady(cacheKey, stats);
+                            if (isRawLayerKey(key) || isProcessedLayerKey(key))
+                            {
+                                emit imageHistogramReady(
+                                    sourceIdFromLayerKey(key), isProcessedLayerKey(key), stats);
+                            }
+                            emit layerHistogramReady(key, stats);
                         }
-                        if (it->queuedFrame.isValid())
+                        if (histogramUpdatesEnabled(key) && it->queuedFrame.isValid())
                         {
                             queuedFrame = it->queuedFrame;
-                            it->queuedFrame = ImageFrame{};
-                            it->lastScheduledMs = 0;
                         }
+                        it->queuedFrame = ImageFrame{};
                     }
                     watcher->deleteLater();
 
                     if (queuedFrame.isValid())
                     {
-                        scheduleHistogramStats(trimmedCameraId, processed, queuedFrame);
+                        scheduleHistogramStats(key, queuedFrame);
                     }
                 });
-        watcher->setFuture(QtConcurrent::run([frame]()
+        watcher->setFuture(QtConcurrent::run(m_histogramThreadPool.get(), [frame]()
         {
             HistogramStats stats;
             ScopeOneCore::computeHistogramStats(frame, stats);
@@ -2477,6 +2563,12 @@ namespace scopeone::core
         {
             return;
         }
+        if (m_lineProfileUpdateTimer.isValid()
+            && m_lineProfileUpdateTimer.elapsed() < kLineProfileRefreshIntervalMs)
+        {
+            return;
+        }
+        m_lineProfileUpdateTimer.restart();
 
         QVector<int> values;
         if (!sampleLine(m_activeLineProfile.start, m_activeLineProfile.end, values,
@@ -2792,7 +2884,8 @@ namespace scopeone::core
             }
             resolvedTarget = m_cameraIds.first();
         }
-        if (m_cameraIds.contains(resolvedTarget) && m_managers->mpcm->getExposure(resolvedTarget, exposureMs))
+        if (m_cameraIds.contains(resolvedTarget)
+            && m_managers->cameraManager->getExposure(resolvedTarget, exposureMs))
         {
             return true;
         }
@@ -2876,9 +2969,9 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            return m_managers->mpcm->listProperties(device);
+            return m_managers->cameraManager->listProperties(device);
         }
         auto handle = core();
         try
@@ -2900,9 +2993,9 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            return m_managers->mpcm->getProperty(device, property);
+            return m_managers->cameraManager->getProperty(device, property, fromCache);
         }
         auto handle = core();
         try
@@ -2931,9 +3024,9 @@ namespace scopeone::core
         {
             return QStringLiteral("Unknown");
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            return m_managers->mpcm->getPropertyType(device, property);
+            return m_managers->cameraManager->getPropertyType(device, property);
         }
         auto handle = core();
         try
@@ -2963,9 +3056,9 @@ namespace scopeone::core
         {
             return true;
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            return m_managers->mpcm->isPropertyReadOnly(device, property);
+            return m_managers->cameraManager->isPropertyReadOnly(device, property);
         }
         auto handle = core();
         try
@@ -2978,14 +3071,18 @@ namespace scopeone::core
         }
     }
 
-    // Check whether a native property must be set before initialization
+    // Check whether a property must be set before initialization
     bool ScopeOneCore::isPropertyPreInit(const QString& deviceLabel, const QString& name) const
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty() || isAgentCamera(device))
+        if (device.isEmpty() || property.isEmpty())
         {
             return false;
+        }
+        if (isConfiguredCamera(device))
+        {
+            return m_managers->cameraManager->isPropertyPreInit(device, property);
         }
         auto handle = core();
         try
@@ -3007,9 +3104,9 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            return m_managers->mpcm->getAllowedPropertyValues(device, property);
+            return m_managers->cameraManager->getAllowedPropertyValues(device, property);
         }
         auto handle = core();
         try
@@ -3038,14 +3135,14 @@ namespace scopeone::core
         {
             return false;
         }
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            if (!m_managers->mpcm->hasPropertyLimits(device, property))
+            if (!m_managers->cameraManager->hasPropertyLimits(device, property))
             {
                 return false;
             }
-            lower = m_managers->mpcm->getPropertyLowerLimit(device, property);
-            upper = m_managers->mpcm->getPropertyUpperLimit(device, property);
+            lower = m_managers->cameraManager->getPropertyLowerLimit(device, property);
+            upper = m_managers->cameraManager->getPropertyUpperLimit(device, property);
             return true;
         }
 
@@ -3083,16 +3180,16 @@ namespace scopeone::core
             return false;
         }
 
-        if (isAgentCamera(device))
+        if (isConfiguredCamera(device))
         {
-            QString agentError;
-            if (!m_managers->mpcm->setProperty(device, property, value, &agentError))
+            QString cameraError;
+            if (!m_managers->cameraManager->setProperty(device, property, value, &cameraError))
             {
                 if (errorMessage)
                 {
-                    *errorMessage = agentError.isEmpty()
-                                        ? QStringLiteral("Agent setProperty failed")
-                                        : agentError;
+                    *errorMessage = cameraError.isEmpty()
+                                        ? QStringLiteral("Camera setProperty failed")
+                                        : cameraError;
                 }
                 return false;
             }
@@ -3142,6 +3239,10 @@ namespace scopeone::core
     bool ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
         if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
+        {
+            return false;
+        }
+        if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(enabled))
         {
             return false;
         }

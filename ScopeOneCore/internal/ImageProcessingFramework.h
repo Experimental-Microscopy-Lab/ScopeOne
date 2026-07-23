@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QMutex>
 #include <QThreadPool>
+#include <QTimer>
 #include <QHash>
 #include <functional>
 #include <memory>
@@ -67,15 +68,18 @@ namespace scopeone::core::internal
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame);
 
     signals:
-        void imageProcessed(const ImageFrame& frame);
+        void imageProcessed(const ImageFrame& frame, quint64 completedFrameCount);
         void processingError(const QString& error);
 
     private:
         struct CameraSlot
         {
             ImageFrame latestFrame;
+            quint64 latestFrameGeneration{0};
             bool hasFrame{false};
             bool processing{false};
+            ImageFrame latestProcessedFrame;
+            quint64 completedFrameCount{0};
         };
 
         QString getCameraKey(const ImageFrame& frame) const;
@@ -85,6 +89,7 @@ namespace scopeone::core::internal
             QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>>& pipelines,
             const QString& cameraKey);
         void processCameraQueue(const QString& cameraKey);
+        void flushProcessedOutputs();
         ImageFrame frameFromResult(ProcessingResult result);
 
         ProcessingPipelineDefinition m_definition;
@@ -92,10 +97,11 @@ namespace scopeone::core::internal
         QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>> m_offlinePipelines;
         std::atomic<bool> m_realTimeEnabled;
         std::atomic<int> m_processingBitDepth{16};
-        void submitFrame(const ImageFrame& frame);
         mutable QMutex m_frameMutex;
         QHash<QString, CameraSlot> m_cameraSlots;
+        quint64 m_liveGeneration{1};
 
         QThreadPool m_threadPool;
+        QTimer m_outputTimer;
     };
 }

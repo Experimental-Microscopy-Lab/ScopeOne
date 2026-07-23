@@ -423,6 +423,11 @@ namespace scopeone::ui
                 });
     }
 
+    InspectWidget::~InspectWidget()
+    {
+        m_scopeonecore->setActiveHistogramLayer({});
+    }
+
     // Enable inspect controls when camera state changes
     void InspectWidget::onCameraInitialized(bool initialized)
     {
@@ -439,6 +444,7 @@ namespace scopeone::ui
     void InspectWidget::setCurrentLayer(const QString& layerKey)
     {
         m_currentLayerKey = layerKey.trimmed();
+        m_scopeonecore->setActiveHistogramLayer(m_currentLayerKey);
         if (!m_crossSectionLayerKey.isEmpty() && m_crossSectionLayerKey != m_currentLayerKey)
         {
             clearCrossSectionProfile();
@@ -487,6 +493,7 @@ namespace scopeone::ui
         if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
         {
             m_currentLayerKey.clear();
+            m_scopeonecore->setActiveHistogramLayer({});
             clearCrossSectionProfile();
         }
         updateLayerVisibility();
@@ -512,6 +519,7 @@ namespace scopeone::ui
             && !m_availableCameraIds.contains(currentLayerCameraId()))
         {
             m_currentLayerKey.clear();
+            m_scopeonecore->setActiveHistogramLayer({});
             clearCrossSectionProfile();
         }
         updateLayerVisibility();

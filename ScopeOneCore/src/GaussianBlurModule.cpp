@@ -32,12 +32,23 @@ namespace scopeone::core::internal
             }
 
             const int cvType = workingFrame.isMono16() ? CV_16UC1 : CV_8UC1;
-            cv::Mat src(workingFrame.height, workingFrame.width, cvType,
-                        workingFrame.bytes.data(), workingFrame.stride);
-            cv::Mat blurred;
+            const cv::Mat src(workingFrame.height, workingFrame.width, cvType,
+                              const_cast<char*>(workingFrame.bytes.constData()),
+                              workingFrame.stride);
+            QByteArray bytes = workingFrame.isMono16()
+                                   ? allocatePixelBytes<quint16>(workingFrame.width, workingFrame.height)
+                                   : allocatePixelBytes<uchar>(workingFrame.width, workingFrame.height);
+            if (bytes.isEmpty())
+            {
+                return {{}, QStringLiteral("Failed to allocate Gaussian blur output")};
+            }
+            cv::Mat blurred(workingFrame.height,
+                            workingFrame.width,
+                            cvType,
+                            bytes.data(),
+                            workingFrame.width * workingFrame.bytesPerPixel());
             cv::GaussianBlur(src, blurred, cv::Size(m_kernelSize, m_kernelSize), m_sigma, m_sigma);
 
-            QByteArray bytes = copyMatBytes(blurred);
             return {makeFrameLike(workingFrame, blurred.cols, blurred.rows, std::move(bytes)), {}};
         }
         catch (const std::exception& e)

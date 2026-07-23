@@ -8,7 +8,7 @@
 
 namespace scopeone::core::internal::agent
 {
-    inline constexpr quint32 kProtocolVersion = 1;
+    inline constexpr quint32 kProtocolVersion = 3;
     inline constexpr quint32 kMaxControlMessageBytes = 256 * 1024;
 
     inline const QString kEnvelopeKindField = QStringLiteral("kind");
@@ -23,6 +23,7 @@ namespace scopeone::core::internal::agent
     inline const QString kCommandShutdown = QStringLiteral("Shutdown");
     inline const QString kCommandStartPreview = QStringLiteral("StartPreview");
     inline const QString kCommandStopPreview = QStringLiteral("StopPreview");
+    inline const QString kCommandSetFrameDeliveryMode = QStringLiteral("SetFrameDeliveryMode");
     inline const QString kCommandSetExposure = QStringLiteral("SetExposure");
     inline const QString kCommandListProperties = QStringLiteral("ListProperties");
     inline const QString kCommandGetProperty = QStringLiteral("GetProperty");
@@ -32,11 +33,14 @@ namespace scopeone::core::internal::agent
     inline const QString kCommandClearRoi = QStringLiteral("ClearROI");
     inline const QString kCommandGetRoi = QStringLiteral("GetROI");
 
+    inline const QString kFrameDeliveryModePreviewLatest = QStringLiteral("PreviewLatest");
+    inline const QString kFrameDeliveryModeLatestOnly = QStringLiteral("LatestOnly");
+    inline const QString kFrameDeliveryModeAllFrames = QStringLiteral("AllFrames");
+
     inline const QString kEventHello = QStringLiteral("Hello");
     inline const QString kEventFrameAvailable = QStringLiteral("FrameAvailable");
     inline const QString kEventPreviewState = QStringLiteral("PreviewState");
     inline const QString kEventAgentError = QStringLiteral("AgentError");
-    inline const QString kEventBufferOverflow = QStringLiteral("BufferOverflow");
 
     inline const QString kExecutableFileName = QStringLiteral("ScopeOne_Agent.exe");
 

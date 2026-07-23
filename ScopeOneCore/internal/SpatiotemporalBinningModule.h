@@ -3,6 +3,7 @@
 #include "internal/ProcessingModule.h"
 
 #include <deque>
+#include <vector>
 
 namespace scopeone::core::internal
 {
@@ -33,5 +34,6 @@ namespace scopeone::core::internal
         BinningMode m_spatialMode{BinningMode::Mean};
         BinningMode m_temporalMode{BinningMode::Mean};
         std::deque<ImageFrame> m_frameBuffer;
+        std::vector<qint64> m_temporalSum;
     };
 }

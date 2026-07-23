@@ -15,7 +15,7 @@ class CMMCore;
 
 namespace scopeone::core::internal
 {
-    class MultiProcessCameraManager;
+    class CameraManager;
 
     struct MDAOutput
     {
@@ -37,7 +37,7 @@ namespace scopeone::core::internal
 
         bool isRunning() const { return m_running.load(); }
 
-        void setMultiProcessCameraManager(MultiProcessCameraManager* mpcm);
+        void setCameraManager(CameraManager* cameraManager);
         bool start(const QList<AcquisitionEvent>& events, bool block = false);
         void requestCancel();
 
@@ -58,7 +58,7 @@ namespace scopeone::core::internal
         void runSequence(QList<AcquisitionEvent> events);
 
         std::shared_ptr<CMMCore> m_mmcore;
-        MultiProcessCameraManager* m_mpcm{nullptr};
+        CameraManager* m_cameraManager{nullptr};
         QThreadPool m_threadPool;
         std::atomic<bool> m_running{false};
         std::atomic<bool> m_cancelRequested{false};
