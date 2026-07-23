@@ -3,6 +3,7 @@
 #include "scopeone/ImageFrame.h"
 
 #include <limits>
+#include <opencv2/core/utility.hpp>
 #include <utility>
 
 namespace cv
@@ -65,16 +66,34 @@ namespace scopeone::core::internal
     }
 
     template <typename Pixel>
-    inline Pixel* mutableRowData(QByteArray& bytes, int width, int y)
-    {
-        return reinterpret_cast<Pixel*>(
-            bytes.data() + static_cast<qint64>(y) * static_cast<qint64>(width) * static_cast<qint64>(sizeof(Pixel)));
-    }
-
-    template <typename Pixel>
     inline Pixel clampPixelValue(int value, int maxValue)
     {
         return static_cast<Pixel>(qBound(0, value, maxValue));
+    }
+
+    template <typename Handler>
+    inline void parallelForRows(qint64 workItemCount, int rowCount, Handler&& handler)
+    {
+        constexpr qint64 kMinimumParallelWorkItems = 1024ll * 1024ll;
+        if (rowCount <= 0 || workItemCount < kMinimumParallelWorkItems)
+        {
+            handler(0, qMax(0, rowCount));
+            return;
+        }
+
+        cv::parallel_for_(cv::Range(0, rowCount),
+                          [&handler](const cv::Range& range)
+                          {
+                              handler(range.start, range.end);
+                          });
+    }
+
+    template <typename Handler>
+    inline void parallelForImageRows(int width, int height, Handler&& handler)
+    {
+        parallelForRows(static_cast<qint64>(width) * height,
+                        height,
+                        std::forward<Handler>(handler));
     }
 
     template <typename Handler>

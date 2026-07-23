@@ -14,9 +14,14 @@
 #include <QThread>
 #include <QTimer>
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "MMCore.h"
 #include "internal/AgentProtocol.h"
@@ -24,6 +29,9 @@
 
 namespace scopeone::core::internal
 {
+    static_assert(std::atomic_ref<quint32>::is_always_lock_free,
+                  "Shared frame state requires lock-free 32-bit atomics");
+
     using scopeone::core::SharedFrameHeader;
     using scopeone::core::SharedMemoryControl;
     using scopeone::core::SharedPixelFormat;
@@ -33,6 +41,21 @@ namespace scopeone::core::internal
     using scopeone::core::kSharedFrameNumSlots;
     using scopeone::core::kSharedFrameSlotStride;
     using scopeone::core::kSharedMemoryControlSize;
+
+    constexpr int kMinimumPollIntervalMs = 1;
+    constexpr int kMaximumPollIntervalMs = 50;
+    constexpr int kPreviewFrameDeliveryIntervalMs = 16;
+
+    int pollingIntervalFor(double frameIntervalMs)
+    {
+        if (!std::isfinite(frameIntervalMs) || frameIntervalMs <= 0.0)
+        {
+            return kMinimumPollIntervalMs;
+        }
+        return static_cast<int>(std::clamp(frameIntervalMs / 4.0,
+                                           static_cast<double>(kMinimumPollIntervalMs),
+                                           static_cast<double>(kMaximumPollIntervalMs)));
+    }
 
     // Normalize frame bit depth before publishing shared frame metadata
     static quint16 normalizedSharedBitDepth(SharedPixelFormat format, int bitsPerSample)
@@ -89,7 +112,6 @@ namespace scopeone::core::internal
                 return;
             }
             m_socket->write(agent::encodeMessage(message));
-            m_socket->flush();
         }
 
     signals:
@@ -212,7 +234,7 @@ namespace scopeone::core::internal
             if (!m_timer)
             {
                 m_timer = new QTimer(this);
-                m_timer->setInterval(1);
+                m_timer->setTimerType(Qt::PreciseTimer);
                 connect(m_timer, &QTimer::timeout,
                         this, &AgentRuntime::pollAndWrite);
             }
@@ -297,7 +319,19 @@ namespace scopeone::core::internal
 
             if (m_shm->lock())
             {
-                memset(m_shm->data(), 0, totalBytes);
+                auto* base = static_cast<uchar*>(m_shm->data());
+                if (base)
+                {
+                    const SharedMemoryControl control{};
+                    memcpy(base, &control, sizeof(control));
+                    for (int i = 0; i < kSharedFrameNumSlots; ++i)
+                    {
+                        const SharedFrameHeader header{};
+                        uchar* slot = base + kSharedMemoryControlSize
+                                      + i * kSharedFrameSlotStride;
+                        memcpy(slot, &header, sizeof(header));
+                    }
+                }
                 m_shm->unlock();
             }
 
@@ -343,6 +377,13 @@ namespace scopeone::core::internal
             ShuttingDown
         };
 
+        enum class FrameDeliveryMode
+        {
+            PreviewLatest,
+            LatestOnly,
+            AllFrames
+        };
+
         // Frame layout describes one shared memory payload shape
         struct FrameLayout
         {
@@ -369,13 +410,15 @@ namespace scopeone::core::internal
                              QString* errorMessage);
         void emitPreviewStateEvent();
         void emitAgentErrorEvent(const QString& error);
-        void emitBufferOverflowEvent(long bufferCapacity);
         void emitFrameAvailableEvent(quint64 frameIndex);
         bool startPreviewInternal(QString* errorMessage);
         bool stopPreviewInternal(QString* errorMessage);
         bool captureEventFrameInternal(quint64& frameIndex, QString* errorMessage);
-        bool writeFrameToSharedMemory(const void* pixels, quint64* frameIndexOut = nullptr);
+        bool writeFrameToSharedMemory(const void* pixels,
+                                      quint64 frameAdvance = 1,
+                                      quint64* frameIndexOut = nullptr);
         void pollAndWrite();
+        void updatePollingInterval(quint64 frameCount);
         bool ensureFrameLayout(unsigned width, unsigned height, unsigned bytesPerPixel);
         void refreshSourceRoi();
 
@@ -394,6 +437,9 @@ namespace scopeone::core::internal
         std::unique_ptr<CMMCore> m_mmcore;
         std::unique_ptr<QSharedMemory> m_shm;
         QTimer* m_timer{nullptr};
+        QElapsedTimer m_frameIntervalTimer;
+        QElapsedTimer m_deliveryTimer;
+        double m_observedFrameIntervalMs{0.0};
 
         FrameLayout m_frameLayout{};
         bool m_frameLayoutValid{false};
@@ -405,7 +451,9 @@ namespace scopeone::core::internal
         int m_sourceRoiHeight{0};
 
         quint64 m_frameIndex{0};
-        int m_overflowCheckCounter{0};
+        quint64 m_pendingFrameAdvance{0};
+        int m_nextWriteSlot{0};
+        FrameDeliveryMode m_frameDeliveryMode{FrameDeliveryMode::PreviewLatest};
     };
 
     // Publish the initial hello event to connected clients
@@ -514,6 +562,39 @@ namespace scopeone::core::internal
             return;
         }
 
+        if (type == agent::kCommandSetFrameDeliveryMode)
+        {
+            const QString mode = message.value(QStringLiteral("mode")).toString();
+            if (mode == agent::kFrameDeliveryModePreviewLatest)
+            {
+                m_frameDeliveryMode = FrameDeliveryMode::PreviewLatest;
+                m_deliveryTimer.invalidate();
+            }
+            else if (mode == agent::kFrameDeliveryModeLatestOnly)
+            {
+                m_frameDeliveryMode = FrameDeliveryMode::LatestOnly;
+            }
+            else if (mode == agent::kFrameDeliveryModeAllFrames)
+            {
+                m_frameDeliveryMode = FrameDeliveryMode::AllFrames;
+                m_pendingFrameAdvance = 0;
+                m_deliveryTimer.invalidate();
+            }
+            else
+            {
+                emit responseReady(connectionId,
+                                   makeErrorResponse(type,
+                                                     requestId,
+                                                     QStringLiteral("Unknown frame delivery mode")));
+                return;
+            }
+
+            QJsonObject response = makeResponse(type, requestId, true);
+            response.insert(QStringLiteral("mode"), mode);
+            emit responseReady(connectionId, response);
+            return;
+        }
+
         if (type == agent::kCommandSetExposure)
         {
             const double exposureMs = message.value(QStringLiteral("value")).toDouble(-1.0);
@@ -586,9 +667,13 @@ namespace scopeone::core::internal
         if (type == agent::kCommandGetProperty)
         {
             const QString name = message.value(QStringLiteral("name")).toString();
+            const bool fromCache = message.value(QStringLiteral("fromCache")).toBool(false);
+            const std::string camera = m_cameraId.toStdString();
+            const std::string property = name.toStdString();
             QString value;
             QString propertyType = QStringLiteral("Unknown");
             bool readOnly = true;
+            bool preInit = false;
             QJsonArray allowedValues;
             bool hasLimits = false;
             double lowerLimit = 0.0;
@@ -599,13 +684,13 @@ namespace scopeone::core::internal
             try
             {
                 value = QString::fromStdString(
-                    m_mmcore->getProperty(m_cameraId.toStdString().c_str(),
-                                          name.toStdString().c_str()));
+                    fromCache
+                        ? m_mmcore->getPropertyFromCache(camera.c_str(), property.c_str())
+                        : m_mmcore->getProperty(camera.c_str(), property.c_str()));
 
                 try
                 {
-                    switch (m_mmcore->getPropertyType(m_cameraId.toStdString().c_str(),
-                                                      name.toStdString().c_str()))
+                    switch (m_mmcore->getPropertyType(camera.c_str(), property.c_str()))
                     {
                     case MM::String:
                         propertyType = QStringLiteral("String");
@@ -627,9 +712,15 @@ namespace scopeone::core::internal
 
                 try
                 {
-                    readOnly = m_mmcore->isPropertyReadOnly(
-                        m_cameraId.toStdString().c_str(),
-                        name.toStdString().c_str());
+                    preInit = m_mmcore->isPropertyPreInit(camera.c_str(), property.c_str());
+                }
+                catch (const CMMError&)
+                {
+                }
+
+                try
+                {
+                    readOnly = m_mmcore->isPropertyReadOnly(camera.c_str(), property.c_str());
                 }
                 catch (const CMMError&)
                 {
@@ -638,8 +729,7 @@ namespace scopeone::core::internal
                 try
                 {
                     const auto values =
-                        m_mmcore->getAllowedPropertyValues(m_cameraId.toStdString().c_str(),
-                                                           name.toStdString().c_str());
+                        m_mmcore->getAllowedPropertyValues(camera.c_str(), property.c_str());
                     for (const auto& allowedValue : values)
                     {
                         allowedValues.append(QString::fromStdString(allowedValue));
@@ -651,16 +741,11 @@ namespace scopeone::core::internal
 
                 try
                 {
-                    hasLimits = m_mmcore->hasPropertyLimits(m_cameraId.toStdString().c_str(),
-                                                            name.toStdString().c_str());
+                    hasLimits = m_mmcore->hasPropertyLimits(camera.c_str(), property.c_str());
                     if (hasLimits)
                     {
-                        lowerLimit = m_mmcore->getPropertyLowerLimit(
-                            m_cameraId.toStdString().c_str(),
-                            name.toStdString().c_str());
-                        upperLimit = m_mmcore->getPropertyUpperLimit(
-                            m_cameraId.toStdString().c_str(),
-                            name.toStdString().c_str());
+                        lowerLimit = m_mmcore->getPropertyLowerLimit(camera.c_str(), property.c_str());
+                        upperLimit = m_mmcore->getPropertyUpperLimit(camera.c_str(), property.c_str());
                     }
                 }
                 catch (const CMMError&)
@@ -680,6 +765,7 @@ namespace scopeone::core::internal
                 response.insert(QStringLiteral("value"), value);
                 response.insert(QStringLiteral("propertyType"), propertyType);
                 response.insert(QStringLiteral("readOnly"), readOnly);
+                response.insert(QStringLiteral("preInit"), preInit);
                 response.insert(QStringLiteral("allowedValues"), allowedValues);
                 response.insert(QStringLiteral("hasLimits"), hasLimits);
                 response.insert(QStringLiteral("lowerLimit"), lowerLimit);
@@ -912,14 +998,6 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
-    // Publish a camera buffer overflow event
-    void AgentRuntime::emitBufferOverflowEvent(long bufferCapacity)
-    {
-        QJsonObject event = makeEvent(agent::kEventBufferOverflow);
-        event.insert(QStringLiteral("capacityFrames"), static_cast<int>(bufferCapacity));
-        emit eventReady(event);
-    }
-
     // Publish the newest shared memory frame index
     void AgentRuntime::emitFrameAvailableEvent(quint64 frameIndex)
     {
@@ -959,7 +1037,22 @@ namespace scopeone::core::internal
                 m_mmcore->popNextImage();
             }
             refreshSourceRoi();
+            if (!ensureFrameLayout(m_mmcore->getImageWidth(),
+                                   m_mmcore->getImageHeight(),
+                                   m_mmcore->getBytesPerPixel()))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unsupported frame format");
+                }
+                return false;
+            }
             m_mmcore->startContinuousSequenceAcquisition(0.0);
+            m_observedFrameIntervalMs = 0.0;
+            m_pendingFrameAdvance = 0;
+            m_frameIntervalTimer.restart();
+            m_deliveryTimer.invalidate();
+            m_timer->setInterval(pollingIntervalFor(m_exposureMs));
             if (m_timer && !m_timer->isActive())
             {
                 m_timer->start();
@@ -999,6 +1092,10 @@ namespace scopeone::core::internal
             {
                 m_timer->stop();
             }
+            m_frameIntervalTimer.invalidate();
+            m_deliveryTimer.invalidate();
+            m_observedFrameIntervalMs = 0.0;
+            m_pendingFrameAdvance = 0;
             if (m_state != State::ShuttingDown && m_state != State::Error)
             {
                 setState(State::Idle);
@@ -1066,13 +1163,20 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            if (!writeFrameToSharedMemory(pixels, &frameIndex))
+            const quint64 frameAdvance = m_pendingFrameAdvance + 1;
+            m_pendingFrameAdvance = 0;
+            if (!writeFrameToSharedMemory(pixels, frameAdvance, &frameIndex))
             {
                 if (errorMessage)
                 {
                     *errorMessage = QStringLiteral("Shared memory unavailable");
                 }
                 return false;
+            }
+
+            if (m_frameDeliveryMode == FrameDeliveryMode::PreviewLatest)
+            {
+                m_deliveryTimer.restart();
             }
 
             emitFrameAvailableEvent(frameIndex);
@@ -1089,27 +1193,62 @@ namespace scopeone::core::internal
     }
 
     // Copy one camera frame into the shared memory ring buffer
-    bool AgentRuntime::writeFrameToSharedMemory(const void* pixels, quint64* frameIndexOut)
+    bool AgentRuntime::writeFrameToSharedMemory(const void* pixels,
+                                                quint64 frameAdvance,
+                                                quint64* frameIndexOut)
     {
         if (!m_shm || !m_shm->isAttached())
         {
             return false;
         }
-        if (!m_shm->lock())
-        {
-            return false;
-        }
-
         uchar* base = static_cast<uchar*>(m_shm->data());
         if (!base)
         {
-            m_shm->unlock();
             return false;
         }
 
-        const int slotIndex = static_cast<int>(m_frameIndex % kSharedFrameNumSlots);
+        const quint64 nextFrameIndex = m_frameIndex + (std::max)(quint64{1}, frameAdvance);
+        const int preferredSlotIndex = m_nextWriteSlot;
+        int slotIndex = -1;
+        uchar* ptr = nullptr;
+        for (int offset = 0; offset < kSharedFrameNumSlots; ++offset)
+        {
+            const int candidate = (preferredSlotIndex + offset) % kSharedFrameNumSlots;
+            uchar* candidatePtr = base + kSharedMemoryControlSize
+                                  + candidate * kSharedFrameSlotStride;
+            auto& stateValue = *reinterpret_cast<quint32*>(candidatePtr);
+            std::atomic_ref<quint32> state(stateValue);
+            quint32 expected = state.load(std::memory_order_acquire);
+            while (expected == 0 || expected == 2)
+            {
+                if (state.compare_exchange_weak(expected,
+                                                1,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+                {
+                    slotIndex = candidate;
+                    ptr = candidatePtr;
+                    break;
+                }
+            }
+            if (slotIndex >= 0)
+            {
+                break;
+            }
+        }
+
+        if (slotIndex < 0 || !ptr)
+        {
+            m_frameIndex = nextFrameIndex;
+            if (frameIndexOut)
+            {
+                *frameIndexOut = m_frameIndex;
+            }
+            return false;
+        }
+
         auto* control = reinterpret_cast<SharedMemoryControl*>(base);
-        uchar* ptr = base + kSharedMemoryControlSize + slotIndex * kSharedFrameSlotStride;
+        m_nextWriteSlot = (slotIndex + 1) % kSharedFrameNumSlots;
         SharedFrameHeader header{};
         header.state = 1;
         header.width = m_frameLayout.width;
@@ -1118,7 +1257,7 @@ namespace scopeone::core::internal
         header.pixelFormat = static_cast<quint32>(m_frameLayout.format);
         header.bitsPerSample = m_frameLayout.bitDepth;
         header.channels = m_frameLayout.channels;
-        header.frameIndex = ++m_frameIndex;
+        header.frameIndex = nextFrameIndex;
         header.timestampNs =
             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
         setSharedFrameSourceRoi(header,
@@ -1126,20 +1265,23 @@ namespace scopeone::core::internal
                                 m_sourceRoiY,
                                 m_sourceRoiWidth,
                                 m_sourceRoiHeight);
-        memcpy(ptr, &header, sizeof(header));
+        memcpy(ptr + sizeof(header.state),
+               reinterpret_cast<const uchar*>(&header) + sizeof(header.state),
+               sizeof(header) - sizeof(header.state));
 
         uchar* dst = ptr + kSharedFrameHeaderSize;
         memcpy(dst, pixels, static_cast<size_t>(m_frameLayout.byteCount));
 
-        header.state = 2;
-        memcpy(ptr, &header, sizeof(header));
-        control->latestSlotIndex = static_cast<quint32>(slotIndex);
+        auto& stateValue = *reinterpret_cast<quint32*>(ptr);
+        std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
+        std::atomic_ref<quint32>(control->latestSlotIndex)
+            .store(static_cast<quint32>(slotIndex), std::memory_order_release);
+        m_frameIndex = nextFrameIndex;
         if (frameIndexOut)
         {
             *frameIndexOut = m_frameIndex;
         }
 
-        m_shm->unlock();
         return true;
     }
 
@@ -1155,49 +1297,82 @@ namespace scopeone::core::internal
         {
             long remaining = m_mmcore->getRemainingImageCount();
 
-            if (++m_overflowCheckCounter >= 100 || remaining > 10)
-            {
-                m_overflowCheckCounter = 0;
-                if (m_mmcore->isBufferOverflowed())
-                {
-                    emitBufferOverflowEvent(m_mmcore->getBufferTotalCapacity());
-                }
-            }
-
             if (remaining <= 0)
             {
                 return;
             }
 
             quint64 newestFrameIndex = 0;
-            while (remaining-- > 0)
+            quint64 acquiredFrameCount = 0;
+            if (m_frameDeliveryMode != FrameDeliveryMode::AllFrames)
             {
-                const void* pixels = m_mmcore->popNextImage();
-                if (!pixels)
+                const bool previewRateLimited =
+                    m_frameDeliveryMode == FrameDeliveryMode::PreviewLatest;
+                const bool publishFrame = !previewRateLimited
+                    || !m_deliveryTimer.isValid()
+                    || m_deliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs;
+                while (remaining-- > 0)
                 {
-                    break;
+                    const void* pixels = m_mmcore->popNextImage();
+                    if (!pixels)
+                    {
+                        break;
+                    }
+                    ++acquiredFrameCount;
+                    ++m_pendingFrameAdvance;
+                    if (remaining > 0)
+                    {
+                        continue;
+                    }
+                    if (publishFrame && m_frameLayoutValid)
+                    {
+                        quint64 writtenFrameIndex = 0;
+                        const bool written = writeFrameToSharedMemory(
+                            pixels,
+                            m_pendingFrameAdvance,
+                            &writtenFrameIndex);
+                        m_pendingFrameAdvance = 0;
+                        if (previewRateLimited)
+                        {
+                            m_deliveryTimer.restart();
+                        }
+                        if (written)
+                        {
+                            newestFrameIndex = writtenFrameIndex;
+                        }
+                    }
                 }
+            }
+            else
+            {
+                while (remaining-- > 0)
+                {
+                    const void* pixels = m_mmcore->popNextImage();
+                    if (!pixels)
+                    {
+                        break;
+                    }
+                    ++acquiredFrameCount;
 
-                const unsigned width = m_mmcore->getImageWidth();
-                const unsigned height = m_mmcore->getImageHeight();
-                const unsigned bytesPerPixel = m_mmcore->getBytesPerPixel();
-                if (!ensureFrameLayout(width, height, bytesPerPixel))
-                {
-                    break;
-                }
+                    if (!m_frameLayoutValid)
+                    {
+                        break;
+                    }
 
-                quint64 writtenFrameIndex = 0;
-                if (!writeFrameToSharedMemory(pixels, &writtenFrameIndex))
-                {
-                    break;
+                    quint64 writtenFrameIndex = 0;
+                    if (!writeFrameToSharedMemory(pixels, 1, &writtenFrameIndex))
+                    {
+                        break;
+                    }
+                    newestFrameIndex = writtenFrameIndex;
                 }
-                newestFrameIndex = writtenFrameIndex;
             }
 
             if (newestFrameIndex != 0)
             {
                 emitFrameAvailableEvent(newestFrameIndex);
             }
+            updatePollingInterval(acquiredFrameCount);
         }
         catch (const CMMError& error)
         {
@@ -1205,6 +1380,33 @@ namespace scopeone::core::internal
                 QStringLiteral("Agent capture error: %1")
                 .arg(QString::fromStdString(error.getMsg()));
             setState(State::Error, message);
+        }
+    }
+
+    // Adapts MMCore polling to the observed camera frame interval
+    void AgentRuntime::updatePollingInterval(quint64 frameCount)
+    {
+        if (frameCount == 0 || !m_frameIntervalTimer.isValid())
+        {
+            return;
+        }
+
+        const double elapsedMs = static_cast<double>(m_frameIntervalTimer.nsecsElapsed()) / 1000000.0;
+        m_frameIntervalTimer.restart();
+        const double measuredIntervalMs = elapsedMs / static_cast<double>(frameCount);
+        if (!std::isfinite(measuredIntervalMs) || measuredIntervalMs <= 0.0)
+        {
+            return;
+        }
+
+        m_observedFrameIntervalMs = m_observedFrameIntervalMs > 0.0
+                                        ? 0.75 * m_observedFrameIntervalMs
+                                              + 0.25 * measuredIntervalMs
+                                        : measuredIntervalMs;
+        const int intervalMs = pollingIntervalFor(m_observedFrameIntervalMs);
+        if (m_timer->interval() != intervalMs)
+        {
+            m_timer->setInterval(intervalMs);
         }
     }
 

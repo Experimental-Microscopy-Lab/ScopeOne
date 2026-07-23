@@ -80,6 +80,7 @@ namespace scopeone::ui
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
+        void schedulePreviewCursorStatusRefresh();
         void registerGallerySessionFrameControls(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
             int frameIndex);
@@ -165,6 +166,7 @@ namespace scopeone::ui
         QLabel* m_statusProcessingLabel{nullptr};
         QLabel* m_statusRecordingLabel{nullptr};
         QTimer* m_statusMessageTimer{nullptr};
+        QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};

@@ -34,7 +34,7 @@ namespace scopeone::ui
         };
 
         explicit InspectWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
-        ~InspectWidget() override = default;
+        ~InspectWidget() override;
 
         void onCameraInitialized(bool initialized);
         void setCurrentLayer(const QString& layerKey);

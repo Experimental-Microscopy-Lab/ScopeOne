@@ -76,8 +76,8 @@ namespace scopeone::core
         }
     }
 
-    inline constexpr int kSharedFrameNumSlots = 12;
-    inline constexpr int kSharedFrameMaxBytes = 16 * 2048 * 2048;
+    inline constexpr int kSharedFrameNumSlots = 32;
+    inline constexpr int kSharedFrameMaxBytes = 4 * 2048 * 2048;
     inline constexpr int kSharedMemoryControlSize = 64;
     inline constexpr int kSharedFrameHeaderSize = static_cast<int>(sizeof(SharedFrameHeader));
     inline constexpr int kSharedFrameSlotStride = kSharedFrameHeaderSize + kSharedFrameMaxBytes;

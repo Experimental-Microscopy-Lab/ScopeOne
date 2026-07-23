@@ -7,7 +7,7 @@
   <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a>
 </p>
 
-ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a multi-process architecture where each camera runs in its own [MMCore](https://github.com/micro-manager/mmCoreAndDevices) instance, enabling simultaneous preview and acquisition across multiple cameras.
+ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a native [MMCore](https://github.com/micro-manager/mmCoreAndDevices) backend for single-camera operation and one isolated camera agent per device for simultaneous multi-camera preview and acquisition.
 It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 <p align="center">
@@ -191,6 +191,20 @@ The API reports which operations mutate hardware, write files, remove state, or 
 
 `ScopeOneMcpServer` is a standalone C++ MCP server included with ScopeOne. It uses MCP protocol version `2025-06-18` over standard input and output and forwards validated tool calls to the running desktop app through the Local API. It does not embed a model, open a network port, or depend on Python.
 
+#### Claude Code plugin
+
+Install ScopeOne first, then run these commands inside Claude Code:
+
+```text
+/plugin marketplace add Experimental-Microscopy-Lab/ScopeOne
+/plugin install scopeone@scopeone
+/reload-plugins
+```
+
+When prompted, select `ScopeOneMcpServer.exe` from the same directory as `ScopeOne.exe`. Start ScopeOne before asking Claude to inspect or control it. The plugin supplies the MCP configuration and agent operating guidance, so no Python installation or manual MCP server launch is required.
+
+#### Other MCP hosts
+
 To use it:
 
 1. Start ScopeOne. Load the device configuration manually or ask the agent to load it after confirmation.
@@ -212,8 +226,9 @@ The current validation list is still short, but the codebase has been cleaned to
 
 ## 🖥️ Tested System Configurations
 
-- Windows 10, Dual Intel(R) Xeon(R) E5-2637 v3, 64 GB RAM, NVIDIA Quadro K620
-- Windows 11, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
+- Windows 10 Version 21H2, Dual Intel(R) Xeon(R) E5-2637 v3, 64 GB RAM, NVIDIA Quadro K620
+- Windows 11 Version 25H2, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
+- Fedora Linux 44 (Workstation Edition), Intel(R) Core(TM) i7-7700, 32 GB RAM
 - macOS 26.5.2, Apple M1 Pro, 16 GB RAM
 
-Although these machines are older and weaker than many typical lab computers, ScopeOne still provides smooth real-time preview and processing on them.
+We build and test ScopeOne on the above machines, which are comparatively older and weaker than many typical optical lab computers. However, ScopeOne still provides smooth real-time preview and processing on them.

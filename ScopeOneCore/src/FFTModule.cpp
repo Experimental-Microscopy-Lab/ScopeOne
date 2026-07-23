@@ -2,6 +2,7 @@
 #include "internal/FrameBufferUtils.h"
 
 #include <cmath>
+#include <cstring>
 #include <numbers>
 #include <utility>
 #include <opencv2/core.hpp>
@@ -33,11 +34,21 @@ namespace scopeone::core::internal
         ImageFrame matToOutputFrame(const cv::Mat& input,
                                     const ImageFrame& reference)
         {
-            cv::Mat normalized;
             const int targetType = reference.isMono16() ? CV_16U : CV_8U;
             const double targetMax = static_cast<double>(reference.maxValue());
+            QByteArray bytes = reference.isMono16()
+                                   ? allocatePixelBytes<quint16>(input.cols, input.rows)
+                                   : allocatePixelBytes<uchar>(input.cols, input.rows);
+            if (bytes.isEmpty())
+            {
+                return {};
+            }
+            cv::Mat normalized(input.rows,
+                               input.cols,
+                               targetType,
+                               bytes.data(),
+                               input.cols * reference.bytesPerPixel());
             cv::normalize(input, normalized, 0.0, targetMax, cv::NORM_MINMAX, targetType);
-            QByteArray bytes = copyMatBytes(normalized);
             return makeFrameLike(reference, normalized.cols, normalized.rows, std::move(bytes));
         }
 
@@ -47,15 +58,19 @@ namespace scopeone::core::internal
             shifted.create(image.size(), image.type());
             const int xOffset = image.cols / 2;
             const int yOffset = image.rows / 2;
-            for (int y = 0; y < image.rows; ++y)
+            const size_t tailBytes = static_cast<size_t>(image.cols - xOffset)
+                                     * sizeof(float);
+            const size_t headBytes = static_cast<size_t>(xOffset) * sizeof(float);
+            parallelForImageRows(image.cols, image.rows, [&](int firstRow, int lastRow)
             {
-                const float* srcRow = image.ptr<float>((y + yOffset) % image.rows);
-                float* dstRow = shifted.ptr<float>(y);
-                for (int x = 0; x < image.cols; ++x)
+                for (int y = firstRow; y < lastRow; ++y)
                 {
-                    dstRow[x] = srcRow[(x + xOffset) % image.cols];
+                    const float* srcRow = image.ptr<float>((y + yOffset) % image.rows);
+                    float* dstRow = shifted.ptr<float>(y);
+                    std::memcpy(dstRow, srcRow + xOffset, tailBytes);
+                    std::memcpy(dstRow + image.cols - xOffset, srcRow, headBytes);
                 }
-            }
+            });
         }
 
         // Computes a log magnitude spectrum from complex DFT planes
@@ -107,16 +122,8 @@ namespace scopeone::core::internal
                 }
             }
 
-            cv::Mat mask(size, CV_32F);
-            const int cx = size.width / 2;
-            const int cy = size.height / 2;
-            centered(cv::Rect(cx, cy, size.width - cx, size.height - cy)).copyTo(
-                mask(cv::Rect(0, 0, size.width - cx, size.height - cy)));
-            centered(cv::Rect(0, cy, cx, size.height - cy)).copyTo(
-                mask(cv::Rect(size.width - cx, 0, cx, size.height - cy)));
-            centered(cv::Rect(cx, 0, size.width - cx, cy)).copyTo(
-                mask(cv::Rect(0, size.height - cy, size.width - cx, cy)));
-            centered(cv::Rect(0, 0, cx, cy)).copyTo(mask(cv::Rect(size.width - cx, size.height - cy, cx, cy)));
+            cv::Mat mask;
+            fftShift(centered, mask);
             return mask;
         }
     }

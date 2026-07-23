@@ -1,5 +1,5 @@
 #include "internal/MMCoreManager.h"
-#include "internal/MultiProcessCameraManager.h"
+#include "internal/CameraManager.h"
 #include <QFile>
 #include <QDebug>
 #include <QCoreApplication>
@@ -330,7 +330,7 @@ namespace scopeone::core::internal
 
     // Initializes devices and starts camera backends
     bool MMCoreManager::loadConfigurationAndStartCameras(const QString& configPath,
-                                                         MultiProcessCameraManager* mpcm,
+                                                         CameraManager* cameraManager,
                                                          LoadConfigResult* result,
                                                          QString* errorMessage)
     {
@@ -441,14 +441,9 @@ namespace scopeone::core::internal
         QStringList agentsStarted;
         const bool foundCamera = !cameraInfos.empty();
 
-        if (useSingleCamera && mpcm)
-        {
-            mpcm->setNativeCore(m_mmcore);
-        }
-
         for (const auto& ci : cameraInfos)
         {
-            if (!mpcm)
+            if (!cameraManager)
             {
                 cameraIds.append(ci.label);
                 continue;
@@ -456,7 +451,7 @@ namespace scopeone::core::internal
 
             if (useSingleCamera)
             {
-                if (mpcm->startSingleCamera(ci.label, ci.exposureMs))
+                if (cameraManager->configureNativeCamera(m_mmcore, ci.label, ci.exposureMs))
                 {
                     cameraIds.append(ci.label);
                 }
@@ -467,12 +462,12 @@ namespace scopeone::core::internal
             }
             else
             {
-                if (mpcm->startAgentFor(ci.label,
-                                        ci.adapter,
-                                        ci.device,
-                                        ci.preInitProperties,
-                                        ci.properties,
-                                        ci.exposureMs))
+                if (cameraManager->addAgentCamera(ci.label,
+                                                  ci.adapter,
+                                                  ci.device,
+                                                  ci.preInitProperties,
+                                                  ci.properties,
+                                                  ci.exposureMs))
                 {
                     cameraIds.append(ci.label);
                     agentsStarted.append(ci.label);

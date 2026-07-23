@@ -7,7 +7,7 @@
 
 namespace scopeone::core::internal
 {
-    class MultiProcessCameraManager;
+    class CameraManager;
 
     enum class DeviceType
     {
@@ -52,7 +52,7 @@ namespace scopeone::core::internal
 
         QString getDeviceTypeString(DeviceType type) const;
         bool loadConfigurationAndStartCameras(const QString& configPath,
-                                              MultiProcessCameraManager* mpcm,
+                                              CameraManager* cameraManager,
                                               LoadConfigResult* result,
                                               QString* errorMessage);
 

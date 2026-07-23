@@ -220,16 +220,19 @@ namespace scopeone::ui
 
         QMutexLocker lock(&m_mutex);
         FrameSourceState& frameState = m_frameSources[normalizedId];
+        ++m_nextFrameRevision;
         bool hadFrame = false;
         if (role == FrameRole::Processed)
         {
             hadFrame = frameState.processedFrame.isValid();
             frameState.processedFrame = frame;
+            frameState.processedRevision = m_nextFrameRevision;
         }
         else
         {
             hadFrame = frameState.rawFrame.isValid();
             frameState.rawFrame = frame;
+            frameState.rawRevision = m_nextFrameRevision;
         }
         if (replacedFrame)
         {
@@ -249,14 +252,14 @@ namespace scopeone::ui
     }
 
     // Counts one frame in a live layer throughput window
-    void PreviewWidget::updateLayerFps(const QString& layerKey)
+    void PreviewWidget::updateLayerFps(const QString& layerKey, quint64 frameCount)
     {
         FpsState& state = m_fpsStates[layerKey];
         if (!state.intervalTimer.isValid())
         {
             state.intervalTimer.start();
         }
-        state.framesSinceUpdate += 1;
+        state.framesSinceUpdate += frameCount;
     }
 
     // Stores one graph processed frame and updates layer statistics
@@ -304,23 +307,23 @@ namespace scopeone::ui
         update();
     }
 
-    // Counts one completed processing output before preview coalescing
-    void PreviewWidget::trackProcessedFrameRate(const ImageFrame& frame)
+    // Tracks completed processing throughput from aggregated frame counts
+    void PreviewWidget::trackProcessedFrameRate(const QString& cameraId, quint64 frameCount)
     {
-        const QString sourceId = normalizedSourceId(frame.cameraId);
-        if (!sourceId.isEmpty() && frame.isValid())
+        const QString sourceId = normalizedSourceId(cameraId);
+        if (!sourceId.isEmpty() && frameCount > 0)
         {
-            updateLayerFps(previewLayerKey(sourceId, true));
+            updateLayerFps(previewLayerKey(sourceId, true), frameCount);
         }
     }
 
-    // Counts one incoming raw frame before preview coalescing
-    void PreviewWidget::trackRawFrameRate(const ImageFrame& frame)
+    // Tracks acquired raw throughput from backend frame counts
+    void PreviewWidget::trackRawFrameRate(const QString& cameraId, quint64 frameCount)
     {
-        const QString sourceId = normalizedSourceId(frame.cameraId);
-        if (!sourceId.isEmpty() && frame.isValid())
+        const QString sourceId = normalizedSourceId(cameraId);
+        if (!sourceId.isEmpty() && frameCount > 0)
         {
-            updateLayerFps(previewLayerKey(sourceId, false));
+            updateLayerFps(previewLayerKey(sourceId, false), frameCount);
         }
     }
 
@@ -627,6 +630,7 @@ namespace scopeone::ui
             for (auto it = m_frameSources.begin(); it != m_frameSources.end(); ++it)
             {
                 it->processedFrame = ImageFrame();
+                it->processedRevision = 0;
             }
         }
 
@@ -1548,6 +1552,7 @@ namespace scopeone::ui
         {
             drawFrameInRect(item.layerKey,
                             frameState.processedFrame,
+                            frameState.processedRevision,
                             displayRect,
                             frameState.flipX,
                             frameState.flipY,
@@ -1560,6 +1565,7 @@ namespace scopeone::ui
         {
             drawFrameInRect(item.layerKey,
                             frameState.rawFrame,
+                            frameState.rawRevision,
                             displayRect,
                             frameState.flipX,
                             frameState.flipY,
@@ -2035,6 +2041,7 @@ namespace scopeone::ui
     // Uploads and draws one image frame into a target rectangle
     void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                         const ImageFrame& frame,
+                                        quint64 frameRevision,
                                         const QRect& r,
                                         bool flipX,
                                         bool flipY,
@@ -2061,23 +2068,28 @@ namespace scopeone::ui
         }
 
         GLuint texId = getOrCreateTexture(textureKey, frame.width, frame.height, internalFormat);
+        CachedTexture& cachedTexture = m_textureCache[textureKey];
 
         glBindTexture(GL_TEXTURE_2D, texId);
 
-        glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
-        const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
-        if (frame.stride > 0)
+        if (cachedTexture.uploadedRevision != frameRevision)
         {
-            const int rowPixels = frame.stride / bytesPerPixel;
-            if (rowPixels != frame.width)
+            glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
+            const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
+            if (frame.stride > 0)
             {
-                glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
+                const int rowPixels = frame.stride / bytesPerPixel;
+                if (rowPixels != frame.width)
+                {
+                    glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
+                }
             }
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                            frame.width, frame.height,
+                            GL_RED, uploadType, frame.bytes.constData());
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            cachedTexture.uploadedRevision = frameRevision;
         }
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                        frame.width, frame.height,
-                        GL_RED, uploadType, frame.bytes.constData());
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
         m_prog.bind();
         glActiveTexture(GL_TEXTURE0);

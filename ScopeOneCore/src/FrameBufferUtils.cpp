@@ -67,16 +67,20 @@ namespace scopeone::core::internal
         uchar* dstData = reinterpret_cast<uchar*>(bytes.data());
         const char* srcData = src.bytes.constData();
 
-        for (int y = 0; y < src.height; ++y)
+        parallelForImageRows(src.width, src.height, [&](int firstRow, int lastRow)
         {
-            const quint16* srcRow = reinterpret_cast<const quint16*>(srcData + static_cast<qint64>(y) * src.stride);
-            uchar* dstRow = dstData + static_cast<qint64>(y) * src.width;
-            for (int x = 0; x < src.width; ++x)
+            for (int y = firstRow; y < lastRow; ++y)
             {
-                dstRow[x] = static_cast<uchar>(mono8ValueFrom16(static_cast<int>(srcRow[x]),
-                                                                src.bitsPerSample));
+                const quint16* srcRow = reinterpret_cast<const quint16*>(
+                    srcData + static_cast<qint64>(y) * src.stride);
+                uchar* dstRow = dstData + static_cast<qint64>(y) * src.width;
+                for (int x = 0; x < src.width; ++x)
+                {
+                    dstRow[x] = static_cast<uchar>(
+                        mono8ValueFrom16(static_cast<int>(srcRow[x]), src.bitsPerSample));
+                }
             }
-        }
+        });
 
         dst = makeMono8Frame(src.cameraId, src.width, src.height, std::move(bytes));
         copyFrameMetadata(src, dst);
