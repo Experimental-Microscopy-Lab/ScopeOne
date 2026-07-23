@@ -1,14 +1,22 @@
 #include <QApplication>
 #include <QIcon>
+#include <QSurfaceFormat>
 #include <memory>
 #include "AppVersion.h"
 #include "scopeone/ScopeOneCore.h"
 #include "ConsoleWidget.h"
 #include "MainWindow.h"
 
-// Create the shared core before the main window
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
+    QSurfaceFormat format;
+    // macOS supports OpenGL only up to 4.1, and ScopeOne currently uses no features introduced after 4.1
+    format.setVersion(4, 1);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+    format.setDepthBufferSize(0);
+    QSurfaceFormat::setDefaultFormat(format);
+
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral(SCOPEONE_APP_NAME));
     QCoreApplication::setApplicationVersion(QStringLiteral(SCOPEONE_APP_VERSION_STRING));
