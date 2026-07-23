@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QFont>
+#include <QFontDatabase>
 #include <QLabel>
 #include <QMutex>
 #include <QMutexLocker>
@@ -123,7 +124,9 @@ namespace scopeone::ui
 
         m_consoleTextEdit = new QTextEdit(this);
         m_consoleTextEdit->setReadOnly(true);
-        m_consoleTextEdit->setFont(QFont("Consolas", 9));
+        QFont consoleFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        consoleFont.setPointSize(9);
+        m_consoleTextEdit->setFont(consoleFont);
         m_consoleTextEdit->setStyleSheet(
             "QTextEdit {"
             "    background-color: #1e1e1e;"
