@@ -46,4 +46,4 @@ jobs:
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
-        run: ./scripts/build-linux.sh
+        run: ./scripts/build-unix.sh

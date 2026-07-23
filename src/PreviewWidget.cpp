@@ -2,7 +2,6 @@
 
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
-#include <QSurfaceFormat>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -177,13 +176,6 @@ namespace scopeone::ui
                 {
                     update();
                 });
-
-        QSurfaceFormat requestedFormat;
-        requestedFormat.setVersion(4, 6);
-        requestedFormat.setProfile(QSurfaceFormat::CoreProfile);
-        requestedFormat.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
-        requestedFormat.setDepthBufferSize(0);
-        setFormat(requestedFormat);
 
         setMinimumSize(256, 256);
         setMouseTracking(true);

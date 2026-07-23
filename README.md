@@ -24,6 +24,7 @@ As an open-source project, ScopeOne builds on existing community efforts to redu
 Download the latest release package from the [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases) page and extract it. Run `ScopeOne.exe` to start the application.
 
 **System Requirements:**
+
 - Windows 10/11 (64-bit)
 - Micro-Manager device adapters for your hardware
 
@@ -38,6 +39,7 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 ### For Developers
 
 **Prerequisites:**
+
 - [CMake](https://cmake.org/download/) 4.1.0
 - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
 - [Qt](https://www.qt.io/development/download-qt-installer-oss) 6.9.1 (msvc2022_64)
@@ -63,6 +65,7 @@ ScopeOne/
 **Windows Build Steps:**
 
 1. Build and install `ScopeOneCore`:
+
 ```powershell
 cmake -S ScopeOneCore -B ScopeOneCore/build
 cmake --build ScopeOneCore/build --config Release --parallel
@@ -70,30 +73,45 @@ cmake --install ScopeOneCore/build --config Release
 ```
 
 2. Build the GUI application:
+
 ```powershell
 cmake -S . -B build
 cmake --build build --config Release --parallel
 ```
 
 3. Run:
+
 ```powershell
 .\build\Release\ScopeOne.exe
 ```
 
-**Linux Build Steps (experimental):**
+**Linux and macOS Build Steps (experimental):**
 
-On Linux, use the top-level `micro-manager` repository to configure the native build, then compile only `MMDevice` and `MMCore`. Create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
+Linux and macOS use the same native build flow. Use the top-level `micro-manager` repository to configure the native build, then compile `MMDevice`, `MMCore`, and the required device adapters. Create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
 
-Run `./scripts/build-linux.sh` from the ScopeOne repository root to automate the complete sequence below.
+Run `./scripts/build-unix.sh` from the ScopeOne repository root on Linux or macOS to automate the complete sequence below.
 
-1. Install common build dependencies:
+1. Install common build dependencies.
+
+Linux:
+
 ```bash
 sudo apt install \
   git subversion build-essential cmake autoconf automake libtool autoconf-archive \
   pkg-config libboost-all-dev qt6-base-dev libopencv-dev libtiff-dev zlib1g-dev
 ```
 
+macOS:
+
+```bash
+xcode-select --install
+brew install \
+  git subversion cmake autoconf automake libtool autoconf-archive \
+  pkg-config boost qt opencv libtiff zlib
+```
+
 2. Clone Micro-Manager and create the `mmCoreAndDevices` symlink:
+
 ```bash
 cd /path/to/ScopeOne/ScopeOneCore
 mkdir -p external
@@ -107,24 +125,28 @@ git submodule update --init --recursive
 ```
 
 3. Configure Micro-Manager without the Java application layer:
+
 ```bash
 ./autogen.sh
 ./configure --without-java --enable-static
 ```
 
 4. Build the native core components:
+
 ```bash
-make -C mmCoreAndDevices/MMDevice -j"$(nproc)"
-make -C mmCoreAndDevices/MMCore -j"$(nproc)"
+# Adjust `-j4` to match your CPU cores
+make -C mmCoreAndDevices/MMDevice -j4
+make -C mmCoreAndDevices/MMCore -j4
 ```
 
-Device adapters are runtime plugins and are not required for this compile verification. Build the required adapters separately in their own directories when running ScopeOne with hardware or a demo configuration. ScopeOne currently links Linux MMCore from:
+5. Build the specific device adapters you need. The DemoCamera adapter is included for testing and demonstration purposes. You can build additional adapters as needed.
 
-```text
-ScopeOneCore/external/mmCoreAndDevices/MMCore/.libs/libMMCore.a
+```bash
+make -C mmCoreAndDevices/DeviceAdapters/DemoCamera -j4
 ```
 
-5. Build and install `ScopeOneCore`:
+6. Build and install `ScopeOneCore`:
+
 ```bash
 cd /path/to/ScopeOne
 cmake -S ScopeOneCore -B ScopeOneCore/build -DCMAKE_BUILD_TYPE=Release
@@ -132,16 +154,31 @@ cmake --build ScopeOneCore/build --parallel
 cmake --install ScopeOneCore/build
 ```
 
-6. Build the GUI application:
+7. Build the GUI application:
+
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-The Linux executable is expected at:
+The Linux or macOS executable is expected at:
 
 ```text
 build/ScopeOne
+```
+
+To run `config/MMConfig_demo.cfg`, copy the DemoCamera runtime adapter next to the ScopeOne executable.
+
+Linux:
+
+```bash
+cp -L ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera.so.0 build/
+```
+
+macOS uses an extensionless Mach-O bundle rather than the static `.a` file:
+
+```bash
+cp ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera build/
 ```
 
 ## 🤖 Automation and AI Agents
@@ -180,6 +217,7 @@ Use `scopeone` as the server name, `stdio` as the transport, the absolute path t
 The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
 
 ## 🔬 Tested Devices
+
 - Yokogawa CSU X1
 - Hamamatsu C13440
 - Andor 897D
@@ -187,8 +225,10 @@ The MCP tool set mirrors the Local API operation catalog, including system state
 The current validation list is still short, but the codebase has been cleaned to remove early hard-coded device assumptions. In principle, ScopeOne should follow Micro-Manager device compatibility.
 
 ## 🖥️ Tested System Configurations
+
 - Windows 10 Version 21H2, Dual Intel(R) Xeon(R) E5-2637 v3, 64 GB RAM, NVIDIA Quadro K620
 - Windows 11 Version 25H2, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
 - Fedora Linux 44 (Workstation Edition), Intel(R) Core(TM) i7-7700, 32 GB RAM
+- macOS 26.5.2, Apple M1 Pro, 16 GB RAM
 
 We build and test ScopeOne on the above machines, which are comparatively older and weaker than many typical optical lab computers. However, ScopeOne still provides smooth real-time preview and processing on them.
