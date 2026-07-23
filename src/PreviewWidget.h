@@ -52,8 +52,8 @@ namespace scopeone::ui
 
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
-        void trackProcessedFrameRate(const scopeone::core::ImageFrame& frame);
-        void trackRawFrameRate(const scopeone::core::ImageFrame& frame);
+        void trackProcessedFrameRate(const QString& cameraId, quint64 frameCount);
+        void trackRawFrameRate(const QString& cameraId, quint64 frameCount);
         void resetLiveFrameRates();
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
@@ -150,6 +150,8 @@ signals:
         {
             scopeone::core::ImageFrame processedFrame;
             scopeone::core::ImageFrame rawFrame;
+            quint64 processedRevision{0};
+            quint64 rawRevision{0};
             int offsetX{0};
             int offsetY{0};
             bool flipX{false};
@@ -194,6 +196,7 @@ signals:
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
+        quint64 m_nextFrameRevision{0};
         int m_zoomPercent{100};
         bool m_fitToWindow{true};
         QPoint m_viewOffset;
@@ -213,6 +216,7 @@ signals:
             int width{0};
             int height{0};
             GLenum internalFormat{0};
+            quint64 uploadedRevision{0};
         };
 
         QMap<QString, CachedTexture> m_textureCache;
@@ -236,7 +240,7 @@ signals:
         MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
         bool m_markupDragging{false};
         void updateImageDisplay();
-        void updateLayerFps(const QString& layerKey);
+        void updateLayerFps(const QString& layerKey, quint64 frameCount = 1);
         void updateFrameRates();
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
@@ -305,6 +309,7 @@ signals:
         void ensureGlPipeline();
         void drawFrameInRect(const QString& textureKey,
                              const scopeone::core::ImageFrame& frame,
+                             quint64 frameRevision,
                              const QRect& r,
                              bool flipX,
                              bool flipY,

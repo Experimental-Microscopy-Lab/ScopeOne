@@ -1,6 +1,6 @@
 #include "internal/MDAManager.h"
 
-#include "internal/MultiProcessCameraManager.h"
+#include "internal/CameraManager.h"
 #include "MMCore.h"
 
 #include <QDateTime>
@@ -39,9 +39,9 @@ namespace scopeone::core::internal
     }
 
     // Connects MDA capture to the active camera backend
-    void MDAManager::setMultiProcessCameraManager(MultiProcessCameraManager* mpcm)
+    void MDAManager::setCameraManager(CameraManager* cameraManager)
     {
-        m_mpcm = mpcm;
+        m_cameraManager = cameraManager;
     }
 
     // Starts one immutable acquisition event sequence
@@ -180,9 +180,9 @@ namespace scopeone::core::internal
     {
         if (event.cameraIds.size() > 1)
         {
-            if (!m_mpcm)
+            if (!m_cameraManager)
             {
-                if (errorMessage) *errorMessage = QStringLiteral("MultiProcessCameraManager not available");
+                if (errorMessage) *errorMessage = QStringLiteral("CameraManager not available");
                 return false;
             }
             return execEventMultiCamera(event, output, errorMessage);
@@ -297,7 +297,7 @@ namespace scopeone::core::internal
             {
                 CaptureResult result;
                 result.cameraId = cameraId;
-                if (!m_mpcm->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
+                if (!m_cameraManager->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
                 {
                     result.error = QStringLiteral("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;

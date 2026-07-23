@@ -2,6 +2,7 @@
 
 #include "internal/ProcessingModule.h"
 #include <deque>
+#include <vector>
 
 namespace scopeone::core::internal
 {
@@ -41,9 +42,12 @@ namespace scopeone::core::internal
     private:
         void resetCalibration();
         void computeBackground();
+        ProcessingResult processRunningMean(const ImageFrame& sourceFrame,
+                                            const ImageFrame& workingFrame);
 
         int m_calibrationFrames{101};
         std::deque<ImageFrame> m_buffer;
+        std::vector<qint64> m_runningSum;
         ImageFrame m_background;
         bool m_calibrated{false};
         BackgroundOperation m_operation{BackgroundOperation::Subtract};

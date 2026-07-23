@@ -1,0 +1,16 @@
+{
+  "name": "scopeone",
+  "description": "Control ScopeOne through its bundled MCP server",
+  "version": "1.0.0",
+  "author": {
+    "name": "ScopeOne Project"
+  },
+  "userConfig": {
+    "mcp_server": {
+      "type": "file",
+      "title": "ScopeOne MCP Server",
+      "description": "Select the ScopeOneMcpServer executable installed with ScopeOne",
+      "required": true
+    }
+  }
+}

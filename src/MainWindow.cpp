@@ -339,9 +339,9 @@ namespace scopeone::ui
                 this, &MainWindow::handlePreviewMousePosition);
         connect(m_previewWidget, &PreviewWidget::roiDrawn,
                 this, &MainWindow::handleRoiDrawn);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::newRawFrameReady,
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::rawFramesAcquired,
                 m_previewWidget, &PreviewWidget::trackRawFrameRate);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFrameReady,
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCompleted,
                 m_previewWidget, &PreviewWidget::trackProcessedFrameRate);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
@@ -351,14 +351,14 @@ namespace scopeone::ui
                         return;
                     }
                     m_previewWidget->setGraphRawFrame(frame);
-                    refreshPreviewCursorStatus();
+                    schedulePreviewCursorStatusRefresh();
                 });
 
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewProcessedFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
                 {
                     m_previewWidget->setGraphProcessedFrame(frame);
-                    refreshPreviewCursorStatus();
+                    schedulePreviewCursorStatusRefresh();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramePublished,
                 this, [this](const QString& sourceId,
@@ -366,7 +366,7 @@ namespace scopeone::ui
                              const scopeone::core::ImageFrame& frame)
                 {
                     m_previewWidget->setGraphStaticLayerFrame(sourceId, frame);
-                    refreshPreviewCursorStatus();
+                    schedulePreviewCursorStatusRefresh();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFrameRemoved,
                 this, [this](const QString& sourceId)
@@ -775,6 +775,12 @@ namespace scopeone::ui
         {
             setStatusLabelText(m_statusMessageLabel, tr("Ready"), tr("Latest operation message"));
         });
+
+        m_cursorRefreshTimer = new QTimer(this);
+        m_cursorRefreshTimer->setInterval(50);
+        m_cursorRefreshTimer->setSingleShot(true);
+        connect(m_cursorRefreshTimer, &QTimer::timeout,
+                this, &MainWindow::refreshPreviewCursorStatus);
     }
 
     // Create application menus and persistent actions
@@ -1140,6 +1146,17 @@ namespace scopeone::ui
         setCursorStatus(msg);
     }
 
+    // Coalesce live cursor sampling independently of camera frame rate
+    void MainWindow::schedulePreviewCursorStatusRefresh()
+    {
+        if (m_lastPreviewMousePos.x() >= 0
+            && m_lastPreviewMousePos.y() >= 0
+            && !m_cursorRefreshTimer->isActive())
+        {
+            m_cursorRefreshTimer->start();
+        }
+    }
+
     // Registers right panel frame sliders for stack backed gallery layers
     void MainWindow::registerGallerySessionFrameControls(
         const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
@@ -1293,6 +1310,7 @@ namespace scopeone::ui
     void MainWindow::handlePreviewMousePosition(const QPoint& pos)
     {
         m_lastPreviewMousePos = pos;
+        m_cursorRefreshTimer->stop();
         if (pos.x() < 0 || pos.y() < 0)
         {
             clearCursorStatus();

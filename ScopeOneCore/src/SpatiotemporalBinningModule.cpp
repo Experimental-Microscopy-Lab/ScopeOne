@@ -1,8 +1,9 @@
 #include "internal/SpatiotemporalBinningModule.h"
 #include "internal/FrameBufferUtils.h"
 
-#include <algorithm>
 #include <QtGlobal>
+#include <utility>
+#include <vector>
 
 namespace scopeone::core::internal
 {
@@ -15,77 +16,278 @@ namespace scopeone::core::internal
                 && mode <= static_cast<int>(SpatiotemporalBinningModule::BinningMode::Skip);
         }
 
-        // Reduces a set of pixel values using the selected binning mode
-        int modeValue(SpatiotemporalBinningModule::BinningMode mode, const std::vector<int>& values)
+        template <SpatiotemporalBinningModule::BinningMode Mode, typename Pixel>
+        int reduceTemporalExtremaPixel(const std::vector<const Pixel*>& rows,
+                                       int x,
+                                       int maxValue)
         {
-            switch (mode)
+            static_assert(Mode == SpatiotemporalBinningModule::BinningMode::Minimum
+                          || Mode == SpatiotemporalBinningModule::BinningMode::Maximum);
+
+            if constexpr (Mode == SpatiotemporalBinningModule::BinningMode::Minimum)
             {
-            case SpatiotemporalBinningModule::BinningMode::Mean:
+                int value = maxValue;
+                for (const Pixel* row : rows)
                 {
-                    int sum = 0;
-                    for (int value : values)
-                    {
-                        sum += value;
-                    }
-                    return sum / static_cast<int>(values.size());
+                    value = qMin(value, static_cast<int>(row[x]));
                 }
-            case SpatiotemporalBinningModule::BinningMode::Sum:
-                {
-                    int sum = 0;
-                    for (int value : values)
-                    {
-                        sum += value;
-                    }
-                    return sum;
-                }
-            case SpatiotemporalBinningModule::BinningMode::Minimum:
-                return *std::min_element(values.begin(), values.end());
-            case SpatiotemporalBinningModule::BinningMode::Maximum:
-                return *std::max_element(values.begin(), values.end());
-            case SpatiotemporalBinningModule::BinningMode::Skip:
-                return values.front();
+                return value;
             }
-            return values.front();
+            else
+            {
+                int value = 0;
+                for (const Pixel* row : rows)
+                {
+                    value = qMax(value, static_cast<int>(row[x]));
+                }
+                return value;
+            }
         }
 
-        // Combines buffered frames along the time axis
-        ImageFrame applyTemporalBinning(const std::deque<ImageFrame>& buffer,
+        template <SpatiotemporalBinningModule::BinningMode Mode, typename Pixel>
+        QByteArray temporalExtremaBytes(const std::deque<ImageFrame>& buffer,
+                                        int width,
+                                        int height,
+                                        int maxValue)
+        {
+            QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+            if (outBytes.isEmpty())
+            {
+                return outBytes;
+            }
+
+            Pixel* outputData = reinterpret_cast<Pixel*>(outBytes.data());
+            std::vector<const char*> sourceData(buffer.size());
+            std::vector<int> sourceStrides(buffer.size());
+            for (size_t i = 0; i < buffer.size(); ++i)
+            {
+                sourceData[i] = buffer[i].bytes.constData();
+                sourceStrides[i] = buffer[i].stride;
+            }
+            const qint64 workItemCount = static_cast<qint64>(width)
+                                         * height * static_cast<qint64>(buffer.size());
+            parallelForRows(workItemCount, height, [&](int firstRow, int lastRow)
+            {
+                std::vector<const Pixel*> rows(buffer.size());
+                for (int y = firstRow; y < lastRow; ++y)
+                {
+                    for (size_t i = 0; i < buffer.size(); ++i)
+                    {
+                        rows[i] = reinterpret_cast<const Pixel*>(
+                            sourceData[i] + static_cast<qint64>(y) * sourceStrides[i]);
+                    }
+                    Pixel* dstRow = outputData + static_cast<size_t>(y) * width;
+                    for (int x = 0; x < width; ++x)
+                    {
+                        dstRow[x] = static_cast<Pixel>(
+                            reduceTemporalExtremaPixel<Mode>(rows, x, maxValue));
+                    }
+                }
+            });
+            return outBytes;
+        }
+
+        // Advances a rolling temporal sum and writes a ready output in the same image pass
+        ImageFrame advanceTemporalSum(const ImageFrame& incoming,
+                                      const ImageFrame* expired,
+                                      const ImageFrame& reference,
+                                      std::vector<qint64>& sum,
+                                      int frameCount,
+                                      bool mean,
+                                      bool outputReady)
+        {
+            const int maxValue = incoming.maxValue();
+            QByteArray bytes = dispatchFrameType(incoming, [&]<typename Pixel>()
+            {
+                QByteArray outBytes;
+                if (outputReady)
+                {
+                    outBytes = allocatePixelBytes<Pixel>(incoming.width, incoming.height);
+                    if (outBytes.isEmpty())
+                    {
+                        return outBytes;
+                    }
+                }
+
+                const char* incomingData = incoming.bytes.constData();
+                const char* expiredData = expired ? expired->bytes.constData() : nullptr;
+                qint64* sumData = sum.data();
+                Pixel* outputData = outputReady
+                                        ? reinterpret_cast<Pixel*>(outBytes.data())
+                                        : nullptr;
+                parallelForImageRows(incoming.width, incoming.height, [&](int firstRow, int lastRow)
+                {
+                    for (int y = firstRow; y < lastRow; ++y)
+                    {
+                        const Pixel* incomingRow = reinterpret_cast<const Pixel*>(
+                            incomingData + static_cast<qint64>(y) * incoming.stride);
+                        const Pixel* expiredRow = expired
+                                                      ? reinterpret_cast<const Pixel*>(
+                                                            expiredData
+                                                            + static_cast<qint64>(y) * expired->stride)
+                                                      : nullptr;
+                        qint64* sumRow = sumData + static_cast<size_t>(y) * incoming.width;
+                        Pixel* outputRow = outputData
+                                               ? outputData + static_cast<size_t>(y) * incoming.width
+                                               : nullptr;
+                        for (int x = 0; x < incoming.width; ++x)
+                        {
+                            sumRow[x] += static_cast<int>(incomingRow[x]);
+                            if (expiredRow)
+                            {
+                                sumRow[x] -= static_cast<int>(expiredRow[x]);
+                            }
+                            if (outputRow)
+                            {
+                                const qint64 value = mean
+                                                         ? sumRow[x] / frameCount
+                                                         : sumRow[x];
+                                outputRow[x] = static_cast<Pixel>(
+                                    qBound(qint64{0}, value, static_cast<qint64>(maxValue)));
+                            }
+                        }
+                    }
+                });
+                return outBytes;
+            });
+            if (!outputReady)
+            {
+                return {};
+            }
+            return makeFrameLike(reference,
+                                 incoming.width,
+                                 incoming.height,
+                                 std::move(bytes));
+        }
+
+        template <SpatiotemporalBinningModule::BinningMode Mode, typename Pixel>
+        int reduceSpatialBlock(const char* sourceData,
+                               int sourceStride,
+                               int startX,
+                               int startY,
+                               int binX,
+                               int binY,
+                               int maxValue)
+        {
+            if constexpr (Mode == SpatiotemporalBinningModule::BinningMode::Skip)
+            {
+                const Pixel* row = reinterpret_cast<const Pixel*>(
+                    sourceData + static_cast<qint64>(startY) * sourceStride);
+                return static_cast<int>(row[startX]);
+            }
+
+            if constexpr (Mode == SpatiotemporalBinningModule::BinningMode::Minimum)
+            {
+                int value = maxValue;
+                for (int yy = 0; yy < binY; ++yy)
+                {
+                    const Pixel* row = reinterpret_cast<const Pixel*>(
+                        sourceData + static_cast<qint64>(startY + yy) * sourceStride) + startX;
+                    for (int xx = 0; xx < binX; ++xx)
+                    {
+                        value = qMin(value, static_cast<int>(row[xx]));
+                    }
+                }
+                return value;
+            }
+
+            if constexpr (Mode == SpatiotemporalBinningModule::BinningMode::Maximum)
+            {
+                int value = 0;
+                for (int yy = 0; yy < binY; ++yy)
+                {
+                    const Pixel* row = reinterpret_cast<const Pixel*>(
+                        sourceData + static_cast<qint64>(startY + yy) * sourceStride) + startX;
+                    for (int xx = 0; xx < binX; ++xx)
+                    {
+                        value = qMax(value, static_cast<int>(row[xx]));
+                    }
+                }
+                return value;
+            }
+
+            qint64 sum = 0;
+            for (int yy = 0; yy < binY; ++yy)
+            {
+                const Pixel* row = reinterpret_cast<const Pixel*>(
+                    sourceData + static_cast<qint64>(startY + yy) * sourceStride) + startX;
+                for (int xx = 0; xx < binX; ++xx)
+                {
+                    sum += static_cast<int>(row[xx]);
+                }
+            }
+            if constexpr (Mode == SpatiotemporalBinningModule::BinningMode::Mean)
+            {
+                sum /= static_cast<qint64>(binX) * binY;
+            }
+            return static_cast<int>(qBound(qint64{0}, sum, static_cast<qint64>(maxValue)));
+        }
+
+        template <SpatiotemporalBinningModule::BinningMode Mode, typename Pixel>
+        QByteArray spatialBinningBytes(const ImageFrame& frame,
+                                       int width,
+                                       int height,
+                                       int binX,
+                                       int binY,
+                                       int maxValue)
+        {
+            QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
+            if (outBytes.isEmpty())
+            {
+                return outBytes;
+            }
+
+            const char* sourceData = frame.bytes.constData();
+            Pixel* outputData = reinterpret_cast<Pixel*>(outBytes.data());
+            const qint64 workItemCount = static_cast<qint64>(width)
+                                         * height * binX * binY;
+            parallelForRows(workItemCount, height, [&](int firstRow, int lastRow)
+            {
+                for (int y = firstRow; y < lastRow; ++y)
+                {
+                    Pixel* dst = outputData + static_cast<size_t>(y) * width;
+                    for (int x = 0; x < width; ++x)
+                    {
+                        dst[x] = static_cast<Pixel>(
+                            reduceSpatialBlock<Mode, Pixel>(sourceData,
+                                                           frame.stride,
+                                                           x * binX,
+                                                           y * binY,
+                                                           binX,
+                                                           binY,
+                                                           maxValue));
+                    }
+                }
+            });
+            return outBytes;
+        }
+
+        // Scans one buffered window for temporal minimum or maximum
+        ImageFrame applyTemporalExtrema(const std::deque<ImageFrame>& buffer,
                                         SpatiotemporalBinningModule::BinningMode mode)
         {
             if (buffer.empty())
             {
                 qFatal("Temporal binning requires at least one frame");
             }
-            if (buffer.size() == 1 || mode == SpatiotemporalBinningModule::BinningMode::Skip)
+            if (mode != SpatiotemporalBinningModule::BinningMode::Minimum
+                && mode != SpatiotemporalBinningModule::BinningMode::Maximum)
             {
-                return buffer.front();
+                qFatal("Temporal extrema requires minimum or maximum mode");
             }
 
             const int width = buffer.front().width;
             const int height = buffer.front().height;
             const int maxValue = buffer.front().maxValue();
-            std::vector<int> samples(buffer.size());
             QByteArray bytes = dispatchFrameType(buffer.front(), [&]<typename Pixel>()
             {
-                QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
-                if (outBytes.isEmpty())
+                if (mode == SpatiotemporalBinningModule::BinningMode::Minimum)
                 {
-                    return outBytes;
+                    return temporalExtremaBytes<SpatiotemporalBinningModule::BinningMode::Minimum, Pixel>(
+                        buffer, width, height, maxValue);
                 }
-                for (int y = 0; y < height; ++y)
-                {
-                    Pixel* dstRow = mutableRowData<Pixel>(outBytes, width, y);
-                    for (int x = 0; x < width; ++x)
-                    {
-                        for (int i = 0; i < static_cast<int>(buffer.size()); ++i)
-                        {
-                            samples[static_cast<size_t>(i)] = static_cast<int>(
-                                frameRowData<Pixel>(buffer[static_cast<size_t>(i)], y)[x]);
-                        }
-                        dstRow[x] = clampPixelValue<Pixel>(modeValue(mode, samples), maxValue);
-                    }
-                }
-                return outBytes;
+                return temporalExtremaBytes<SpatiotemporalBinningModule::BinningMode::Maximum, Pixel>(
+                    buffer, width, height, maxValue);
             });
 
             return makeFrameLike(buffer.front(), width, height, std::move(bytes));
@@ -109,34 +311,28 @@ namespace scopeone::core::internal
                 return frame;
             }
 
-            std::vector<int> samples;
-            samples.reserve(static_cast<size_t>(static_cast<qint64>(binX) * binY));
             const int maxValue = frame.maxValue();
             QByteArray bytes = dispatchFrameType(frame, [&]<typename Pixel>()
             {
-                QByteArray outBytes = allocatePixelBytes<Pixel>(width, height);
-                if (outBytes.isEmpty())
+                switch (mode)
                 {
-                    return outBytes;
+                case SpatiotemporalBinningModule::BinningMode::Mean:
+                    return spatialBinningBytes<SpatiotemporalBinningModule::BinningMode::Mean, Pixel>(
+                        frame, width, height, binX, binY, maxValue);
+                case SpatiotemporalBinningModule::BinningMode::Sum:
+                    return spatialBinningBytes<SpatiotemporalBinningModule::BinningMode::Sum, Pixel>(
+                        frame, width, height, binX, binY, maxValue);
+                case SpatiotemporalBinningModule::BinningMode::Minimum:
+                    return spatialBinningBytes<SpatiotemporalBinningModule::BinningMode::Minimum, Pixel>(
+                        frame, width, height, binX, binY, maxValue);
+                case SpatiotemporalBinningModule::BinningMode::Maximum:
+                    return spatialBinningBytes<SpatiotemporalBinningModule::BinningMode::Maximum, Pixel>(
+                        frame, width, height, binX, binY, maxValue);
+                case SpatiotemporalBinningModule::BinningMode::Skip:
+                    return spatialBinningBytes<SpatiotemporalBinningModule::BinningMode::Skip, Pixel>(
+                        frame, width, height, binX, binY, maxValue);
                 }
-                for (int y = 0; y < height; ++y)
-                {
-                    Pixel* dst = mutableRowData<Pixel>(outBytes, width, y);
-                    for (int x = 0; x < width; ++x)
-                    {
-                        samples.clear();
-                        for (int yy = 0; yy < binY; ++yy)
-                        {
-                            for (int xx = 0; xx < binX; ++xx)
-                            {
-                                samples.push_back(static_cast<int>(
-                                    frameRowData<Pixel>(frame, y * binY + yy)[x * binX + xx]));
-                            }
-                        }
-                        dst[x] = clampPixelValue<Pixel>(modeValue(mode, samples), maxValue);
-                    }
-                }
-                return outBytes;
+                return QByteArray{};
             });
 
             return makeFrameLike(frame, width, height, std::move(bytes));
@@ -169,6 +365,38 @@ namespace scopeone::core::internal
             if (!m_frameBuffer.empty() && !m_frameBuffer.front().isCompatibleWith(workingFrame))
             {
                 m_frameBuffer.clear();
+                m_temporalSum.clear();
+            }
+
+            ImageFrame temporal;
+            const bool useRollingSum = m_temporalBin > 1
+                && (m_temporalMode == BinningMode::Mean
+                    || m_temporalMode == BinningMode::Sum);
+            if (useRollingSum)
+            {
+                const qint64 pixelCount = static_cast<qint64>(workingFrame.width)
+                                          * workingFrame.height;
+                if (m_temporalSum.size() != static_cast<size_t>(pixelCount))
+                {
+                    m_frameBuffer.clear();
+                    m_temporalSum.assign(static_cast<size_t>(pixelCount), qint64{0});
+                }
+                const ImageFrame* expired = static_cast<int>(m_frameBuffer.size()) >= m_temporalBin
+                                                ? &m_frameBuffer.front()
+                                                : nullptr;
+                const bool outputReady = static_cast<int>(m_frameBuffer.size()) + 1
+                                         >= m_temporalBin;
+                const ImageFrame& reference = m_frameBuffer.empty()
+                                                  ? workingFrame
+                                                  : m_frameBuffer.front();
+                temporal = advanceTemporalSum(
+                    workingFrame,
+                    expired,
+                    reference,
+                    m_temporalSum,
+                    m_temporalBin,
+                    m_temporalMode == BinningMode::Mean,
+                    outputReady);
             }
             m_frameBuffer.push_back(workingFrame);
             while (static_cast<int>(m_frameBuffer.size()) > m_temporalBin)
@@ -180,7 +408,12 @@ namespace scopeone::core::internal
             {
                 return {frame, {}};
             }
-            const ImageFrame temporal = applyTemporalBinning(m_frameBuffer, m_temporalMode);
+            if (!useRollingSum)
+            {
+                temporal = m_frameBuffer.size() == 1 || m_temporalMode == BinningMode::Skip
+                               ? m_frameBuffer.front()
+                               : applyTemporalExtrema(m_frameBuffer, m_temporalMode);
+            }
             return {applySpatialBinning(temporal, m_spatialBinX, m_spatialBinY, m_spatialMode), {}};
         }
         catch (const std::exception& e)
@@ -248,6 +481,7 @@ namespace scopeone::core::internal
         if (resetBuffer)
         {
             m_frameBuffer.clear();
+            m_temporalSum.clear();
         }
     }
 
@@ -255,6 +489,7 @@ namespace scopeone::core::internal
     bool SpatiotemporalBinningModule::resetState()
     {
         m_frameBuffer.clear();
+        m_temporalSum.clear();
         return true;
     }
 } // namespace scopeone::core::internal

@@ -1,0 +1,16 @@
+{
+  "name": "scopeone",
+  "owner": {
+    "name": "ScopeOne Project"
+  },
+  "description": "Claude Code plugins for ScopeOne microscopy automation",
+  "plugins": [
+    {
+      "name": "scopeone",
+      "displayName": "ScopeOne",
+      "source": "./scopeone-skill",
+      "description": "Control ScopeOne through its bundled MCP server",
+      "homepage": "https://github.com/Experimental-Microscopy-Lab/ScopeOne"
+    }
+  ]
+}

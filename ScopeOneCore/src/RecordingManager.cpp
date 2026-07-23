@@ -1,6 +1,6 @@
 #include "internal/RecordingManager.h"
 
-#include "internal/MultiProcessCameraManager.h"
+#include "internal/CameraManager.h"
 #include "MMCore.h"
 
 #include <QDateTime>
@@ -635,6 +635,14 @@ namespace scopeone::core::internal
     RecordingManager::RecordingManager(QObject* parent)
         : QObject(parent)
     {
+        m_writerStatusTimer.setInterval(100);
+        connect(&m_writerStatusTimer, &QTimer::timeout, this, [this]()
+        {
+            if (m_writerStatusDirty.load(std::memory_order_acquire))
+            {
+                emitWriterStatus();
+            }
+        });
     }
 
     // Stops recording and writer threads during teardown
@@ -663,15 +671,16 @@ namespace scopeone::core::internal
         return static_cast<qint64>(m_writerState.recordedMaxBytes);
     }
 
-    // Emits the current write buffer usage
-    void RecordingManager::emitBufferUsageChanged(qint64 pendingWriteBytes)
+    // Marks writer telemetry for the next bounded UI update
+    void RecordingManager::markWriterStatusDirty()
     {
-        emit bufferUsageChanged(pendingWriteBytes);
+        m_writerStatusDirty.store(true, std::memory_order_release);
     }
 
     // Emits a snapshot of writer status
     void RecordingManager::emitWriterStatus()
     {
+        m_writerStatusDirty.store(false, std::memory_order_release);
         RecordingWriterStatus status;
         {
             std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
@@ -775,7 +784,7 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_mpcm && !m_latestFrameFetcher)
+        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraManager && !m_latestFrameFetcher)
         {
             errorMessage = QStringLiteral("Frame source is not available for recording");
             return false;
@@ -988,7 +997,6 @@ namespace scopeone::core::internal
             std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
             m_writerState.pendingWriteBytes = 0;
         }
-        emitBufferUsageChanged(0);
         const quint64 generation = m_captureState.generation;
         for (auto it = m_writerState.cameraOutputs.begin(); it != m_writerState.cameraOutputs.end(); ++it)
         {
@@ -1007,6 +1015,7 @@ namespace scopeone::core::internal
                 writerLoop(output, generation);
             });
         }
+        m_writerStatusTimer.start();
         setWriterStatus(RecordingWriterPhase::Writing);
         return true;
     }
@@ -1096,7 +1105,7 @@ namespace scopeone::core::internal
             m_writerState.cameraOutputs.clear();
             m_writerState.pendingWriteBytes = 0;
         }
-        emitBufferUsageChanged(0);
+        m_writerStatusTimer.stop();
         emitWriterStatus();
     }
 
@@ -1140,7 +1149,7 @@ namespace scopeone::core::internal
                     writerFailure = m_writerState.writerError;
                 }
                 requestWriterStop();
-                emitWriterStatus();
+                markWriterStatusDirty();
                 QMetaObject::invokeMethod(this, [this, writerFailure, generation]()
                 {
                     if (generation == m_captureState.generation && m_captureState.isRecording)
@@ -1151,16 +1160,13 @@ namespace scopeone::core::internal
                 break;
             }
 
-            qint64 pendingWriteBytes = 0;
             {
                 std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
                 m_writerState.pendingWriteBytes -= static_cast<size_t>(task.frame.payloadByteCount());
                 m_writerState.status.addWrittenFrames(1);
-                pendingWriteBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
             }
             output->framesWritten += 1;
-            emitBufferUsageChanged(pendingWriteBytes);
-            emitWriterStatus();
+            markWriterStatusDirty();
         }
     }
 
@@ -1282,6 +1288,12 @@ namespace scopeone::core::internal
         if (!usesMda)
         {
             primeLastFrameIndices();
+            if (m_cameraManager
+                && !m_cameraManager->setRecordingFrameDeliveryEnabled(true))
+            {
+                qWarning().noquote() << "Failed to enable all-frame camera delivery";
+                return false;
+            }
         }
         resetSessionState(plan, deviceProperties);
 
@@ -1289,6 +1301,10 @@ namespace scopeone::core::internal
         {
             if (!startStreamingOutputs(plan))
             {
+                if (m_cameraManager)
+                {
+                    m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+                }
                 const QString writerError = writerErrorSnapshot();
                 qWarning().noquote() << (writerError.isEmpty()
                                              ? QStringLiteral("Failed to start streaming outputs")
@@ -1311,7 +1327,7 @@ namespace scopeone::core::internal
                                           ? kRecordingPhaseRecordingBurst
                                           : kRecordingPhaseRecording);
         emit recordingStateChanged(true);
-        emitProgress();
+        emitProgress(true);
 
         qInfo().noquote() << QString("Recording started (%1 camera(s))").arg(m_captureState.activeCameraIds.size());
 
@@ -1340,13 +1356,17 @@ namespace scopeone::core::internal
     void RecordingManager::finishRecording(ExperimentRunState state, const QString& errorMessage)
     {
         if (!m_captureState.isRecording) return;
+        if (m_cameraManager)
+        {
+            m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+        }
         if (m_mdaState.usingMda && m_mdaState.manager && m_mdaState.manager->isRunning())
         {
             m_mdaState.manager->requestCancel();
         }
-        if (m_mpcm)
+        if (m_cameraManager)
         {
-            m_mpcm->setPollingPaused(false);
+            m_cameraManager->setFrameDeliveryPaused(false);
         }
 
         if (m_captureState.streamToDisk)
@@ -1358,7 +1378,7 @@ namespace scopeone::core::internal
         m_captureState.isRecording = false;
         m_captureState.phase = kRecordingPhaseStopped;
         emit recordingStateChanged(false);
-        emitProgress();
+        emitProgress(true);
 
         qInfo().noquote() << "Recording stopped";
 
@@ -1396,10 +1416,27 @@ namespace scopeone::core::internal
         emit recordingStopped(session);
     }
 
-    // Receives one raw preview frame for recording ingestion
-    void RecordingManager::onNewRawFrameReady(const ImageFrame& frame)
+    // Receives one complete preview frame batch for recording ingestion
+    void RecordingManager::onRawFramesReady(const QList<ImageFrame>& frames)
     {
-        ingestFrame(FramePacket{frame, FramePacket::Source::PreviewStream});
+        for (const ImageFrame& frame : frames)
+        {
+            if (!m_captureState.isRecording)
+            {
+                break;
+            }
+            ingestFrame(FramePacket{frame, FramePacket::Source::PreviewStream});
+        }
+    }
+
+    // Fails an active preview recording when frame delivery is incomplete
+    void RecordingManager::onFrameDeliveryFailed(const QString& errorMessage)
+    {
+        if (!m_captureState.isRecording || m_mdaState.usingMda)
+        {
+            return;
+        }
+        finishRecording(ExperimentRunState::Failed, errorMessage);
     }
 
     // Seeds last frame indices to skip stale preview frames
@@ -1422,8 +1459,17 @@ namespace scopeone::core::internal
     }
 
     // Emits recording progress for UI and API listeners
-    void RecordingManager::emitProgress()
+    void RecordingManager::emitProgress(bool force)
     {
+        constexpr qint64 kProgressPublishIntervalMs = 100;
+        if (!force
+            && m_progressPublishTimer.isValid()
+            && m_progressPublishTimer.elapsed() < kProgressPublishIntervalMs)
+        {
+            return;
+        }
+        m_progressPublishTimer.restart();
+
         qint64 frameCurrent = 0;
         const int burstCurrent = m_captureState.burstMode ? m_captureState.currentBurst : 0;
         const int burstTarget = m_captureState.burstMode ? m_captureState.targetBursts : 0;
@@ -1502,7 +1548,6 @@ namespace scopeone::core::internal
     {
         const QString cameraId = frame.cameraId.trimmed();
         const size_t frameBytes = static_cast<size_t>(frame.payloadByteCount());
-        qint64 pendingWriteBytes = 0;
         std::shared_ptr<CameraOutput> output;
         QString failureError;
         bool emitStatus = false;
@@ -1533,7 +1578,6 @@ namespace scopeone::core::internal
             {
                 output = it.value();
                 m_writerState.pendingWriteBytes += frameBytes;
-                pendingWriteBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
             }
         }
         if (!output)
@@ -1557,20 +1601,17 @@ namespace scopeone::core::internal
             std::lock_guard<std::mutex> lock(output->queueMutex);
             if (output->stopRequested)
             {
-                qint64 revertedPendingBytes = 0;
                 {
                     std::lock_guard<std::mutex> stateLock(m_writerState.writeMutex);
                     m_writerState.pendingWriteBytes -= frameBytes;
-                    revertedPendingBytes = static_cast<qint64>(m_writerState.pendingWriteBytes);
                 }
-                emitBufferUsageChanged(revertedPendingBytes);
+                markWriterStatusDirty();
                 return false;
             }
             output->writeQueue.push_back(WriteTask{frame});
         }
-        emitBufferUsageChanged(pendingWriteBytes);
         output->writeCondition.notify_one();
-        emitWriterStatus();
+        markWriterStatusDirty();
         return true;
     }
 
@@ -1729,7 +1770,7 @@ namespace scopeone::core::internal
             {
                 m_sessionState.activeSession->appendEventRecord(record);
             }
-            emitProgress();
+            emitProgress(true);
             return;
         }
 
@@ -1814,9 +1855,9 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        if (m_captureState.activeCameraIds.size() > 1 && !m_mpcm)
+        if (m_captureState.activeCameraIds.size() > 1 && !m_cameraManager)
         {
-            const QString message = QStringLiteral("Multi-camera MDA requires MultiProcessCameraManager");
+            const QString message = QStringLiteral("Multi-camera MDA requires CameraManager");
             if (errorMessage) *errorMessage = message;
             qWarning().noquote() << message;
             return false;
@@ -1833,11 +1874,11 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        m_mdaState.manager->setMultiProcessCameraManager(m_mpcm);
+        m_mdaState.manager->setCameraManager(m_cameraManager);
 
         if (m_captureState.activeCameraIds.size() > 1)
         {
-            m_mpcm->setPollingPaused(true);
+            m_cameraManager->setFrameDeliveryPaused(true);
         }
 
         m_mdaState.cameraId = m_captureState.activeCameraIds.first();
@@ -1877,7 +1918,7 @@ namespace scopeone::core::internal
                 m_captureState.waitingBetweenBursts = true;
                 m_captureState.lastBurstEndMs = m_captureState.elapsedTimer.elapsed();
                 m_captureState.phase = kRecordingPhaseWaitingNextBurst;
-                emitProgress();
+                emitProgress(true);
                 const int waitMs = static_cast<int>(m_captureState.burstIntervalMs);
                 QTimer::singleShot(waitMs, this, [this, generation]()
                 {
@@ -1961,7 +2002,7 @@ namespace scopeone::core::internal
         const int burstIndex = m_captureState.currentBurst;
         m_captureState.currentBurst += 1;
         m_captureState.phase = kRecordingPhaseRecordingMda;
-        emitProgress();
+        emitProgress(true);
 
         QString buildError;
         const QList<AcquisitionEvent> events = buildAcquisitionEvents(m_mdaState.plan,
@@ -2032,7 +2073,7 @@ namespace scopeone::core::internal
 
         m_captureState.currentBurst += 1;
         m_captureState.phase = kRecordingPhaseWaitingNextBurst;
-        emitProgress();
+        emitProgress(true);
 
         if (m_captureState.currentBurst >= m_captureState.targetBursts)
         {

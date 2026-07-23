@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOneCore VERSION 2.0.719 LANGUAGES CXX)
+project(ScopeOneCore VERSION 2.0.722 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -108,7 +108,10 @@ set(CORE_SOURCES
         src/DifferentialRollingModule.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
-        src/MultiProcessCameraManager.cpp
+        src/CameraBackend.cpp
+        src/CameraManager.cpp
+        src/NativeCameraBackend.cpp
+        src/AgentCameraBackend.cpp
         src/ScopeOneCore.cpp
 )
 
@@ -129,7 +132,8 @@ set(CORE_HEADERS
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
-        internal/MultiProcessCameraManager.h
+        internal/CameraBackend.h
+        internal/CameraManager.h
         include/scopeone/ImageFrame.h
         include/scopeone/SharedFrame.h
         include/scopeone/scopeone_core_export.h

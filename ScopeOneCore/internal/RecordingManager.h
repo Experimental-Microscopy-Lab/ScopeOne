@@ -6,6 +6,8 @@
 #include <QFile>
 #include <QHash>
 #include <QStringList>
+#include <QTimer>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -27,7 +29,7 @@ namespace scopeone::core::internal
     using RecordingWriterPhase = scopeone::core::ScopeOneCore::RecordingWriterPhase;
     using RecordingWriterStatus = scopeone::core::ScopeOneCore::RecordingWriterStatus;
 
-    class MultiProcessCameraManager;
+    class CameraManager;
 
     class RecordingManager : public QObject
     {
@@ -37,7 +39,7 @@ namespace scopeone::core::internal
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
-        void setMultiProcessCameraManager(MultiProcessCameraManager* mpcm) { m_mpcm = mpcm; }
+        void setCameraManager(CameraManager* cameraManager) { m_cameraManager = cameraManager; }
         void setMMCore(const std::shared_ptr<CMMCore>& core) { m_mmcore = core; }
 
         void setLatestFrameFetcher(std::function<bool(const QString&, ImageFrame&)> fetcher)
@@ -54,7 +56,8 @@ namespace scopeone::core::internal
 
         bool isRecording() const { return m_captureState.isRecording; }
 
-        void onNewRawFrameReady(const ImageFrame& frame);
+        void onRawFramesReady(const QList<ImageFrame>& frames);
+        void onFrameDeliveryFailed(const QString& errorMessage);
 
         static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
 
@@ -77,7 +80,6 @@ namespace scopeone::core::internal
                              double y,
                              bool hasZ,
                              double z);
-        void bufferUsageChanged(qint64 pendingWriteBytes);
         void writerStatusChanged(const RecordingWriterStatus& status);
         void recordingStateChanged(bool isRecording);
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
@@ -187,14 +189,14 @@ namespace scopeone::core::internal
                                          QString& errorMessage);
         void appendPreviewEventRecord(const ImageFrame& frame);
         void primeLastFrameIndices();
-        void emitProgress();
+        void emitProgress(bool force = false);
         bool startStreamingOutputs(const ExperimentPlan& plan);
         void stopStreamingOutputs(bool applyOutputManifest = false);
         void requestWriterStop();
         void writerLoop(const std::shared_ptr<CameraOutput>& output, quint64 generation);
         bool writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage);
         QString formatName(RecordingFormat format) const;
-        void emitBufferUsageChanged(qint64 pendingWriteBytes);
+        void markWriterStatusDirty();
         void emitWriterStatus();
         void setWriterStatus(RecordingWriterPhase phase, const QString& errorMessage = QString());
         QString writerErrorSnapshot() const;
@@ -214,7 +216,7 @@ namespace scopeone::core::internal
         bool allCamerasReachedTarget() const;
         bool advanceBurstStateIfNeeded();
 
-        MultiProcessCameraManager* m_mpcm{nullptr};
+        CameraManager* m_cameraManager{nullptr};
         std::shared_ptr<CMMCore> m_mmcore;
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
 
@@ -222,5 +224,8 @@ namespace scopeone::core::internal
         WriterState m_writerState;
         CaptureState m_captureState;
         MdaState m_mdaState;
+        QElapsedTimer m_progressPublishTimer;
+        QTimer m_writerStatusTimer;
+        std::atomic_bool m_writerStatusDirty{false};
     };
 }

@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QStringList>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QList>
 #include <QMetaType>
@@ -21,6 +22,8 @@
 #include "scopeone/scopeone_core_export.h"
 
 class CMMCore;
+class QThreadPool;
+class QTimer;
 
 namespace scopeone::core
 {
@@ -620,6 +623,7 @@ namespace scopeone::core
         void clearProcessedFrames();
         bool getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const;
         bool getLayerHistogram(const QString& layerKey, HistogramStats& stats) const;
+        void setActiveHistogramLayer(const QString& layerKey);
         bool autoLayerLevels(const QString& layerKey);
         bool fullLayerLevels(const QString& layerKey);
         bool setLayerAutoStretchEnabled(const QString& layerKey, bool enabled);
@@ -726,10 +730,12 @@ namespace scopeone::core
         void deviceStateChanged();
         void stagePositionChanged();
         void newRawFrameReady(const ImageFrame& frame);
+        void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
         void processedFrameReady(const ImageFrame& frame);
+        void processedFramesCompleted(const QString& cameraId, quint64 frameCount);
         void previewProcessedFrameReady(const ImageFrame& frame);
         void staticFramePublished(const QString& sourceId,
                                   const QString& displayName,
@@ -825,6 +831,7 @@ namespace scopeone::core
         struct HistogramJobState
         {
             bool inFlight{false};
+            bool retryScheduled{false};
             qint64 lastScheduledMs{0};
             quint64 activeSequence{0};
             ImageFrame queuedFrame;
@@ -834,7 +841,7 @@ namespace scopeone::core
                                        LoadConfigResult* result,
                                        QString* errorMessage);
         std::shared_ptr<CMMCore> core() const;
-        bool isAgentCamera(const QString& deviceLabel) const;
+        bool isConfiguredCamera(const QString& deviceLabel) const;
         bool isNativeCamera(const QString& deviceLabel) const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void ensureSceneLayer(const QString& layerKey,
@@ -845,13 +852,12 @@ namespace scopeone::core
         void processGraphRawFrameAsync(const ImageFrame& frame);
         void queuePreviewRawFrame(const ImageFrame& frame);
         void queuePreviewProcessedFrame(const ImageFrame& frame);
-        void flushPreviewRawFrames();
-        void flushPreviewProcessedFrames();
+        void schedulePreviewFlush();
+        void flushPreviewFrames();
         QString sessionFrameSourceId(const std::shared_ptr<RecordingSessionData>& session) const;
         bool publishSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session);
-        void scheduleHistogramStats(const QString& cameraId,
-                                    bool processed,
-                                    const ImageFrame& frame);
+        bool histogramUpdatesEnabled(const QString& layerKey) const;
+        void scheduleHistogramStats(const QString& layerKey, const ImageFrame& frame);
         void clearLayerAnalysis(const QString& layerKey);
         void clearLayerAnalysisByPrefix(const QString& prefix);
         void updateLineProfile(const QString& cameraId,
@@ -891,9 +897,12 @@ namespace scopeone::core
         QHash<QString, ImageFrame> m_pendingPreviewProcessedFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;
         QHash<QString, HistogramStats> m_latestHistogramStats;
+        std::unique_ptr<QThreadPool> m_histogramThreadPool;
+        QString m_activeHistogramLayerKey;
         quint64 m_nextHistogramSequence{0};
-        bool m_previewRawFlushQueued{false};
-        bool m_previewProcessedFlushQueued{false};
+        QElapsedTimer m_lineProfileUpdateTimer;
+        QElapsedTimer m_previewPublishTimer;
+        QTimer* m_previewFlushTimer{nullptr};
         QSet<const RecordingSessionData*> m_sessionsSaving;
     };
 }
