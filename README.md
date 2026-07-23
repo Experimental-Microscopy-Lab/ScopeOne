@@ -7,7 +7,7 @@
   <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a>
 </p>
 
-ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a multi-process architecture where each camera runs in its own [MMCore](https://github.com/micro-manager/mmCoreAndDevices) instance, enabling simultaneous preview and acquisition across multiple cameras.
+ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a native [MMCore](https://github.com/micro-manager/mmCoreAndDevices) backend for single-camera operation and one isolated camera agent per device for simultaneous multi-camera preview and acquisition.
 It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 <p align="center">
@@ -187,7 +187,8 @@ The MCP tool set mirrors the Local API operation catalog, including system state
 The current validation list is still short, but the codebase has been cleaned to remove early hard-coded device assumptions. In principle, ScopeOne should follow Micro-Manager device compatibility.
 
 ## 🖥️ Tested System Configurations
-- Windows 10, Dual Intel(R) Xeon(R) E5-2637 v3, 64 GB RAM, NVIDIA Quadro K620  
-- Windows 11, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
+- Windows 10 Version 21H2, Dual Intel(R) Xeon(R) E5-2637 v3, 64 GB RAM, NVIDIA Quadro K620
+- Windows 11 Version 25H2, Intel(R) Core(TM) Ultra 5 125U, 64 GB RAM
+- Fedora Linux 44 (Workstation Edition), Intel(R) Core(TM) i7-7700, 32 GB RAM
 
-Although these machines are older and weaker than many typical lab computers, ScopeOne still provides smooth real-time preview and processing on them.
+We build and test ScopeOne on the above machines, which are comparatively older and weaker than many typical optical lab computers. However, ScopeOne still provides smooth real-time preview and processing on them.

@@ -43,7 +43,7 @@ Use this placement rule:
 | Namespace | Purpose | Examples |
 |---|---|---|
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
-| `scopeone::core::internal` | Core-only managers and processing implementations | `MMCoreManager`, `RecordingManager`, processing modules |
+| `scopeone::core::internal` | Core-only managers and processing implementations | `CameraManager`, `MMCoreManager`, `RecordingManager`, processing modules |
 | `scopeone::core::internal::agent` | Private camera-agent protocol details | Agent request, response and frame transport types |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
 
