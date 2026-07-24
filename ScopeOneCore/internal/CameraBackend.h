@@ -43,6 +43,13 @@ namespace scopeone::core::internal
         ~CameraBackend() override;
 
         virtual Kind kind() const = 0;
+        virtual void shutdown(std::function<void(const QString&)> completion)
+        {
+            if (completion)
+            {
+                completion({});
+            }
+        }
 
         virtual bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                            const QString& cameraId,

@@ -165,7 +165,7 @@ namespace scopeone::ui
     void DevicePropertyWidget::refresh(bool fromCache)
     {
         // Rebuild the tree and keep the scroll position
-        if (m_updating)
+        if (m_updating || m_scopeonecore->configurationOperationRunning())
         {
             return;
         }

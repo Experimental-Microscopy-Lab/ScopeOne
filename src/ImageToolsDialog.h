@@ -70,6 +70,11 @@ namespace scopeone::ui
         void refreshCameras();
         void ensurePreviewRunning(const QString& cameraId);
         void analyzeCurrentFrame();
+        void handleDetectionFinished(
+            quint64 requestId,
+            const QString& layerKey,
+            const scopeone::core::ScopeOneCore::ParticleDetectionResult& result,
+            const QString& errorMessage);
         QString selectedCameraId() const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
@@ -83,5 +88,6 @@ namespace scopeone::ui
         QLabel* m_statusLabel{nullptr};
         QTimer* m_autoUpdateTimer{nullptr};
         QString m_requestedPreviewCameraId;
+        quint64 m_activeDetectionRequestId{0};
     };
 }

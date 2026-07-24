@@ -51,6 +51,7 @@ namespace scopeone::core::internal
                    const QStringList& activeCameraIds,
                    const QJsonObject& deviceProperties);
         void stop();
+        void shutdown();
         void setRecordedMaxBytes(qint64 bytes);
         qint64 recordedMaxBytes() const;
 

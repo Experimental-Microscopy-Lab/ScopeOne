@@ -49,6 +49,11 @@ namespace scopeone::core::internal
     {
         connect(core, &ScopeOneCore::newRawFrameReady,
                 this, &StageMosaicManager::handleRawFrame);
+        connect(core, &ScopeOneCore::stageMoveFinished,
+                this, [this](quint64 commandId, const QString&, bool success, const QString& errorMessage)
+                {
+                    handleStageMoveFinished(commandId, success, errorMessage);
+                });
     }
 
     StageMosaicManager::~StageMosaicManager() = default;
@@ -107,6 +112,7 @@ namespace scopeone::core::internal
         m_currentTile = 0;
         m_frameWaitSerial = 0;
         m_waitingForFrame = false;
+        m_pendingMoveCommandId = 0;
         m_referenceFrame = ImageFrame{};
         m_storage->sum.release();
         m_storage->count.release();
@@ -151,11 +157,32 @@ namespace scopeone::core::internal
                        QStringLiteral("Moving to tile %1 of %2")
                            .arg(m_currentTile + 1)
                            .arg(totalTiles));
-        if (!m_core->moveXYTo(m_plan.xyStageId, x, y))
+        m_pendingMoveCommandId = m_core->moveXYTo(m_plan.xyStageId, x, y);
+        if (m_pendingMoveCommandId == 0)
         {
             finish(false, false, QStringLiteral("Stage move failed"));
+        }
+    }
+
+    // Continues mosaic capture after the asynchronous stage move
+    void StageMosaicManager::handleStageMoveFinished(quint64 commandId,
+                                                     bool success,
+                                                     const QString& errorMessage)
+    {
+        if (!isRunning() || commandId == 0 || commandId != m_pendingMoveCommandId)
+        {
             return;
         }
+        m_pendingMoveCommandId = 0;
+        if (!success)
+        {
+            finish(false,
+                   false,
+                   errorMessage.isEmpty() ? QStringLiteral("Stage move failed") : errorMessage);
+            return;
+        }
+
+        const quint64 generation = m_generation;
         QTimer::singleShot(m_plan.settleMs, this,
                            [this, generation]() { waitForTileFrame(generation); });
     }
@@ -190,6 +217,7 @@ namespace scopeone::core::internal
             return;
         }
         m_waitingForFrame = false;
+        m_pendingMoveCommandId = 0;
 
         QString errorMessage;
         if (m_storage->sum.empty() && !initializeMosaic(frame, errorMessage))

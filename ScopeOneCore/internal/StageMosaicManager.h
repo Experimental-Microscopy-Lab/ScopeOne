@@ -35,6 +35,9 @@ namespace scopeone::core::internal
         class Storage;
 
         void captureNextTile(quint64 generation);
+        void handleStageMoveFinished(quint64 commandId,
+                                     bool success,
+                                     const QString& errorMessage);
         void waitForTileFrame(quint64 generation);
         void handleRawFrame(const ImageFrame& frame);
         bool initializeMosaic(const ImageFrame& frame, QString& errorMessage);
@@ -52,6 +55,7 @@ namespace scopeone::core::internal
         int m_currentTile{0};
         int m_frameWaitSerial{0};
         quint64 m_generation{0};
+        quint64 m_pendingMoveCommandId{0};
         bool m_waitingForFrame{false};
         bool m_startedPreview{false};
         ScopeOneCore::StageMosaicStatus m_status;

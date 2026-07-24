@@ -80,14 +80,39 @@ namespace scopeone::ui
 
         setupUI();
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::deviceStateChanged,
-                this, &DeviceControlWidget::refreshCameraParameters,
+                this, [this]()
+                {
+                    if (!m_scopeonecore->configurationOperationRunning())
+                    {
+                        refreshCameraParameters();
+                    }
+                },
                 Qt::QueuedConnection);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stagePositionChanged,
                 this, [this]()
                 {
-                    updateStagePositions();
+                    if (!m_scopeonecore->configurationOperationRunning())
+                    {
+                        updateStagePositions();
+                    }
                 },
                 Qt::QueuedConnection);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMoveFinished,
+                this,
+                [this](quint64 commandId,
+                       const QString& deviceLabel,
+                       bool success,
+                       const QString& errorMessage)
+                {
+                    if (!m_pendingStageMoveIds.remove(commandId) || success)
+                    {
+                        return;
+                    }
+                    emit stageMoveFailed(
+                        errorMessage.isEmpty()
+                            ? tr("Failed to move stage: %1").arg(deviceLabel)
+                            : tr("Failed to move stage %1: %2").arg(deviceLabel, errorMessage));
+                });
         updateControlsState();
         refreshStageDevices();
         m_currentTarget = m_cameraSelectCombo->currentText();
@@ -1224,11 +1249,13 @@ namespace scopeone::ui
         {
             return;
         }
-        if (m_scopeonecore->moveXYRelative(xyLabel, dx, dy))
+        const quint64 commandId = m_scopeonecore->moveXYRelative(xyLabel, dx, dy);
+        if (commandId != 0)
         {
+            m_pendingStageMoveIds.insert(commandId);
             return;
         }
-        qWarning().noquote() << QString("Failed to move XY stage: %1").arg(xyLabel);
+        emit stageMoveFailed(tr("Failed to queue XY stage move: %1").arg(xyLabel));
     }
 
     // Moves the selected Z stage by a relative offset
@@ -1239,11 +1266,13 @@ namespace scopeone::ui
         {
             return;
         }
-        if (m_scopeonecore->moveZRelative(zLabel, dz))
+        const quint64 commandId = m_scopeonecore->moveZRelative(zLabel, dz);
+        if (commandId != 0)
         {
+            m_pendingStageMoveIds.insert(commandId);
             return;
         }
-        qWarning().noquote() << QString("Failed to move Z stage: %1").arg(zLabel);
+        emit stageMoveFailed(tr("Failed to queue Z stage move: %1").arg(zLabel));
     }
 
     // Updates control state when cameras initialize

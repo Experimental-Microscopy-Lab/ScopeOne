@@ -7,17 +7,19 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalServer>
 #include <QLocalSocket>
-#include <QEventLoop>
+#include <QPointer>
 #include <QSet>
 #include <QTimer>
 #include <QUuid>
 #include <QtEndian>
 #include <QtGlobal>
+#include <QtConcurrent>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -878,6 +880,87 @@ namespace scopeone::ui
             return QStringList{target};
         }
 
+        // Parses the convenience recording request without starting acquisition
+        bool recordingPlanFromRequest(scopeone::core::ScopeOneCore* core,
+                                      const QJsonObject& request,
+                                      scopeone::core::ExperimentPlan& plan,
+                                      int& timeoutMs,
+                                      QString& errorMessage)
+        {
+            const QJsonValue framesValue = request.value(QStringLiteral("frames"));
+            if (!framesValue.isDouble()
+                || std::trunc(framesValue.toDouble()) != framesValue.toDouble()
+                || framesValue.toDouble() < static_cast<double>((std::numeric_limits<int>::min)())
+                || framesValue.toDouble() > static_cast<double>((std::numeric_limits<int>::max)()))
+            {
+                errorMessage = QStringLiteral("frames must be an integer");
+                return false;
+            }
+            const QJsonValue cameraValue = request.value(QStringLiteral("camera"));
+            if (!cameraValue.isUndefined() && !cameraValue.isString())
+            {
+                errorMessage = QStringLiteral("camera must be a string");
+                return false;
+            }
+
+            plan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            plan.cameraIds = resolveCameraIds(
+                core,
+                cameraValue.isUndefined() ? QStringLiteral("All") : cameraValue.toString());
+            plan.format = scopeone::core::RecordingFormat::Tiff;
+            plan.streamToDisk = false;
+            plan.framesPerBurst = framesValue.toInt();
+            plan.burstMode = false;
+            plan.targetBursts = 1;
+            plan.enableCompression = false;
+            plan.processing = core->processingRecipe();
+            timeoutMs = request.value(QStringLiteral("timeoutMs")).toInt(120000);
+
+            const QJsonValue intervalValue = request.value(QStringLiteral("mdaIntervalMs"));
+            if (!intervalValue.isUndefined()
+                && (!intervalValue.isDouble() || !std::isfinite(intervalValue.toDouble())))
+            {
+                errorMessage = QStringLiteral("mdaIntervalMs must be a finite number");
+                return false;
+            }
+            plan.mdaIntervalMs = intervalValue.isUndefined() ? 0.0 : intervalValue.toDouble();
+            if (!doubleArrayFromJson(request.value(QStringLiteral("zPositions")),
+                                     QStringLiteral("zPositions"),
+                                     plan.zPositions,
+                                     errorMessage)
+                || !pointArrayFromJson(request.value(QStringLiteral("positions")),
+                                       plan.positions,
+                                       errorMessage))
+            {
+                return false;
+            }
+
+            const QJsonValue orderValue = request.value(QStringLiteral("order"));
+            if (orderValue.isUndefined())
+            {
+                return true;
+            }
+            if (!orderValue.isArray())
+            {
+                errorMessage = QStringLiteral("order must be an array");
+                return false;
+            }
+            const QJsonArray orderArray = orderValue.toArray();
+            plan.order.clear();
+            for (qsizetype index = 0; index < orderArray.size(); ++index)
+            {
+                scopeone::core::RecordingAxis axis;
+                if (!orderArray.at(index).isString()
+                    || !axisFromName(orderArray.at(index).toString(), axis))
+                {
+                    errorMessage = QStringLiteral("order[%1] contains an unsupported axis").arg(index);
+                    return false;
+                }
+                plan.order.push_back(axis);
+            }
+            return true;
+        }
+
         // Add common frame metadata to a local API response
         void addFrameMetadata(QJsonObject& response, const scopeone::core::ImageFrame& frame)
         {
@@ -906,6 +989,12 @@ namespace scopeone::ui
             int moduleIndex{-1};
             int nextModuleIndex{-1};
             int startModuleIndex{-1};
+        };
+
+        struct AsyncProcessResult
+        {
+            ProcessFrameRequestResult processed;
+            QString errorMessage;
         };
 
         // Process one frame according to optional local API stage fields
@@ -999,25 +1088,6 @@ namespace scopeone::ui
             return graphFrame;
         }
 
-        bool processAndPublishExternalApiFrame(scopeone::core::ScopeOneCore* core,
-                                               const scopeone::core::ImageFrame& frame,
-                                               const QJsonObject& request,
-                                               ProcessFrameRequestResult& result,
-                                               QString& errorMessage)
-        {
-            result = processFrameFromRequest(core, frame, request, errorMessage);
-            if (!result.frame.isValid())
-            {
-                if (errorMessage.isEmpty())
-                {
-                    errorMessage = QStringLiteral("Processing produced no valid frame");
-                }
-                return false;
-            }
-
-            result.frame = publishExternalApiFrame(core, result.frame, errorMessage);
-            return result.frame.isValid();
-        }
     } // namespace
 
     // Starts the local API pipe server and frame mapping
@@ -1034,6 +1104,7 @@ namespace scopeone::ui
         {
             qFatal("ScopeOneLocalApiServer requires ScopeOneCore");
         }
+        m_taskPool.setMaxThreadCount(1);
 
         QLocalServer::removeServer(kServerName);
         connect(m_server, &QLocalServer::newConnection,
@@ -1108,6 +1179,7 @@ namespace scopeone::ui
     // Releases local API shared frame resources
     ScopeOneLocalApiServer::~ScopeOneLocalApiServer()
     {
+        m_taskPool.waitForDone();
 #if defined(_WIN32)
         if (m_frameMappingView)
         {
@@ -1170,21 +1242,32 @@ namespace scopeone::ui
             }
 
             const QJsonValue requestId = request.value(QStringLiteral("requestId"));
+            const QString requestType = request.value(QStringLiteral("type")).toString().trimmed();
             QJsonObject response;
             if (!requestId.isUndefined() && !requestId.isString() && !requestId.isDouble())
             {
-                response = makeResponse(request.value(QStringLiteral("type")).toString(), false);
+                response = makeResponse(requestType, false);
                 response.insert(QStringLiteral("error"), QStringLiteral("requestId must be a string or number"));
+            }
+            else if (m_scopeonecore->configurationOperationRunning()
+                     && requestType != QStringLiteral("ping")
+                     && requestType != QStringLiteral("version")
+                     && requestType != QStringLiteral("capabilities")
+                     && requestType != QStringLiteral("frame_mapping_info"))
+            {
+                response = makeResponse(requestType, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("A configuration operation is still running"));
             }
             else
             {
+                if (processAsyncRequest(socket, request, requestId))
+                {
+                    continue;
+                }
                 response = processRequest(request);
             }
-            if (!requestId.isUndefined())
-            {
-                response.insert(QStringLiteral("requestId"), requestId);
-            }
-            sendResponse(socket, response);
+            sendRequestResponse(socket, response, requestId);
         }
     }
 
@@ -1213,6 +1296,730 @@ namespace scopeone::ui
         }
         socket->write(message);
         socket->flush();
+    }
+
+    // Restores request correlation before sending a deferred response
+    void ScopeOneLocalApiServer::sendRequestResponse(QLocalSocket* socket,
+                                                     QJsonObject response,
+                                                     const QJsonValue& requestId)
+    {
+        if (!socket)
+        {
+            return;
+        }
+        if (!requestId.isUndefined())
+        {
+            response.insert(QStringLiteral("requestId"), requestId);
+        }
+        sendResponse(socket, response);
+    }
+
+    // Starts Local API operations that must not run in the socket callback
+    bool ScopeOneLocalApiServer::processAsyncRequest(QLocalSocket* socket,
+                                                     const QJsonObject& request,
+                                                     const QJsonValue& requestId)
+    {
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        const QPointer<QLocalSocket> guardedSocket(socket);
+        const auto finish = [this, guardedSocket, requestId](QJsonObject response)
+        {
+            if (guardedSocket)
+            {
+                sendRequestResponse(guardedSocket, std::move(response), requestId);
+            }
+        };
+
+        if (type == QStringLiteral("load_config"))
+        {
+            const QString configPath = request.value(QStringLiteral("configPath")).toString().trimmed();
+            if (configPath.isEmpty() || !m_scopeonecore->loadConfiguration(configPath))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                configPath.isEmpty()
+                                    ? QStringLiteral("Missing configPath")
+                                    : QStringLiteral("Another hardware operation is still running"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationLoadFinished,
+                    context,
+                    [this, context, finish, type](
+                        bool success,
+                        const scopeone::core::ScopeOneCore::LoadConfigResult& result,
+                        const QString& errorMessage)
+                    {
+                        QJsonObject response = makeResponse(type, success);
+                        if (success)
+                        {
+                            response.insert(QStringLiteral("cameraIds"),
+                                            QJsonArray::fromStringList(result.cameraIds));
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("error"),
+                                            errorMessage.isEmpty()
+                                                ? QStringLiteral("Failed to load configuration")
+                                                : errorMessage);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        if (type == QStringLiteral("unload_config"))
+        {
+            if (!m_scopeonecore->unloadConfiguration())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Another hardware operation is still running"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationUnloadFinished,
+                    context, [context, finish, type](bool success, const QString& errorMessage)
+                    {
+                        QJsonObject response = makeResponse(type, success);
+                        if (!success)
+                        {
+                            response.insert(QStringLiteral("error"), errorMessage);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        const bool xyRelative = type == QStringLiteral("move_xy_relative");
+        const bool zRelative = type == QStringLiteral("move_z_relative");
+        const bool xyAbsolute = type == QStringLiteral("move_xy_to");
+        const bool zAbsolute = type == QStringLiteral("move_z_to");
+        if (xyRelative || zRelative || xyAbsolute || zAbsolute)
+        {
+            const QString device = stringValueOrDefault(
+                request,
+                QStringLiteral("device"),
+                (xyRelative || xyAbsolute)
+                    ? m_scopeonecore->currentXYStageDevice()
+                    : m_scopeonecore->currentFocusDevice());
+            quint64 commandId = 0;
+            if (xyRelative)
+            {
+                commandId = m_scopeonecore->moveXYRelative(
+                    device,
+                    request.value(QStringLiteral("dx")).toDouble(),
+                    request.value(QStringLiteral("dy")).toDouble());
+            }
+            else if (zRelative)
+            {
+                commandId = m_scopeonecore->moveZRelative(
+                    device, request.value(QStringLiteral("dz")).toDouble());
+            }
+            else if (xyAbsolute)
+            {
+                commandId = m_scopeonecore->moveXYTo(
+                    device,
+                    request.value(QStringLiteral("x")).toDouble(),
+                    request.value(QStringLiteral("y")).toDouble());
+            }
+            else
+            {
+                commandId = m_scopeonecore->moveZTo(
+                    device, request.value(QStringLiteral("z")).toDouble());
+            }
+            if (commandId == 0)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to queue stage move"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMoveFinished,
+                    context,
+                    [context, finish, type, commandId](quint64 completedId,
+                                                       const QString&,
+                                                       bool success,
+                                                       const QString& errorMessage)
+                    {
+                        if (completedId != commandId)
+                        {
+                            return;
+                        }
+                        QJsonObject response = makeResponse(type, success);
+                        if (!success)
+                        {
+                            response.insert(QStringLiteral("error"),
+                                            errorMessage.isEmpty()
+                                                ? QStringLiteral("Stage move failed")
+                                                : errorMessage);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        if (type == QStringLiteral("detect_particles"))
+        {
+            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
+            int threshold = 0;
+            int minArea = 0;
+            int maxArea = 0;
+            int maxParticles = 1000;
+            const QJsonValue exportMaskValue = request.value(QStringLiteral("exportMask"));
+            const QJsonValue publishMaskValue = request.value(QStringLiteral("publishMask"));
+            const scopeone::core::ImageFrame frame = m_scopeonecore->graphFrame(layerKey);
+            if (layerKey.isEmpty()
+                || !intField(request, QStringLiteral("threshold"), threshold)
+                || !intField(request, QStringLiteral("minArea"), minArea)
+                || !intField(request, QStringLiteral("maxArea"), maxArea)
+                || (request.contains(QStringLiteral("maxParticles"))
+                    && !intField(request, QStringLiteral("maxParticles"), maxParticles))
+                || threshold < 0
+                || minArea <= 0
+                || maxArea < minArea
+                || maxParticles <= 0
+                || maxParticles > 10000
+                || (!exportMaskValue.isUndefined() && !exportMaskValue.isBool())
+                || (!publishMaskValue.isUndefined() && !publishMaskValue.isBool())
+                || !frame.isValid()
+                || (!frame.isMono8() && !frame.isMono16()))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Invalid particle detection request"));
+                finish(std::move(response));
+                return true;
+            }
+            threshold = qMin(threshold, frame.maxValue());
+            const quint64 analysisId = m_scopeonecore->detectParticles(
+                layerKey, threshold, minArea, maxArea, maxParticles);
+            if (analysisId == 0)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to queue particle detection"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::particleDetectionFinished,
+                    context,
+                    [this, context, finish, type, analysisId, threshold, minArea, maxArea,
+                     publishMask = publishMaskValue.toBool(false),
+                     exportMask = exportMaskValue.toBool(false)](
+                        quint64 completedId,
+                        const QString& resultLayerKey,
+                        const scopeone::core::ScopeOneCore::ParticleDetectionResult& result,
+                        const QString& errorMessage)
+                    {
+                        if (completedId != analysisId)
+                        {
+                            return;
+                        }
+                        if (!errorMessage.isEmpty())
+                        {
+                            QJsonObject response = makeResponse(type, false);
+                            response.insert(QStringLiteral("error"), errorMessage);
+                            finish(std::move(response));
+                            context->deleteLater();
+                            return;
+                        }
+
+                        QJsonArray particles;
+                        for (const auto& particle : result.particles)
+                        {
+                            particles.append(particleMeasurementToJson(particle));
+                        }
+                        QJsonObject response = makeResponse(type, true);
+                        response.insert(QStringLiteral("layerKey"), resultLayerKey);
+                        response.insert(QStringLiteral("threshold"), threshold);
+                        response.insert(QStringLiteral("minArea"), minArea);
+                        response.insert(QStringLiteral("maxArea"), maxArea);
+                        response.insert(QStringLiteral("particleCount"), particles.size());
+                        response.insert(QStringLiteral("truncated"), result.truncated);
+                        response.insert(QStringLiteral("particles"), particles);
+
+                        if (publishMask)
+                        {
+                            const QString maskLayerId = QStringLiteral("particle_mask");
+                            const auto publishedMask = m_scopeonecore->publishStaticFrame(
+                                maskLayerId, result.mask, QStringLiteral("Particle Mask"));
+                            if (!publishedMask.isValid())
+                            {
+                                response = makeResponse(type, false);
+                                response.insert(QStringLiteral("error"),
+                                                QStringLiteral("Failed to publish particle mask"));
+                            }
+                            else
+                            {
+                                const QString maskLayerKey =
+                                    scopeone::core::ScopeOneCore::staticLayerKey(maskLayerId);
+                                m_sceneModel->setLayerColormap(maskLayerKey, QStringLiteral("Magenta"));
+                                m_sceneModel->setLayerOpacityPercent(maskLayerKey, 70);
+                                m_sceneModel->setLayerBlending(maskLayerKey, QStringLiteral("Additive"));
+                                QStringList visibleLayers = m_sceneModel->visibleLayerIds();
+                                if (!visibleLayers.contains(resultLayerKey)) visibleLayers.append(resultLayerKey);
+                                if (!visibleLayers.contains(maskLayerKey)) visibleLayers.append(maskLayerKey);
+                                m_sceneModel->setVisibleLayers(visibleLayers);
+                                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
+                                response.insert(QStringLiteral("maskLayerKey"), maskLayerKey);
+                            }
+                        }
+                        if (response.value(QStringLiteral("ok")).toBool() && exportMask)
+                        {
+                            QString exportError;
+                            scopeone::core::ImageFrame exportedMask;
+                            if (!exportFrameToSharedMemory(result.mask, exportedMask, exportError))
+                            {
+                                response = makeResponse(type, false);
+                                response.insert(QStringLiteral("error"),
+                                                exportError.isEmpty()
+                                                    ? QStringLiteral("Failed to export particle mask")
+                                                    : exportError);
+                            }
+                            else
+                            {
+                                QJsonObject mask;
+                                mask.insert(QStringLiteral("mappingName"), kFrameMappingName);
+                                mask.insert(QStringLiteral("mappingSize"),
+                                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                                + scopeone::core::kSharedFrameMaxBytes));
+                                addFrameMetadata(mask, exportedMask);
+                                response.insert(QStringLiteral("mask"), mask);
+                            }
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        if (type == QStringLiteral("session_process_frame")
+            || type == QStringLiteral("process_frame_mapping"))
+        {
+            const auto startProcessing = [this, finish, type, request](
+                const scopeone::core::ImageFrame& inputFrame)
+            {
+                auto* watcher = new QFutureWatcher<AsyncProcessResult>(this);
+                connect(watcher, &QFutureWatcher<AsyncProcessResult>::finished,
+                        this, [this, watcher, finish, type]()
+                {
+                    AsyncProcessResult task = watcher->result();
+                    QJsonObject response = makeResponse(type, false);
+                    if (task.processed.frame.isValid())
+                    {
+                        task.processed.frame = publishExternalApiFrame(
+                            m_scopeonecore, task.processed.frame, task.errorMessage);
+                    }
+                    scopeone::core::ImageFrame exportedFrame;
+                    if (!task.processed.frame.isValid()
+                        || !exportFrameToSharedMemory(
+                            task.processed.frame, exportedFrame, task.errorMessage))
+                    {
+                        response.insert(QStringLiteral("error"),
+                                        task.errorMessage.isEmpty()
+                                            ? QStringLiteral("Failed to process frame")
+                                            : task.errorMessage);
+                    }
+                    else
+                    {
+                        response = makeResponse(type, true);
+                        response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+                        response.insert(QStringLiteral("mappingSize"),
+                                        static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                            + scopeone::core::kSharedFrameMaxBytes));
+                        addFrameMetadata(response, exportedFrame);
+                        addProcessingMetadata(response, task.processed);
+                    }
+                    finish(std::move(response));
+                    watcher->deleteLater();
+                });
+                watcher->setFuture(QtConcurrent::run(
+                    &m_taskPool,
+                    [this, inputFrame, request]()
+                    {
+                        AsyncProcessResult task;
+                        task.processed = processFrameFromRequest(
+                            m_scopeonecore, inputFrame, request, task.errorMessage);
+                        return task;
+                    }));
+            };
+
+            if (type == QStringLiteral("process_frame_mapping"))
+            {
+                scopeone::core::ImageFrame frame;
+                QString errorMessage;
+                const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+                if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
+                {
+                    QJsonObject response = makeResponse(type, false);
+                    response.insert(QStringLiteral("error"),
+                                    errorMessage.isEmpty()
+                                        ? QStringLiteral("Failed to import frame")
+                                        : errorMessage);
+                    finish(std::move(response));
+                    return true;
+                }
+                frame = publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
+                if (!frame.isValid())
+                {
+                    QJsonObject response = makeResponse(type, false);
+                    response.insert(QStringLiteral("error"), errorMessage);
+                    finish(std::move(response));
+                    return true;
+                }
+                startProcessing(frame);
+                return true;
+            }
+
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            const auto session = m_scopeonecore->recordingSession(sessionId);
+            const quint64 frameRequestId = m_scopeonecore->requestRecordingSessionFrame(
+                session, cameraId, index);
+            if (frameRequestId == 0)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                session ? QStringLiteral("Invalid frame request")
+                                        : QStringLiteral("Unknown session"));
+                finish(std::move(response));
+                return true;
+            }
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
+                    context,
+                    [context, frameRequestId, startProcessing, finish, type](
+                        quint64 completedId,
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
+                        const QString&,
+                        int,
+                        const scopeone::core::ImageFrame& frame)
+                    {
+                        if (completedId != frameRequestId)
+                        {
+                            return;
+                        }
+                        if (frame.isValid())
+                        {
+                            startProcessing(frame);
+                        }
+                        else
+                        {
+                            QJsonObject response = makeResponse(type, false);
+                            response.insert(QStringLiteral("error"),
+                                            QStringLiteral("Frame index out of range"));
+                            finish(std::move(response));
+                        }
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        if (type == QStringLiteral("session_frame"))
+        {
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            const auto session = m_scopeonecore->recordingSession(sessionId);
+            const quint64 frameRequestId = m_scopeonecore->requestRecordingSessionFrame(
+                session, cameraId, index);
+            if (frameRequestId == 0)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                session ? QStringLiteral("Invalid frame request")
+                                        : QStringLiteral("Unknown session"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
+                    context,
+                    [this, context, finish, type, frameRequestId](
+                        quint64 completedId,
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
+                        const QString&,
+                        int,
+                        const scopeone::core::ImageFrame& frame)
+                    {
+                        if (completedId != frameRequestId)
+                        {
+                            return;
+                        }
+                        QJsonObject response = makeResponse(type, false);
+                        QString errorMessage;
+                        const auto graphFrame = publishExternalApiFrame(
+                            m_scopeonecore, frame, errorMessage);
+                        scopeone::core::ImageFrame exportedFrame;
+                        if (!graphFrame.isValid()
+                            || !exportFrameToSharedMemory(graphFrame, exportedFrame, errorMessage))
+                        {
+                            response.insert(QStringLiteral("error"),
+                                            errorMessage.isEmpty()
+                                                ? QStringLiteral("Frame index out of range")
+                                                : errorMessage);
+                        }
+                        else
+                        {
+                            response = makeResponse(type, true);
+                            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+                            response.insert(QStringLiteral("mappingSize"),
+                                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                                + scopeone::core::kSharedFrameMaxBytes));
+                            addFrameMetadata(response, exportedFrame);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            return true;
+        }
+
+        if (type == QStringLiteral("record"))
+        {
+            scopeone::core::ExperimentPlan plan;
+            int timeoutMs = 120000;
+            QString errorMessage;
+            if (!recordingPlanFromRequest(
+                    m_scopeonecore, request, plan, timeoutMs, errorMessage))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), errorMessage);
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            const auto completed = std::make_shared<bool>(false);
+            auto* timeoutTimer = new QTimer(context);
+            timeoutTimer->setSingleShot(true);
+            const int waitTimeoutMs = timeoutMs > 0 ? timeoutMs : 120000;
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped,
+                    context,
+                    [context, timeoutTimer, finish, type, completed,
+                     experimentId = plan.experimentId](
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                    {
+                        if (!session || session->capturePlan().experimentId != experimentId)
+                        {
+                            return;
+                        }
+                        if (*completed)
+                        {
+                            return;
+                        }
+                        *completed = true;
+                        timeoutTimer->stop();
+                        QJsonObject response = makeResponse(type, session->hasRecordedOutput());
+                        if (!session->hasRecordedOutput())
+                        {
+                            response.insert(
+                                QStringLiteral("error"),
+                                session->saveMessage().isEmpty()
+                                    ? QStringLiteral("Recording finished but captured no frames")
+                                    : session->saveMessage());
+                        }
+                        else if (session->streamedToDisk() && !session->isSaved())
+                        {
+                            response = makeResponse(type, false);
+                            response.insert(QStringLiteral("error"),
+                                            session->saveMessage().isEmpty()
+                                                ? QStringLiteral("Recording writer failed")
+                                                : session->saveMessage());
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("sessionId"), experimentId);
+                            response.insert(QStringLiteral("cameraIds"),
+                                            QJsonArray::fromStringList(session->recordedCameraIds()));
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            connect(timeoutTimer, &QTimer::timeout, context,
+                    [this, context, finish, type, completed,
+                     experimentId = plan.experimentId, waitTimeoutMs]()
+                    {
+                        if (*completed)
+                        {
+                            return;
+                        }
+                        *completed = true;
+                        QString ignoredError;
+                        m_scopeonecore->cancelExperiment(experimentId, &ignoredError);
+                        QJsonObject response = makeResponse(type, false);
+                        response.insert(
+                            QStringLiteral("error"),
+                            QStringLiteral("Recording timed out after %1 ms").arg(waitTimeoutMs));
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+
+            scopeone::core::ExperimentDocument document;
+            document.plan = plan;
+            copyValidPresentation(m_sceneModel->document(), document);
+            if (!m_scopeonecore->startExperiment(document, &errorMessage))
+            {
+                if (!*completed)
+                {
+                    *completed = true;
+                    QJsonObject response = makeResponse(type, false);
+                    response.insert(QStringLiteral("error"), errorMessage);
+                    finish(std::move(response));
+                    context->deleteLater();
+                }
+                return true;
+            }
+            if (!*completed)
+            {
+                timeoutTimer->start(waitTimeoutMs);
+            }
+            return true;
+        }
+
+        if (type == QStringLiteral("session_save"))
+        {
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const auto session = m_scopeonecore->recordingSession(sessionId);
+            const QString saveError = saveRequestError(request);
+            if (!session || !saveError.isEmpty())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                session ? saveError : QStringLiteral("Unknown session"));
+                finish(std::move(response));
+                return true;
+            }
+
+            const scopeone::core::ExperimentDocument& presentation = m_sceneModel->document();
+            if (presentation.plan.experimentId == sessionId)
+            {
+                QString presentationError;
+                if (!m_scopeonecore->setRecordingSessionPresentation(
+                        session, presentation, &presentationError))
+                {
+                    QJsonObject response = makeResponse(type, false);
+                    response.insert(QStringLiteral("error"), presentationError);
+                    finish(std::move(response));
+                    return true;
+                }
+            }
+
+            scopeone::core::ScopeOneCore::RecordingSaveOptions saveOptions;
+            applySaveRequest(request, saveOptions);
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
+                    context,
+                    [context, finish, type, session](
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& completed)
+                    {
+                        if (completed != session)
+                        {
+                            return;
+                        }
+                        QJsonObject response = makeResponse(type, session->isSaved());
+                        if (session->isSaved())
+                        {
+                            response.insert(QStringLiteral("paths"), savedFramePaths(session));
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("error"), session->saveMessage());
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            if (!m_scopeonecore->saveRecordingSession(session, saveOptions))
+            {
+                delete context;
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Session save is already in progress"));
+                finish(std::move(response));
+            }
+            return true;
+        }
+
+        if (type == QStringLiteral("save_frame_mapping"))
+        {
+            const QString saveError = saveRequestError(request);
+            scopeone::core::ImageFrame frame;
+            QString errorMessage;
+            if (!saveError.isEmpty()
+                || !importFrameFromSharedMemory(
+                    request.value(QStringLiteral("camera")).toString().trimmed(),
+                    frame,
+                    errorMessage))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                !saveError.isEmpty() ? saveError : errorMessage);
+                finish(std::move(response));
+                return true;
+            }
+            frame = publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
+            if (!frame.isValid())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), errorMessage);
+                finish(std::move(response));
+                return true;
+            }
+
+            scopeone::core::ExperimentPlan capturePlan;
+            capturePlan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            capturePlan.cameraIds.append(frame.cameraId);
+            capturePlan.streamToDisk = false;
+            capturePlan.processing = m_scopeonecore->processingRecipe();
+            applySaveRequest(request, capturePlan);
+            const auto session = m_scopeonecore->createFrameSession({frame}, capturePlan);
+            if (!session)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Failed to create frame session"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
+                    context,
+                    [context, finish, type, session, frame](
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& completed)
+                    {
+                        if (completed != session)
+                        {
+                            return;
+                        }
+                        QJsonObject response = makeResponse(type, session->isSaved());
+                        if (session->isSaved())
+                        {
+                            response.insert(QStringLiteral("paths"), savedFramePaths(session));
+                            addFrameMetadata(response, frame);
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("error"), session->saveMessage());
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            m_scopeonecore->saveRecordingSession(session);
+            return true;
+        }
+
+        return false;
     }
 
     // Dispatches one local API request object
@@ -1421,34 +2228,6 @@ namespace scopeone::ui
             return response;
         }
 
-        if (type == QStringLiteral("load_config"))
-        {
-            scopeone::core::ScopeOneCore::LoadConfigResult result;
-            QString errorMessage;
-            const QString configPath = request.value(QStringLiteral("configPath")).toString().trimmed();
-            const bool ok = !configPath.isEmpty()
-                && m_scopeonecore->loadConfiguration(configPath, &result, &errorMessage);
-            QJsonObject response = makeResponse(type, ok);
-            if (ok)
-            {
-                response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));
-            }
-            else
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to load configuration")
-                                    : errorMessage);
-            }
-            return response;
-        }
-
-        if (type == QStringLiteral("unload_config"))
-        {
-            m_scopeonecore->unloadConfiguration();
-            return makeResponse(type, true);
-        }
-
         if (type == QStringLiteral("start_preview"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
@@ -1610,119 +2389,6 @@ namespace scopeone::ui
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             response.insert(QStringLiteral("values"), samples);
-            return response;
-        }
-
-        if (type == QStringLiteral("detect_particles"))
-        {
-            const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            int threshold = 0;
-            int minArea = 0;
-            int maxArea = 0;
-            int maxParticles = 1000;
-            const QJsonValue exportMaskValue = request.value(QStringLiteral("exportMask"));
-            const QJsonValue publishMaskValue = request.value(QStringLiteral("publishMask"));
-            QJsonObject response = makeResponse(type, false);
-            if (layerKey.isEmpty()
-                || !intField(request, QStringLiteral("threshold"), threshold)
-                || !intField(request, QStringLiteral("minArea"), minArea)
-                || !intField(request, QStringLiteral("maxArea"), maxArea)
-                || (request.contains(QStringLiteral("maxParticles"))
-                    && !intField(request, QStringLiteral("maxParticles"), maxParticles))
-                || threshold < 0
-                || minArea <= 0
-                || maxArea < minArea
-                || maxParticles <= 0
-                || maxParticles > 10000
-                || (!exportMaskValue.isUndefined() && !exportMaskValue.isBool())
-                || (!publishMaskValue.isUndefined() && !publishMaskValue.isBool()))
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid particle detection parameters"));
-                return response;
-            }
-
-            const scopeone::core::ImageFrame frame = m_scopeonecore->graphFrame(layerKey);
-            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
-            {
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Layer has no supported current frame"));
-                return response;
-            }
-            threshold = qMin(threshold, frame.maxValue());
-
-            scopeone::core::ScopeOneCore::ParticleDetectionResult result;
-            if (!m_scopeonecore->detectParticles(
-                    layerKey, threshold, minArea, maxArea, result, maxParticles))
-            {
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Layer has no supported current frame"));
-                return response;
-            }
-
-            QJsonArray particles;
-            for (const auto& particle : result.particles)
-            {
-                particles.append(particleMeasurementToJson(particle));
-            }
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("layerKey"), layerKey);
-            response.insert(QStringLiteral("threshold"), threshold);
-            response.insert(QStringLiteral("minArea"), minArea);
-            response.insert(QStringLiteral("maxArea"), maxArea);
-            response.insert(QStringLiteral("particleCount"), static_cast<int>(particles.size()));
-            response.insert(QStringLiteral("truncated"), result.truncated);
-            response.insert(QStringLiteral("particles"), particles);
-
-            if (publishMaskValue.toBool(false))
-            {
-                const QString maskLayerId = QStringLiteral("particle_mask");
-                const scopeone::core::ImageFrame publishedMask = m_scopeonecore->publishStaticFrame(
-                    maskLayerId, result.mask, QStringLiteral("Particle Mask"));
-                if (!publishedMask.isValid())
-                {
-                    response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"), QStringLiteral("Failed to publish particle mask"));
-                    return response;
-                }
-                const QString maskLayerKey = scopeone::core::ScopeOneCore::staticLayerKey(maskLayerId);
-                m_sceneModel->setLayerColormap(maskLayerKey, QStringLiteral("Magenta"));
-                m_sceneModel->setLayerOpacityPercent(maskLayerKey, 70);
-                m_sceneModel->setLayerBlending(maskLayerKey, QStringLiteral("Additive"));
-                QStringList visibleLayers = m_sceneModel->visibleLayerIds();
-                if (!visibleLayers.contains(layerKey))
-                {
-                    visibleLayers.append(layerKey);
-                }
-                if (!visibleLayers.contains(maskLayerKey))
-                {
-                    visibleLayers.append(maskLayerKey);
-                }
-                m_sceneModel->setVisibleLayers(visibleLayers);
-                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
-                response.insert(QStringLiteral("maskLayerKey"), maskLayerKey);
-            }
-
-            if (exportMaskValue.toBool(false))
-            {
-                QString errorMessage;
-                scopeone::core::ImageFrame exportedMask;
-                if (!exportFrameToSharedMemory(result.mask, exportedMask, errorMessage))
-                {
-                    response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"),
-                                    errorMessage.isEmpty()
-                                        ? QStringLiteral("Failed to export particle mask")
-                                        : errorMessage);
-                    return response;
-                }
-                QJsonObject mask;
-                mask.insert(QStringLiteral("mappingName"), kFrameMappingName);
-                mask.insert(QStringLiteral("mappingSize"),
-                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
-                                + scopeone::core::kSharedFrameMaxBytes));
-                addFrameMetadata(mask, exportedMask);
-                response.insert(QStringLiteral("mask"), mask);
-            }
             return response;
         }
 
@@ -2628,66 +3294,6 @@ namespace scopeone::ui
             return response;
         }
 
-        if (type == QStringLiteral("move_xy_relative"))
-        {
-            const QString device = stringValueOrDefault(request,
-                                                        QStringLiteral("device"),
-                                                        m_scopeonecore->currentXYStageDevice());
-            const bool ok = m_scopeonecore->moveXYRelative(device,
-                                                           request.value(QStringLiteral("dx")).toDouble(),
-                                                           request.value(QStringLiteral("dy")).toDouble());
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to move XY stage"));
-            }
-            return response;
-        }
-
-        if (type == QStringLiteral("move_z_relative"))
-        {
-            const QString device = stringValueOrDefault(request,
-                                                        QStringLiteral("device"),
-                                                        m_scopeonecore->currentFocusDevice());
-            const bool ok = m_scopeonecore->moveZRelative(device, request.value(QStringLiteral("dz")).toDouble());
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to move Z stage"));
-            }
-            return response;
-        }
-
-        if (type == QStringLiteral("move_xy_to"))
-        {
-            const QString device = stringValueOrDefault(request,
-                                                        QStringLiteral("device"),
-                                                        m_scopeonecore->currentXYStageDevice());
-            const bool ok = m_scopeonecore->moveXYTo(device,
-                                                     request.value(QStringLiteral("x")).toDouble(),
-                                                     request.value(QStringLiteral("y")).toDouble());
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to move XY stage"));
-            }
-            return response;
-        }
-
-        if (type == QStringLiteral("move_z_to"))
-        {
-            const QString device = stringValueOrDefault(request,
-                                                        QStringLiteral("device"),
-                                                        m_scopeonecore->currentFocusDevice());
-            const bool ok = m_scopeonecore->moveZTo(device, request.value(QStringLiteral("z")).toDouble());
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to move Z stage"));
-            }
-            return response;
-        }
-
         if (type == QStringLiteral("start_stage_mosaic"))
         {
             scopeone::core::ScopeOneCore::StageMosaicPlan plan;
@@ -3043,105 +3649,6 @@ namespace scopeone::ui
             return experimentStatusResponse(type, experimentId);
         }
 
-        if (type == QStringLiteral("record"))
-        {
-            QString errorMessage;
-            const QJsonValue framesValue = request.value(QStringLiteral("frames"));
-            if (!framesValue.isDouble()
-                || std::trunc(framesValue.toDouble()) != framesValue.toDouble()
-                || framesValue.toDouble() < static_cast<double>((std::numeric_limits<int>::min)())
-                || framesValue.toDouble() > static_cast<double>((std::numeric_limits<int>::max)()))
-            {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("frames must be an integer"));
-                return response;
-            }
-            const int frameCount = framesValue.toInt();
-            const QJsonValue cameraValue = request.value(QStringLiteral("camera"));
-            if (!cameraValue.isUndefined() && !cameraValue.isString())
-            {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("camera must be a string"));
-                return response;
-            }
-            const QString camera = cameraValue.isUndefined()
-                                       ? QStringLiteral("All")
-                                       : cameraValue.toString();
-            const int timeoutMs = request.value(QStringLiteral("timeoutMs")).toInt(120000);
-            scopeone::core::ExperimentPlan plan;
-            plan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            plan.cameraIds = resolveCameraIds(m_scopeonecore, camera);
-            plan.format = scopeone::core::RecordingFormat::Tiff;
-            plan.streamToDisk = false;
-            plan.framesPerBurst = frameCount;
-            plan.burstMode = false;
-            plan.targetBursts = 1;
-            plan.enableCompression = false;
-            const QJsonValue intervalValue = request.value(QStringLiteral("mdaIntervalMs"));
-            if (!intervalValue.isUndefined()
-                && (!intervalValue.isDouble() || !std::isfinite(intervalValue.toDouble())))
-            {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("mdaIntervalMs must be a finite number"));
-                return response;
-            }
-            plan.mdaIntervalMs = intervalValue.isUndefined() ? 0.0 : intervalValue.toDouble();
-            plan.processing = m_scopeonecore->processingRecipe();
-            if (!doubleArrayFromJson(request.value(QStringLiteral("zPositions")),
-                                     QStringLiteral("zPositions"),
-                                     plan.zPositions,
-                                     errorMessage)
-                || !pointArrayFromJson(request.value(QStringLiteral("positions")),
-                                       plan.positions,
-                                       errorMessage))
-            {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-            const QJsonValue orderValue = request.value(QStringLiteral("order"));
-            if (!orderValue.isUndefined())
-            {
-                if (!orderValue.isArray())
-                {
-                    QJsonObject response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"), QStringLiteral("order must be an array"));
-                    return response;
-                }
-                const QJsonArray orderArray = orderValue.toArray();
-                plan.order.clear();
-                for (qsizetype index = 0; index < orderArray.size(); ++index)
-                {
-                    scopeone::core::RecordingAxis axis;
-                    if (!orderArray.at(index).isString()
-                        || !axisFromName(orderArray.at(index).toString(), axis))
-                    {
-                        QJsonObject response = makeResponse(type, false);
-                        response.insert(QStringLiteral("error"),
-                                        QStringLiteral("order[%1] contains an unsupported axis").arg(index));
-                        return response;
-                    }
-                    plan.order.push_back(axis);
-                }
-            }
-            const auto session = runRecording(plan, timeoutMs, errorMessage);
-            QJsonObject response = makeResponse(type, static_cast<bool>(session));
-            if (!session)
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Recording failed")
-                                    : errorMessage);
-                return response;
-            }
-
-            const QString sessionId = plan.experimentId;
-            response.insert(QStringLiteral("sessionId"), sessionId);
-            response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(session->recordedCameraIds()));
-            return response;
-        }
-
         if (type == QStringLiteral("session_info"))
         {
             const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
@@ -3176,53 +3683,6 @@ namespace scopeone::ui
             }
 
             m_scopeonecore->closeRecordingSession(sessionId);
-            return response;
-        }
-
-        if (type == QStringLiteral("session_frame"))
-        {
-            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            const int index = request.value(QStringLiteral("index")).toInt(-1);
-            const auto session = m_scopeonecore->recordingSession(sessionId);
-            QJsonObject response = makeResponse(type, false);
-            if (!session)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
-                return response;
-            }
-            const scopeone::core::ImageFrame frame = m_scopeonecore->sessionFrameAt(session, cameraId, index);
-            if (!frame.isValid())
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Frame index out of range"));
-                return response;
-            }
-
-            QString errorMessage;
-            const scopeone::core::ImageFrame graphFrame =
-                publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
-            if (!graphFrame.isValid())
-            {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-
-            scopeone::core::ImageFrame exportedFrame;
-            if (!exportFrameToSharedMemory(graphFrame, exportedFrame, errorMessage))
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to export frame")
-                                    : errorMessage);
-                return response;
-            }
-
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
-            response.insert(QStringLiteral("mappingSize"),
-                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
-                                + scopeone::core::kSharedFrameMaxBytes));
-            addFrameMetadata(response, exportedFrame);
             return response;
         }
 
@@ -3275,112 +3735,6 @@ namespace scopeone::ui
             return response;
         }
 
-        if (type == QStringLiteral("session_process_frame"))
-        {
-            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            const int index = request.value(QStringLiteral("index")).toInt(-1);
-            const auto session = m_scopeonecore->recordingSession(sessionId);
-            QJsonObject response = makeResponse(type, false);
-            if (!session)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
-                return response;
-            }
-
-            const scopeone::core::ImageFrame frame = m_scopeonecore->sessionFrameAt(session, cameraId, index);
-            if (!frame.isValid())
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Frame index out of range"));
-                return response;
-            }
-
-            QString errorMessage;
-            ProcessFrameRequestResult processedResult;
-            if (!processAndPublishExternalApiFrame(m_scopeonecore,
-                                                   frame,
-                                                   request,
-                                                   processedResult,
-                                                   errorMessage))
-            {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-
-            scopeone::core::ImageFrame exportedFrame;
-            if (!exportFrameToSharedMemory(processedResult.frame, exportedFrame, errorMessage))
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to export processed frame")
-                                    : errorMessage);
-                return response;
-            }
-
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
-            response.insert(QStringLiteral("mappingSize"),
-                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
-                                + scopeone::core::kSharedFrameMaxBytes));
-            addFrameMetadata(response, exportedFrame);
-            addProcessingMetadata(response, processedResult);
-            return response;
-        }
-
-        if (type == QStringLiteral("process_frame_mapping"))
-        {
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
-
-            scopeone::core::ImageFrame frame;
-            QString errorMessage;
-            if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to import frame")
-                                    : errorMessage);
-                return response;
-            }
-            const scopeone::core::ImageFrame graphFrame =
-                publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
-            if (!graphFrame.isValid())
-            {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-
-            ProcessFrameRequestResult processedResult;
-            if (!processAndPublishExternalApiFrame(m_scopeonecore,
-                                                   graphFrame,
-                                                   request,
-                                                   processedResult,
-                                                   errorMessage))
-            {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-
-            scopeone::core::ImageFrame exportedFrame;
-            if (!exportFrameToSharedMemory(processedResult.frame, exportedFrame, errorMessage))
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to export processed frame")
-                                    : errorMessage);
-                return response;
-            }
-
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
-            response.insert(QStringLiteral("mappingSize"),
-                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
-                                + scopeone::core::kSharedFrameMaxBytes));
-            addFrameMetadata(response, exportedFrame);
-            addProcessingMetadata(response, processedResult);
-            return response;
-        }
-
         if (type == QStringLiteral("show_frame_mapping_as_layer"))
         {
             const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
@@ -3428,112 +3782,6 @@ namespace scopeone::ui
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             addFrameMetadata(response, graphFrame);
-            return response;
-        }
-
-        if (type == QStringLiteral("save_frame_mapping"))
-        {
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
-            const QString saveError = saveRequestError(request);
-            if (!saveError.isEmpty())
-            {
-                response.insert(QStringLiteral("error"), saveError);
-                return response;
-            }
-
-            scopeone::core::ImageFrame frame;
-            QString errorMessage;
-            if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
-            {
-                response.insert(QStringLiteral("error"),
-                                errorMessage.isEmpty()
-                                    ? QStringLiteral("Failed to import frame")
-                                    : errorMessage);
-                return response;
-            }
-            const scopeone::core::ImageFrame graphFrame =
-                publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
-            if (!graphFrame.isValid())
-            {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
-            }
-
-            scopeone::core::ExperimentPlan capturePlan;
-            capturePlan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            capturePlan.cameraIds.append(graphFrame.cameraId);
-            capturePlan.streamToDisk = false;
-            capturePlan.processing = m_scopeonecore->processingRecipe();
-            applySaveRequest(request, capturePlan);
-            QList<scopeone::core::ImageFrame> frames;
-            frames.append(graphFrame);
-            auto session = m_scopeonecore->createFrameSession(
-                frames,
-                capturePlan);
-            if (!session)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to create frame session"));
-                return response;
-            }
-
-            const QString saveResult = m_scopeonecore->saveRecordingSession(session);
-            if (saveResult.startsWith(QStringLiteral("Error:"), Qt::CaseInsensitive))
-            {
-                response.insert(QStringLiteral("error"), saveResult);
-                return response;
-            }
-
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("paths"), savedFramePaths(session));
-            addFrameMetadata(response, graphFrame);
-            return response;
-        }
-
-        if (type == QStringLiteral("session_save"))
-        {
-            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
-            const auto session = m_scopeonecore->recordingSession(sessionId);
-            QJsonObject response = makeResponse(type, false);
-            if (!session)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
-                return response;
-            }
-            const QString saveError = saveRequestError(request);
-            if (!saveError.isEmpty())
-            {
-                response.insert(QStringLiteral("error"), saveError);
-                return response;
-            }
-
-            scopeone::core::ScopeOneCore::RecordingSaveOptions saveOptions;
-            applySaveRequest(request, saveOptions);
-
-            const scopeone::core::ExperimentDocument& presentation =
-                m_sceneModel->document();
-            if (presentation.plan.experimentId == sessionId)
-            {
-                QString presentationError;
-                if (!m_scopeonecore->setRecordingSessionPresentation(
-                        session,
-                        presentation,
-                        &presentationError))
-                {
-                    response.insert(QStringLiteral("error"), presentationError);
-                    return response;
-                }
-            }
-
-            const QString saveResult = m_scopeonecore->saveRecordingSession(session, saveOptions);
-            if (saveResult.startsWith(QStringLiteral("Error:"), Qt::CaseInsensitive))
-            {
-                response.insert(QStringLiteral("error"), saveResult);
-                return response;
-            }
-
-            response = makeResponse(type, true);
-            response.insert(QStringLiteral("paths"), savedFramePaths(session));
             return response;
         }
 
@@ -3612,104 +3860,6 @@ namespace scopeone::ui
             response.insert(QStringLiteral("frameCount"), session->recordedFrameCount());
         }
         return response;
-    }
-
-    // Runs a blocking API recording and returns the captured session
-    std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ScopeOneLocalApiServer::runRecording(
-        const scopeone::core::ExperimentPlan& plan,
-        int timeoutMs,
-        QString& errorMessage)
-    {
-        const bool useMda = !plan.positions.empty() || !plan.zPositions.empty();
-        bool timedOut = false;
-        std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> recordedSession;
-
-        QEventLoop waitLoop;
-        const QMetaObject::Connection connection = QObject::connect(
-            m_scopeonecore,
-            &scopeone::core::ScopeOneCore::recordingStopped,
-            &waitLoop,
-            [&recordedSession, &waitLoop](
-                const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
-            {
-                recordedSession = session;
-                waitLoop.quit();
-            });
-
-        scopeone::core::ExperimentDocument document;
-        document.plan = plan;
-        copyValidPresentation(m_sceneModel->document(), document);
-        if (!m_scopeonecore->startExperiment(document, &errorMessage))
-        {
-            QObject::disconnect(connection);
-            return {};
-        }
-
-        const int waitTimeoutMs = timeoutMs > 0 ? timeoutMs : 120000;
-        QTimer timeoutTimer;
-        timeoutTimer.setSingleShot(true);
-        QObject::connect(&timeoutTimer, &QTimer::timeout,
-                         &waitLoop, [this, &plan, &timedOut, &waitLoop]()
-        {
-            timedOut = true;
-            if (m_scopeonecore->isRecording())
-            {
-                QString ignoredError;
-                if (!m_scopeonecore->cancelExperiment(plan.experimentId, &ignoredError))
-                {
-                    m_scopeonecore->stopRecording();
-                }
-            }
-            waitLoop.quit();
-        });
-
-        if (m_scopeonecore->isRecording() && !recordedSession)
-        {
-            timeoutTimer.start(waitTimeoutMs);
-            waitLoop.exec();
-        }
-        timeoutTimer.stop();
-        QObject::disconnect(connection);
-
-        if (!recordedSession)
-        {
-            recordedSession = m_scopeonecore->recordingSession(plan.experimentId);
-        }
-
-        if (!recordedSession)
-        {
-            errorMessage = timedOut
-                               ? QStringLiteral("Recording timed out after %1 ms before session data was returned")
-                                     .arg(waitTimeoutMs)
-                               : QStringLiteral("Recording finished but no session data was returned");
-            return {};
-        }
-        if (recordedSession->streamedToDisk() && !recordedSession->isSaved())
-        {
-            errorMessage = recordedSession->saveMessage().isEmpty()
-                               ? QStringLiteral("Recording writer failed")
-                               : recordedSession->saveMessage();
-            return {};
-        }
-        if (!recordedSession->hasRecordedOutput())
-        {
-            if (timedOut)
-            {
-                errorMessage = useMda
-                                   ? QStringLiteral("MDA recording timed out and captured no frames")
-                                   : QStringLiteral("Preview-frame recording timed out and captured no frames");
-            }
-            else
-            {
-                errorMessage = useMda
-                                   ? QStringLiteral(
-                                       "MDA recording finished but captured no frames. Check stage devices, camera snap support, and ScopeOne logs for MDA errors")
-                                   : QStringLiteral(
-                                       "Preview-frame recording finished but captured no frames. Check that preview is producing raw frames for the selected camera");
-            }
-            return {};
-        }
-        return recordedSession;
     }
 
     // Exports one captured frame to the shared frame mapping

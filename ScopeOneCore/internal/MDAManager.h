@@ -40,6 +40,7 @@ namespace scopeone::core::internal
         void setCameraManager(CameraManager* cameraManager);
         bool start(const QList<AcquisitionEvent>& events, bool block = false);
         void requestCancel();
+        void cancelAndWait();
 
     signals:
         void eventFinished(const scopeone::core::internal::MDAOutput& output);

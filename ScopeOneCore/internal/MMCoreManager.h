@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QList>
 #include <QStringList>
 #include <memory>
 #include "MMCore.h"
@@ -9,40 +10,30 @@ namespace scopeone::core::internal
 {
     class CameraManager;
 
-    enum class DeviceType
-    {
-        UnknownType = 0,
-        AnyType,
-        CameraDevice,
-        ShutterDevice,
-        StateDevice,
-        StageDevice,
-        XYStageDevice,
-        SerialDevice,
-        GenericDevice,
-        AutoFocusDevice,
-        CoreDevice,
-        ImageProcessorDevice,
-        SignalIODevice,
-        MagnifierDevice,
-        SLMDevice,
-        GalvoDevice,
-        HubDevice
-    };
-
     class MMCoreManager : public QObject
     {
         Q_OBJECT
 
     public:
+        struct CameraLoadInfo
+        {
+            QString label;
+            QString adapter;
+            QString device;
+            QStringList preInitProperties;
+            QStringList properties;
+            double exposureMs{10.0};
+        };
+
         struct LoadConfigResult
         {
             QStringList cameraIds;
-            QStringList agentsStarted;
+            QList<CameraLoadInfo> cameras;
             int successCount{0};
             int failCount{0};
             int skippedCameraCount{0};
             bool foundCamera{false};
+            bool useSingleCamera{false};
         };
 
         explicit MMCoreManager(QObject* parent = nullptr);
@@ -50,15 +41,12 @@ namespace scopeone::core::internal
 
         std::shared_ptr<CMMCore> getCore() const { return m_mmcore; }
 
-        QString getDeviceTypeString(DeviceType type) const;
-        bool loadConfigurationAndStartCameras(const QString& configPath,
-                                              CameraManager* cameraManager,
-                                              LoadConfigResult* result,
-                                              QString* errorMessage);
-
+        bool loadConfigurationDevices(const QString& configPath,
+                                      LoadConfigResult& result,
+                                      QString& errorMessage);
+        void startCameraBackends(CameraManager& cameraManager,
+                                 LoadConfigResult& result);
     private:
         std::shared_ptr<CMMCore> m_mmcore;
     };
 }
-
-Q_DECLARE_METATYPE(scopeone::core::internal::DeviceType)

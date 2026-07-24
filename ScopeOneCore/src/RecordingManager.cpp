@@ -648,7 +648,17 @@ namespace scopeone::core::internal
     // Stops recording and writer threads during teardown
     RecordingManager::~RecordingManager()
     {
+        shutdown();
+    }
+
+    // Stops recording and joins acquisition and writer workers
+    void RecordingManager::shutdown()
+    {
         stop();
+        if (m_mdaState.manager)
+        {
+            m_mdaState.manager->cancelAndWait();
+        }
         stopStreamingOutputs();
     }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -58,6 +59,7 @@ namespace scopeone::ui
         void controlTargetChanged(const QString& target);
         void currentLayerChanged(const QString& layerKey);
         void previewLayerFrameRequested(const QString& layerKey, int frameIndex);
+        void stageMoveFailed(const QString& message);
 
         void requestDrawROI(const QString& cameraId);
         void requestHalfROI(const QString& cameraId);
@@ -185,6 +187,7 @@ namespace scopeone::ui
         QPushButton* m_zDownButton{nullptr};
         QPushButton* m_zBigUpButton{nullptr};
         QPushButton* m_zBigDownButton{nullptr};
+        QSet<quint64> m_pendingStageMoveIds;
 
         bool m_cameraInitialized;
         bool m_previewRunning;

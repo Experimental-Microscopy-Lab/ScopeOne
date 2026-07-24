@@ -15,6 +15,7 @@
 #include <QMap>
 #include <QMetaObject>
 #include <QProcess>
+#include <QPointer>
 #include <QSharedMemory>
 #include <QTimer>
 #include <atomic>
@@ -485,7 +486,8 @@ namespace scopeone::core::internal
                                ImageFrame& frame,
                                int timeoutMs) override;
 
-        void shutdown();
+        void shutdownNow();
+        void shutdown(std::function<void(const QString&)> completion) override;
 
         bool startPreview() override
         {
@@ -848,10 +850,17 @@ namespace scopeone::core::internal
                                 QJsonObject* response,
                                 int timeoutMs);
         bool sendFrameDeliveryMode(const QString& cameraId, AgentFrameDeliveryMode mode);
+        void stopAgentProcessesAsync();
+        void completeAsyncShutdown();
 
         QMap<QString, std::shared_ptr<AgentCameraSlot>> m_cameras;
         std::atomic_bool m_frameDeliveryPaused{false};
         bool m_shuttingDown{false};
+        bool m_shutdownHadRunningCamera{false};
+        int m_shutdownProcessesRemaining{0};
+        int m_shutdownKillPollsRemaining{0};
+        QString m_shutdownError;
+        std::function<void(const QString&)> m_shutdownCompletion;
         QThread m_frameThread;
         AgentFrameWorker* m_frameWorker{nullptr};
     };
@@ -944,19 +953,20 @@ namespace scopeone::core::internal
 
     AgentCameraBackend::~AgentCameraBackend()
     {
-        shutdown();
+        shutdownNow();
         m_frameThread.quit();
         m_frameThread.wait();
         m_frameWorker = nullptr;
     }
 
-    void AgentCameraBackend::shutdown()
+    void AgentCameraBackend::shutdownNow()
     {
-        if (m_shuttingDown)
+        if (m_shuttingDown && m_cameras.isEmpty())
         {
             return;
         }
         m_shuttingDown = true;
+        m_shutdownCompletion = {};
         CameraBackend::setRecordingFrameDeliveryEnabled(false);
 
         const bool hadRunningCamera = hasRunningCamera();
@@ -995,6 +1005,208 @@ namespace scopeone::core::internal
         if (hadRunningCamera)
         {
             notifyPreviewStopped();
+        }
+    }
+
+    // Stops agent processes without waiting on the facade thread
+    void AgentCameraBackend::shutdown(std::function<void(const QString&)> completion)
+    {
+        if (m_shuttingDown)
+        {
+            if (!m_shutdownCompletion && !m_shutdownError.isEmpty())
+            {
+                completeAsyncShutdown();
+                if (!m_shuttingDown)
+                {
+                    shutdown(std::move(completion));
+                    return;
+                }
+            }
+            if (completion)
+            {
+                completion(m_cameras.isEmpty()
+                               ? QString()
+                               : m_shutdownError.isEmpty()
+                                   ? QStringLiteral("Camera agent shutdown is already in progress")
+                                   : m_shutdownError);
+            }
+            return;
+        }
+
+        m_shuttingDown = true;
+        m_shutdownError.clear();
+        m_shutdownCompletion = std::move(completion);
+        m_shutdownHadRunningCamera = hasRunningCamera();
+        m_shutdownProcessesRemaining = 0;
+        CameraBackend::setRecordingFrameDeliveryEnabled(false);
+        for (auto& slot : m_cameras)
+        {
+            slot->isRunning = false;
+        }
+        if (m_frameWorker && m_frameThread.isRunning())
+        {
+            AgentFrameWorker* const worker = m_frameWorker;
+            const QPointer<AgentCameraBackend> guardedThis(this);
+            const bool queued = QMetaObject::invokeMethod(
+                worker,
+                [guardedThis, worker]()
+                {
+                    worker->clear();
+                    if (guardedThis)
+                    {
+                        QMetaObject::invokeMethod(
+                            guardedThis.data(),
+                            [guardedThis]()
+                            {
+                                if (guardedThis)
+                                {
+                                    guardedThis->stopAgentProcessesAsync();
+                                }
+                            },
+                            Qt::QueuedConnection);
+                    }
+                },
+                Qt::QueuedConnection);
+            if (queued)
+            {
+                return;
+            }
+        }
+
+        stopAgentProcessesAsync();
+    }
+
+    // Requests agent exit and falls back to bounded process termination
+    void AgentCameraBackend::stopAgentProcessesAsync()
+    {
+        if (!m_shutdownCompletion)
+        {
+            return;
+        }
+
+        for (auto& slot : m_cameras)
+        {
+            if (!slot->process || slot->process->state() == QProcess::NotRunning)
+            {
+                if (slot->control)
+                {
+                    slot->control->stop();
+                }
+                continue;
+            }
+
+            ++m_shutdownProcessesRemaining;
+            QProcess* const process = slot->process.get();
+            connect(process, &QProcess::finished, this,
+                    [this](int, QProcess::ExitStatus)
+                    {
+                        if (m_shutdownProcessesRemaining > 0)
+                        {
+                            --m_shutdownProcessesRemaining;
+                        }
+                        if (m_shutdownProcessesRemaining == 0)
+                        {
+                            QTimer::singleShot(0, this, [this]()
+                            {
+                                if (m_shutdownProcessesRemaining == 0)
+                                {
+                                    completeAsyncShutdown();
+                                }
+                            });
+                        }
+                    });
+
+            bool shutdownQueued = false;
+            if (slot->control)
+            {
+                QJsonObject request;
+                request.insert(agent::kMessageTypeField, agent::kCommandShutdown);
+                const QPointer<QProcess> guardedProcess(process);
+                shutdownQueued = slot->control->sendRequest(
+                    request,
+                    800,
+                    [guardedProcess](bool success, const QJsonObject&, const QString&)
+                    {
+                        if (!success
+                            && guardedProcess
+                            && guardedProcess->state() != QProcess::NotRunning)
+                        {
+                            guardedProcess->terminate();
+                        }
+                    });
+            }
+            if (!shutdownQueued)
+            {
+                process->terminate();
+            }
+        }
+
+        if (m_shutdownProcessesRemaining == 0)
+        {
+            completeAsyncShutdown();
+            return;
+        }
+
+        QTimer::singleShot(1500, this, [this]()
+        {
+            if (m_shutdownProcessesRemaining == 0)
+            {
+                return;
+            }
+            for (const auto& slot : m_cameras)
+            {
+                if (slot->process && slot->process->state() != QProcess::NotRunning)
+                {
+                    slot->process->kill();
+                }
+            }
+            m_shutdownKillPollsRemaining = 50;
+            QTimer::singleShot(100, this, [this]() { completeAsyncShutdown(); });
+        });
+    }
+
+    // Releases agent state and completes the owning manager callback
+    void AgentCameraBackend::completeAsyncShutdown()
+    {
+        if (!m_shutdownCompletion && m_shutdownError.isEmpty())
+        {
+            return;
+        }
+        for (const auto& slot : m_cameras)
+        {
+            if (slot->process && slot->process->state() != QProcess::NotRunning)
+            {
+                if (!m_shutdownCompletion)
+                {
+                    return;
+                }
+                if (m_shutdownKillPollsRemaining <= 0)
+                {
+                    m_shutdownError = QStringLiteral("Camera agent process did not stop after termination");
+                    auto completion = std::move(m_shutdownCompletion);
+                    completion(m_shutdownError);
+                    return;
+                }
+                --m_shutdownKillPollsRemaining;
+                slot->process->kill();
+                QTimer::singleShot(100, this, [this]() { completeAsyncShutdown(); });
+                return;
+            }
+        }
+        m_shutdownProcessesRemaining = 0;
+        m_cameras.clear();
+        discardPendingPreviewFrames();
+        if (m_shutdownHadRunningCamera)
+        {
+            notifyPreviewStopped();
+        }
+        m_shutdownHadRunningCamera = false;
+        m_shuttingDown = false;
+        m_shutdownError.clear();
+        auto completion = std::move(m_shutdownCompletion);
+        if (completion)
+        {
+            completion({});
         }
     }
 

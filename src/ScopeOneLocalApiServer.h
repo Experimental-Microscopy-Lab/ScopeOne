@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QString>
 #include <QStringList>
+#include <QThreadPool>
 #include <memory>
 
 #include "scopeone/ScopeOneCore.h"
@@ -32,14 +33,16 @@ namespace scopeone::ui
         void handleSocketReadyRead(QLocalSocket* socket);
         void handleSocketDisconnected(QLocalSocket* socket);
         void sendResponse(QLocalSocket* socket, const QJsonObject& response);
+        void sendRequestResponse(QLocalSocket* socket,
+                                 QJsonObject response,
+                                 const QJsonValue& requestId);
+        bool processAsyncRequest(QLocalSocket* socket,
+                                 const QJsonObject& request,
+                                 const QJsonValue& requestId);
         QJsonObject processRequest(const QJsonObject& request);
         scopeone::core::ExperimentDocument createExperimentDocument();
         QJsonObject experimentStatusResponse(const QString& type,
                                              const QString& experimentId) const;
-        std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> runRecording(
-            const scopeone::core::ExperimentPlan& plan,
-            int timeoutMs,
-            QString& errorMessage);
         bool exportFrameToSharedMemory(const scopeone::core::ImageFrame& frame,
                                        scopeone::core::ImageFrame& exportedFrame,
                                        QString& errorMessage);
@@ -52,6 +55,7 @@ namespace scopeone::ui
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;
+        QThreadPool m_taskPool;
         QString m_frameMappingCameraId;
 
         void* m_frameMappingHandle{nullptr};

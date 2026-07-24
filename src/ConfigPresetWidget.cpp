@@ -84,7 +84,7 @@ namespace scopeone::ui
     // Rebuild the preset table while preserving scroll position
     void ConfigPresetWidget::refresh()
     {
-        if (m_updating)
+        if (m_updating || m_scopeonecore->configurationOperationRunning())
         {
             return;
         }

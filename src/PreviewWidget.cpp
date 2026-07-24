@@ -2,10 +2,13 @@
 
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
+#include <QDebug>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QOpenGLContext>
+#include <QSurfaceFormat>
 #include <QtGlobal>
 #include <QtMath>
 #include <algorithm>
@@ -1720,6 +1723,35 @@ namespace scopeone::ui
     void PreviewWidget::initializeGL()
     {
         initializeOpenGLFunctions();
+
+        const QSurfaceFormat format = context()->format();
+        QString profile = QStringLiteral("No profile");
+        if (format.profile() == QSurfaceFormat::CoreProfile)
+        {
+            profile = QStringLiteral("Core profile");
+        }
+        else if (format.profile() == QSurfaceFormat::CompatibilityProfile)
+        {
+            profile = QStringLiteral("Compatibility profile");
+        }
+        const auto glString = [this](GLenum name)
+        {
+            const GLubyte* value = glGetString(name);
+            return value
+                       ? QString::fromLatin1(reinterpret_cast<const char*>(value))
+                       : QStringLiteral("Unavailable");
+        };
+        qInfo().noquote()
+            << QStringLiteral("OpenGL context: %1 %2.%3, %4")
+                   .arg(context()->isOpenGLES() ? QStringLiteral("OpenGL ES")
+                                               : QStringLiteral("Desktop OpenGL"))
+                   .arg(format.majorVersion())
+                   .arg(format.minorVersion())
+                   .arg(profile);
+        qInfo().noquote() << QStringLiteral("OpenGL vendor: %1").arg(glString(GL_VENDOR));
+        qInfo().noquote() << QStringLiteral("OpenGL renderer: %1").arg(glString(GL_RENDERER));
+        qInfo().noquote() << QStringLiteral("OpenGL version: %1").arg(glString(GL_VERSION));
+        qInfo().noquote() << QStringLiteral("GLSL version: %1").arg(glString(GL_SHADING_LANGUAGE_VERSION));
 
         glDisable(GL_DEPTH_TEST);
         ensureGlPipeline();

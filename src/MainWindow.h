@@ -87,6 +87,13 @@ namespace scopeone::ui
         void removeGallerySessionFrameControls(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void updateGalleryLayerFrame(const QString& layerKey, int frameIndex);
+        void requestLatestGalleryFrame(const QString& layerKey);
+        void handleGalleryFrameReady(
+            quint64 requestId,
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            const QString& cameraId,
+            int frameIndex,
+            const scopeone::core::ImageFrame& frame);
 
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
@@ -106,6 +113,8 @@ namespace scopeone::ui
                                              const QString& errorMessage);
         void handleConfigurationUnloadFinished(bool success,
                                                const QString& errorMessage);
+        void handleCloseSaveFinished(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void loadConfigurationFromDialog();
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
@@ -130,6 +139,12 @@ namespace scopeone::ui
             QString cameraId;
         };
         QHash<QString, GalleryLayerFrameControl> m_galleryLayerFrameControls;
+        struct GalleryFrameRequestState
+        {
+            quint64 requestId{0};
+            int latestFrameIndex{0};
+        };
+        QHash<QString, GalleryFrameRequestState> m_galleryFrameRequests;
 
         QDockWidget* m_deviceControlDockWidget{nullptr};
         DeviceControlWidget* m_deviceControlWidget{nullptr};
@@ -157,6 +172,7 @@ namespace scopeone::ui
         QAction* m_aboutQtAction{nullptr};
 
         QPointer<QProgressDialog> m_loadConfigProgress;
+        QPointer<QProgressDialog> m_closeSaveProgress;
         QPointer<StageMosaicDialog> m_stageMosaicDialog;
         QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
         QLabel* m_statusMessageLabel{nullptr};
@@ -170,5 +186,8 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};
+        QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;
+        int m_closeSaveTotal{0};
+        bool m_closeSaveInProgress{false};
     };
 }

@@ -1,5 +1,7 @@
 #include "internal/CameraManager.h"
 
+#include <QTimer>
+
 namespace scopeone::core::internal
 {
     namespace
@@ -23,7 +25,7 @@ namespace scopeone::core::internal
 
     CameraManager::~CameraManager()
     {
-        shutdown();
+        shutdownNow();
     }
 
     bool CameraManager::activateBackend(CameraBackend::Kind kind)
@@ -33,7 +35,7 @@ namespace scopeone::core::internal
             return true;
         }
 
-        shutdown();
+        shutdownNow();
         m_backend = kind == CameraBackend::Kind::Native
                         ? createNativeCameraBackend()
                         : createAgentCameraBackend();
@@ -92,11 +94,51 @@ namespace scopeone::core::internal
                                          exposureMs);
     }
 
-    void CameraManager::shutdown()
+    void CameraManager::shutdownNow()
     {
         m_backend.reset();
         m_recordingFrameDeliveryEnabled = false;
         m_propertyDetailsCache.clear();
+    }
+
+    // Releases the active backend after its asynchronous teardown completes
+    void CameraManager::shutdown(std::function<void(const QString&)> completion)
+    {
+        if (!m_backend)
+        {
+            m_recordingFrameDeliveryEnabled = false;
+            m_propertyDetailsCache.clear();
+            if (completion)
+            {
+                completion({});
+            }
+            return;
+        }
+
+        CameraBackend* const backend = m_backend.get();
+        backend->shutdown([this, backend, completion = std::move(completion)](
+                                   const QString& errorMessage) mutable
+        {
+            QTimer::singleShot(0, this, [this,
+                                        backend,
+                                        completion = std::move(completion),
+                                        errorMessage]() mutable
+            {
+                if (errorMessage.isEmpty() && m_backend.get() == backend)
+                {
+                    m_backend.reset();
+                }
+                if (errorMessage.isEmpty())
+                {
+                    m_recordingFrameDeliveryEnabled = false;
+                    m_propertyDetailsCache.clear();
+                }
+                if (completion)
+                {
+                    completion(errorMessage);
+                }
+            });
+        });
     }
 
     bool CameraManager::startPreview()

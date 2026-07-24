@@ -120,68 +120,6 @@ namespace scopeone::ui
                 qBound<qint64>(1, frameCount, static_cast<qint64>((std::numeric_limits<int>::max)())));
         }
 
-        // Publish one frame of each recorded camera as graph layers
-        QStringList previewGallerySession(
-            scopeone::core::ScopeOneCore& core,
-            PreviewWidget& previewWidget,
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            int frameIndex = 0)
-        {
-            QStringList visibleLayerKeys = previewWidget.visibleLayerKeys();
-            QStringList openedLayerKeys;
-
-            if (!session)
-            {
-                return openedLayerKeys;
-            }
-
-            for (const QString& cameraId : session->recordedCameraIds())
-            {
-                const qint64 cameraFrameCount = session->recordedFrameCount(cameraId);
-                if (cameraFrameCount <= 0)
-                {
-                    continue;
-                }
-
-                const int cameraFrameIndex = static_cast<int>(
-                    qBound<qint64>(0, static_cast<qint64>(frameIndex), cameraFrameCount - 1));
-                const scopeone::core::ImageFrame frame = core.sessionFrameAt(session, cameraId, cameraFrameIndex);
-                if (!frame.isValid())
-                {
-                    continue;
-                }
-
-                const QString displayName = cameraFrameCount > 1
-                                                ? QStringLiteral("Gallery %1 Frame %2").arg(cameraId)
-                                                  .arg(cameraFrameIndex + 1)
-                                                : QStringLiteral("Gallery %1").arg(cameraId);
-                const QString layerId = gallerySessionLayerId(session, cameraId);
-                const scopeone::core::ImageFrame graphFrame = core.publishStaticFrame(layerId, frame, displayName);
-                if (!graphFrame.isValid())
-                {
-                    continue;
-                }
-                const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(layerId);
-                if (!layerKey.isEmpty())
-                {
-                    openedLayerKeys.append(layerKey);
-                    if (!visibleLayerKeys.contains(layerKey))
-                    {
-                        visibleLayerKeys.append(layerKey);
-                    }
-                }
-            }
-
-            if (!openedLayerKeys.isEmpty())
-            {
-                core.imageSceneModel()->setVisibleLayers(visibleLayerKeys);
-                previewWidget.setLayerLayoutMode(visibleLayerKeys.size() > 1
-                                                     ? PreviewWidget::LayerLayoutMode::SideBySide
-                                                     : PreviewWidget::LayerLayoutMode::Overlay);
-            }
-            return openedLayerKeys;
-        }
-
         // Remove graph layers that belong to one gallery session
         void removeGallerySessionPreview(
             scopeone::core::ScopeOneCore& core,
@@ -244,6 +182,12 @@ namespace scopeone::ui
     // Confirm what to do with unsaved gallery sessions
     void MainWindow::closeEvent(QCloseEvent* event)
     {
+        if (m_closeSaveInProgress)
+        {
+            event->ignore();
+            return;
+        }
+
         const auto unsavedSessions = m_imageGalleryWidget->unsavedSessions();
         if (unsavedSessions.isEmpty())
         {
@@ -267,20 +211,25 @@ namespace scopeone::ui
 
         if (reply == QMessageBox::Save)
         {
+            event->ignore();
+            m_closePendingSessions = unsavedSessions;
+            m_closeSaveTotal = unsavedSessions.size();
+            m_closeSaveInProgress = true;
+            m_closeSaveProgress = new QProgressDialog(
+                tr("Saving gallery images..."), QString(), 0, m_closeSaveTotal, this);
+            m_closeSaveProgress->setWindowTitle(tr("Saving"));
+            m_closeSaveProgress->setWindowModality(Qt::ApplicationModal);
+            m_closeSaveProgress->setCancelButton(nullptr);
+            m_closeSaveProgress->setMinimumDuration(0);
+            m_closeSaveProgress->setAutoClose(false);
+            m_closeSaveProgress->setValue(0);
+            m_closeSaveProgress->show();
             for (const auto& session : unsavedSessions)
             {
                 updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
-                const QString result = m_scopeonecore->saveRecordingSession(session);
-                if (!session->isSaved())
-                {
-                    QMessageBox::critical(
-                        this,
-                        tr("Save Failed"),
-                        result.isEmpty() ? tr("Failed to save gallery images") : result);
-                    event->ignore();
-                    return;
-                }
+                m_scopeonecore->saveRecordingSession(session);
             }
+            return;
         }
 
         QMainWindow::closeEvent(event);
@@ -292,6 +241,24 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::hardwareConfigurationChanged,
                 this, [this]()
                 {
+                    const bool configurationRunning =
+                        m_scopeonecore->configurationOperationRunning();
+                    m_loadConfigurationAction->setEnabled(!configurationRunning);
+                    m_unloadConfigurationAction->setEnabled(!configurationRunning);
+                    m_propertyBrowser->setEnabled(!configurationRunning);
+                    m_configPresetWidget->setEnabled(!configurationRunning);
+                    m_deviceControlWidget->setEnabled(!configurationRunning);
+                    m_stageMosaicAction->setEnabled(!configurationRunning);
+                    m_particleDetectionAction->setEnabled(!configurationRunning);
+                    if (m_stageMosaicDialog)
+                    {
+                        m_stageMosaicDialog->setEnabled(!configurationRunning);
+                    }
+                    if (m_particleDetectionDialog)
+                    {
+                        m_particleDetectionDialog->setEnabled(!configurationRunning);
+                    }
+
                     const QStringList cameraIds = m_scopeonecore->cameraIds();
                     if (cameraIds.isEmpty())
                     {
@@ -301,25 +268,49 @@ namespace scopeone::ui
                     {
                         applyLoadedCameraState(cameraIds);
                     }
-                    refreshDevicePanels(false);
-
-                    if (m_scopeonecore->loadedConfigurationPath().isEmpty())
+                    if (!configurationRunning)
                     {
-                        showStatusMessage(tr("Configuration unloaded"), 3000);
-                    }
-                    else if (cameraIds.isEmpty())
-                    {
-                        showStatusMessage(tr("Configuration loaded without cameras"), 5000);
-                    }
-                    else
-                    {
-                        showStatusMessage(tr("%1 camera(s) ready").arg(cameraIds.size()), 5000);
+                        refreshDevicePanels(false);
+                        if (m_scopeonecore->loadedConfigurationPath().isEmpty())
+                        {
+                            showStatusMessage(tr("Configuration unloaded"), 3000);
+                        }
+                        else if (cameraIds.isEmpty())
+                        {
+                            showStatusMessage(tr("Configuration loaded without cameras"), 5000);
+                        }
+                        else
+                        {
+                            showStatusMessage(tr("%1 camera(s) ready").arg(cameraIds.size()), 5000);
+                        }
                     }
                 });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationLoadFinished,
+                this,
+                [this](bool success,
+                       const scopeone::core::ScopeOneCore::LoadConfigResult& result,
+                       const QString& errorMessage)
+                {
+                    handleConfigurationLoadFinished(success,
+                                                    m_scopeonecore->loadedConfigurationPath(),
+                                                    result.cameraIds,
+                                                    result.foundCamera,
+                                                    result.successCount,
+                                                    result.failCount,
+                                                    result.skippedCameraCount,
+                                                    errorMessage);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationUnloadFinished,
+                this, &MainWindow::handleConfigurationUnloadFinished);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
+                this, &MainWindow::handleGalleryFrameReady);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::deviceStateChanged,
                 this, [this]()
                 {
-                    refreshDevicePanels(false);
+                    if (!m_scopeonecore->configurationOperationRunning())
+                    {
+                        refreshDevicePanels(false);
+                    }
                 },
                 Qt::QueuedConnection);
 
@@ -373,12 +364,14 @@ namespace scopeone::ui
                 {
                     const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
                     m_galleryLayerFrameControls.remove(layerKey);
+                    m_galleryFrameRequests.remove(layerKey);
                     m_deviceControlWidget->removeLayerFrameControl(layerKey);
                     m_previewWidget->removeStaticLayer(layerKey);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
                 this, [this]()
                 {
+                    m_galleryFrameRequests.clear();
                     for (const QString& layerKey : m_galleryLayerFrameControls.keys())
                     {
                         m_deviceControlWidget->removeLayerFrameControl(layerKey);
@@ -594,9 +587,16 @@ namespace scopeone::ui
                     const QString title = tr("Stage Mosaic %1").arg(session->cameraIds().value(0));
                     m_imageGalleryWidget->addSession(session, title);
                     m_scopeonecore->removeStaticFrame(QStringLiteral("stage_mosaic"));
-                    if (!previewGallerySession(*m_scopeonecore, *m_previewWidget, session).isEmpty())
+                    registerGallerySessionFrameControls(session, 0);
+                    for (const QString& cameraId : session->recordedCameraIds())
                     {
-                        registerGallerySessionFrameControls(session, 0);
+                        if (session->recordedFrameCount(cameraId) > 0)
+                        {
+                            updateGalleryLayerFrame(
+                                scopeone::core::ScopeOneCore::staticLayerKey(
+                                    gallerySessionLayerId(session, cameraId)),
+                                0);
+                        }
                     }
                     showStatusMessage(tr("Mosaic added to Gallery"), 5000);
                 });
@@ -634,6 +634,7 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
+                    handleCloseSaveFinished(session);
                     if (session && session->isSaved())
                     {
                         m_imageGalleryWidget->markSessionSaved(session);
@@ -648,19 +649,23 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QStringList visibleLayerKeys = previewGallerySession(
-                        *m_scopeonecore,
-                        *m_previewWidget,
-                        session);
-                    if (visibleLayerKeys.isEmpty())
+                    if (!session || !session->hasRecordedOutput())
                     {
                         showStatusMessage(tr("No gallery image available for preview"), 5000);
                         return;
                     }
                     registerGallerySessionFrameControls(session, 0);
-                    showStatusMessage(
-                        tr("Gallery preview opened with %1 layer(s)").arg(visibleLayerKeys.size()),
-                        5000);
+                    for (const QString& cameraId : session->recordedCameraIds())
+                    {
+                        if (session->recordedFrameCount(cameraId) > 0)
+                        {
+                            updateGalleryLayerFrame(
+                                scopeone::core::ScopeOneCore::staticLayerKey(
+                                    gallerySessionLayerId(session, cameraId)),
+                                0);
+                        }
+                    }
+                    showStatusMessage(tr("Loading gallery preview..."));
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::livePreviewRequested,
                 this, &MainWindow::showLivePreview);
@@ -682,7 +687,7 @@ namespace scopeone::ui
                         if (session)
                         {
                             updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
-                            m_scopeonecore->saveRecordingSessionAsync(session);
+                            m_scopeonecore->saveRecordingSession(session);
                         }
                     }
                 });
@@ -815,6 +820,12 @@ namespace scopeone::ui
         m_deviceControlDockWidget = new QDockWidget(tr("Control"), this);
         m_deviceControlWidget = new DeviceControlWidget(m_scopeonecore, this);
         m_deviceControlWidget->setPreviewWidget(m_previewWidget);
+        connect(m_deviceControlWidget, &DeviceControlWidget::stageMoveFailed,
+                this, [this](const QString& message)
+                {
+                    showStatusMessage(message, 5000);
+                    qWarning().noquote() << message;
+                });
         m_deviceControlDockWidget->setWidget(m_deviceControlWidget);
 
         addDockWidget(Qt::RightDockWidgetArea, m_deviceControlDockWidget);
@@ -1172,14 +1183,13 @@ namespace scopeone::ui
             const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(
                 gallerySessionLayerId(session, cameraId));
             const int frameCount = uiFrameCount(session->recordedFrameCount(cameraId));
+            m_galleryLayerFrameControls.insert(layerKey, {session, cameraId});
             if (frameCount <= 1)
             {
-                m_galleryLayerFrameControls.remove(layerKey);
                 m_deviceControlWidget->removeLayerFrameControl(layerKey);
                 continue;
             }
 
-            m_galleryLayerFrameControls.insert(layerKey, {session, cameraId});
             m_deviceControlWidget->setLayerFrameControl(
                 layerKey,
                 frameCount,
@@ -1201,6 +1211,7 @@ namespace scopeone::ui
             const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(
                 gallerySessionLayerId(session, cameraId));
             m_galleryLayerFrameControls.remove(layerKey);
+            m_galleryFrameRequests.remove(layerKey);
             m_deviceControlWidget->removeLayerFrameControl(layerKey);
         }
     }
@@ -1229,18 +1240,64 @@ namespace scopeone::ui
 
         const int cameraFrameIndex = static_cast<int>(
             qBound<qint64>(0, static_cast<qint64>(frameIndex), cameraFrameCount - 1));
-        const scopeone::core::ImageFrame frame = m_scopeonecore->sessionFrameAt(
-            session,
-            cameraId,
-            cameraFrameIndex);
-        if (!frame.isValid())
+        GalleryFrameRequestState& state = m_galleryFrameRequests[layerKey];
+        state.latestFrameIndex = cameraFrameIndex;
+        if (state.requestId == 0)
+        {
+            requestLatestGalleryFrame(layerKey);
+        }
+    }
+
+    // Starts the newest pending frame read for one gallery layer
+    void MainWindow::requestLatestGalleryFrame(const QString& layerKey)
+    {
+        const auto controlIt = m_galleryLayerFrameControls.constFind(layerKey);
+        auto stateIt = m_galleryFrameRequests.find(layerKey);
+        if (controlIt == m_galleryLayerFrameControls.constEnd()
+            || stateIt == m_galleryFrameRequests.end()
+            || stateIt->requestId != 0)
         {
             return;
         }
 
+        stateIt->requestId = m_scopeonecore->requestRecordingSessionFrame(
+            controlIt->session,
+            controlIt->cameraId,
+            stateIt->latestFrameIndex);
+    }
+
+    // Displays a decoded frame only if it is still the latest slider request
+    void MainWindow::handleGalleryFrameReady(
+        quint64 requestId,
+        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+        const QString& cameraId,
+        int frameIndex,
+        const scopeone::core::ImageFrame& frame)
+    {
+        const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(
+            gallerySessionLayerId(session, cameraId));
+        auto stateIt = m_galleryFrameRequests.find(layerKey);
+        if (stateIt == m_galleryFrameRequests.end() || stateIt->requestId != requestId)
+        {
+            return;
+        }
+
+        stateIt->requestId = 0;
+        if (stateIt->latestFrameIndex != frameIndex)
+        {
+            requestLatestGalleryFrame(layerKey);
+            return;
+        }
+        if (!frame.isValid())
+        {
+            showStatusMessage(tr("Failed to load gallery frame"), 5000);
+            return;
+        }
+
         const QString layerId = gallerySessionLayerId(session, cameraId);
+        const qint64 cameraFrameCount = session->recordedFrameCount(cameraId);
         const QString displayName = cameraFrameCount > 1
-                                        ? tr("Gallery %1 Frame %2").arg(cameraId).arg(cameraFrameIndex + 1)
+                                        ? tr("Gallery %1 Frame %2").arg(cameraId).arg(frameIndex + 1)
                                         : tr("Gallery %1").arg(cameraId);
         const scopeone::core::ImageFrame graphFrame = m_scopeonecore->publishStaticFrame(
             layerId,
@@ -1251,9 +1308,22 @@ namespace scopeone::ui
             return;
         }
 
-        const int frameCount = uiFrameCount(cameraFrameCount);
-        m_deviceControlWidget->setLayerFrameControl(layerKey, frameCount, cameraFrameIndex);
-        showStatusMessage(tr("Gallery %1 frame %2").arg(cameraId).arg(cameraFrameIndex + 1), 1500);
+        QStringList visibleLayers = m_imageSceneModel->visibleLayerIds();
+        if (!visibleLayers.contains(layerKey))
+        {
+            visibleLayers.append(layerKey);
+            m_imageSceneModel->setVisibleLayers(visibleLayers);
+        }
+        m_previewWidget->setLayerLayoutMode(
+            visibleLayers.size() > 1
+                ? PreviewWidget::LayerLayoutMode::SideBySide
+                : PreviewWidget::LayerLayoutMode::Overlay);
+        if (cameraFrameCount > 1)
+        {
+            m_deviceControlWidget->setLayerFrameControl(
+                layerKey, uiFrameCount(cameraFrameCount), frameIndex);
+        }
+        showStatusMessage(tr("Gallery %1 frame %2").arg(cameraId).arg(frameIndex + 1), 1500);
     }
 
     // Edit persistent application settings
@@ -1360,6 +1430,8 @@ namespace scopeone::ui
                                                      const QString& errorMessage)
     {
         closeLoadConfigProgress();
+        m_loadConfigurationAction->setEnabled(true);
+        m_unloadConfigurationAction->setEnabled(true);
 
         if (!success)
         {
@@ -1417,6 +1489,8 @@ namespace scopeone::ui
     void MainWindow::handleConfigurationUnloadFinished(bool success,
                                                        const QString& errorMessage)
     {
+        m_loadConfigurationAction->setEnabled(true);
+        m_unloadConfigurationAction->setEnabled(true);
         if (!success)
         {
             QMessageBox::critical(this, tr("Unload Failed"),
@@ -1427,6 +1501,54 @@ namespace scopeone::ui
         }
 
         qInfo().noquote() << "Configuration unload completed successfully";
+    }
+
+    // Completes the deferred close after every gallery save finishes
+    void MainWindow::handleCloseSaveFinished(
+        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+    {
+        if (!m_closeSaveInProgress || !m_closePendingSessions.removeOne(session))
+        {
+            return;
+        }
+
+        const int completed = m_closeSaveTotal - m_closePendingSessions.size();
+        if (m_closeSaveProgress)
+        {
+            m_closeSaveProgress->setValue(completed);
+        }
+        if (!session || !session->isSaved())
+        {
+            m_closeSaveInProgress = false;
+            m_closePendingSessions.clear();
+            if (m_closeSaveProgress)
+            {
+                m_closeSaveProgress->close();
+                m_closeSaveProgress->deleteLater();
+                m_closeSaveProgress = nullptr;
+            }
+            QMessageBox::critical(
+                this,
+                tr("Save Failed"),
+                session && !session->saveMessage().isEmpty()
+                    ? session->saveMessage()
+                    : tr("Failed to save gallery images"));
+            return;
+        }
+        if (!m_closePendingSessions.isEmpty())
+        {
+            return;
+        }
+
+        m_closeSaveInProgress = false;
+        if (m_closeSaveProgress)
+        {
+            m_closeSaveProgress->setValue(m_closeSaveTotal);
+            m_closeSaveProgress->close();
+            m_closeSaveProgress->deleteLater();
+            m_closeSaveProgress = nullptr;
+        }
+        QTimer::singleShot(0, this, &QWidget::close);
     }
 
     // Load a Micro Manager config selected by the user
@@ -1464,21 +1586,22 @@ namespace scopeone::ui
         m_loadConfigProgress->setAutoClose(false);
         m_loadConfigProgress->setAutoReset(false);
         m_loadConfigProgress->show();
-        qApp->processEvents();
 
         showStatusMessage(tr("Loading configuration..."));
         qInfo().noquote() << QString("Loading configuration: %1").arg(fileName);
-        scopeone::core::ScopeOneCore::LoadConfigResult result;
-        QString errorMessage;
-        const bool success = m_scopeonecore->loadConfiguration(fileName, &result, &errorMessage);
-        handleConfigurationLoadFinished(success,
-                                        fileName,
-                                        result.cameraIds,
-                                        result.foundCamera,
-                                        result.successCount,
-                                        result.failCount,
-                                        result.skippedCameraCount,
-                                        errorMessage);
+        m_loadConfigurationAction->setEnabled(false);
+        m_unloadConfigurationAction->setEnabled(false);
+        if (!m_scopeonecore->loadConfiguration(fileName))
+        {
+            handleConfigurationLoadFinished(false,
+                                            fileName,
+                                            {},
+                                            false,
+                                            0,
+                                            0,
+                                            0,
+                                            tr("Another hardware operation is still running"));
+        }
     }
 
     // Confirm and unload the active device configuration
@@ -1492,8 +1615,14 @@ namespace scopeone::ui
 
         if (reply == QMessageBox::Yes)
         {
-            m_scopeonecore->unloadConfiguration();
-            handleConfigurationUnloadFinished(true, QString{});
+            m_loadConfigurationAction->setEnabled(false);
+            m_unloadConfigurationAction->setEnabled(false);
+            showStatusMessage(tr("Unloading configuration..."));
+            if (!m_scopeonecore->unloadConfiguration())
+            {
+                handleConfigurationUnloadFinished(
+                    false, tr("Another hardware operation is still running"));
+            }
         }
     }
 

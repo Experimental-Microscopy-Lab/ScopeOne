@@ -83,7 +83,7 @@ namespace scopeone::core::internal
             ~NativeCameraBackend() override;
 
             Kind kind() const override { return Kind::Native; }
-            void shutdown();
+            void shutdownNow();
             bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                        const QString& cameraId,
                                        double exposureMs) override;
@@ -370,13 +370,13 @@ namespace scopeone::core::internal
 
         NativeCameraBackend::~NativeCameraBackend()
         {
-            shutdown();
+            shutdownNow();
             m_streamThread.quit();
             m_streamThread.wait();
             m_worker = nullptr;
         }
 
-        void NativeCameraBackend::shutdown()
+        void NativeCameraBackend::shutdownNow()
         {
             if (m_running)
             {
@@ -399,7 +399,7 @@ namespace scopeone::core::internal
             {
                 return false;
             }
-            shutdown();
+            shutdownNow();
             m_core = core;
             m_cameraId = normalizedId;
             m_exposureMs = exposureMs > 0.0 ? exposureMs : 10.0;

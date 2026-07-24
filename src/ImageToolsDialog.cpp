@@ -265,6 +265,8 @@ namespace scopeone::ui
 
         setWindowTitle(tr("Particle Detection"));
         setupUI();
+        connect(m_core, &ScopeOneCore::particleDetectionFinished,
+                this, &ParticleDetectionDialog::handleDetectionFinished);
         refreshCameras();
     }
 
@@ -272,6 +274,7 @@ namespace scopeone::ui
     void ParticleDetectionDialog::reject()
     {
         m_autoUpdateTimer->stop();
+        m_activeDetectionRequestId = 0;
         QDialog::reject();
     }
 
@@ -368,6 +371,10 @@ namespace scopeone::ui
     // Detect connected bright particles in the latest frame
     void ParticleDetectionDialog::analyzeCurrentFrame()
     {
+        if (m_activeDetectionRequestId != 0)
+        {
+            return;
+        }
         const QString cameraId = selectedCameraId();
         if (cameraId.isEmpty())
         {
@@ -409,16 +416,39 @@ namespace scopeone::ui
             m_maxAreaSpinBox->setValue(minArea);
         }
         const int maxArea = m_maxAreaSpinBox->value();
-        ScopeOneCore::ParticleDetectionResult result;
-        if (!m_core->detectParticles(ScopeOneCore::rawLayerKey(cameraId),
-                                     threshold,
-                                     minArea,
-                                     maxArea,
-                                     result))
+        m_activeDetectionRequestId = m_core->detectParticles(
+            ScopeOneCore::rawLayerKey(cameraId), threshold, minArea, maxArea);
+        if (m_activeDetectionRequestId == 0)
         {
             m_statusLabel->setText(tr("Particle analysis failed"));
+        }
+        else
+        {
+            m_analyzeButton->setEnabled(false);
+            m_statusLabel->setText(tr("Analyzing..."));
+        }
+    }
+
+    // Publishes the latest particle result on the UI thread
+    void ParticleDetectionDialog::handleDetectionFinished(
+        quint64 requestId,
+        const QString& layerKey,
+        const ScopeOneCore::ParticleDetectionResult& result,
+        const QString& errorMessage)
+    {
+        if (requestId != m_activeDetectionRequestId)
+        {
             return;
         }
+        m_activeDetectionRequestId = 0;
+        m_analyzeButton->setEnabled(m_cameraCombo->count() > 0);
+        if (!errorMessage.isEmpty())
+        {
+            m_statusLabel->setText(errorMessage);
+            return;
+        }
+
+        const QString cameraId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
         const QString maskLayerId = QStringLiteral("particle_mask");
         const ImageFrame previewMaskFrame = m_core->publishStaticFrame(
             maskLayerId,

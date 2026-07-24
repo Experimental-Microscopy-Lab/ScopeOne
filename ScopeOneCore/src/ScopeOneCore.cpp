@@ -378,26 +378,6 @@ namespace
     }
 
     template <typename Operation>
-    // Run an MMCore operation only after validating the device label
-    bool runWithTrimmedLabel(const QString& rawLabel, Operation&& operation)
-    {
-        const QString label = rawLabel.trimmed();
-        if (label.isEmpty())
-        {
-            return false;
-        }
-        try
-        {
-            operation(label.toStdString());
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
-    }
-
-    template <typename Operation>
     // Apply camera changes while active previews are temporarily stopped
     bool withSuspendedPreviews(scopeone::core::ScopeOneCore* core, const QStringList& cameraIds, Operation&& operation)
     {
@@ -576,6 +556,19 @@ namespace
         return facade;
     }
 
+    struct ConfigurationTaskResult
+    {
+        bool success{false};
+        scopeone::core::internal::MMCoreManager::LoadConfigResult loadResult;
+        QString errorMessage;
+    };
+
+    struct StageTaskResult
+    {
+        bool success{false};
+        QString errorMessage;
+    };
+
     // Capture current device properties for recording metadata
     QJsonObject buildDevicePropertyMetadata(const scopeone::core::ScopeOneCore& core)
     {
@@ -671,14 +664,13 @@ namespace scopeone::core
         return true;
     }
 
-    // Clear all live frame graph state
+    // Clear all frame graph state
     void ScopeOneCore::FrameGraph::clear()
     {
         m_rawFrames.clear();
         m_processedFrames.clear();
         m_staticFrames.clear();
         m_externalFrames.clear();
-        m_sessionSources.clear();
     }
 
     // Store the latest valid frame for one graph stream
@@ -715,60 +707,6 @@ namespace scopeone::core
 
         const auto it = latestMap(stream).constFind(trimmedSourceId);
         return it != latestMap(stream).constEnd() && it.value().isValid() ? it.value() : ImageFrame{};
-    }
-
-    // Store a session source without copying the full recording into the graph
-    bool ScopeOneCore::FrameGraph::publishSessionSource(
-        const QString& sourceId,
-        const std::shared_ptr<ScopeOneCore::RecordingSessionData>& session,
-        const QList<ImageFrame>& firstFrames)
-    {
-        const QString trimmedSourceId = sourceId.trimmed();
-        if (trimmedSourceId.isEmpty() || !session || firstFrames.isEmpty())
-        {
-            return false;
-        }
-
-        QList<ImageFrame> validFrames;
-        validFrames.reserve(firstFrames.size());
-        for (const ImageFrame& frame : firstFrames)
-        {
-            if (frame.isValid())
-            {
-                validFrames.append(frame);
-            }
-        }
-        if (validFrames.isEmpty())
-        {
-            return false;
-        }
-
-        SessionSource graphSource;
-        graphSource.session = session;
-        graphSource.firstFrames = std::move(validFrames);
-        m_sessionSources.insert(trimmedSourceId, std::move(graphSource));
-        return true;
-    }
-
-    // Return the session source registered with the graph
-    std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::FrameGraph::sessionSource(
-        const QString& sourceId) const
-    {
-        const auto it = m_sessionSources.constFind(sourceId.trimmed());
-        return it == m_sessionSources.constEnd() ? nullptr : it.value().session.lock();
-    }
-
-    // Return cached first frames for a session source
-    QList<ImageFrame> ScopeOneCore::FrameGraph::sessionFirstFrames(const QString& sourceId) const
-    {
-        const auto it = m_sessionSources.constFind(sourceId.trimmed());
-        return it == m_sessionSources.constEnd() ? QList<ImageFrame>{} : it.value().firstFrames;
-    }
-
-    // Remove one stored session source
-    void ScopeOneCore::FrameGraph::removeSessionSource(const QString& sourceId)
-    {
-        m_sessionSources.remove(sourceId.trimmed());
     }
 
     // Remove one graph source
@@ -823,23 +761,6 @@ namespace scopeone::core
         const QString trimmedCameraId = cameraId.trimmed();
         const ImageFrame* frame = frameAt(trimmedCameraId, index);
         return frame ? *frame : outputImageFrameAt(trimmedCameraId, index);
-    }
-
-    // Return the first valid frame from each recorded camera
-    QList<ImageFrame> ScopeOneCore::RecordingSessionData::firstImageFrames() const
-    {
-        QList<ImageFrame> frames;
-        const QStringList cameraIds = recordedCameraIds();
-        frames.reserve(cameraIds.size());
-        for (const QString& cameraId : cameraIds)
-        {
-            ImageFrame frame = firstImageFrame(cameraId);
-            if (frame.isValid())
-            {
-                frames.append(std::move(frame));
-            }
-        }
-        return frames;
     }
 
     // Append all valid frames through the same session frame path
@@ -1280,9 +1201,19 @@ namespace scopeone::core
             "scopeone::core::ScopeOneCore::RecordingWriterStatus");
         qRegisterMetaType<scopeone::core::ScopeOneCore::HistogramStats>(
             "scopeone::core::ScopeOneCore::HistogramStats");
+        qRegisterMetaType<scopeone::core::ScopeOneCore::LoadConfigResult>(
+            "scopeone::core::ScopeOneCore::LoadConfigResult");
+        qRegisterMetaType<scopeone::core::ScopeOneCore::ParticleDetectionResult>(
+            "scopeone::core::ScopeOneCore::ParticleDetectionResult");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
+        m_hardwareThreadPool = std::make_unique<QThreadPool>();
+        m_hardwareThreadPool->setMaxThreadCount(1);
+        m_analysisThreadPool = std::make_unique<QThreadPool>();
+        m_analysisThreadPool->setMaxThreadCount(1);
+        m_sessionFrameThreadPool = std::make_unique<QThreadPool>();
+        m_sessionFrameThreadPool->setMaxThreadCount(1);
         m_previewFlushTimer = new QTimer(this);
         m_previewFlushTimer->setSingleShot(true);
         m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
@@ -1391,7 +1322,6 @@ namespace scopeone::core
                 this, [this](const std::shared_ptr<RecordingSessionData>& session)
                 {
                     finalizeActiveExperiment(session);
-                    publishSessionFrameSource(session);
                     emit recordingStopped(session);
                 });
         connect(m_managers->stageMosaicManager, &StageMosaicManager::progressChanged,
@@ -1424,7 +1354,13 @@ namespace scopeone::core
     // Release loaded devices before the facade is destroyed
     ScopeOneCore::~ScopeOneCore()
     {
-        unloadConfiguration();
+        m_hardwareThreadPool->waitForDone();
+        m_analysisThreadPool->waitForDone();
+        m_sessionFrameThreadPool->waitForDone();
+        m_managers->recordingManager->shutdown();
+        m_pendingStageCommands = 0;
+        m_configurationOperationRunning = false;
+        unloadConfigurationForShutdown();
         m_histogramThreadPool->waitForDone();
     }
 
@@ -1444,7 +1380,7 @@ namespace scopeone::core
     bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
     {
         const QString device = deviceLabel.trimmed();
-        if (device.isEmpty() || isConfiguredCamera(device))
+        if (m_configurationOperationRunning || device.isEmpty() || isConfiguredCamera(device))
         {
             return false;
         }
@@ -1474,23 +1410,11 @@ namespace scopeone::core
         return running;
     }
 
-    // Load devices and agent cameras from a Micro Manager config
-    bool ScopeOneCore::loadConfigurationInternal(const QString& configPath,
-                                                 LoadConfigResult* result,
-                                                 QString* errorMessage)
+    // Applies a completed device load to the frame graph and public state
+    void ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
+                                                const LoadConfigResult& result)
     {
-        MMCoreManager::LoadConfigResult mmResult;
-        if (!m_managers->mmcoreManager->loadConfigurationAndStartCameras(
-            configPath, m_managers->cameraManager, &mmResult, errorMessage))
-        {
-            return false;
-        }
-        const LoadConfigResult facadeResult = toFacadeLoadConfigResult(mmResult);
-        if (result)
-        {
-            *result = facadeResult;
-        }
-        m_cameraIds = facadeResult.cameraIds;
+        m_cameraIds = result.cameraIds;
         for (const QString& cameraId : m_cameraIds)
         {
             ensureSceneLayer(rawLayerKey(cameraId),
@@ -1514,45 +1438,12 @@ namespace scopeone::core
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
         emit hardwareConfigurationChanged();
-        return true;
     }
 
-    // Replace the active configuration with a new device setup
-    bool ScopeOneCore::loadConfiguration(const QString& configPath,
-                                         LoadConfigResult* result,
-                                         QString* errorMessage)
+    // Releases hardware synchronously during facade destruction
+    void ScopeOneCore::unloadConfigurationForShutdown()
     {
-        if (configPath.trimmed().isEmpty())
-        {
-            return loadConfigurationInternal(configPath, result, errorMessage);
-        }
-        if (!loadedDevices().isEmpty())
-        {
-            unloadConfiguration();
-        }
-        if (loadConfigurationInternal(configPath, result, errorMessage))
-        {
-            return true;
-        }
-        unloadConfiguration();
-        return false;
-    }
-
-    // Stop cameras and clear all cached runtime state
-    void ScopeOneCore::unloadConfiguration()
-    {
-        m_managers->stageMosaicManager->cancel();
-        const QStringList cameraIds = m_cameraIds;
-        m_managers->cameraManager->stopPreview();
-        m_managers->cameraManager->shutdown();
-
-        for (const QString& cameraId : cameraIds)
-        {
-            clearLiveFrames(cameraId);
-        }
-        clearProcessedFrames();
-        clearStaticFrames();
-
+        clearConfigurationRuntime(false, true);
         auto handle = core();
         try
         {
@@ -1561,6 +1452,26 @@ namespace scopeone::core
         catch (const CMMError&)
         {
         }
+    }
+
+    // Stops camera runtime and clears state owned by the facade thread
+    void ScopeOneCore::clearConfigurationRuntime(bool notify, bool shutdownCameraBackend)
+    {
+        ++m_analysisGeneration;
+        m_managers->stageMosaicManager->cancel();
+        const QStringList cameraIds = m_cameraIds;
+        if (shutdownCameraBackend)
+        {
+            m_managers->cameraManager->stopPreview();
+            m_managers->cameraManager->shutdownNow();
+        }
+
+        for (const QString& cameraId : cameraIds)
+        {
+            clearLiveFrames(cameraId);
+        }
+        clearProcessedFrames();
+        clearStaticFrames();
         m_cameraIds.clear();
         m_loadedConfigPath.clear();
         m_loadedConfigSha256.clear();
@@ -1571,7 +1482,153 @@ namespace scopeone::core
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
-        emit hardwareConfigurationChanged();
+        if (notify)
+        {
+            emit hardwareConfigurationChanged();
+        }
+    }
+
+    // Loads a configuration on the serialized hardware worker
+    bool ScopeOneCore::loadConfiguration(const QString& configPath)
+    {
+        const QString path = configPath.trimmed();
+        if (path.isEmpty()
+            || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || isRecording())
+        {
+            return false;
+        }
+
+        m_configurationOperationRunning = true;
+        clearConfigurationRuntime(true, false);
+        m_managers->cameraManager->shutdown(
+            [this, path](const QString& errorMessage)
+            {
+                if (!errorMessage.isEmpty())
+                {
+                    m_configurationOperationRunning = false;
+                    emit hardwareConfigurationChanged();
+                    emit configurationLoadFinished(false, {}, errorMessage);
+                    return;
+                }
+                startConfigurationLoadTask(path);
+            });
+        return true;
+    }
+
+    // Starts MMCore configuration loading after camera teardown
+    void ScopeOneCore::startConfigurationLoadTask(const QString& path)
+    {
+        auto* watcher = new QFutureWatcher<ConfigurationTaskResult>(this);
+        connect(watcher, &QFutureWatcher<ConfigurationTaskResult>::finished,
+                this, [this, watcher, path]()
+        {
+            ConfigurationTaskResult task = watcher->result();
+            LoadConfigResult result;
+            if (task.success)
+            {
+                m_managers->mmcoreManager->startCameraBackends(
+                    *m_managers->cameraManager, task.loadResult);
+                result = toFacadeLoadConfigResult(task.loadResult);
+                m_configurationOperationRunning = false;
+                applyLoadedConfiguration(path, result);
+            }
+            else
+            {
+                m_configurationOperationRunning = false;
+                emit hardwareConfigurationChanged();
+            }
+            emit configurationLoadFinished(task.success, result, task.errorMessage);
+            watcher->deleteLater();
+        });
+
+        auto* manager = m_managers->mmcoreManager;
+        const auto future = QtConcurrent::run(m_hardwareThreadPool.get(), [manager, path]()
+        {
+            ConfigurationTaskResult task;
+            auto handle = manager->getCore();
+            try
+            {
+                handle->unloadAllDevices();
+            }
+            catch (const CMMError& error)
+            {
+                task.errorMessage = QString::fromStdString(error.getMsg());
+                return task;
+            }
+
+            task.success = manager->loadConfigurationDevices(
+                path, task.loadResult, task.errorMessage);
+            if (!task.success)
+            {
+                try
+                {
+                    handle->unloadAllDevices();
+                }
+                catch (const CMMError&)
+                {
+                }
+            }
+            return task;
+        });
+        watcher->setFuture(future);
+    }
+
+    // Unloads devices on the serialized hardware worker
+    bool ScopeOneCore::unloadConfiguration()
+    {
+        if (m_configurationOperationRunning || m_pendingStageCommands > 0 || isRecording())
+        {
+            return false;
+        }
+
+        m_configurationOperationRunning = true;
+        clearConfigurationRuntime(true, false);
+        m_managers->cameraManager->shutdown(
+            [this](const QString& errorMessage)
+            {
+                if (!errorMessage.isEmpty())
+                {
+                    m_configurationOperationRunning = false;
+                    emit hardwareConfigurationChanged();
+                    emit configurationUnloadFinished(false, errorMessage);
+                    return;
+                }
+                startConfigurationUnloadTask();
+            });
+        return true;
+    }
+
+    // Starts MMCore device unloading after camera teardown
+    void ScopeOneCore::startConfigurationUnloadTask()
+    {
+        auto* watcher = new QFutureWatcher<StageTaskResult>(this);
+        connect(watcher, &QFutureWatcher<StageTaskResult>::finished,
+                this, [this, watcher]()
+        {
+            const StageTaskResult task = watcher->result();
+            m_configurationOperationRunning = false;
+            emit hardwareConfigurationChanged();
+            emit configurationUnloadFinished(task.success, task.errorMessage);
+            watcher->deleteLater();
+        });
+
+        const auto handle = core();
+        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [handle]()
+        {
+            StageTaskResult task;
+            try
+            {
+                handle->unloadAllDevices();
+                task.success = true;
+            }
+            catch (const CMMError& error)
+            {
+                task.errorMessage = QString::fromStdString(error.getMsg());
+            }
+            return task;
+        }));
     }
 
     // Start preview for one camera or the full camera set
@@ -1579,7 +1636,7 @@ namespace scopeone::core
     {
         // Route preview to one camera or all cameras
         const QString target = cameraIdOrAll.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1594,7 +1651,7 @@ namespace scopeone::core
     bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
     {
         const QString target = cameraIdOrAll.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1609,7 +1666,7 @@ namespace scopeone::core
     bool ScopeOneCore::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
         const QString target = cameraIdOrAll.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1625,7 +1682,7 @@ namespace scopeone::core
     bool ScopeOneCore::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
         const QString target = cameraId.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1642,7 +1699,9 @@ namespace scopeone::core
     bool ScopeOneCore::setHalfROI(const QString& cameraId)
     {
         const QString target = cameraId.trimmed();
-        if (target.isEmpty() || target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        if (m_configurationOperationRunning
+            || target.isEmpty()
+            || target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
             return false;
         }
@@ -1674,7 +1733,7 @@ namespace scopeone::core
     bool ScopeOneCore::clearROI(const QString& cameraId)
     {
         const QString target = cameraId.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1709,7 +1768,7 @@ namespace scopeone::core
     bool ScopeOneCore::getROI(const QString& cameraId, int& x, int& y, int& width, int& height)
     {
         const QString target = cameraId.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -1952,62 +2011,7 @@ namespace scopeone::core
         return sampleFrameValue(graphFrame(layerKey), imagePos, value);
     }
 
-    // Return one frame from a session source through the graph facade
-    ImageFrame ScopeOneCore::sessionFrameAt(
-        const std::shared_ptr<RecordingSessionData>& session,
-        const QString& cameraId,
-        int index)
-    {
-        if (!session || index < 0)
-        {
-            return {};
-        }
-
-        const QString trimmedCameraId = cameraId.trimmed();
-        const QString sourceId = sessionFrameSourceId(session);
-        if (!publishSessionFrameSource(session))
-        {
-            return {};
-        }
-
-        if (index == 0)
-        {
-            for (const ImageFrame& frame : m_frameGraph.sessionFirstFrames(sourceId))
-            {
-                if (frame.cameraId == trimmedCameraId)
-                {
-                    return frame;
-                }
-            }
-            return {};
-        }
-
-        const auto graphSession = m_frameGraph.sessionSource(sourceId);
-        if (!graphSession)
-        {
-            return {};
-        }
-        return graphSession->imageFrameAt(trimmedCameraId, index);
-    }
-
-    // Return the cached first frames from a session source
-    QList<ImageFrame> ScopeOneCore::firstSessionFrames(
-        const std::shared_ptr<RecordingSessionData>& session)
-    {
-        if (!publishSessionFrameSource(session))
-        {
-            return {};
-        }
-        return m_frameGraph.sessionFirstFrames(sessionFrameSourceId(session));
-    }
-
-    // Remove a session source from the graph
-    void ScopeOneCore::removeSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session)
-    {
-        m_frameGraph.removeSessionSource(sessionFrameSourceId(session));
-    }
-
-    // Build a graph-backed session source from frames
+    // Build a recording session from frames
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::createFrameSession(
         const QList<ImageFrame>& frames,
         const ExperimentPlan& capturePlan)
@@ -2031,36 +2035,7 @@ namespace scopeone::core
             session->setDeviceProperties(deviceProperties);
             registerRecordingSession(session);
         }
-        publishSessionFrameSource(session);
         return session;
-    }
-
-    // Build a stable graph source id for one session
-    QString ScopeOneCore::sessionFrameSourceId(const std::shared_ptr<RecordingSessionData>& session) const
-    {
-        if (!session)
-        {
-            return {};
-        }
-        return QStringLiteral("session:%1").arg(
-            static_cast<qulonglong>(reinterpret_cast<quintptr>(session.get())), 0, 16);
-    }
-
-    // Publish a lazy session provider to the graph
-    bool ScopeOneCore::publishSessionFrameSource(const std::shared_ptr<RecordingSessionData>& session)
-    {
-        if (!session)
-        {
-            return false;
-        }
-
-        const QString sourceId = sessionFrameSourceId(session);
-        if (m_frameGraph.sessionSource(sourceId)
-            && !m_frameGraph.sessionFirstFrames(sourceId).isEmpty())
-        {
-            return true;
-        }
-        return m_frameGraph.publishSessionSource(sourceId, session, session->firstImageFrames());
     }
 
     // Publish a static frame source to the central graph
@@ -2398,24 +2373,68 @@ namespace scopeone::core
                           });
     }
 
-    bool ScopeOneCore::detectParticles(const QString& layerKey,
-                                       int threshold,
-                                       int minArea,
-                                       int maxArea,
-                                       ParticleDetectionResult& result,
-                                       int maxParticles) const
+    // Runs particle detection on the analysis worker
+    quint64 ScopeOneCore::detectParticles(const QString& layerKey,
+                                          int threshold,
+                                          int minArea,
+                                          int maxArea,
+                                          int maxParticles)
     {
-        return internal::detectParticles(graphFrame(layerKey),
-                                         threshold,
-                                         minArea,
-                                         maxArea,
-                                         result,
-                                         maxParticles);
+        const QString key = layerKey.trimmed();
+        const ImageFrame frame = graphFrame(key);
+        if (key.isEmpty() || !frame.isValid())
+        {
+            return 0;
+        }
+
+        const quint64 requestId = ++m_nextAnalysisRequestId;
+        const quint64 generation = m_analysisGeneration;
+        auto* watcher = new QFutureWatcher<ParticleDetectionResult>(this);
+        connect(watcher, &QFutureWatcher<ParticleDetectionResult>::finished,
+                this, [this, watcher, requestId, key, generation]()
+        {
+            const ParticleDetectionResult result = watcher->result();
+            QString error;
+            if (generation != m_analysisGeneration)
+            {
+                error = QStringLiteral("Particle analysis invalidated by configuration change");
+            }
+            else if (!result.mask.isValid())
+            {
+                error = QStringLiteral("Particle analysis failed");
+            }
+            emit particleDetectionFinished(requestId, key, result, error);
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run(
+            m_analysisThreadPool.get(),
+            [frame, threshold, minArea, maxArea, maxParticles]()
+            {
+                ParticleDetectionResult result;
+                internal::detectParticles(frame,
+                                          threshold,
+                                          minArea,
+                                          maxArea,
+                                          result,
+                                          maxParticles);
+                return result;
+            }));
+        return requestId;
     }
 
     bool ScopeOneCore::startStageMosaic(const StageMosaicPlan& plan,
                                         QString* errorMessage)
     {
+        if (m_configurationOperationRunning || m_pendingStageCommands > 0)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = m_configurationOperationRunning
+                                    ? QStringLiteral("A configuration operation is running")
+                                    : QStringLiteral("A stage command is running");
+            }
+            return false;
+        }
         return m_managers->stageMosaicManager->start(plan, errorMessage);
     }
 
@@ -2616,6 +2635,10 @@ namespace scopeone::core
 
     QStringList ScopeOneCore::xyStageDevices() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         try
         {
@@ -2629,6 +2652,10 @@ namespace scopeone::core
 
     QStringList ScopeOneCore::zStageDevices() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         try
         {
@@ -2642,6 +2669,10 @@ namespace scopeone::core
 
     QString ScopeOneCore::currentXYStageDevice() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         try
         {
@@ -2655,6 +2686,10 @@ namespace scopeone::core
 
     QString ScopeOneCore::currentFocusDevice() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         try
         {
@@ -2673,7 +2708,7 @@ namespace scopeone::core
         y = 0.0;
         const QString label = xyStageLabel.trimmed();
         auto handle = core();
-        if (label.isEmpty())
+        if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
@@ -2694,7 +2729,7 @@ namespace scopeone::core
         z = 0.0;
         const QString label = zStageLabel.trimmed();
         auto handle = core();
-        if (label.isEmpty())
+        if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
@@ -2709,73 +2744,98 @@ namespace scopeone::core
         }
     }
 
-    // Move an XY stage by a relative offset and wait for completion
-    bool ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
+    // Queues one stage command on the serialized hardware worker
+    quint64 ScopeOneCore::queueStageMove(
+        const QString& deviceLabel,
+        std::function<void(CMMCore&, const char*)> command)
     {
-        auto handle = core();
-        const bool ok = runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
+        const QString label = deviceLabel.trimmed();
+        if (label.isEmpty()
+            || !command
+            || m_configurationOperationRunning
+            || isRecording()
+            || !m_managers->activeExperimentId.isEmpty())
         {
-            handle->setRelativeXYPosition(label.c_str(), dx, dy);
-            handle->waitForDevice(label.c_str());
-        });
-        if (ok)
-        {
-            emit stagePositionChanged();
+            return 0;
         }
-        return ok;
+
+        const quint64 commandId = ++m_nextStageCommandId;
+        ++m_pendingStageCommands;
+        auto* watcher = new QFutureWatcher<StageTaskResult>(this);
+        connect(watcher, &QFutureWatcher<StageTaskResult>::finished,
+                this, [this, watcher, commandId, label]()
+        {
+            const StageTaskResult task = watcher->result();
+            --m_pendingStageCommands;
+            if (task.success)
+            {
+                emit stagePositionChanged();
+            }
+            emit stageMoveFinished(commandId, label, task.success, task.errorMessage);
+            watcher->deleteLater();
+        });
+
+        const auto handle = core();
+        watcher->setFuture(QtConcurrent::run(
+            m_hardwareThreadPool.get(),
+            [handle, label, command = std::move(command)]()
+            {
+                StageTaskResult task;
+                try
+                {
+                    const std::string device = label.toStdString();
+                    command(*handle, device.c_str());
+                    handle->waitForDevice(device.c_str());
+                    task.success = true;
+                }
+                catch (const CMMError& error)
+                {
+                    task.errorMessage = QString::fromStdString(error.getMsg());
+                }
+                return task;
+            }));
+        return commandId;
     }
 
-    // Move a Z stage by a relative offset and wait for completion
-    bool ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
+    quint64 ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
-        auto handle = core();
-        const bool ok = runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
+        return queueStageMove(xyStageLabel, [dx, dy](CMMCore& handle, const char* label)
         {
-            handle->setRelativePosition(label.c_str(), dz);
-            handle->waitForDevice(label.c_str());
+            handle.setRelativeXYPosition(label, dx, dy);
         });
-        if (ok)
-        {
-            emit stagePositionChanged();
-        }
-        return ok;
     }
 
-    // Move an XY stage to an absolute position and wait for completion
-    bool ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
+    quint64 ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
-        auto handle = core();
-        const bool ok = runWithTrimmedLabel(xyStageLabel, [&](const std::string& label)
+        return queueStageMove(zStageLabel, [dz](CMMCore& handle, const char* label)
         {
-            handle->setXYPosition(label.c_str(), x, y);
-            handle->waitForDevice(label.c_str());
+            handle.setRelativePosition(label, dz);
         });
-        if (ok)
-        {
-            emit stagePositionChanged();
-        }
-        return ok;
     }
 
-    // Move a Z stage to an absolute position and wait for completion
-    bool ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
+    quint64 ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
-        auto handle = core();
-        const bool ok = runWithTrimmedLabel(zStageLabel, [&](const std::string& label)
+        return queueStageMove(xyStageLabel, [x, y](CMMCore& handle, const char* label)
         {
-            handle->setPosition(label.c_str(), z);
-            handle->waitForDevice(label.c_str());
+            handle.setXYPosition(label, x, y);
         });
-        if (ok)
+    }
+
+    quint64 ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
+    {
+        return queueStageMove(zStageLabel, [z](CMMCore& handle, const char* label)
         {
-            emit stagePositionChanged();
-        }
-        return ok;
+            handle.setPosition(label, z);
+        });
     }
 
     // List available Micro Manager configuration groups
     QStringList ScopeOneCore::availableConfigGroups() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         try
         {
@@ -2797,7 +2857,7 @@ namespace scopeone::core
     QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
     {
         auto handle = core();
-        if (configGroup.isEmpty())
+        if (m_configurationOperationRunning || configGroup.isEmpty())
         {
             return {};
         }
@@ -2821,7 +2881,7 @@ namespace scopeone::core
     QString ScopeOneCore::currentConfig(const QString& groupName) const
     {
         auto handle = core();
-        if (groupName.isEmpty())
+        if (m_configurationOperationRunning || groupName.isEmpty())
         {
             return {};
         }
@@ -2839,7 +2899,10 @@ namespace scopeone::core
     bool ScopeOneCore::setConfig(const QString& groupName, const QString& configName)
     {
         auto handle = core();
-        if (groupName.isEmpty() || configName.isEmpty())
+        if (m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || groupName.isEmpty()
+            || configName.isEmpty())
         {
             return false;
         }
@@ -2870,7 +2933,7 @@ namespace scopeone::core
     {
         exposureMs = 0.0;
         const QString target = cameraIdOrAll.trimmed();
-        if (target.isEmpty())
+        if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
@@ -2912,6 +2975,10 @@ namespace scopeone::core
     // Merge native MMCore devices with agent camera labels
     QStringList ScopeOneCore::loadedDevices() const
     {
+        if (m_configurationOperationRunning)
+        {
+            return {};
+        }
         auto handle = core();
         QStringList devices;
         try
@@ -2965,7 +3032,7 @@ namespace scopeone::core
     QStringList ScopeOneCore::devicePropertyNames(const QString& deviceLabel) const
     {
         const QString device = deviceLabel.trimmed();
-        if (device.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty())
         {
             return {};
         }
@@ -2989,7 +3056,7 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return {};
         }
@@ -3020,7 +3087,7 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return QStringLiteral("Unknown");
         }
@@ -3052,7 +3119,7 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return true;
         }
@@ -3076,7 +3143,7 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return false;
         }
@@ -3100,7 +3167,7 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return {};
         }
@@ -3131,7 +3198,7 @@ namespace scopeone::core
 
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning || device.isEmpty() || property.isEmpty())
         {
             return false;
         }
@@ -3171,11 +3238,25 @@ namespace scopeone::core
     {
         const QString device = deviceLabel.trimmed();
         const QString property = name.trimmed();
-        if (device.isEmpty() || property.isEmpty())
+        if (m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || device.isEmpty()
+            || property.isEmpty())
         {
             if (errorMessage)
             {
-                *errorMessage = QStringLiteral("Invalid property target");
+                if (m_configurationOperationRunning)
+                {
+                    *errorMessage = QStringLiteral("A configuration operation is running");
+                }
+                else if (m_pendingStageCommands > 0)
+                {
+                    *errorMessage = QStringLiteral("A stage command is running");
+                }
+                else
+                {
+                    *errorMessage = QStringLiteral("Invalid property target");
+                }
             }
             return false;
         }
@@ -3238,6 +3319,10 @@ namespace scopeone::core
     // Toggle live processing without changing the module list
     bool ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
+        if (m_configurationOperationRunning)
+        {
+            return false;
+        }
         if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
         {
             return false;
@@ -3555,7 +3640,9 @@ namespace scopeone::core
     // Start recording and suspend preview during MDA motion
     bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
     {
-        if (m_managers->recordingManager->isRecording()
+        if (m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || m_managers->recordingManager->isRecording()
             || !m_managers->activeExperimentId.isEmpty()
             || isStageMosaicRunning())
         {
@@ -3678,6 +3765,16 @@ namespace scopeone::core
     bool ScopeOneCore::startExperiment(const ExperimentDocument& document,
                                        QString* errorMessage)
     {
+        if (m_configurationOperationRunning || m_pendingStageCommands > 0)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = m_configurationOperationRunning
+                                    ? QStringLiteral("A configuration operation is running")
+                                    : QStringLiteral("A stage command is running");
+            }
+            return false;
+        }
         if (!validateExperimentDocument(document, errorMessage))
         {
             return false;
@@ -3864,7 +3961,6 @@ namespace scopeone::core
         {
             return false;
         }
-        removeSessionFrameSource(session);
         m_managers->sessions.remove(id);
         emit recordingSessionClosed(id);
         return true;
@@ -4002,64 +4098,16 @@ namespace scopeone::core
         return true;
     }
 
-    // Save a completed session with device metadata attached
-    QString ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session)
-    {
-        if (!session)
-        {
-            emit recordingSessionSaveFinished(session);
-            return QStringLiteral("Error: no session data");
-        }
-        ExperimentPlan capturePlan = session->capturePlan();
-        if (capturePlan.metadataFileName.trimmed().isEmpty())
-        {
-            capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
-        }
-        session->setCapturePlan(capturePlan);
-        const QString result = RecordingManager::saveSessionToDisk(session);
-        registerRecordingSession(session);
-        emit recordingSessionSaveFinished(session);
-        return result;
-    }
-
-    // Save a completed session with an updated capture plan
-    QString ScopeOneCore::saveRecordingSession(
-        const std::shared_ptr<RecordingSessionData>& session,
-        const RecordingSaveOptions& saveOptions)
-    {
-        if (!session)
-        {
-            return saveRecordingSession(session);
-        }
-
-        const ExperimentPlan& existingPlan = session->capturePlan();
-        ExperimentPlan mergedPlan = existingPlan;
-        mergedPlan.format = saveOptions.format;
-        mergedPlan.enableCompression = saveOptions.enableCompression;
-        mergedPlan.compressionLevel = saveOptions.compressionLevel;
-        if (!saveOptions.saveDir.trimmed().isEmpty())
-        {
-            mergedPlan.saveDir = saveOptions.saveDir;
-        }
-        if (!saveOptions.baseName.trimmed().isEmpty())
-        {
-            mergedPlan.baseName = saveOptions.baseName;
-        }
-        session->setCapturePlan(mergedPlan);
-        return saveRecordingSession(session);
-    }
-
     // Save a completed session on a worker thread
-    void ScopeOneCore::saveRecordingSessionAsync(const std::shared_ptr<RecordingSessionData>& session)
+    bool ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session)
     {
         if (!session)
         {
-            emit recordingSessionSaveFinished(session);
-            return;
+            return false;
         }
         if (m_sessionsSaving.contains(session.get()))
         {
-            return;
+            return false;
         }
 
         ExperimentPlan capturePlan = session->capturePlan();
@@ -4087,5 +4135,62 @@ namespace scopeone::core
             return RecordingManager::saveSessionToDisk(saveSession);
         });
         watcher->setFuture(future);
+        return true;
+    }
+
+    // Updates save options before dispatching the asynchronous writer
+    bool ScopeOneCore::saveRecordingSession(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const RecordingSaveOptions& saveOptions)
+    {
+        if (!session || m_sessionsSaving.contains(session.get()))
+        {
+            return false;
+        }
+
+        ExperimentPlan plan = session->capturePlan();
+        plan.format = saveOptions.format;
+        plan.enableCompression = saveOptions.enableCompression;
+        plan.compressionLevel = saveOptions.compressionLevel;
+        if (!saveOptions.saveDir.trimmed().isEmpty())
+        {
+            plan.saveDir = saveOptions.saveDir;
+        }
+        if (!saveOptions.baseName.trimmed().isEmpty())
+        {
+            plan.baseName = saveOptions.baseName;
+        }
+        session->setCapturePlan(plan);
+        return saveRecordingSession(session);
+    }
+
+    // Reads one recording frame on the serialized session IO worker
+    quint64 ScopeOneCore::requestRecordingSessionFrame(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const QString& cameraId,
+        int index)
+    {
+        const QString camera = cameraId.trimmed();
+        if (!session || camera.isEmpty() || index < 0)
+        {
+            return 0;
+        }
+
+        const quint64 requestId = ++m_nextSessionFrameRequestId;
+        auto* watcher = new QFutureWatcher<ImageFrame>(this);
+        connect(watcher, &QFutureWatcher<ImageFrame>::finished,
+                this, [this, watcher, requestId, session, camera, index]()
+        {
+            emit recordingSessionFrameReady(
+                requestId, session, camera, index, watcher->result());
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run(
+            m_sessionFrameThreadPool.get(),
+            [session, camera, index]()
+            {
+                return session->imageFrameAt(camera, index);
+            }));
+        return requestId;
     }
 } // namespace scopeone::core

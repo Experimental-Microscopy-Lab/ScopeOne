@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 #include <memory>
 
 #include "internal/CameraBackend.h"
@@ -30,7 +31,8 @@ namespace scopeone::core::internal
                             const QStringList& preInitProperties = QStringList(),
                             const QStringList& properties = QStringList(),
                             double exposureMs = 0.0);
-        void shutdown();
+        void shutdownNow();
+        void shutdown(std::function<void(const QString&)> completion);
 
         bool startPreview();
         bool stopPreview();

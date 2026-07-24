@@ -34,8 +34,7 @@ namespace scopeone::core::internal
     // Cancels and joins the acquisition worker before teardown
     MDAManager::~MDAManager()
     {
-        requestCancel();
-        m_threadPool.waitForDone();
+        cancelAndWait();
     }
 
     // Connects MDA capture to the active camera backend
@@ -77,6 +76,13 @@ namespace scopeone::core::internal
     void MDAManager::requestCancel()
     {
         m_cancelRequested.store(true);
+    }
+
+    // Cancels and joins the active acquisition worker
+    void MDAManager::cancelAndWait()
+    {
+        requestCancel();
+        m_threadPool.waitForDone();
     }
 
     // Executes a precomputed event sequence in order

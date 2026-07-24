@@ -15,16 +15,6 @@ namespace scopeone::core::internal
 {
     namespace
     {
-        struct CameraLoadInfo
-        {
-            QString label;
-            QString adapter;
-            QString device;
-            QStringList preInitProperties;
-            QStringList properties;
-            double exposureMs{10.0};
-        };
-
         struct DevicePropertyState
         {
             QStringList preInitProperties;
@@ -233,13 +223,13 @@ namespace scopeone::core::internal
     }
 
     // Reads camera metadata before backend startup
-    std::vector<CameraLoadInfo> loadedCameraInfos(
+    QList<MMCoreManager::CameraLoadInfo> loadedCameraInfos(
         CMMCore& core,
         const QStringList& loadedDevices,
         const QHash<QString, QList<ConfigProperty>>& explicitProperties)
     {
-        std::vector<CameraLoadInfo> cameras;
-        cameras.reserve(static_cast<size_t>(loadedDevices.size()));
+        QList<MMCoreManager::CameraLoadInfo> cameras;
+        cameras.reserve(loadedDevices.size());
         for (const QString& deviceName : loadedDevices)
         {
             try
@@ -250,7 +240,7 @@ namespace scopeone::core::internal
                     continue;
                 }
 
-                CameraLoadInfo info;
+                MMCoreManager::CameraLoadInfo info;
                 info.label = deviceName;
                 try
                 {
@@ -285,7 +275,7 @@ namespace scopeone::core::internal
                 info.preInitProperties = propertyState.preInitProperties;
                 info.properties = propertyState.properties;
 
-                cameras.push_back(std::move(info));
+                cameras.append(std::move(info));
             }
             catch (const CMMError&)
             {
@@ -299,61 +289,16 @@ namespace scopeone::core::internal
         : QObject(parent)
           , m_mmcore(std::make_shared<CMMCore>())
     {
-        qRegisterMetaType<DeviceType>("DeviceType");
     }
 
-    // Converts a device type enum into a UI label
-    QString MMCoreManager::getDeviceTypeString(DeviceType type) const
+    // Loads and initializes devices without creating Qt camera backends
+    bool MMCoreManager::loadConfigurationDevices(const QString& configPath,
+                                                 LoadConfigResult& result,
+                                                 QString& errorMessage)
     {
-        switch (type)
+        result = LoadConfigResult{};
+        if (!loadConfigurationFile(*m_mmcore, configPath, &errorMessage))
         {
-        case DeviceType::CameraDevice: return "Camera";
-        case DeviceType::ShutterDevice: return "Shutter";
-        case DeviceType::StateDevice: return "State";
-        case DeviceType::StageDevice: return "Stage";
-        case DeviceType::XYStageDevice: return "XYStage";
-        case DeviceType::SerialDevice: return "Serial";
-        case DeviceType::GenericDevice: return "Generic";
-        case DeviceType::AutoFocusDevice: return "AutoFocus";
-        case DeviceType::CoreDevice: return "Core";
-        case DeviceType::ImageProcessorDevice: return "ImageProcessor";
-        case DeviceType::SignalIODevice: return "SignalIO";
-        case DeviceType::MagnifierDevice: return "Magnifier";
-        case DeviceType::SLMDevice: return "SLM";
-        case DeviceType::GalvoDevice: return "Galvo";
-        case DeviceType::HubDevice: return "Hub";
-        case DeviceType::UnknownType: return "Unknown";
-        case DeviceType::AnyType: return "Any";
-        default: return "Unknown";
-        }
-    }
-
-    // Initializes devices and starts camera backends
-    bool MMCoreManager::loadConfigurationAndStartCameras(const QString& configPath,
-                                                         CameraManager* cameraManager,
-                                                         LoadConfigResult* result,
-                                                         QString* errorMessage)
-    {
-        if (result)
-        {
-            *result = LoadConfigResult{};
-        }
-        if (!m_mmcore)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
-
-        QString loadError;
-        if (!loadConfigurationFile(*m_mmcore, configPath, &loadError))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = loadError;
-            }
             return false;
         }
 
@@ -364,9 +309,9 @@ namespace scopeone::core::internal
             qWarning().noquote() << QString("Failed to query loaded devices: %1").arg(listError);
         }
         const QHash<QString, QList<ConfigProperty>> explicitProperties = explicitConfigProperties(configPath);
-        const std::vector<CameraLoadInfo> cameraInfos =
+        const QList<CameraLoadInfo> cameraInfos =
             loadedCameraInfos(*m_mmcore, loadedDevices, explicitProperties);
-        const bool useSingleCamera = (cameraInfos.size() == 1);
+        const bool useSingleCamera = cameraInfos.size() == 1;
 
         int successCount = 0;
         int failCount = 0;
@@ -437,57 +382,38 @@ namespace scopeone::core::internal
             }
         }
 
-        QStringList cameraIds;
-        QStringList agentsStarted;
-        const bool foundCamera = !cameraInfos.empty();
+        result.cameras = cameraInfos;
+        result.successCount = successCount;
+        result.failCount = failCount;
+        result.skippedCameraCount = skippedCameraCount;
+        result.foundCamera = !cameraInfos.isEmpty();
+        result.useSingleCamera = useSingleCamera;
+        return true;
+    }
 
-        for (const auto& ci : cameraInfos)
+    // Creates camera backends on the owning Qt thread
+    void MMCoreManager::startCameraBackends(CameraManager& cameraManager,
+                                            LoadConfigResult& result)
+    {
+        result.cameraIds.clear();
+        for (const CameraLoadInfo& camera : result.cameras)
         {
-            if (!cameraManager)
+            const bool started = result.useSingleCamera
+                ? cameraManager.configureNativeCamera(m_mmcore, camera.label, camera.exposureMs)
+                : cameraManager.addAgentCamera(camera.label,
+                                               camera.adapter,
+                                               camera.device,
+                                               camera.preInitProperties,
+                                               camera.properties,
+                                               camera.exposureMs);
+            if (!started)
             {
-                cameraIds.append(ci.label);
+                ++result.failCount;
                 continue;
             }
 
-            if (useSingleCamera)
-            {
-                if (cameraManager->configureNativeCamera(m_mmcore, ci.label, ci.exposureMs))
-                {
-                    cameraIds.append(ci.label);
-                }
-                else
-                {
-                    failCount++;
-                }
-            }
-            else
-            {
-                if (cameraManager->addAgentCamera(ci.label,
-                                                  ci.adapter,
-                                                  ci.device,
-                                                  ci.preInitProperties,
-                                                  ci.properties,
-                                                  ci.exposureMs))
-                {
-                    cameraIds.append(ci.label);
-                    agentsStarted.append(ci.label);
-                }
-                else
-                {
-                    failCount++;
-                }
-            }
+            result.cameraIds.append(camera.label);
         }
+    }
 
-        if (result)
-        {
-            result->cameraIds = cameraIds;
-            result->agentsStarted = agentsStarted;
-            result->successCount = successCount;
-            result->failCount = failCount;
-            result->skippedCameraCount = skippedCameraCount;
-            result->foundCamera = foundCamera;
-        }
-        return true;
-    } // namespace scopeone::core::internal
-}
+} // namespace scopeone::core::internal
