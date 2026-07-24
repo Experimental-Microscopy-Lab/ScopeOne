@@ -124,8 +124,12 @@ namespace scopeone::ui
 
         m_consoleTextEdit = new QTextEdit(this);
         m_consoleTextEdit->setReadOnly(true);
+#ifdef Q_OS_WIN
+        QFont consoleFont(QStringLiteral("Consolas"), 9);
+#else
         QFont consoleFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         consoleFont.setPointSize(9);
+#endif
         m_consoleTextEdit->setFont(consoleFont);
         m_consoleTextEdit->setStyleSheet(
             "QTextEdit {"

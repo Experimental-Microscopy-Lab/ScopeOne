@@ -172,6 +172,34 @@ target_include_directories(ScopeOneCore
         ${TIFF_INCLUDE_DIRS}
         ${ZLIB_INCLUDE_DIR}
 )
+target_precompile_headers(ScopeOneCore PRIVATE
+        <QtGlobal>
+        <QObject>
+        <QString>
+        <QStringList>
+        <QByteArray>
+        <QVector>
+        <QList>
+        <QHash>
+        <QJsonObject>
+        <QJsonArray>
+        <QJsonDocument>
+        <QDateTime>
+        <QElapsedTimer>
+        <QTimer>
+        <QThread>
+        <QMetaObject>
+        <QDebug>
+        <algorithm>
+        <atomic>
+        <cmath>
+        <cstring>
+        <functional>
+        <limits>
+        <memory>
+        <utility>
+        <vector>
+)
 target_link_directories(ScopeOneCore PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOneCore $<TARGET_FILE_DIR:ScopeOneCore>)
@@ -195,28 +223,36 @@ target_link_directories(ScopeOne_Agent PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Agent>)
 
+# Fast Release build
 if (MSVC)
     target_compile_options(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
+            $<$<CONFIG:Release>:/MP>
     )
-    target_compile_definitions(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
-    )
-    target_link_options(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:/LTCG>
-    )
-
-    target_compile_options(ScopeOne_Agent PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-    )
-    target_compile_definitions(ScopeOne_Agent PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
-    )
-    target_link_options(ScopeOne_Agent PRIVATE
-            $<$<CONFIG:Release>:/LTCG>
-    )
-
 endif ()
+
+# LTO Release build
+# if (MSVC)
+#     target_compile_options(ScopeOneCore PRIVATE
+#             $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
+#     )
+#     target_compile_definitions(ScopeOneCore PRIVATE
+#             $<$<CONFIG:Release>:NDEBUG>
+#     )
+#     target_link_options(ScopeOneCore PRIVATE
+#             $<$<CONFIG:Release>:/LTCG>
+#     )
+
+#     target_compile_options(ScopeOne_Agent PRIVATE
+#             $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
+#     )
+#     target_compile_definitions(ScopeOne_Agent PRIVATE
+#             $<$<CONFIG:Release>:NDEBUG>
+#     )
+#     target_link_options(ScopeOne_Agent PRIVATE
+#             $<$<CONFIG:Release>:/LTCG>
+#     )
+# endif ()
+
 
 configure_package_config_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScopeOneCoreConfig.cmake.in"
