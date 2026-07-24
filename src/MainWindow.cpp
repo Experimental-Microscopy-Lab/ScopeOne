@@ -1088,7 +1088,11 @@ namespace scopeone::ui
     // Record the application startup state in one place
     void MainWindow::logStartupSummary()
     {
-        m_consoleWidget->addMessage(QStringLiteral("ScopeOne UI ready"), QStringLiteral("SYSTEM"));
+        m_consoleWidget->addMessage(
+            QStringLiteral("ScopeOne %1 ready, commit %2")
+                .arg(QCoreApplication::applicationVersion(),
+                     QStringLiteral(SCOPEONE_GIT_COMMIT)),
+            QStringLiteral("SYSTEM"));
         m_consoleWidget->addMessage(
             QStringLiteral("Qt runtime: %1").arg(QString::fromLatin1(qVersion())),
             QStringLiteral("SYSTEM"));

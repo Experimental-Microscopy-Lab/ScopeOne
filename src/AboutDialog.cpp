@@ -63,6 +63,7 @@ namespace scopeone::ui
         const QString mmCoreVersion = scopeone::core::ScopeOneCore::getMMCoreVersion();
         const QString libTiffVersion = scopeone::core::ScopeOneCore::getLibTiffVersion();
         const QString zlibVersion = scopeone::core::ScopeOneCore::getZlibVersion();
+        const QString commit = QStringLiteral(SCOPEONE_GIT_COMMIT);
         const QString platformInfo = QString("%1, %2")
             .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture());
 
@@ -73,13 +74,14 @@ namespace scopeone::ui
 
 <h3>Runtime</h3>
 <table cellspacing="4" cellpadding="0">
-<tr><td><b>ScopeOneCore</b></td><td>%2</td></tr>
-<tr><td><b>MMCore</b></td><td>%3</td></tr>
-<tr><td><b>Qt</b></td><td>%4</td></tr>
-<tr><td><b>OpenCV</b></td><td>%5</td></tr>
-<tr><td><b>libtiff</b></td><td>%6</td></tr>
-<tr><td><b>zlib</b></td><td>%7</td></tr>
-<tr><td><b>Platform</b></td><td>%8</td></tr>
+<tr><td><b>Commit</b></td><td>%2</td></tr>
+<tr><td><b>ScopeOneCore</b></td><td>%3</td></tr>
+<tr><td><b>MMCore</b></td><td>%4</td></tr>
+<tr><td><b>Qt</b></td><td>%5</td></tr>
+<tr><td><b>OpenCV</b></td><td>%6</td></tr>
+<tr><td><b>libtiff</b></td><td>%7</td></tr>
+<tr><td><b>zlib</b></td><td>%8</td></tr>
+<tr><td><b>Platform</b></td><td>%9</td></tr>
 </table>
 
 <h3>Links</h3>
@@ -97,6 +99,7 @@ Licensed under the BSD 3-Clause License.
 </html>
 )")
             .arg(title.toHtmlEscaped(),
+                 commit.toHtmlEscaped(),
                  coreVersion.toHtmlEscaped(),
                  mmCoreVersion.toHtmlEscaped(),
                  QString::fromLatin1(qVersion()).toHtmlEscaped(),

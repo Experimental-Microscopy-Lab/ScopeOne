@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.16)
-project(ScopeOne VERSION 1.3.719 LANGUAGES CXX)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/VERSION")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/VERSION" SCOPEONE_VERSION LIMIT_COUNT 1)
+project(ScopeOne VERSION "${SCOPEONE_VERSION}" LANGUAGES CXX)
+
+set(SCOPEONE_GIT_COMMIT "unknown")
+find_package(Git QUIET)
+if (GIT_FOUND)
+    execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse --short=7 HEAD
+            RESULT_VARIABLE GIT_COMMIT_RESULT
+            OUTPUT_VARIABLE GIT_COMMIT_OUTPUT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+    )
+    if (GIT_COMMIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUTPUT STREQUAL "")
+        set(SCOPEONE_GIT_COMMIT "${GIT_COMMIT_OUTPUT}")
+    endif ()
+endif ()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
@@ -115,6 +132,9 @@ target_link_libraries(ScopeOne PRIVATE
         Qt::Network
         Qt::Concurrent
         ${OpenCV_LIBS}
+)
+target_compile_definitions(ScopeOne PRIVATE
+        SCOPEONE_GIT_COMMIT="${SCOPEONE_GIT_COMMIT}"
 )
 target_link_libraries(ScopeOneMcpServer PRIVATE
         Qt::Core
