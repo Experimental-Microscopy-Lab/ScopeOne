@@ -216,26 +216,25 @@ if (WIN32)
     endif ()
 endif ()
 
-# Fast Release build
-if (MSVC)
-    target_compile_options(ScopeOne PRIVATE
-            $<$<CONFIG:Release>:/MP>
-    )
-endif ()
-
-# LTO Release build
-
+# # Fast Release build
 # if (MSVC)
 #     target_compile_options(ScopeOne PRIVATE
-#             $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-#     )
-#     target_compile_definitions(ScopeOne PRIVATE
-#             $<$<CONFIG:Release>:NDEBUG>
-#     )
-#     target_link_options(ScopeOne PRIVATE
-#             $<$<CONFIG:Release>:/LTCG>
+#             $<$<CONFIG:Release>:/MP>
 #     )
 # endif ()
+
+# LTO Release build
+if (MSVC)
+    target_compile_options(ScopeOne PRIVATE
+            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
+    )
+    target_compile_definitions(ScopeOne PRIVATE
+            $<$<CONFIG:Release>:NDEBUG>
+    )
+    target_link_options(ScopeOne PRIVATE
+            $<$<CONFIG:Release>:/LTCG>
+    )
+endif ()
 
 
 
