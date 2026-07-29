@@ -94,7 +94,6 @@ set(CORE_SOURCES
         src/DifferentialRollingModule.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
-        src/OmeZarrStorage.cpp
         src/CameraBackend.cpp
         src/CameraManager.cpp
         src/NativeCameraBackend.cpp
@@ -119,7 +118,6 @@ set(CORE_HEADERS
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
-        internal/OmeZarrStorage.h
         internal/CameraBackend.h
         internal/CameraManager.h
         include/scopeone/ImageFrame.h
@@ -139,14 +137,10 @@ target_link_libraries(ScopeOneCore
         Qt::Network
         Qt::Concurrent
         ${OpenCV_LIBS}
-        TIFF::tiff
         ScopeWriter::ScopeWriter
-        Crc32c::crc32c
-        zstd::libzstd_static
 )
 target_compile_definitions(ScopeOneCore PRIVATE
         MMDEVICE_CLIENT_BUILD
-        SCOPEONE_HAVE_TIFF
         SCOPEONE_CORE_EXPORTS
         SCOPEONE_CORE_VERSION_STRING="${PROJECT_VERSION}"
 )

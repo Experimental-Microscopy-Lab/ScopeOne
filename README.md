@@ -46,14 +46,13 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 - OpenCV 4.12.0
 - mmCoreAndDevices
 
-Place OpenCV and MMCore under `ScopeOneCore/external`. ScopeWriter is maintained in
-its own repository and included here as a Git submodule. Clone ScopeOne with:
+Clone ScopeOne and initialize all submodules with:
 
 ```powershell
 git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
 ```
 
-For an existing checkout, initialize ScopeWriter with:
+For an existing checkout, initialize the submodules with:
 
 ```powershell
 git submodule update --init --recursive
@@ -71,8 +70,6 @@ ScopeOne/
 ```
 
 ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zstd and crc32c under its own `third_party` directory. It builds these dependencies from source without downloading packages during CMake configuration.
-
-<!-- Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes OpenCV and MMCore except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases). -->
 
 **Windows Build Steps:**
 

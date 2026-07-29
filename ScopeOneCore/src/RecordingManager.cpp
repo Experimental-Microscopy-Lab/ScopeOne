@@ -528,12 +528,6 @@ namespace scopeone::core::internal
                             });
                         }
                     }
-                    settings.detector.manufacturer = cameraProperties.value(
-                        QStringLiteral("Name")).toString().trimmed().toStdString();
-                    settings.detector.model = cameraProperties.value(
-                        QStringLiteral("CameraName")).toString().trimmed().toStdString();
-                    settings.detector.serialNumber = cameraProperties.value(
-                        QStringLiteral("CameraID")).toString().trimmed().toStdString();
                     double value = 0.0;
                     if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), value)
                         && value > 0.0)
