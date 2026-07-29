@@ -2,12 +2,12 @@
 
 #include "internal/CameraManager.h"
 #include "MMCore.h"
+#include <scopewriter/ScopeWriter.h>
 
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QCoreApplication>
 #include <QDebug>
@@ -17,10 +17,11 @@
 #include <QTimer>
 #include <QUuid>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <utility>
-#include <tiffio.h>
 
 namespace scopeone::core::internal
 {
@@ -40,6 +41,10 @@ namespace scopeone::core::internal
         {
             switch (format)
             {
+            case scopeone::core::RecordingFormat::OmeTiff:
+                return QStringLiteral("OME-TIFF");
+            case scopeone::core::RecordingFormat::OmeZarr:
+                return QStringLiteral("OME-Zarr");
             case scopeone::core::RecordingFormat::Tiff:
                 return QStringLiteral("TIFF");
             case scopeone::core::RecordingFormat::Binary:
@@ -61,55 +66,36 @@ namespace scopeone::core::internal
             }
         }
 
-        quint32 pixelFormatId(ImagePixelFormat pixelFormat)
-        {
-            switch (pixelFormat)
-            {
-            case ImagePixelFormat::Mono8:
-                return 0;
-            case ImagePixelFormat::Mono16:
-                return 1;
-            default:
-                return 0;
-            }
-        }
-
-        quint64 timestampNsForStorage(const ImageFrame& frame)
-        {
-            if (frame.timestampNs != 0)
-            {
-                return frame.timestampNs;
-            }
-            return static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-        }
-
-        QByteArray buildImageDescriptionJson(const QString& metadataFileName, const ImageFrame& frame)
-        {
-            QJsonObject imageDescription;
-            imageDescription["metadata_file"] = metadataFileName;
-            imageDescription["camera_id"] = frame.cameraId;
-            imageDescription["frame_index"] = QString::number(frame.frameIndex);
-            imageDescription["timestamp_ns"] = QString::number(timestampNsForStorage(frame));
-            imageDescription["bits_per_sample"] = frame.bitsPerSample;
-            imageDescription["pixel_format"] = pixelFormatName(frame.pixelFormat);
-            imageDescription["pixel_format_id"] = static_cast<int>(pixelFormatId(frame.pixelFormat));
-            imageDescription["source_roi_x"] = frame.sourceRoiX;
-            imageDescription["source_roi_y"] = frame.sourceRoiY;
-            imageDescription["source_roi_width"] = frame.sourceRoiWidth;
-            imageDescription["source_roi_height"] = frame.sourceRoiHeight;
-            return QJsonDocument(imageDescription).toJson(QJsonDocument::Compact);
-        }
-
         QString recordingExtension(scopeone::core::RecordingFormat format)
         {
             switch (format)
             {
+            case scopeone::core::RecordingFormat::OmeTiff:
+                return QStringLiteral(".ome.tiff");
+            case scopeone::core::RecordingFormat::OmeZarr:
+                return QStringLiteral(".ome.zarr");
             case scopeone::core::RecordingFormat::Tiff:
                 return QStringLiteral(".tif");
             case scopeone::core::RecordingFormat::Binary:
                 return QStringLiteral(".bin");
             }
             return QStringLiteral(".dat");
+        }
+
+        bool readFiniteNumber(const QJsonValue& value, double& number)
+        {
+            bool ok = false;
+            number = value.isDouble() ? value.toDouble() : value.toString().toDouble(&ok);
+            return (value.isDouble() || ok) && std::isfinite(number);
+        }
+
+        double uniformTimeIncrementMs(const ExperimentPlan& plan)
+        {
+            if (plan.framesPerBurst < 2 || (plan.burstMode && plan.targetBursts > 1))
+            {
+                return 0.0;
+            }
+            return plan.mdaIntervalMs > 0.0 ? plan.mdaIntervalMs : 0.0;
         }
 
         bool requiresFrameInfo(scopeone::core::RecordingFormat format)
@@ -257,14 +243,19 @@ namespace scopeone::core::internal
         CameraOutputPaths buildCameraOutputPaths(const QString& outputDir,
                                                  const QString& baseName,
                                                  const QString& cameraId,
-                                                 scopeone::core::RecordingFormat format)
+                                                 const ExperimentPlan& plan)
         {
             CameraOutputPaths paths;
             paths.rawPath = buildSessionFilePath(outputDir,
                                                 baseName,
                                                 cameraId,
-                                                recordingExtension(format));
-            if (requiresFrameInfo(format))
+                                                recordingExtension(plan.format));
+            if (plan.format == scopeone::core::RecordingFormat::OmeTiff
+                && plan.positions.size() > 1)
+            {
+                paths.rawPath.chop(QStringLiteral(".ome.tiff").size());
+            }
+            if (requiresFrameInfo(plan.format))
             {
                 paths.frameInfoPath = buildSessionFilePath(outputDir,
                                                            baseName,
@@ -273,49 +264,6 @@ namespace scopeone::core::internal
                                                            QStringLiteral("_frameinfo"));
             }
             return paths;
-        }
-
-        QByteArray frameInfoHeaderLine()
-        {
-            return QByteArray(
-                "camera_id,frame_index,timestamp_ns,width,height,bits_per_sample,stride,pixel_format,pixel_format_id,payload_bytes,source_roi_x,source_roi_y,source_roi_width,source_roi_height\n");
-        }
-
-        // Escapes one frame info field for CSV storage
-        QString csvField(QString value)
-        {
-            if (!value.contains(QLatin1Char(','))
-                && !value.contains(QLatin1Char('"'))
-                && !value.contains(QLatin1Char('\n'))
-                && !value.contains(QLatin1Char('\r')))
-            {
-                return value;
-            }
-
-            value.replace(QLatin1Char('"'), QStringLiteral("\"\""));
-            return QStringLiteral("\"%1\"").arg(value);
-        }
-
-        QByteArray frameInfoLine(const ImageFrame& frame)
-        {
-            const quint64 timestampNs = timestampNsForStorage(frame);
-            QStringList fields;
-            fields.reserve(14);
-            fields << csvField(frame.cameraId)
-                   << QString::number(frame.frameIndex)
-                   << QString::number(timestampNs)
-                   << QString::number(frame.width)
-                   << QString::number(frame.height)
-                   << QString::number(frame.bitsPerSample)
-                   << QString::number(frame.stride)
-                   << csvField(pixelFormatName(frame.pixelFormat))
-                   << QString::number(pixelFormatId(frame.pixelFormat))
-                   << QString::number(frame.payloadByteCount())
-                   << QString::number(frame.sourceRoiX)
-                   << QString::number(frame.sourceRoiY)
-                   << QString::number(frame.sourceRoiWidth)
-                   << QString::number(frame.sourceRoiHeight);
-            return (fields.join(QLatin1Char(',')) + QLatin1Char('\n')).toUtf8();
         }
 
         struct FramePayloadView
@@ -382,16 +330,20 @@ namespace scopeone::core::internal
             return payload;
         }
 
-        void discardIncompleteFile(QFile& file)
+        void discardIncompleteOutput(const QString& path)
         {
-            const QString filePath = file.fileName();
-            if (file.isOpen())
+            const QFileInfo info(path);
+            if (!info.exists())
             {
-                file.close();
+                return;
             }
-            if (!filePath.isEmpty())
+            if (info.isDir())
             {
-                QFile::remove(filePath);
+                QDir(info.absoluteFilePath()).removeRecursively();
+            }
+            else
+            {
+                QFile::remove(info.absoluteFilePath());
             }
         }
 
@@ -457,178 +409,231 @@ namespace scopeone::core::internal
                 TiffOptions() : useDeflate(true), zipQuality(6) {}
             };
 
-            enum class Format { None, TiffStack, BinaryStream };
-
             SaveBackend() = default;
-            ~SaveBackend() { stopStack(); }
+            ~SaveBackend() { (void)stopStack(); }
 
             bool startStackRaw(const QString& filePath,
+                               const QString& frameInfoPath,
+                               const QString& metadataFileName,
                                scopeone::core::RecordingFormat recordingFormat,
                                int width,
                                int height,
                                ImagePixelFormat pixelFormat,
                                int bitsPerSample,
+                               const ExperimentPlan& plan,
+                               quint64 acquisitionStartTimestampNs,
+                               const QString& imageName,
+                               const QJsonObject& cameraProperties,
                                const TiffOptions& tiff = TiffOptions{})
             {
-                stopStack();
-                if (!ensureDir(filePath)) return false;
+                (void)stopStack();
                 m_lastError.clear();
-                m_format = Format::None;
-                m_filePath = filePath;
+                m_omePlan = plan;
 
-                if (recordingFormat == scopeone::core::RecordingFormat::Binary)
+                if (recordingFormat == scopeone::core::RecordingFormat::OmeTiff
+                    || recordingFormat == scopeone::core::RecordingFormat::OmeZarr
+                    || recordingFormat == scopeone::core::RecordingFormat::Tiff
+                    || recordingFormat == scopeone::core::RecordingFormat::Binary)
                 {
-                    auto file = std::make_unique<QFile>(filePath);
-                    if (!file->open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    const int storageBits = tiffStorageBitsForFormat(pixelFormat);
+                    if (storageBits == 0)
                     {
-                        m_lastError = QStringLiteral("Failed to open binary output");
+                        m_lastError = QStringLiteral("Unsupported bit depth");
                         return false;
                     }
-                    m_binaryFile = std::move(file);
-                    m_format = Format::BinaryStream;
-                    m_width = width;
-                    m_height = height;
-                    m_bits = bitsPerSample;
+
+                    scopewriter::WriterSettings settings;
+                    switch (recordingFormat)
+                    {
+                    case scopeone::core::RecordingFormat::OmeTiff:
+                        settings.format = scopewriter::Format::OmeTiff;
+                        break;
+                    case scopeone::core::RecordingFormat::OmeZarr:
+                        settings.format = scopewriter::Format::OmeZarr;
+                        break;
+                    case scopeone::core::RecordingFormat::Tiff:
+                        settings.format = scopewriter::Format::Tiff;
+                        break;
+                    case scopeone::core::RecordingFormat::Binary:
+                        settings.format = scopewriter::Format::Binary;
+                        break;
+                    }
+#if defined(_WIN32)
+                    settings.outputPath = std::filesystem::path(filePath.toStdWString());
+                    settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdWString());
+#else
+                    settings.outputPath = std::filesystem::path(filePath.toStdString());
+                    settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdString());
+#endif
+                    settings.linkedMetadataFile = metadataFileName.toStdString();
+                    settings.width = width;
+                    settings.height = height;
+                    settings.pixelType = pixelFormat == ImagePixelFormat::Mono8
+                                             ? scopewriter::PixelType::UInt8
+                                             : scopewriter::PixelType::UInt16;
+                    settings.significantBits = bitsPerSample;
+                    settings.positionCount = (std::max)(1, static_cast<int>(plan.positions.size()));
+                    settings.timeCount = (std::max)(1, plan.framesPerBurst)
+                        * (plan.burstMode ? (std::max)(1, plan.targetBursts) : 1);
+                    settings.channelCount = 1;
+                    settings.zCount = (std::max)(1, static_cast<int>(plan.zPositions.size()));
+                    const auto timeAxis = std::find(plan.order.begin(),
+                                                    plan.order.end(),
+                                                    RecordingAxis::Time);
+                    const auto zAxis = std::find(plan.order.begin(),
+                                                 plan.order.end(),
+                                                 RecordingAxis::Z);
+                    settings.acquisitionOrder = zAxis < timeAxis ? "ZTC" : "TZC";
+                    settings.physicalSizeXUm = plan.pixelSizeUm;
+                    settings.physicalSizeYUm = plan.pixelSizeUm;
+                    settings.timeIncrementMs = uniformTimeIncrementMs(plan);
+                    if (plan.zPositions.size() > 1)
+                    {
+                        const double zStepUm = std::abs(plan.zPositions[1] - plan.zPositions[0]);
+                        bool uniform = zStepUm > 0.0;
+                        for (size_t index = 2; uniform && index < plan.zPositions.size(); ++index)
+                        {
+                            const double step = std::abs(plan.zPositions[index]
+                                                         - plan.zPositions[index - 1]);
+                            uniform = std::abs(step - zStepUm)
+                                <= (std::max)(1e-9, zStepUm * 1e-9);
+                        }
+                        if (uniform)
+                        {
+                            settings.physicalSizeZUm = zStepUm;
+                        }
+                    }
+                    settings.acquisitionStartTimestampNs = acquisitionStartTimestampNs;
+                    settings.imageName = imageName.toStdString();
+                    settings.creator = "ScopeOne";
+                    settings.channels.push_back(scopewriter::ChannelMetadata{
+                        .name = settings.imageName
+                    });
+                    settings.positions.reserve(static_cast<std::size_t>(settings.positionCount));
+                    if (plan.positions.empty())
+                    {
+                        settings.positions.push_back(scopewriter::PositionMetadata{
+                            .name = "Position 1"
+                        });
+                    }
+                    else
+                    {
+                        for (std::size_t index = 0; index < plan.positions.size(); ++index)
+                        {
+                            const auto& position = plan.positions[index];
+                            settings.positions.push_back(scopewriter::PositionMetadata{
+                                .name = "Position " + std::to_string(index + 1),
+                                .xUm = position.x(),
+                                .yUm = position.y()
+                            });
+                        }
+                    }
+                    settings.detector.manufacturer = cameraProperties.value(
+                        QStringLiteral("Name")).toString().trimmed().toStdString();
+                    settings.detector.model = cameraProperties.value(
+                        QStringLiteral("CameraName")).toString().trimmed().toStdString();
+                    settings.detector.serialNumber = cameraProperties.value(
+                        QStringLiteral("CameraID")).toString().trimmed().toStdString();
+                    double value = 0.0;
+                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), value)
+                        && value > 0.0)
+                    {
+                        settings.defaultExposureMs = value;
+                    }
+                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Offset")), value))
+                    {
+                        settings.detector.offset = value;
+                    }
+                    settings.enableCompression = tiff.useDeflate;
+                    settings.compressionLevel = tiff.zipQuality;
+
+                    auto writer = std::make_unique<scopewriter::Writer>();
+                    if (!writer->open(settings))
+                    {
+                        m_lastError = QString::fromStdString(writer->lastError());
+                        return false;
+                    }
+                    m_writer = std::move(writer);
                     return true;
                 }
 
-                const int storageBits = tiffStorageBitsForFormat(pixelFormat);
-                if (storageBits == 0)
-                {
-                    m_lastError = QStringLiteral("Unsupported bit depth");
-                    return false;
-                }
-                m_width = width;
-                m_height = height;
-                m_bits = storageBits;
-                m_useDeflate = tiff.useDeflate;
-                m_zipQuality = tiff.zipQuality;
-                TIFF* t = reinterpret_cast<TIFF*>(openTiffForWrite(filePath));
-                if (!t)
-                {
-                    m_lastError = QStringLiteral("Failed to open TIFF output");
-                    return false;
-                }
-                m_tiff = t;
-                m_format = Format::TiffStack;
-                return true;
+                m_lastError = QStringLiteral("Unsupported recording format");
+                return false;
             }
 
-            bool appendRaw(const uchar* data, qint64 rawBytes, const QByteArray& imageDescription = QByteArray())
+            bool appendRaw(const uchar* data,
+                           qint64 rawBytes,
+                           const ImageFrame& frame,
+                           const AcquisitionEvent* event = nullptr)
             {
                 if (!data) return false;
-                if (m_format == Format::BinaryStream)
+                if (m_writer)
                 {
-                    if (!m_binaryFile) return false;
                     if (rawBytes <= 0)
                     {
-                        m_lastError = QStringLiteral("Invalid binary frame size");
+                        m_lastError = QStringLiteral("Invalid frame size");
                         return false;
                     }
-                    if (m_binaryFile->write(reinterpret_cast<const char*>(data), rawBytes) != rawBytes)
+                    scopewriter::FrameMetadata metadata;
+                    metadata.cameraId = frame.cameraId.toStdString();
+                    metadata.frameIndex = frame.frameIndex;
+                    metadata.timestampNs = frame.timestampNs;
+                    metadata.stride = static_cast<std::size_t>(frame.stride);
+                    metadata.sourceRoiX = frame.sourceRoiX;
+                    metadata.sourceRoiY = frame.sourceRoiY;
+                    metadata.sourceRoiWidth = frame.sourceRoiWidth;
+                    metadata.sourceRoiHeight = frame.sourceRoiHeight;
+                    if (event)
                     {
-                        m_lastError = QStringLiteral("Failed to append binary frame");
+                        metadata.positionIndex = event->positionIndex;
+                        metadata.t = static_cast<std::int64_t>(event->burstIndex)
+                                * (std::max)(1, m_omePlan.framesPerBurst)
+                            + event->timeIndex;
+                        metadata.z = event->zIndex;
+                        metadata.exposureMs = event->exposureMs;
+                        if (event->hasXY)
+                        {
+                            metadata.positionXUm = event->x;
+                            metadata.positionYUm = event->y;
+                        }
+                        if (event->hasZ)
+                        {
+                            metadata.positionZUm = event->z;
+                        }
+                    }
+                    if (!m_writer->append(data,
+                                          static_cast<std::size_t>(rawBytes),
+                                          metadata))
+                    {
+                        m_lastError = QString::fromStdString(m_writer->lastError());
                         return false;
                     }
                     return true;
                 }
-                if (m_format != Format::TiffStack || !m_tiff) return false;
-                TIFF* t = reinterpret_cast<TIFF*>(m_tiff);
-                TIFFCreateDirectory(t);
-                setCommonTags(t, m_width, m_height, m_bits);
-                if (m_useDeflate)
-                {
-                    TIFFSetField(t, TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE);
-                    TIFFSetField(t, TIFFTAG_ZIPQUALITY, m_zipQuality);
-                    TIFFSetField(t, TIFFTAG_PREDICTOR, PREDICTOR_HORIZONTAL);
-                }
-                else
-                {
-                    TIFFSetField(t, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
-                }
-                if (!imageDescription.isEmpty())
-                {
-                    TIFFSetField(t, TIFFTAG_IMAGEDESCRIPTION, imageDescription.constData());
-                }
-                if (!writeStrip(t, data, m_width, m_height, m_bits)) return false;
-                TIFFWriteDirectory(t);
-                return true;
+                return false;
             }
 
-            void stopStack()
+            bool stopStack()
             {
-                if (m_tiff)
+                bool success = true;
+                if (m_writer)
                 {
-                    TIFFClose(reinterpret_cast<TIFF*>(m_tiff));
-                    m_tiff = nullptr;
+                    if (!m_writer->close())
+                    {
+                        m_lastError = QString::fromStdString(m_writer->lastError());
+                        success = false;
+                    }
+                    m_writer.reset();
                 }
-                if (m_binaryFile)
-                {
-                    m_binaryFile->close();
-                    m_binaryFile.reset();
-                }
-                m_format = Format::None;
+                return success;
             }
 
             QString lastError() const { return m_lastError; }
-            bool isRecording() const { return m_format != Format::None; }
 
         private:
-            static bool ensureDir(const QString& filePath)
-            {
-                QFileInfo fi(filePath);
-                QDir dir = fi.dir();
-                if (dir.exists()) return true;
-                return dir.mkpath(".");
-            }
-
-            static void* openTiffForWrite(const QString& path)
-            {
-                const char* mode = "w8";
-#if defined(_WIN32)
-                std::wstring w = path.toStdWString();
-#if defined(TIFFOpenW)
-                return TIFFOpenW(reinterpret_cast<const wchar_t*>(w.c_str()), mode);
-#else
-                return TIFFOpen(path.toLocal8Bit().constData(), mode);
-#endif
-#else
-                return TIFFOpen(path.toLocal8Bit().constData(), mode);
-#endif
-            }
-
-            static void setCommonTags(void* tiff, int width, int height, int bits)
-            {
-                TIFF* t = reinterpret_cast<TIFF*>(tiff);
-                TIFFSetField(t, TIFFTAG_IMAGEWIDTH, width);
-                TIFFSetField(t, TIFFTAG_IMAGELENGTH, height);
-                TIFFSetField(t, TIFFTAG_BITSPERSAMPLE, bits);
-                TIFFSetField(t, TIFFTAG_SAMPLESPERPIXEL, 1);
-                TIFFSetField(t, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
-                TIFFSetField(t, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
-                TIFFSetField(t, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-                TIFFSetField(t, TIFFTAG_ROWSPERSTRIP, height);
-            }
-
-            static bool writeStrip(void* tiff, const uchar* data, int width, int height, int bits)
-            {
-                TIFF* t = reinterpret_cast<TIFF*>(tiff);
-                const tmsize_t bytesPerSample = bits / 8;
-                const tmsize_t stride = static_cast<tmsize_t>(width) * bytesPerSample;
-                const tmsize_t total = stride * height;
-                return TIFFWriteEncodedStrip(t, 0, (void*)data, total) != -1;
-            }
-
-            void* m_tiff{nullptr};
-            int m_width{0};
-            int m_height{0};
-            int m_bits{0};
-            bool m_useDeflate{true};
-            int m_zipQuality{6};
-            Format m_format{Format::None};
             QString m_lastError;
-            QString m_filePath;
-            std::unique_ptr<QFile> m_binaryFile;
+            ExperimentPlan m_omePlan;
+            std::unique_ptr<scopewriter::Writer> m_writer;
         };
     } // namespace
 
@@ -950,6 +955,10 @@ namespace scopeone::core::internal
             m_sessionState.activeSession->resetSaveResult();
             m_sessionState.activeSession->resetWriterStatus(recordedMaxBytes());
         }
+        const quint64 acquisitionStartTimestampNs = m_sessionState.activeSession
+                                                        ? m_sessionState.activeSession->experimentDocument()
+                                                              .startedTimestampNs
+                                                        : 0;
         setWriterStatus(RecordingWriterPhase::Starting);
 
         SessionOutputInfo outputInfo;
@@ -971,33 +980,18 @@ namespace scopeone::core::internal
             const CameraOutputPaths paths = buildCameraOutputPaths(outputInfo.outputDir,
                                                                    plan.baseName,
                                                                    cameraId,
-                                                                   plan.format);
+                                                                   plan);
             output->rawPath = paths.rawPath;
             output->metadataFileName = outputInfo.metadataFileName;
+            output->acquisitionStartTimestampNs = acquisitionStartTimestampNs;
+            if (m_sessionState.activeSession)
+            {
+                output->cameraProperties = m_sessionState.activeSession->experimentDocument()
+                                               .deviceProperties.value(cameraId).toObject();
+            }
             if (requiresFrameInfo(plan.format))
             {
                 output->frameInfoPath = paths.frameInfoPath;
-                output->frameInfoFile.setFileName(output->frameInfoPath);
-                if (!output->frameInfoFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
-                {
-                    outputError = QStringLiteral("Failed to open frame info output for %1").arg(cameraId);
-                    setWriterError(outputError);
-                    stopStreamingOutputs();
-                    setWriterStatus(RecordingWriterPhase::Failed, outputError);
-                    return false;
-                }
-
-                const QByteArray header = frameInfoHeaderLine();
-                if (output->frameInfoFile.write(header) != header.size()
-                    || !output->frameInfoFile.flush())
-                {
-                    outputError = QStringLiteral("Failed to write frame info header for %1").arg(cameraId);
-                    discardIncompleteFile(output->frameInfoFile);
-                    setWriterError(outputError);
-                    stopStreamingOutputs();
-                    setWriterStatus(RecordingWriterPhase::Failed, outputError);
-                    return false;
-                }
             }
 
             m_writerState.cameraOutputs.insert(cameraId, output);
@@ -1075,16 +1069,14 @@ namespace scopeone::core::internal
             if (output->backend)
             {
                 auto* backend = reinterpret_cast<SaveBackend*>(output->backend);
+                if (!backend->stopStack() && writerErrorSnapshot().isEmpty())
+                {
+                    setWriterError(QStringLiteral("Failed to finalize output for %1: %2")
+                                       .arg(output->cameraId)
+                                       .arg(backend->lastError()));
+                }
                 delete backend;
                 output->backend = nullptr;
-            }
-            if (output->frameInfoFile.isOpen())
-            {
-                if (!output->frameInfoFile.flush() && writerErrorSnapshot().isEmpty())
-                {
-                    setWriterError(QStringLiteral("Failed to flush frame info for %1").arg(output->cameraId));
-                }
-                output->frameInfoFile.close();
             }
             {
                 std::lock_guard<std::mutex> lock(output->queueMutex);
@@ -1107,7 +1099,29 @@ namespace scopeone::core::internal
                                                                  output->rawPath,
                                                                  output->frameInfoPath);
                 m_sessionState.activeSession->setOutputFramesWritten(output->cameraId,
-                                                                     output->framesWritten);
+                                                                      output->framesWritten);
+            }
+        }
+        if (!writerErrorSnapshot().isEmpty())
+        {
+            QStringList outputDirs;
+            for (const auto& output : outputs)
+            {
+                if (!output)
+                {
+                    continue;
+                }
+                discardIncompleteOutput(output->rawPath);
+                discardIncompleteOutput(output->frameInfoPath);
+                const QString outputDir = QFileInfo(output->rawPath).absolutePath();
+                if (!outputDir.isEmpty() && !outputDirs.contains(outputDir))
+                {
+                    outputDirs.append(outputDir);
+                }
+            }
+            for (const QString& outputDir : outputDirs)
+            {
+                QDir().rmdir(outputDir);
             }
         }
         {
@@ -1192,11 +1206,17 @@ namespace scopeone::core::internal
 
             auto newBackend = std::make_unique<SaveBackend>();
             if (!newBackend->startStackRaw(output.rawPath,
+                                           output.frameInfoPath,
+                                           output.metadataFileName,
                                            m_captureState.format,
                                            task.frame.width,
                                            task.frame.height,
                                            task.frame.pixelFormat,
                                            task.frame.bitsPerSample,
+                                           m_mdaState.plan,
+                                           output.acquisitionStartTimestampNs,
+                                           output.cameraId,
+                                           output.cameraProperties,
                                            tiffOpts))
             {
                 errorMessage = QStringLiteral("Failed to open raw output for %1: %2")
@@ -1227,12 +1247,10 @@ namespace scopeone::core::internal
             return false;
         }
 
-        const QByteArray imageDescription = m_captureState.format == RecordingFormat::Tiff
-                                                ? buildImageDescriptionJson(output.metadataFileName, task.frame)
-                                                : QByteArray();
         if (!backend->appendRaw(payload.data(),
                                 payload.byteCount,
-                                imageDescription))
+                                task.frame,
+                                task.hasEvent ? &task.event : nullptr))
         {
             errorMessage = QStringLiteral("Failed writing raw frame for %1: %2")
                            .arg(output.cameraId)
@@ -1240,15 +1258,6 @@ namespace scopeone::core::internal
             return false;
         }
 
-        if (output.frameInfoFile.isOpen())
-        {
-            const QByteArray infoLine = frameInfoLine(task.frame);
-            if (output.frameInfoFile.write(infoLine) != infoLine.size())
-            {
-                errorMessage = QStringLiteral("Failed writing frame info for %1").arg(output.cameraId);
-                return false;
-            }
-        }
         return true;
     }
 
@@ -1301,6 +1310,10 @@ namespace scopeone::core::internal
             if (m_cameraManager
                 && !m_cameraManager->setRecordingFrameDeliveryEnabled(true))
             {
+                if (plan.streamToDisk)
+                {
+                    QDir(sessionOutputDir(plan.saveDir, plan.baseName)).removeRecursively();
+                }
                 qWarning().noquote() << "Failed to enable all-frame camera delivery";
                 return false;
             }
@@ -1554,7 +1567,8 @@ namespace scopeone::core::internal
     }
 
     // Adds one captured frame to the asynchronous writer queue
-    bool RecordingManager::enqueueFrame(const ImageFrame& frame)
+    bool RecordingManager::enqueueFrame(const ImageFrame& frame,
+                                        const AcquisitionEvent* event)
     {
         const QString cameraId = frame.cameraId.trimmed();
         const size_t frameBytes = static_cast<size_t>(frame.payloadByteCount());
@@ -1618,7 +1632,14 @@ namespace scopeone::core::internal
                 markWriterStatusDirty();
                 return false;
             }
-            output->writeQueue.push_back(WriteTask{frame});
+            WriteTask task;
+            task.frame = frame;
+            if (event)
+            {
+                task.event = *event;
+                task.hasEvent = true;
+            }
+            output->writeQueue.push_back(std::move(task));
         }
         output->writeCondition.notify_one();
         markWriterStatusDirty();
@@ -1696,9 +1717,37 @@ namespace scopeone::core::internal
             return;
         }
 
+        AcquisitionEvent previewEvent;
+        if (!m_mdaState.usingMda)
+        {
+            previewEvent.sequenceIndex = m_sessionState.activeSession
+                                             ? static_cast<quint64>(
+                                                   m_sessionState.activeSession->experimentDocument().events.size())
+                                             : 0;
+            previewEvent.burstIndex = m_captureState.currentBurst;
+            previewEvent.timeIndex = static_cast<int>(
+                m_captureState.framesCapturedThisBurst.value(frame.cameraId, 0));
+            previewEvent.exposureMs = m_mdaState.plan.exposureMs;
+            if (previewEvent.exposureMs <= 0.0 && m_sessionState.activeSession)
+            {
+                double exposureMs = 0.0;
+                const QJsonObject cameraProperties = m_sessionState.activeSession->experimentDocument()
+                                                         .deviceProperties.value(frame.cameraId).toObject();
+                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), exposureMs)
+                    && exposureMs > 0.0)
+                {
+                    previewEvent.exposureMs = exposureMs;
+                }
+            }
+            previewEvent.cameraIds = QStringList{frame.cameraId};
+        }
+        const AcquisitionEvent* writeEvent = packet.hasEvent
+                                                 ? &packet.event
+                                                 : (!m_mdaState.usingMda ? &previewEvent : nullptr);
+
         if (m_captureState.streamToDisk)
         {
-            if (!enqueueFrame(frame))
+            if (!enqueueFrame(frame, writeEvent))
             {
                 return;
             }
@@ -1711,7 +1760,7 @@ namespace scopeone::core::internal
 
         if (!m_mdaState.usingMda)
         {
-            appendPreviewEventRecord(frame);
+            appendPreviewEventRecord(frame, previewEvent);
         }
 
         m_captureState.framesCapturedThisBurst[cameraId] += 1;
@@ -1722,20 +1771,16 @@ namespace scopeone::core::internal
     }
 
     // Records one accepted preview frame as an actual acquisition event
-    void RecordingManager::appendPreviewEventRecord(const ImageFrame& frame)
+    void RecordingManager::appendPreviewEventRecord(const ImageFrame& frame,
+                                                     const AcquisitionEvent& event)
     {
         if (!m_sessionState.activeSession)
         {
             return;
         }
         AcquisitionEventRecord record;
-        record.event.sequenceIndex = static_cast<quint64>(
-            m_sessionState.activeSession->experimentDocument().events.size());
-        record.event.burstIndex = m_captureState.currentBurst;
-        record.event.timeIndex = static_cast<int>(m_captureState.framesCapturedThisBurst.value(frame.cameraId, 0));
-        record.event.exposureMs = m_mdaState.plan.exposureMs;
-        record.event.cameraIds = QStringList{frame.cameraId};
-        record.startedTimestampNs = timestampNsForStorage(frame);
+        record.event = event;
+        record.startedTimestampNs = frame.timestampNs;
         record.completedTimestampNs = record.startedTimestampNs;
         record.succeeded = true;
         record.frames.insert(frame.cameraId, frameRecordFromImageFrame(frame));
@@ -1801,7 +1846,7 @@ namespace scopeone::core::internal
             {
                 rawFrame.frameIndex = m_captureState.lastFrameIndex.value(rawFrame.cameraId, 0) + 1;
             }
-            ingestFrame(FramePacket{rawFrame, FramePacket::Source::Mda});
+            ingestFrame(FramePacket{rawFrame, FramePacket::Source::Mda, output.event, true});
             if (rawFrame.isValid())
             {
                 emit mdaRawFrameReady(rawFrame);
@@ -2169,8 +2214,10 @@ namespace scopeone::core::internal
 
         session->prepareForSave(session->streamedToDisk());
         session->setWriterPhase(RecordingWriterPhase::Starting);
-        const auto failSave = [&session](const QString& errorMessage)
+        const auto failSave = [&session, &outputInfo](const QString& errorMessage)
         {
+            QDir(outputInfo.outputDir).removeRecursively();
+            session->clearOutputFiles();
             session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
             return updateSessionResult(session, QStringLiteral("Error: %1").arg(errorMessage), false);
         };
@@ -2193,36 +2240,37 @@ namespace scopeone::core::internal
             {
                 continue;
             }
+            QList<AcquisitionEvent> cameraEvents;
+            if (capturePlan.format == RecordingFormat::OmeTiff
+                || capturePlan.format == RecordingFormat::OmeZarr)
+            {
+                for (const AcquisitionEventRecord& record : session->experimentDocument().events)
+                {
+                    if (record.succeeded && record.frames.contains(cameraId))
+                    {
+                        cameraEvents.append(record.event);
+                    }
+                }
+            }
             const CameraOutputPaths paths = buildCameraOutputPaths(outputInfo.outputDir,
                                                                    capturePlan.baseName,
                                                                    cameraId,
-                                                                   capturePlan.format);
-            QFile frameInfoFile;
-            if (requiresFrameInfo(capturePlan.format))
-            {
-                frameInfoFile.setFileName(paths.frameInfoPath);
-                if (!frameInfoFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
-                {
-                    const QString errorMessage = QString("Failed to open frame info output for %1").arg(cameraId);
-                    return failSave(errorMessage);
-                }
-                const QByteArray header = frameInfoHeaderLine();
-                if (frameInfoFile.write(header) != header.size())
-                {
-                    discardIncompleteFile(frameInfoFile);
-                    const QString errorMessage = QString("Failed to write frame info header for %1").arg(cameraId);
-                    return failSave(errorMessage);
-                }
-            }
+                                                                   capturePlan);
             if (!rawSaver.startStackRaw(paths.rawPath,
+                                        paths.frameInfoPath,
+                                        outputInfo.metadataFileName,
                                         capturePlan.format,
                                         firstImageFrame.width,
                                         firstImageFrame.height,
                                         firstImageFrame.pixelFormat,
                                         firstImageFrame.bitsPerSample,
+                                        capturePlan,
+                                        session->experimentDocument().startedTimestampNs,
+                                        cameraId,
+                                        session->experimentDocument().deviceProperties
+                                            .value(cameraId).toObject(),
                                         tiffOpts))
             {
-                discardIncompleteFile(frameInfoFile);
                 const QString errorMessage = QString("Failed to start raw output for %1").arg(cameraId);
                 return failSave(errorMessage);
             }
@@ -2239,7 +2287,6 @@ namespace scopeone::core::internal
                     || imageFrame.bitsPerSample != firstImageFrame.bitsPerSample
                     || imageFrame.pixelFormat != firstImageFrame.pixelFormat)
                 {
-                    discardIncompleteFile(frameInfoFile);
                     rawSaver.stopStack();
                     const QString errorMessage = QString("Frame format changed during save for %1").arg(cameraId);
                     return failSave(errorMessage);
@@ -2247,50 +2294,32 @@ namespace scopeone::core::internal
                 const FramePayloadView payload = framePayloadForWrite(imageFrame, capturePlan.format);
                 if (!payload.data() || payload.byteCount <= 0)
                 {
-                    discardIncompleteFile(frameInfoFile);
                     rawSaver.stopStack();
                     const QString errorMessage = QString("Invalid frame payload for %1").arg(cameraId);
                     return failSave(errorMessage);
                 }
 
-                const QByteArray imageDescription = capturePlan.format == RecordingFormat::Tiff
-                                                        ? buildImageDescriptionJson(outputInfo.metadataFileName,
-                                                                                    imageFrame)
-                                                        : QByteArray();
+                const AcquisitionEvent* event = saved < cameraEvents.size()
+                                                    ? &cameraEvents.at(saved)
+                                                    : nullptr;
                 if (!rawSaver.appendRaw(payload.data(),
                                         payload.byteCount,
-                                        imageDescription))
+                                        imageFrame,
+                                        event))
                 {
-                    discardIncompleteFile(frameInfoFile);
                     rawSaver.stopStack();
                     const QString errorMessage = QString("Failed to append raw frame %1 for %2").arg(saved).arg(
                         cameraId);
                     return failSave(errorMessage);
                 }
-                if (frameInfoFile.isOpen())
-                {
-                    const QByteArray infoLine = frameInfoLine(imageFrame);
-                    if (frameInfoFile.write(infoLine) != infoLine.size())
-                    {
-                        discardIncompleteFile(frameInfoFile);
-                        rawSaver.stopStack();
-                        const QString errorMessage = QString("Failed to write frame info for %1").arg(cameraId);
-                        return failSave(errorMessage);
-                    }
-                }
                 saved += 1;
             }
-            if (frameInfoFile.isOpen())
+            if (!rawSaver.stopStack())
             {
-                if (!frameInfoFile.flush())
-                {
-                    discardIncompleteFile(frameInfoFile);
-                    rawSaver.stopStack();
-                    return failSave(QStringLiteral("Failed to flush frame info for %1").arg(cameraId));
-                }
-                frameInfoFile.close();
+                return failSave(QStringLiteral("Failed to finalize output for %1: %2")
+                                    .arg(cameraId)
+                                    .arg(rawSaver.lastError()));
             }
-            rawSaver.stopStack();
             completedOutputs.insert(cameraId,
                                     RecordingFileManifest{paths.rawPath, paths.frameInfoPath, saved});
             session->addWrittenFrames(saved);

@@ -416,6 +416,8 @@ namespace scopeone::ui
         formatLayout->setVerticalSpacing(4);
 
         m_formatCombo = new QComboBox(this);
+        m_formatCombo->addItem("OME-TIFF", static_cast<int>(scopeone::core::RecordingFormat::OmeTiff));
+        m_formatCombo->addItem("OME-Zarr", static_cast<int>(scopeone::core::RecordingFormat::OmeZarr));
         m_formatCombo->addItem("TIFF", static_cast<int>(scopeone::core::RecordingFormat::Tiff));
         m_formatCombo->addItem("Binary", static_cast<int>(scopeone::core::RecordingFormat::Binary));
         formatLayout->addWidget(new QLabel("Raw Format:", this), 0, 0);

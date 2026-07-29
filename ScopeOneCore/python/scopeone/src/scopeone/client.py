@@ -1113,6 +1113,7 @@ class ExternalClient:
         z_positions: list[float] | None = None,
         positions: list[tuple[float, float]] | None = None,
         order: list[str] | None = None,
+        pixel_size_um: float = 0.0,
     ):
         request = {
             "type": "record",
@@ -1120,6 +1121,7 @@ class ExternalClient:
             "camera": camera,
             "timeoutMs": timeout_ms,
             "mdaIntervalMs": float(mda_interval_ms),
+            "pixelSizeUm": float(pixel_size_um),
         }
         if z_positions is not None:
             request["zPositions"] = [float(z) for z in z_positions]
@@ -1249,7 +1251,7 @@ class ExternalClient:
         self,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
         camera: str | None = None,
@@ -1272,7 +1274,7 @@ class ExternalClient:
         image: object,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
         camera: str = "python",
@@ -1465,7 +1467,7 @@ class ExternalRecordingSession:
         self,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
     ):

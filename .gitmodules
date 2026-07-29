@@ -1,0 +1,3 @@
+[submodule "ScopeOneCore/external/ScopeWriter"]
+	path = ScopeOneCore/external/ScopeWriter
+	url = https://github.com/Experimental-Microscopy-Lab/ScopeWriter.git

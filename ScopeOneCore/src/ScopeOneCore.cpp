@@ -10,12 +10,15 @@
 #include "internal/CameraManager.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
+#include "internal/OmeZarrStorage.h"
 #include "internal/SpatiotemporalBinningModule.h"
 #include "internal/StageMosaicManager.h"
 #include "MMCore.h"
+#include <scopewriter/ScopeWriter.h>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -37,7 +40,6 @@
 #include <string>
 #include <utility>
 #include <tiffio.h>
-#include <zlib.h>
 
 namespace
 {
@@ -252,6 +254,11 @@ namespace
         }
 
         const QJsonObject object = document.object();
+        if (object.value(QStringLiteral("schema")).toString()
+            != QString::fromLatin1(scopewriter::kFrameMetadataProtocol))
+        {
+            return;
+        }
         const QString storedCameraId = object.value(QStringLiteral("camera_id")).toString().trimmed();
         if (!storedCameraId.isEmpty())
         {
@@ -603,6 +610,24 @@ namespace
 
         return devicePropertiesObject;
     }
+
+    // Read the active Micro-Manager pixel size calibration
+    double currentPixelSizeUm(const std::shared_ptr<CMMCore>& core)
+    {
+        if (!core)
+        {
+            return 0.0;
+        }
+        try
+        {
+            const double pixelSizeUm = core->getPixelSizeUm(false);
+            return std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0 ? pixelSizeUm : 0.0;
+        }
+        catch (const CMMError&)
+        {
+            return 0.0;
+        }
+    }
 }
 
 namespace scopeone::core
@@ -887,16 +912,78 @@ namespace scopeone::core
             return {};
         }
 
-        if (m_manifest.plan.format == RecordingFormat::Tiff)
+        if (m_manifest.plan.format == RecordingFormat::OmeZarr)
         {
+            return internal::readOmeZarrFrame(fileManifest.rawPath,
+                                              cameraId,
+                                              index,
+                                              m_manifest);
+        }
+
+        if (m_manifest.plan.format == RecordingFormat::OmeTiff
+            || m_manifest.plan.format == RecordingFormat::Tiff)
+        {
+            const AcquisitionEventRecord* selectedRecord = nullptr;
+            if (m_manifest.plan.format == RecordingFormat::OmeTiff)
+            {
+                int storedFrameIndex = 0;
+                for (const AcquisitionEventRecord& record : m_manifest.events)
+                {
+                    if (!record.succeeded || !record.frames.contains(cameraId))
+                    {
+                        continue;
+                    }
+                    if (storedFrameIndex++ == index)
+                    {
+                        selectedRecord = &record;
+                        break;
+                    }
+                }
+            }
+
+            QString tiffPath = fileManifest.rawPath;
+            int tiffDirectoryIndex = index;
+            if (m_manifest.plan.format == RecordingFormat::OmeTiff
+                && m_manifest.plan.positions.size() > 1)
+            {
+                if (!selectedRecord
+                    || selectedRecord->event.positionIndex < 0
+                    || selectedRecord->event.positionIndex
+                           >= static_cast<int>(m_manifest.plan.positions.size()))
+                {
+                    return {};
+                }
+
+                const int positionIndex = selectedRecord->event.positionIndex;
+                const QFileInfo rootInfo(fileManifest.rawPath);
+                tiffPath = QDir(fileManifest.rawPath).filePath(
+                    QStringLiteral("%1_p%2.ome.tiff")
+                        .arg(rootInfo.fileName())
+                        .arg(positionIndex, 3, 10, QChar('0')));
+                tiffDirectoryIndex = 0;
+                for (const AcquisitionEventRecord& record : m_manifest.events)
+                {
+                    if (&record == selectedRecord)
+                    {
+                        break;
+                    }
+                    if (record.succeeded
+                        && record.event.positionIndex == positionIndex
+                        && record.frames.contains(cameraId))
+                    {
+                        ++tiffDirectoryIndex;
+                    }
+                }
+            }
+
             std::unique_ptr<TIFF, TiffReadCloser> tiff(
-                reinterpret_cast<TIFF*>(openTiffForRead(fileManifest.rawPath)));
+                reinterpret_cast<TIFF*>(openTiffForRead(tiffPath)));
             if (!tiff)
             {
                 return {};
             }
 
-            if (!TIFFSetDirectory(tiff.get(), static_cast<tdir_t>(index)))
+            if (!TIFFSetDirectory(tiff.get(), static_cast<tdir_t>(tiffDirectoryIndex)))
             {
                 return {};
             }
@@ -977,6 +1064,19 @@ namespace scopeone::core
             frame.sourceRoiWidth = frame.width;
             frame.sourceRoiHeight = frame.height;
             applyTiffImageDescriptionMetadata(imageDescriptionBytes, frame);
+            if (selectedRecord)
+            {
+                const FrameRecord& storedFrame = selectedRecord->frames.constFind(cameraId).value();
+                frame.frameIndex = storedFrame.frameIndex;
+                frame.timestampNs = storedFrame.timestampNs;
+                frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(
+                    frame.pixelFormat,
+                    storedFrame.bitsPerSample);
+                frame.sourceRoiX = storedFrame.sourceRoiX;
+                frame.sourceRoiY = storedFrame.sourceRoiY;
+                frame.sourceRoiWidth = storedFrame.sourceRoiWidth;
+                frame.sourceRoiHeight = storedFrame.sourceRoiHeight;
+            }
             frame.bytes = std::move(bytes);
             return frame.isValid() ? frame : ImageFrame{};
         }
@@ -994,7 +1094,11 @@ namespace scopeone::core
             return {};
         }
 
-        (void)frameInfoFile.readLine();
+        const QByteArray header = frameInfoFile.readLine().trimmed();
+        if (header != QByteArray(scopewriter::kBinaryFrameMetadataHeader))
+        {
+            return {};
+        }
         int currentIndex = 0;
         qint64 rawOffset = 0;
         while (!frameInfoFile.atEnd())
@@ -1005,7 +1109,7 @@ namespace scopeone::core
                 continue;
             }
             const QList<QByteArray> fields = parseFrameInfoCsvLine(line);
-            if (fields.size() < 10)
+            if (fields.size() != 14)
             {
                 return {};
             }
@@ -1055,22 +1159,12 @@ namespace scopeone::core
                 frame.pixelFormat = pixelFormatFromFrameInfo(fields.at(7), pixelFormatId);
                 frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(frame.pixelFormat, bitsPerSample);
 
-                if (fields.size() >= 14)
+                if (!readIntField(fields, 10, frame.sourceRoiX)
+                    || !readIntField(fields, 11, frame.sourceRoiY)
+                    || !readIntField(fields, 12, frame.sourceRoiWidth)
+                    || !readIntField(fields, 13, frame.sourceRoiHeight))
                 {
-                    if (!readIntField(fields, 10, frame.sourceRoiX)
-                        || !readIntField(fields, 11, frame.sourceRoiY)
-                        || !readIntField(fields, 12, frame.sourceRoiWidth)
-                        || !readIntField(fields, 13, frame.sourceRoiHeight))
-                    {
-                        return {};
-                    }
-                }
-                else
-                {
-                    frame.sourceRoiX = 0;
-                    frame.sourceRoiY = 0;
-                    frame.sourceRoiWidth = frame.width;
-                    frame.sourceRoiHeight = frame.height;
+                    return {};
                 }
 
                 frame.bytes = std::move(bytes);
@@ -1118,18 +1212,16 @@ namespace scopeone::core
             .arg(CMMCore::getMMCoreVersionPatch());
     }
 
-    // Return the linked libtiff version
+    // Return the ScopeWriter libtiff version
     QString ScopeOneCore::getLibTiffVersion()
     {
-        QString version = QString::fromLatin1(TIFFGetVersion()).section('\n', 0, 0).trimmed();
-        version.remove(QStringLiteral("LIBTIFF, Version "));
-        return version;
+        return QString::fromStdString(scopewriter::libTiffVersion());
     }
 
-    // Return the linked zlib version
+    // Return the ScopeWriter zlib version
     QString ScopeOneCore::getZlibVersion()
     {
-        return QString::fromLatin1(zlibVersion());
+        return QString::fromStdString(scopewriter::zlibVersion());
     }
 
     // Build the graph layer key for one raw source
@@ -2017,6 +2109,10 @@ namespace scopeone::core
         const ExperimentPlan& capturePlan)
     {
         ExperimentPlan plan = capturePlan;
+        if (plan.pixelSizeUm <= 0.0)
+        {
+            plan.pixelSizeUm = currentPixelSizeUm(core());
+        }
         plan.configPath = m_loadedConfigPath;
         plan.configSha256 = m_loadedConfigSha256;
         plan.processing = processingRecipe();
@@ -3650,6 +3746,10 @@ namespace scopeone::core
         }
 
         ExperimentPlan planSnapshot = plan;
+        if (planSnapshot.pixelSizeUm <= 0.0)
+        {
+            planSnapshot.pixelSizeUm = currentPixelSizeUm(core());
+        }
         if (planSnapshot.experimentId.trimmed().isEmpty())
         {
             planSnapshot.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);

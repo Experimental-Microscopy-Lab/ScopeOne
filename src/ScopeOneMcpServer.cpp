@@ -974,6 +974,12 @@ namespace
                          inputProperty(QStringLiteral("number"), QStringLiteral("MDA time interval in milliseconds"),
                                        0.0),
                          0.0)},
+                    {QStringLiteral("pixelSizeUm"),
+                     withMinimum(
+                         inputProperty(QStringLiteral("number"),
+                                       QStringLiteral("Sample pixel size in micrometers or zero when unknown"),
+                                       0.0),
+                         0.0)},
                     {QStringLiteral("zPositions"),
                      arrayProperty(QStringLiteral("Optional absolute Z positions"), QStringLiteral("number"))},
                     {QStringLiteral("positions"),
@@ -1088,10 +1094,10 @@ namespace
                     {QStringLiteral("format"),
                      withEnum(
                          inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
-                                       QStringLiteral("tiff")),
-                         {QStringLiteral("tiff"), QStringLiteral("binary")})},
+                                       QStringLiteral("ome-tiff")),
+                          {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
                     {QStringLiteral("compression"),
-                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable TIFF compression"), false)},
+                      inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
                     {QStringLiteral("compressionLevel"),
                      withMaximum(
                          withMinimum(
@@ -1116,10 +1122,10 @@ namespace
                     {QStringLiteral("format"),
                      withEnum(
                          inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
-                                       QStringLiteral("tiff")),
-                         {QStringLiteral("tiff"), QStringLiteral("binary")})},
+                                       QStringLiteral("ome-tiff")),
+                          {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
                     {QStringLiteral("compression"),
-                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable TIFF compression"), false)},
+                      inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
                     {QStringLiteral("compressionLevel"),
                      withMaximum(
                          withMinimum(

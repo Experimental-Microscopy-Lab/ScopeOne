@@ -406,7 +406,7 @@ class ScopeOne:
         self,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
         camera: str | None = None,
@@ -441,7 +441,7 @@ class ScopeOne:
         image: object,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
         camera: str = "python",
@@ -483,7 +483,7 @@ class ScopeOne:
         save_dir: str,
         base_name: str,
         image: object | None = None,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
     ):
@@ -527,6 +527,7 @@ class ScopeOne:
         z_positions: list[float] | None = None,
         positions: list[tuple[float, float]] | None = None,
         order: list[str] | None = None,
+        pixel_size_um: float = 0.0,
     ) -> RecordingSession:
         return RecordingSession(
             self._client.record(
@@ -537,5 +538,6 @@ class ScopeOne:
                 z_positions,
                 positions,
                 order,
+                pixel_size_um,
             )
         )

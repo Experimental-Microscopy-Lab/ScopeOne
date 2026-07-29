@@ -77,8 +77,8 @@ stage = session.process_frame("Camera", 0, end_module_index=0)
 edited_stage = np.clip(stage.image * 1.2, 0, (1 << stage.bits_per_sample) - 1)
 result = scopeone.continue_pipeline(stage, image=edited_stage)
 scopeone.show_frame(result, layer_id="python_result", name="Python Result")
-paths = scopeone.save_frame(result, r"C:\data", base_name="python_result", format="tiff")
-session_paths = session.save(r"C:\data", base_name="raw_session", format="tiff")
+paths = scopeone.save_frame(result, r"C:\data", base_name="python_result", format="ome-tiff")
+session_paths = session.save(r"C:\data", base_name="raw_session", format="ome-tiff")
 session.close()
 
 scopeone.stop_preview("Camera")
@@ -189,19 +189,19 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.latest_raw_frame(camera)`
 - `ScopeOne.layer_frame(layer_key)`
 - `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
-- `ScopeOne.save_frame_mapping(save_dir, base_name, format="tiff", compression=False, compression_level=6, camera=None)`
+- `ScopeOne.save_frame_mapping(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera=None)`
 - `ScopeOne.continue_pipeline(frame, image=None)`
 - `ScopeOne.show_frame(frame, image=None, layer_id="python_result", name="Python Result")`
 - `ScopeOne.show_image(image, layer_id="python_result", name="Python Result", camera="python", bits_per_sample=None)`
-- `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="tiff", compression=False, compression_level=6)`
-- `ScopeOne.save_image(image, save_dir, base_name, format="tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
-- `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
+- `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="ome-tiff", compression=False, compression_level=6)`
+- `ScopeOne.save_image(image, save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
+- `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None, pixel_size_um=0.0)`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
 - `RecordingSession.frame(camera, index)`
 - `RecordingSession.process_frame(camera, index, start_module_index=None, end_module_index=None)`
 - `RecordingSession.frames(camera)`
-- `RecordingSession.save(save_dir, base_name, format="tiff", compression=False, compression_level=6)`
+- `RecordingSession.save(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6)`
 - `RecordingSession.close()`
 - `FrameResult.write(image=None)`
 
@@ -293,14 +293,14 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
-- `experiment_document`: returns the shared schema version 1 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
+- `experiment_document`: returns the shared schema version 2 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
 - `validate_experiment`: field `document`; response contains the canonical validated `document`.
 - `save_experiment`: fields `filePath`, `document`; validates and atomically saves the document.
 - `load_experiment`: field `filePath`; replaces the shared UI document when no experiment is running and responds with `document`.
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
 - `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, live `progress` and `writer` state while active, and completed recording session details when available.
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
-- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
+- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `pixelSizeUm`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
@@ -309,8 +309,8 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `session_process_frame`: fields `sessionId`, `camera`, `index`, optional `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `process_frame_mapping`: optional fields `camera`, `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `show_frame_mapping_as_layer`: optional fields `camera`, `layerId`, `name`; imports the current shared memory frame as a preview layer and returns `layerKey`.
-- `save_frame_mapping`: fields `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`, optional field `camera`; imports the current shared memory frame and saves it as a one-frame output.
-- `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`; response `paths`.
+- `save_frame_mapping`: fields `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, `compressionLevel`, optional field `camera`; imports the current shared memory frame and saves it as a one-frame output.
+- `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, `compressionLevel`; response `paths`.
 
 ### Record request
 
@@ -321,6 +321,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
   "camera": "Camera",
   "timeoutMs": 120000,
   "mdaIntervalMs": 0.0,
+  "pixelSizeUm": 0.0,
   "zPositions": [0.0, 1.0],
   "positions": [[0.0, 0.0]],
   "order": ["time", "z", "xy"]
@@ -328,6 +329,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 ```
 
 `record` returns `sessionId` and `cameraIds`. If `zPositions` or `positions` is non-empty, recording uses the MDA snap path. If both are empty, recording uses the preview/raw-frame path.
+`pixelSizeUm` overrides the active Micro-Manager calibration when positive. Zero uses the active calibration and leaves OME physical pixel size unset when no calibration is available.
 For timed MDA with more than one time point, `order` must begin with `time` so event start times remain monotonic.
 
 The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
@@ -343,7 +345,7 @@ Processing module editing follows the desktop UI rules: stop real-time processin
 - Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
 - Python reads this through `scopeone.shm.frame_to_ndarray()`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
-- Session frames can come from memory, saved TIFF stacks, or saved binary streams.
+- Session frames can come from memory, saved OME-TIFF or OME-Zarr outputs, TIFF stacks, or saved binary streams.
 - `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
 
 `latest_raw_frame` exports the current live raw frame for Python processing, while `layer_frame` accepts any key returned by `list_layers`. Particle detection can return its mask as a `FrameResult` with `export_mask=True` or publish the mask directly with `publish_mask=True`. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported or explicitly imported camera id when `camera` is omitted. Provide `camera` the first time a mapping was written by an external client.

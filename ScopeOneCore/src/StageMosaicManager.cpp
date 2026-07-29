@@ -386,7 +386,8 @@ namespace scopeone::core::internal
             ExperimentPlan capturePlan;
             capturePlan.cameraIds = {frame.cameraId};
             capturePlan.streamToDisk = false;
-            capturePlan.format = RecordingFormat::Tiff;
+            capturePlan.format = RecordingFormat::OmeTiff;
+            capturePlan.pixelSizeUm = m_plan.pixelSizeUm;
             capturePlan.saveDir = m_plan.gallerySaveDir;
             capturePlan.baseName = QStringLiteral("stage_mosaic_")
                 + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));

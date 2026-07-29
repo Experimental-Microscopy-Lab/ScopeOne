@@ -17,13 +17,15 @@
 
 namespace scopeone::core
 {
-    inline constexpr int kExperimentDocumentSchemaVersion = 1;
+    inline constexpr int kExperimentDocumentSchemaVersion = 2;
     inline constexpr int kProcessingModuleSchemaVersion = 1;
 
     enum class RecordingFormat
     {
         Tiff = 0,
-        Binary = 1
+        Binary = 1,
+        OmeTiff = 2,
+        OmeZarr = 3
     };
 
     enum class RecordingAxis
@@ -98,7 +100,7 @@ namespace scopeone::core
         int schemaVersion{kExperimentDocumentSchemaVersion};
         QString experimentId;
         QStringList cameraIds;
-        RecordingFormat format{RecordingFormat::Tiff};
+        RecordingFormat format{RecordingFormat::OmeTiff};
         bool streamToDisk{true};
         bool enableCompression{false};
         int compressionLevel{6};
@@ -108,6 +110,7 @@ namespace scopeone::core
         double burstIntervalMs{0.0};
         double mdaIntervalMs{0.0};
         double exposureMs{0.0};
+        double pixelSizeUm{0.0};
         std::vector<RecordingAxis> order{RecordingAxis::Time, RecordingAxis::Z, RecordingAxis::XY};
         std::vector<QPointF> positions;
         std::vector<double> zPositions;

@@ -56,7 +56,7 @@ namespace scopeone::core
 
         struct RecordingSaveOptions
         {
-            RecordingFormat format{RecordingFormat::Tiff};
+            RecordingFormat format{RecordingFormat::OmeTiff};
             bool enableCompression{false};
             int compressionLevel{6};
             QString saveDir;

@@ -1,20 +1,20 @@
-!include/
-!internal/
+!/include/
+!/internal/
 !/src/
 
-!CMakeLists.txt
-!README.md
+!/CMakeLists.txt
+!/README.md
 
-!python/
-!python/scopeone/
-!python/scopeone/.gitignore
-!python/scopeone/README.md
-!python/scopeone/pyproject.toml
-!python/scopeone/examples/
-!python/scopeone/examples/**
-!python/scopeone/src/
-!python/scopeone/src/scopeone/
-!python/scopeone/src/scopeone/**/*.py
-!python/scopeone/src/scopeone/*.py
+!/python/
+!/python/scopeone/
+!/python/scopeone/.gitignore
+!/python/scopeone/README.md
+!/python/scopeone/pyproject.toml
+!/python/scopeone/examples/
+!/python/scopeone/examples/**
+!/python/scopeone/src/
+!/python/scopeone/src/scopeone/
+!/python/scopeone/src/scopeone/**/*.py
+!/python/scopeone/src/scopeone/*.py
 
 !/.gitignore

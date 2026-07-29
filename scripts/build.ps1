@@ -76,11 +76,14 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($target -notin @("all", "core", "gui")) {
-    throw "Invalid target '$target'. Expected one of: all, core, gui."
+if ($target -notin @("all", "core", "gui", "scopewriter")) {
+    throw "Invalid target '$target'. Expected one of: all, core, gui, scopewriter."
 }
-if ($package -and $target -eq "core") {
+if ($package -and $target -in @("core", "scopewriter")) {
     throw "--package requires --target gui or --target all."
+}
+if ($run -and $target -eq "scopewriter") {
+    throw "--run is not available for the scopewriter target."
 }
 
 function Write-Step {
@@ -162,6 +165,52 @@ function Find-ConfigureOverride {
     return $Options | Where-Object { $_ -like "$Prefix*" } | Select-Object -First 1
 }
 
+function Import-MsvcEnvironment {
+    if ($env:OS -ne "Windows_NT") {
+        return
+    }
+
+    $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vsWhere)) {
+        throw "Visual Studio Installer was not found."
+    }
+    $installationPath = & $vsWhere `
+        -latest `
+        -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
+        throw "A Visual Studio installation with the C++ toolchain was not found."
+    }
+    $vsDevCmd = Join-Path $installationPath "Common7\Tools\VsDevCmd.bat"
+    if (-not (Test-Path $vsDevCmd)) {
+        throw "Visual Studio developer environment was not found."
+    }
+    $environment = & $env:ComSpec /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to initialize the Visual Studio developer environment."
+    }
+    foreach ($line in $environment) {
+        $separator = $line.IndexOf('=')
+        if ($separator -gt 0) {
+            $name = $line.Substring(0, $separator)
+            $value = $line.Substring($separator + 1)
+            if ($name.Equals("Path", [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item Env:PATH -ErrorAction SilentlyContinue
+                Remove-Item Env:Path -ErrorAction SilentlyContinue
+                $env:Path = $value
+            }
+            else {
+                [Environment]::SetEnvironmentVariable($name, $value, "Process")
+            }
+        }
+    }
+    $env:CC = "cl.exe"
+    $env:CXX = "cl.exe"
+}
+
+Import-MsvcEnvironment
+
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -173,11 +222,27 @@ $guiBuildDir = Join-Path $repoRoot "build"
 $coreSourceDir = Join-Path $repoRoot "ScopeOneCore"
 $coreBuildDir = Join-Path $coreSourceDir "build"
 $coreInstallDir = Join-Path $coreSourceDir "install"
+$writerSourceDir = Join-Path $coreSourceDir "external\ScopeWriter"
+$writerBuildRoot = Join-Path $writerSourceDir "build"
+$writerBuildDir = Join-Path $writerBuildRoot "standalone"
+$writerInstallDir = Join-Path $writerSourceDir "install"
+$writerConsumerSourceDir = Join-Path $writerSourceDir "tests\consumer"
+$writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
 $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 
 if ($clean) {
+    if ($target -eq "scopewriter") {
+        if (Test-Path $writerBuildRoot) {
+            Write-Step "Removing ScopeWriter build directory"
+            Remove-Item -LiteralPath $writerBuildRoot -Recurse -Force
+        }
+        if (Test-Path $writerInstallDir) {
+            Write-Step "Removing ScopeWriter install directory"
+            Remove-Item -LiteralPath $writerInstallDir -Recurse -Force
+        }
+    }
     if ($target -in @("all", "gui") -and (Test-Path $guiBuildDir)) {
         Write-Step "Removing GUI build directory"
         Remove-Item -LiteralPath $guiBuildDir -Recurse -Force
@@ -197,6 +262,83 @@ $needCoreConfigure = $configure -or $coreConfigureOptionOverride -or -not (Test-
 $needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Path $guiCachePath)
 
 $installPrefixOverride = Find-ConfigureOverride -Options $coreConfigureOption -Prefix "-DCMAKE_INSTALL_PREFIX="
+
+if ($target -eq "scopewriter") {
+    $writerGeneratorArgs = @()
+    if ($env:OS -eq "Windows_NT") {
+        $writerGeneratorArgs = @("-G", "Visual Studio 17 2022", "-A", "x64")
+    }
+    Invoke-Step `
+        -Label "Configuring standalone ScopeWriter" `
+        -FilePath $cmake `
+        -Arguments (@(
+            "-S", $writerSourceDir,
+            "-B", $writerBuildDir,
+            "-DCMAKE_INSTALL_PREFIX=$writerInstallDir",
+            "-DSCOPEWRITER_BUILD_TESTS=ON"
+        ) + $writerGeneratorArgs) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Building standalone ScopeWriter ($config)" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--build", $writerBuildDir,
+            "--config", $config,
+            "--parallel"
+        ) `
+        -WorkingDirectory $repoRoot
+
+    $ctest = (Get-Command ctest -ErrorAction Stop).Source
+    Invoke-Step `
+        -Label "Testing standalone ScopeWriter ($config)" `
+        -FilePath $ctest `
+        -Arguments @(
+            "--test-dir", $writerBuildDir,
+            "-C", $config,
+            "--output-on-failure"
+        ) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Installing standalone ScopeWriter" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--install", $writerBuildDir,
+            "--config", $config
+        ) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Configuring installed ScopeWriter consumer" `
+        -FilePath $cmake `
+        -Arguments (@(
+            "-S", $writerConsumerSourceDir,
+            "-B", $writerConsumerBuildDir,
+            "-DCMAKE_PREFIX_PATH=$writerInstallDir"
+        ) + $writerGeneratorArgs) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Building installed ScopeWriter consumer ($config)" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--build", $writerConsumerBuildDir,
+            "--config", $config,
+            "--parallel"
+        ) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Testing installed ScopeWriter consumer ($config)" `
+        -FilePath $ctest `
+        -Arguments @(
+            "--test-dir", $writerConsumerBuildDir,
+            "-C", $config,
+            "--output-on-failure"
+        ) `
+        -WorkingDirectory $repoRoot
+}
 
 if (-not $needCoreConfigure -and $target -in @("all", "core")) {
     $cachedInstallPrefix = Normalize-CMakePath (Get-CMakeCacheValue -CachePath $coreCachePath -Key "CMAKE_INSTALL_PREFIX")
@@ -244,9 +386,8 @@ if ($target -in @("all", "core")) {
             -Label "Installing ScopeOneCore into local prefix" `
             -FilePath $cmake `
             -Arguments @(
-                "--build", $coreBuildDir,
-                "--config", $config,
-                "--target", "INSTALL"
+                "--install", $coreBuildDir,
+                "--config", $config
             ) `
             -WorkingDirectory $repoRoot
     }
@@ -301,14 +442,21 @@ $packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -File -ErrorAction 
 Write-Step "Summary"
 Write-Host "Target: $target"
 Write-Host "Config: $config"
-Write-Host "ScopeOneCore install: $coreInstallDir"
-if (Test-Path $guiExe) {
-    Write-Host "GUI executable: $guiExe"
+if ($target -eq "scopewriter") {
+    Write-Host "ScopeWriter install: $writerInstallDir"
 }
-if ($packageCandidates) {
-    Write-Host "Packages:"
-    foreach ($candidate in $packageCandidates) {
-        Write-Host "  $($candidate.FullName)"
+else {
+    Write-Host "ScopeOneCore install: $coreInstallDir"
+}
+if ($target -ne "scopewriter") {
+    if (Test-Path $guiExe) {
+        Write-Host "GUI executable: $guiExe"
+    }
+    if ($packageCandidates) {
+        Write-Host "Packages:"
+        foreach ($candidate in $packageCandidates) {
+            Write-Host "  $($candidate.FullName)"
+        }
     }
 }
 

@@ -1,19 +1,16 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.23)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../VERSION")
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" SCOPEONE_VERSION LIMIT_COUNT 1)
 project(ScopeOneCore VERSION "${SCOPEONE_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install")
 if (WIN32)
-    set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
+    list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
 endif ()
 
 set(MMCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/mmCoreAndDevices")
@@ -22,21 +19,19 @@ set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
 
 find_package(Qt6 COMPONENTS Core Gui Network Concurrent REQUIRED)
 
+set(SCOPEWRITER_BUILD_TESTS OFF)
+add_subdirectory(external/ScopeWriter)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
 if (WIN32)
     set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
 
     set(OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0")
     set(OpenCV_DIR "${OPENCV_DIR}/build")
     set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
-    set(ZLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib-1.3.1")
-    set(ZLIB_BIN_DIR "${ZLIB_DIR}/build/Release")
-    set(ZLIB_INCLUDE_DIR "${ZLIB_DIR}" "${ZLIB_DIR}/build")
-    set(ZLIB_LIB "${ZLIB_BIN_DIR}/zlib.lib")
-
-    set(TIFF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiff-4.7.1")
-    set(TIFF_BIN_DIR "${TIFF_DIR}/build/libtiff/Release")
-    set(TIFF_INCLUDE_DIRS "${TIFF_DIR}/libtiff;${TIFF_DIR}/build/libtiff")
-    set(TIFF_LIB "${TIFF_BIN_DIR}/tiff.lib")
 
     find_package(OpenCV REQUIRED)
 
@@ -45,13 +40,9 @@ if (WIN32)
             "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
     )
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
-    set(TIFF_RUNTIME_DLL "${TIFF_BIN_DIR}/tiff.dll")
-    set(ZLIB_RUNTIME_DLL "${ZLIB_BIN_DIR}/zlib.dll")
 
     set(SCOPEONE_RUNTIME_DLLS
             ${OPENCV_RUNTIME_DLLS}
-            "${TIFF_RUNTIME_DLL}"
-            "${ZLIB_RUNTIME_DLL}"
             ${MMCORE_RUNTIME_DLLS}
     )
 
@@ -62,17 +53,10 @@ if (WIN32)
         endif ()
     endforeach ()
 else ()
-    # Linux/Unix: use system OpenCV/TIFF/ZLIB, and link the MMCore static libraries
+    # Linux/Unix: use system OpenCV and link the MMCore static libraries
     # built from the sibling micro-manager checkout (symlinked into
     # external/mmCoreAndDevices). No runtime DLLs to stage.
     find_package(OpenCV REQUIRED COMPONENTS core imgproc)
-    find_package(TIFF REQUIRED)
-    find_package(ZLIB REQUIRED)
-
-    set(TIFF_LIB TIFF::TIFF)
-    set(TIFF_INCLUDE_DIRS "")
-    set(ZLIB_LIB ZLIB::ZLIB)
-    set(ZLIB_INCLUDE_DIR "")
     set(MMCORE_BIN_DIR "")
 
     add_library(MMCore STATIC IMPORTED GLOBAL)
@@ -110,6 +94,7 @@ set(CORE_SOURCES
         src/DifferentialRollingModule.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
+        src/OmeZarrStorage.cpp
         src/CameraBackend.cpp
         src/CameraManager.cpp
         src/NativeCameraBackend.cpp
@@ -134,6 +119,7 @@ set(CORE_HEADERS
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
+        internal/OmeZarrStorage.h
         internal/CameraBackend.h
         internal/CameraManager.h
         include/scopeone/ImageFrame.h
@@ -153,8 +139,10 @@ target_link_libraries(ScopeOneCore
         Qt::Network
         Qt::Concurrent
         ${OpenCV_LIBS}
-        ${TIFF_LIB}
-        ${ZLIB_LIB}
+        TIFF::tiff
+        ScopeWriter::ScopeWriter
+        Crc32c::crc32c
+        zstd::libzstd_static
 )
 target_compile_definitions(ScopeOneCore PRIVATE
         MMDEVICE_CLIENT_BUILD
@@ -171,8 +159,6 @@ target_include_directories(ScopeOneCore
         ${MMCORE_INCLUDE_DIR}
         ${MMDEVICE_INCLUDE_DIR}
         ${OpenCV_INCLUDE_DIRS}
-        ${TIFF_INCLUDE_DIRS}
-        ${ZLIB_INCLUDE_DIR}
 )
 target_precompile_headers(ScopeOneCore PRIVATE
         <QtGlobal>
@@ -205,6 +191,11 @@ target_precompile_headers(ScopeOneCore PRIVATE
 target_link_directories(ScopeOneCore PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOneCore $<TARGET_FILE_DIR:ScopeOneCore>)
+add_custom_command(TARGET ScopeOneCore POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ScopeWriter>
+        $<TARGET_FILE_DIR:ScopeOneCore>
+)
 
 add_executable(ScopeOne_Agent
         src/AgentMain.cpp
