@@ -617,6 +617,8 @@ namespace scopeone::core
         bool configurationOperationRunning() const { return m_configurationOperationRunning; }
         QString loadedConfigurationPath() const { return m_loadedConfigPath; }
         QString loadedConfigurationSha256() const { return m_loadedConfigSha256; }
+        QStringList additionalDeviceAdapterSearchPaths() const;
+        bool setAdditionalDeviceAdapterSearchPaths(const QStringList& paths);
 
         QStringList cameraIds() const { return m_cameraIds; }
         QStringList runningPreviewCameraIds() const;

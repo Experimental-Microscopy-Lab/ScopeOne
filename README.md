@@ -30,7 +30,7 @@ Download the latest release package from the [Releases](https://github.com/Exper
 
 **Device Adapter Setup:**
 
-ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/) to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLLs(`mmgr_dal_xxx.dll`) from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the root folder containing `ScopeOne.exe`. Besides, we kindly remind you first ensure your devices are working properly in Micro-Manager before using them in ScopeOne, as device compatibility issues are often related to the device adapter itself.
+ScopeOne loads Micro-Manager configuration files (.cfg) directly and includes the basic adapters required for its demo configurations. To access additional hardware adapters, install [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/). ScopeOne automatically detects the standard `C:\Program Files\Micro-Manager-2.0` installation; custom locations can be selected under Settings. Bundled adapters take precedence over external adapters. We recommend confirming that hardware works in the selected Micro-Manager installation before using it in ScopeOne.
 
 **Dual-camera Setup:**
 

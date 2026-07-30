@@ -764,39 +764,48 @@ namespace scopeone::core
         case RecordingFormat::OmeTiff:
         {
             location.format = scopewriter::Format::OmeTiff;
-            if (m_manifest.plan.positions.size() <= 1)
+            const AcquisitionEvent& event = selectedRecord->event;
+            const std::uint64_t framesPerBurst = static_cast<std::uint64_t>(
+                (std::max)(1, m_manifest.plan.framesPerBurst));
+            const std::uint64_t time = static_cast<std::uint64_t>(event.burstIndex)
+                    * framesPerBurst
+                + static_cast<std::uint64_t>(event.timeIndex);
+            const std::uint64_t timeCount = framesPerBurst
+                * static_cast<std::uint64_t>(m_manifest.plan.burstMode
+                                                  ? (std::max)(1, m_manifest.plan.targetBursts)
+                                                  : 1);
+            const std::uint64_t z = static_cast<std::uint64_t>(event.zIndex);
+            const std::uint64_t zCount = (std::max)(
+                std::uint64_t{1}, static_cast<std::uint64_t>(m_manifest.plan.zPositions.size()));
+
+            const auto timeAxis = std::find(m_manifest.plan.order.begin(),
+                                            m_manifest.plan.order.end(),
+                                            RecordingAxis::Time);
+            const auto zAxis = std::find(m_manifest.plan.order.begin(),
+                                         m_manifest.plan.order.end(),
+                                         RecordingAxis::Z);
+            location.frameIndex = zAxis < timeAxis
+                                      ? z * timeCount + time
+                                      : time * zCount + z;
+
+            if (m_manifest.plan.positions.size() > 1)
             {
-                break;
-            }
-            const int positionIndex = selectedRecord->event.positionIndex;
-            if (positionIndex < 0
-                || positionIndex >= static_cast<int>(m_manifest.plan.positions.size()))
-            {
-                return {};
-            }
-            const QFileInfo rootInfo(fileManifest.rawPath);
-            const QString tiffPath = QDir(fileManifest.rawPath).filePath(
-                QStringLiteral("%1_p%2.ome.tiff")
-                    .arg(rootInfo.fileName())
-                    .arg(positionIndex, 3, 10, QChar('0')));
+                const int positionIndex = event.positionIndex;
+                if (positionIndex < 0
+                    || positionIndex >= static_cast<int>(m_manifest.plan.positions.size()))
+                {
+                    return {};
+                }
+                const QFileInfo rootInfo(fileManifest.rawPath);
+                const QString tiffPath = QDir(fileManifest.rawPath).filePath(
+                    QStringLiteral("%1_p%2.ome.tiff")
+                        .arg(rootInfo.fileName())
+                        .arg(positionIndex, 3, 10, QChar('0')));
 #if defined(_WIN32)
-            location.dataPath = std::filesystem::path(tiffPath.toStdWString());
+                location.dataPath = std::filesystem::path(tiffPath.toStdWString());
 #else
-            location.dataPath = std::filesystem::path(tiffPath.toStdString());
+                location.dataPath = std::filesystem::path(tiffPath.toStdString());
 #endif
-            location.frameIndex = 0;
-            for (const AcquisitionEventRecord& record : m_manifest.events)
-            {
-                if (&record == selectedRecord)
-                {
-                    break;
-                }
-                if (record.succeeded
-                    && record.event.positionIndex == positionIndex
-                    && record.frames.contains(cameraId))
-                {
-                    ++location.frameIndex;
-                }
             }
             break;
         }
@@ -1206,6 +1215,38 @@ namespace scopeone::core
         {
             m_managers->cameraPixelSizesUm.insert(camera, pixelSizeUm);
         }
+        return true;
+    }
+
+    // Return external device adapter directories searched after the application directory
+    QStringList ScopeOneCore::additionalDeviceAdapterSearchPaths() const
+    {
+        return m_managers->mmcoreManager->additionalDeviceAdapterSearchPaths();
+    }
+
+    // Set external device adapter directories for subsequent configuration loads
+    bool ScopeOneCore::setAdditionalDeviceAdapterSearchPaths(const QStringList& paths)
+    {
+        if (m_configurationOperationRunning)
+        {
+            return false;
+        }
+
+        QStringList normalizedPaths;
+        for (const QString& path : paths)
+        {
+            const QFileInfo directory(path.trimmed());
+            if (!directory.isDir())
+            {
+                return false;
+            }
+            const QString normalizedPath = QDir::cleanPath(directory.absoluteFilePath());
+            if (!normalizedPaths.contains(normalizedPath, Qt::CaseInsensitive))
+            {
+                normalizedPaths.append(normalizedPath);
+            }
+        }
+        m_managers->mmcoreManager->setAdditionalDeviceAdapterSearchPaths(normalizedPaths);
         return true;
     }
 

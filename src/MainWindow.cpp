@@ -121,6 +121,26 @@ namespace scopeone::ui
                 qBound<qint64>(1, frameCount, static_cast<qint64>((std::numeric_limits<int>::max)())));
         }
 
+        // Detect the standard 64 bit Micro-Manager installation
+        QString detectedMicroManagerDirectory()
+        {
+#ifdef Q_OS_WIN
+            const QString programFiles = qEnvironmentVariable("ProgramFiles");
+            if (programFiles.isEmpty())
+            {
+                return {};
+            }
+            const QString directoryPath = QDir(programFiles).filePath(QStringLiteral("Micro-Manager-2.0"));
+            const QDir directory(directoryPath);
+            if (directory.exists()
+                && !directory.entryList({QStringLiteral("mmgr_dal_*.dll")}, QDir::Files).isEmpty())
+            {
+                return QDir::cleanPath(directory.absolutePath());
+            }
+#endif
+            return {};
+        }
+
         // Remove graph layers that belong to one gallery session
         void removeGallerySessionPreview(
             scopeone::core::ScopeOneCore& core,
@@ -1138,6 +1158,17 @@ namespace scopeone::ui
                                             QStringLiteral("Recording/MaxPendingWriteBytes"), kDefaultRecordedMaxBytes)
                                         .toLongLong();
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
+
+        const QString adapterDirectoryKey = QStringLiteral("Hardware/MicroManagerDirectory");
+        const QString adapterDirectory = settings.contains(adapterDirectoryKey)
+                                             ? settings.value(adapterDirectoryKey).toString().trimmed()
+                                             : detectedMicroManagerDirectory();
+        if (!m_scopeonecore->setAdditionalDeviceAdapterSearchPaths(
+                adapterDirectory.isEmpty() ? QStringList{} : QStringList{adapterDirectory}))
+        {
+            qWarning().noquote() << QStringLiteral("Ignoring invalid Micro-Manager directory: %1")
+                                    .arg(adapterDirectory);
+        }
     }
 
     // Record the application startup state in one place
@@ -1154,6 +1185,13 @@ namespace scopeone::ui
         m_consoleWidget->addMessage(
             QStringLiteral("Application directory: %1").arg(QCoreApplication::applicationDirPath()),
             QStringLiteral("SYSTEM"));
+        const QStringList adapterPaths = m_scopeonecore->additionalDeviceAdapterSearchPaths();
+        if (!adapterPaths.isEmpty())
+        {
+            m_consoleWidget->addMessage(
+                QStringLiteral("External device adapters: %1").arg(adapterPaths.join(QStringLiteral("; "))),
+                QStringLiteral("SYSTEM"));
+        }
         showStatusMessage(tr("ScopeOne ready"), 3000);
     }
 
@@ -1421,18 +1459,31 @@ namespace scopeone::ui
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         const qint64 currentValue = m_scopeonecore->recordingMaxPendingWriteBytes();
 
-        SettingsDialog dialog(currentValue > 0 ? currentValue : kDefaultRecordedMaxBytes, this);
+        const QStringList adapterPaths = m_scopeonecore->additionalDeviceAdapterSearchPaths();
+        SettingsDialog dialog(currentValue > 0 ? currentValue : kDefaultRecordedMaxBytes,
+                              adapterPaths.value(0),
+                              this);
         if (dialog.exec() != QDialog::Accepted)
         {
             return;
         }
 
         const qint64 recordedMaxBytes = dialog.maxPendingWriteBytes();
+        const QString microManagerDirectory = dialog.microManagerDirectory();
+        if (!m_scopeonecore->setAdditionalDeviceAdapterSearchPaths(
+                microManagerDirectory.isEmpty() ? QStringList{} : QStringList{microManagerDirectory}))
+        {
+            QMessageBox::warning(this,
+                                 tr("Settings"),
+                                 tr("The device adapter directory could not be updated."));
+            return;
+        }
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         settings.setValue(QStringLiteral("Recording/MaxPendingWriteBytes"), recordedMaxBytes);
+        settings.setValue(QStringLiteral("Hardware/MicroManagerDirectory"), microManagerDirectory);
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
         showStatusMessage(
-            tr("Recording buffer limit updated to %1 bytes").arg(recordedMaxBytes),
+            tr("Settings updated"),
             5000);
     }
 
