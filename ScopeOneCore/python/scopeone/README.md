@@ -157,7 +157,7 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.move_z_relative(dz, device=None)`
 - `ScopeOne.move_xy_to(x, y, device=None)`
 - `ScopeOne.move_z_to(z, device=None)`
-- `ScopeOne.start_stage_mosaic(camera_id, xy_stage_id, rows=1, columns=1, pixel_size_um=1.0, step_x_um=0.0, step_y_um=0.0, settle_ms=150, return_to_start=True, gallery_save_dir=None)`
+- `ScopeOne.start_stage_mosaic(camera_id, xy_stage_id, rows=1, columns=1, step_x_um=0.0, step_y_um=0.0, settle_ms=150, return_to_start=True, gallery_save_dir=None)`
 - `ScopeOne.stage_mosaic_status()`
 - `ScopeOne.cancel_stage_mosaic()`
 - `ScopeOne.processing_state()`
@@ -195,7 +195,7 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.show_image(image, layer_id="python_result", name="Python Result", camera="python", bits_per_sample=None)`
 - `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="ome-tiff", compression=False, compression_level=6)`
 - `ScopeOne.save_image(image, save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
-- `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None, pixel_size_um=0.0)`
+- `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
 - `RecordingSession.frame(camera, index)`
@@ -225,7 +225,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 - `ping`: health check.
 - `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
-- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status.
+- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status. Writer status includes captured, written, and dropped frame counts, written bytes, and queued bytes.
 - `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
 - `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, live acquisition and writer progress, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
@@ -283,7 +283,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `move_z_relative`: fields `device`, `dz`.
 - `move_xy_to`: fields `device`, `x`, `y`.
 - `move_z_to`: fields `device`, `z`.
-- `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `pixelSizeUm`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
+- `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
 - `processing_modules`: response `bitDepth`, `realTime`, and `modules`.
@@ -300,7 +300,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
 - `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, live `progress` and `writer` state while active, and completed recording session details when available.
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
-- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `pixelSizeUm`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
+- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
@@ -321,7 +321,6 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
   "camera": "Camera",
   "timeoutMs": 120000,
   "mdaIntervalMs": 0.0,
-  "pixelSizeUm": 0.0,
   "zPositions": [0.0, 1.0],
   "positions": [[0.0, 0.0]],
   "order": ["time", "z", "xy"]
@@ -329,7 +328,6 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 ```
 
 `record` returns `sessionId` and `cameraIds`. If `zPositions` or `positions` is non-empty, recording uses the MDA snap path. If both are empty, recording uses the preview/raw-frame path.
-`pixelSizeUm` overrides the active Micro-Manager calibration when positive. Zero uses the active calibration and leaves OME physical pixel size unset when no calibration is available.
 For timed MDA with more than one time point, `order` must begin with `time` so event start times remain monotonic.
 
 The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.

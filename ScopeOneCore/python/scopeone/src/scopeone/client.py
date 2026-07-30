@@ -946,7 +946,6 @@ class ExternalClient:
         xy_stage_id: str,
         rows: int = 1,
         columns: int = 1,
-        pixel_size_um: float = 1.0,
         step_x_um: float = 0.0,
         step_y_um: float = 0.0,
         settle_ms: int = 150,
@@ -959,7 +958,6 @@ class ExternalClient:
             "xyStageId": xy_stage_id,
             "rows": int(rows),
             "columns": int(columns),
-            "pixelSizeUm": float(pixel_size_um),
             "stepXUm": float(step_x_um),
             "stepYUm": float(step_y_um),
             "settleMs": int(settle_ms),
@@ -1113,7 +1111,6 @@ class ExternalClient:
         z_positions: list[float] | None = None,
         positions: list[tuple[float, float]] | None = None,
         order: list[str] | None = None,
-        pixel_size_um: float = 0.0,
     ):
         request = {
             "type": "record",
@@ -1121,7 +1118,6 @@ class ExternalClient:
             "camera": camera,
             "timeoutMs": timeout_ms,
             "mdaIntervalMs": float(mda_interval_ms),
-            "pixelSizeUm": float(pixel_size_um),
         }
         if z_positions is not None:
             request["zPositions"] = [float(z) for z in z_positions]

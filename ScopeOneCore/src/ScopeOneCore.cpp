@@ -47,7 +47,7 @@ namespace
     // Histogram refresh is throttled to keep preview responsive
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
     // Live line profiles update fast enough for interaction without following camera rate
-    constexpr qint64 kLineProfileRefreshIntervalMs = 50;
+    constexpr qint64 kLineProfileRefreshIntervalMs = 16;
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
 
@@ -408,23 +408,6 @@ namespace
         return devicePropertiesObject;
     }
 
-    // Read the active Micro-Manager pixel size calibration
-    double currentPixelSizeUm(const std::shared_ptr<CMMCore>& core)
-    {
-        if (!core)
-        {
-            return 0.0;
-        }
-        try
-        {
-            const double pixelSizeUm = core->getPixelSizeUm(false);
-            return std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0 ? pixelSizeUm : 0.0;
-        }
-        catch (const CMMError&)
-        {
-            return 0.0;
-        }
-    }
 }
 
 namespace scopeone::core
@@ -893,6 +876,7 @@ namespace scopeone::core
         bool experimentCancelRequested{false};
         RecordingProgress recordingProgress;
         RecordingWriterStatus recordingWriterStatus;
+        QHash<QString, double> cameraPixelSizesUm;
     };
 
     // Return the compiled core version string
@@ -1198,6 +1182,31 @@ namespace scopeone::core
             }
         }
         return running;
+    }
+
+    // Return the global scale assigned to one camera
+    double ScopeOneCore::cameraPixelSizeUm(const QString& cameraId) const
+    {
+        return m_managers->cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
+    }
+
+    // Assign one global scale to a camera
+    bool ScopeOneCore::setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm)
+    {
+        const QString camera = cameraId.trimmed();
+        if (camera.isEmpty() || !std::isfinite(pixelSizeUm) || pixelSizeUm < 0.0)
+        {
+            return false;
+        }
+        if (pixelSizeUm == 0.0)
+        {
+            m_managers->cameraPixelSizesUm.remove(camera);
+        }
+        else
+        {
+            m_managers->cameraPixelSizesUm.insert(camera, pixelSizeUm);
+        }
+        return true;
     }
 
     // Applies a completed device load to the frame graph and public state
@@ -1807,10 +1816,16 @@ namespace scopeone::core
         const ExperimentPlan& capturePlan)
     {
         ExperimentPlan plan = capturePlan;
-        if (plan.pixelSizeUm <= 0.0)
+        QStringList frameCameraIds;
+        for (const ImageFrame& frame : frames)
         {
-            plan.pixelSizeUm = currentPixelSizeUm(core());
+            const QString cameraId = frame.cameraId.trimmed();
+            if (!cameraId.isEmpty() && !frameCameraIds.contains(cameraId))
+            {
+                frameCameraIds.append(cameraId);
+            }
         }
+        plan.pixelSizeUm = frameCameraIds.size() == 1 ? cameraPixelSizeUm(frameCameraIds.first()) : 0.0;
         plan.configPath = m_loadedConfigPath;
         plan.configSha256 = m_loadedConfigSha256;
         plan.processing = processingRecipe();
@@ -1818,6 +1833,16 @@ namespace scopeone::core
         auto session = RecordingSessionData::fromImageFrames(frames, plan);
         if (session)
         {
+            QHash<QString, double> pixelSizesUm;
+            for (const QString& cameraId : session->cameraIds())
+            {
+                const double pixelSizeUm = cameraPixelSizeUm(cameraId);
+                if (pixelSizeUm > 0.0)
+                {
+                    pixelSizesUm.insert(cameraId, pixelSizeUm);
+                }
+            }
+            session->setCameraPixelSizesUm(pixelSizesUm);
             SoftwareSnapshot software;
             software.applicationVersion = QCoreApplication::applicationVersion();
             software.coreVersion = getVersion();
@@ -2229,7 +2254,17 @@ namespace scopeone::core
             }
             return false;
         }
-        return m_managers->stageMosaicManager->start(plan, errorMessage);
+        StageMosaicPlan effectivePlan = plan;
+        effectivePlan.pixelSizeUm = cameraPixelSizeUm(plan.cameraId);
+        if (effectivePlan.pixelSizeUm <= 0.0)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Camera scale is not set");
+            }
+            return false;
+        }
+        return m_managers->stageMosaicManager->start(effectivePlan, errorMessage);
     }
 
     void ScopeOneCore::cancelStageMosaic()
@@ -2271,15 +2306,16 @@ namespace scopeone::core
         }
 
         HistogramJobState& state = m_histogramJobStates[key];
-        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (state.inFlight)
         {
             state.queuedFrame = frame;
             return;
         }
 
-        const qint64 elapsedMs = nowMs - state.lastScheduledMs;
-        if (state.lastScheduledMs > 0 && elapsedMs < kHistogramRefreshIntervalMs)
+        const qint64 elapsedMs = state.lastScheduledTimer.isValid()
+                                     ? state.lastScheduledTimer.elapsed()
+                                     : kHistogramRefreshIntervalMs;
+        if (elapsedMs < kHistogramRefreshIntervalMs)
         {
             state.queuedFrame = frame;
             if (!state.retryScheduled)
@@ -2308,7 +2344,7 @@ namespace scopeone::core
 
         state.inFlight = true;
         state.queuedFrame = ImageFrame{};
-        state.lastScheduledMs = nowMs;
+        state.lastScheduledTimer.start();
         const quint64 sequence = ++m_nextHistogramSequence;
         state.activeSequence = sequence;
 
@@ -3444,10 +3480,6 @@ namespace scopeone::core
         }
 
         ExperimentPlan planSnapshot = plan;
-        if (planSnapshot.pixelSizeUm <= 0.0)
-        {
-            planSnapshot.pixelSizeUm = currentPixelSizeUm(core());
-        }
         if (planSnapshot.experimentId.trimmed().isEmpty())
         {
             planSnapshot.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -3471,6 +3503,9 @@ namespace scopeone::core
                 planSnapshot.cameraIds.append(normalizedCameraId);
             }
         }
+        planSnapshot.pixelSizeUm = planSnapshot.cameraIds.size() == 1
+                                       ? cameraPixelSizeUm(planSnapshot.cameraIds.first())
+                                       : 0.0;
 
         const bool useMda = !planSnapshot.positions.empty() || !planSnapshot.zPositions.empty();
         QStringList suspendedPreviewIds;
@@ -3525,9 +3560,19 @@ namespace scopeone::core
                 Qt::SingleShotConnection);
         }
 
+        QHash<QString, double> pixelSizesUm;
+        for (const QString& cameraId : planSnapshot.cameraIds)
+        {
+            const double pixelSizeUm = cameraPixelSizeUm(cameraId);
+            if (pixelSizeUm > 0.0)
+            {
+                pixelSizesUm.insert(cameraId, pixelSizeUm);
+            }
+        }
         const bool started = m_managers->recordingManager->start(planSnapshot,
                                                                   activeCameraIds,
-                                                                  deviceProperties);
+                                                                  deviceProperties,
+                                                                  pixelSizesUm);
         if (!started)
         {
             if (restorePreviewConnection)

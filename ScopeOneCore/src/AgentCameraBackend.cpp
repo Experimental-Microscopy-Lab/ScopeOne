@@ -1928,7 +1928,8 @@ namespace scopeone::core::internal
                     if (wasRecording)
                     {
                         emit frameDeliveryFailed(
-                            QStringLiteral("Camera agent exited for '%1'").arg(normalizedId));
+                            QStringLiteral("Camera agent exited for '%1'").arg(normalizedId),
+                            0);
                     }
                 });
 
@@ -1974,7 +1975,7 @@ namespace scopeone::core::internal
                     if (recordingFrameDeliveryEnabled())
                     {
                         CameraBackend::setRecordingFrameDeliveryEnabled(false);
-                        emit frameDeliveryFailed(error);
+                        emit frameDeliveryFailed(error, 0);
                     }
                     return;
                 }

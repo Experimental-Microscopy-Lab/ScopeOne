@@ -48,7 +48,8 @@ namespace scopeone::core::internal
 
         bool start(const ExperimentPlan& requestedPlan,
                    const QStringList& activeCameraIds,
-                   const QJsonObject& deviceProperties);
+                   const QJsonObject& deviceProperties,
+                   const QHash<QString, double>& cameraPixelSizesUm);
         void stop();
         void shutdown();
         void setRecordedMaxBytes(qint64 bytes);
@@ -57,7 +58,7 @@ namespace scopeone::core::internal
         bool isRecording() const { return m_captureState.isRecording; }
 
         void onRawFramesReady(const QList<ImageFrame>& frames);
-        void onFrameDeliveryFailed(const QString& errorMessage);
+        void onFrameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
 
         static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
 
@@ -113,6 +114,7 @@ namespace scopeone::core::internal
             QString frameInfoPath;
             QString metadataFileName;
             QJsonObject cameraProperties;
+            double pixelSizeUm{0.0};
             void* backend{nullptr};
             quint64 acquisitionStartTimestampNs{0};
             int width{0};
@@ -187,7 +189,9 @@ namespace scopeone::core::internal
         bool planUsesMda(const ExperimentPlan& plan) const;
         bool planStreamsMda(const ExperimentPlan& plan) const;
         void resetCaptureState(const ExperimentPlan& plan);
-        void resetSessionState(const ExperimentPlan& plan, const QJsonObject& deviceProperties);
+        void resetSessionState(const ExperimentPlan& plan,
+                               const QJsonObject& deviceProperties,
+                               const QHash<QString, double>& cameraPixelSizesUm);
         void finalizeActiveSession(ExperimentRunState state, const QString& errorMessage);
         void finishRecording(ExperimentRunState state, const QString& errorMessage = QString());
         static bool writeSessionDocument(const std::shared_ptr<RecordingSessionData>& session,

@@ -421,6 +421,7 @@ namespace scopeone::core::internal
                                ImagePixelFormat pixelFormat,
                                int bitsPerSample,
                                const ExperimentPlan& plan,
+                               double pixelSizeUm,
                                quint64 acquisitionStartTimestampNs,
                                const QString& imageName,
                                const QJsonObject& cameraProperties,
@@ -484,8 +485,8 @@ namespace scopeone::core::internal
                                                  plan.order.end(),
                                                  RecordingAxis::Z);
                     settings.acquisitionOrder = zAxis < timeAxis ? "ZTC" : "TZC";
-                    settings.physicalSizeXUm = plan.pixelSizeUm;
-                    settings.physicalSizeYUm = plan.pixelSizeUm;
+                    settings.physicalSizeXUm = pixelSizeUm;
+                    settings.physicalSizeYUm = pixelSizeUm;
                     settings.timeIncrementMs = uniformTimeIncrementMs(plan);
                     if (plan.zPositions.size() > 1)
                     {
@@ -696,10 +697,18 @@ namespace scopeone::core::internal
             status = m_writerState.status;
             status.setPendingWriteBytes(static_cast<qint64>(m_writerState.pendingWriteBytes));
             status.setMaxPendingWriteBytes(static_cast<qint64>(m_writerState.recordedMaxBytes));
-            if (m_sessionState.activeSession)
-            {
-                m_sessionState.activeSession->setWriterStatusSnapshot(status);
-            }
+        }
+        qint64 capturedFrames = 0;
+        for (auto it = m_captureState.framesCapturedTotal.constBegin();
+             it != m_captureState.framesCapturedTotal.constEnd();
+             ++it)
+        {
+            capturedFrames += it.value();
+        }
+        status.setFramesCaptured(capturedFrames);
+        if (m_sessionState.activeSession)
+        {
+            m_sessionState.activeSession->setWriterStatusSnapshot(status);
         }
         emit writerStatusChanged(status);
     }
@@ -844,7 +853,8 @@ namespace scopeone::core::internal
 
     // Prepares a fresh session object for the next recording
     void RecordingManager::resetSessionState(const ExperimentPlan& plan,
-                                             const QJsonObject& deviceProperties)
+                                             const QJsonObject& deviceProperties,
+                                             const QHash<QString, double>& cameraPixelSizesUm)
     {
         m_sessionState.activeSession = std::make_shared<RecordingSessionData>();
         m_sessionState.activeSession->setCapturePlan(plan);
@@ -857,6 +867,7 @@ namespace scopeone::core::internal
         software.operatingSystem = QSysInfo::prettyProductName();
         m_sessionState.activeSession->setSoftwareSnapshot(software);
         m_sessionState.activeSession->setDeviceProperties(deviceProperties);
+        m_sessionState.activeSession->setCameraPixelSizesUm(cameraPixelSizesUm);
         m_sessionState.activeSession->prepareForSave(plan.streamToDisk, recordedMaxBytes());
         m_sessionState.activeSession->clearFrames();
         m_sessionState.activeSession->setStartedTimestampNs(currentTimestampNs());
@@ -982,6 +993,7 @@ namespace scopeone::core::internal
             {
                 output->cameraProperties = m_sessionState.activeSession->experimentDocument()
                                                .deviceProperties.value(cameraId).toObject();
+                output->pixelSizeUm = m_sessionState.activeSession->cameraPixelSizeUm(cameraId);
             }
             if (requiresFrameInfo(plan.format))
             {
@@ -1154,6 +1166,12 @@ namespace scopeone::core::internal
             QString errorMessage;
             if (!writeTask(*output, task, errorMessage))
             {
+                requestWriterStop();
+                qint64 droppedFrames = 1;
+                {
+                    std::lock_guard<std::mutex> lock(output->queueMutex);
+                    droppedFrames += static_cast<qint64>(output->writeQueue.size());
+                }
                 QString writerFailure;
                 {
                     std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
@@ -1164,9 +1182,9 @@ namespace scopeone::core::internal
                                                         : errorMessage;
                     }
                     m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
+                    m_writerState.status.addDroppedFrames(droppedFrames);
                     writerFailure = m_writerState.writerError;
                 }
-                requestWriterStop();
                 markWriterStatusDirty();
                 QMetaObject::invokeMethod(this, [this, writerFailure, generation]()
                 {
@@ -1180,8 +1198,10 @@ namespace scopeone::core::internal
 
             {
                 std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-                m_writerState.pendingWriteBytes -= static_cast<size_t>(task.frame.payloadByteCount());
+                const qint64 frameBytes = task.frame.payloadByteCount();
+                m_writerState.pendingWriteBytes -= static_cast<size_t>(frameBytes);
                 m_writerState.status.addWrittenFrames(1);
+                m_writerState.status.addWrittenBytes(frameBytes);
             }
             output->framesWritten += 1;
             markWriterStatusDirty();
@@ -1208,6 +1228,7 @@ namespace scopeone::core::internal
                                            task.frame.pixelFormat,
                                            task.frame.bitsPerSample,
                                            m_mdaState.plan,
+                                           output.pixelSizeUm,
                                            output.acquisitionStartTimestampNs,
                                            output.cameraId,
                                            output.cameraProperties,
@@ -1264,7 +1285,8 @@ namespace scopeone::core::internal
     // Starts a recording session using the requested plan
     bool RecordingManager::start(const ExperimentPlan& requestedPlan,
                                  const QStringList& activeCameraIds,
-                                 const QJsonObject& deviceProperties)
+                                 const QJsonObject& deviceProperties,
+                                 const QHash<QString, double>& cameraPixelSizesUm)
     {
         if (m_captureState.isRecording)
         {
@@ -1312,7 +1334,7 @@ namespace scopeone::core::internal
                 return false;
             }
         }
-        resetSessionState(plan, deviceProperties);
+        resetSessionState(plan, deviceProperties, cameraPixelSizesUm);
 
         if (plan.streamToDisk)
         {
@@ -1447,11 +1469,15 @@ namespace scopeone::core::internal
     }
 
     // Fails an active preview recording when frame delivery is incomplete
-    void RecordingManager::onFrameDeliveryFailed(const QString& errorMessage)
+    void RecordingManager::onFrameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames)
     {
         if (!m_captureState.isRecording || m_mdaState.usingMda)
         {
             return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
+            m_writerState.status.addDroppedFrames(static_cast<qint64>(droppedFrames));
         }
         finishRecording(ExperimentRunState::Failed, errorMessage);
     }
@@ -1579,6 +1605,7 @@ namespace scopeone::core::internal
                     m_writerState.writerError = QStringLiteral("Missing output for %1").arg(cameraId);
                 }
                 m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
+                m_writerState.status.addDroppedFrames(1);
                 failureError = m_writerState.writerError;
                 emitStatus = true;
             }
@@ -1589,6 +1616,7 @@ namespace scopeone::core::internal
                     m_writerState.writerError = QStringLiteral("Recording write queue exceeded limit");
                 }
                 m_writerState.status.setPhase(RecordingWriterPhase::Failed, m_writerState.writerError);
+                m_writerState.status.addDroppedFrames(1);
                 failureError = m_writerState.writerError;
                 emitStatus = true;
             }
@@ -2259,6 +2287,7 @@ namespace scopeone::core::internal
                                         firstImageFrame.pixelFormat,
                                         firstImageFrame.bitsPerSample,
                                         capturePlan,
+                                        session->cameraPixelSizeUm(cameraId),
                                         session->experimentDocument().startedTimestampNs,
                                         cameraId,
                                         session->experimentDocument().deviceProperties

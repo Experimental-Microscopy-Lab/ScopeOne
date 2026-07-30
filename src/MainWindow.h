@@ -73,6 +73,7 @@ namespace scopeone::ui
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
+        void openScaleDialog();
         void openStageMosaicTool();
         void openParticleDetectionTool();
         void connectPropertyPanels();
@@ -166,6 +167,7 @@ namespace scopeone::ui
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_settingsAction{nullptr};
+        QAction* m_scaleAction{nullptr};
         QAction* m_stageMosaicAction{nullptr};
         QAction* m_particleDetectionAction{nullptr};
         QAction* m_aboutAction{nullptr};

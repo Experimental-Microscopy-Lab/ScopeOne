@@ -285,7 +285,6 @@ class ScopeOne:
         xy_stage_id: str,
         rows: int = 1,
         columns: int = 1,
-        pixel_size_um: float = 1.0,
         step_x_um: float = 0.0,
         step_y_um: float = 0.0,
         settle_ms: int = 150,
@@ -297,7 +296,6 @@ class ScopeOne:
             xy_stage_id,
             rows,
             columns,
-            pixel_size_um,
             step_x_um,
             step_y_um,
             settle_ms,
@@ -527,7 +525,6 @@ class ScopeOne:
         z_positions: list[float] | None = None,
         positions: list[tuple[float, float]] | None = None,
         order: list[str] | None = None,
-        pixel_size_um: float = 0.0,
     ) -> RecordingSession:
         return RecordingSession(
             self._client.record(
@@ -538,6 +535,5 @@ class ScopeOne:
                 z_positions,
                 positions,
                 order,
-                pixel_size_um,
             )
         )

@@ -22,8 +22,11 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStorageInfo>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 namespace
@@ -180,17 +183,21 @@ namespace
     QString formatWriterStatusText(const scopeone::core::ScopeOneCore::RecordingWriterStatus& status)
     {
         QString text = QStringLiteral("Writer: %1").arg(writerPhaseText(status.phase()));
-        if (status.phase() == scopeone::core::ScopeOneCore::RecordingWriterPhase::Failed && !status.errorMessage().
-            isEmpty())
-        {
-            return QStringLiteral("%1 - %2").arg(text, status.errorMessage());
-        }
-
         QStringList details;
-        if (status.framesWritten() > 0 || status.phase() ==
+        if (status.framesCaptured() > 0 || status.framesWritten() > 0 || status.phase() ==
             scopeone::core::ScopeOneCore::RecordingWriterPhase::Completed)
         {
-            details.append(QStringLiteral("%1 frame(s)").arg(status.framesWritten()));
+            details.append(QStringLiteral("%1 captured, %2 written")
+                           .arg(status.framesCaptured())
+                           .arg(status.framesWritten()));
+        }
+        if (status.droppedFrames() > 0)
+        {
+            details.append(QStringLiteral("%1 dropped").arg(status.droppedFrames()));
+        }
+        if (status.bytesWritten() > 0)
+        {
+            details.append(QStringLiteral("%1 written").arg(formatByteCount(status.bytesWritten())));
         }
         if (status.maxPendingWriteBytes() > 0)
         {
@@ -234,6 +241,19 @@ namespace scopeone::ui
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this]() { updateUiState(); });
         connect(m_compressionCheck, &QCheckBox::toggled, this, [this]() { updateUiState(); });
+        connect(m_framesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this]() { updateStorageStatus(); });
+        connect(m_burstCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this]() { updateStorageStatus(); });
+        connect(m_mdaZCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this]() { updateStorageStatus(); });
+        connect(m_mdaXCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this]() { updateStorageStatus(); });
+        connect(m_mdaYCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this]() { updateStorageStatus(); });
+        m_storageStatusTimer = new QTimer(this);
+        m_storageStatusTimer->setInterval(1000);
+        connect(m_storageStatusTimer, &QTimer::timeout, this, &RecordingWidget::updateStorageStatus);
         connect(m_mdaEnableZCheck, &QCheckBox::toggled, this, [this]()
         {
             syncOrderList();
@@ -287,6 +307,14 @@ namespace scopeone::ui
                 {
                     m_isRecording = recording;
                     m_startStopButton->setText(recording ? "Stop" : "Start");
+                    if (recording)
+                    {
+                        m_storageStatusTimer->start();
+                    }
+                    else
+                    {
+                        m_storageStatusTimer->stop();
+                    }
                     updateUiState();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingWriterStatusChanged, this,
@@ -572,12 +600,15 @@ namespace scopeone::ui
         auto* statusLayout = new QVBoxLayout(statusGroup);
         m_statusLabel = new QLabel("Idle", this);
         m_writerStatusLabel = new QLabel("Writer: Idle", this);
+        m_writerStatusLabel->setWordWrap(true);
         m_frameCountLabel = new QLabel("Frames: 0", this);
         m_burstCountLabel = new QLabel("Bursts: 0", this);
+        m_storageStatusLabel = new QLabel("Storage: unavailable", this);
         statusLayout->addWidget(m_statusLabel);
         statusLayout->addWidget(m_writerStatusLabel);
         statusLayout->addWidget(m_frameCountLabel);
         statusLayout->addWidget(m_burstCountLabel);
+        statusLayout->addWidget(m_storageStatusLabel);
         contentLayout->addWidget(statusGroup);
 
         m_startStopButton = new QPushButton("Start", this);
@@ -706,6 +737,62 @@ namespace scopeone::ui
         const bool hasName = !normalizedBaseName().isEmpty();
         const bool canStart = !m_isRecording && hasCameras && hasDir && hasName;
         m_startStopButton->setEnabled(m_isRecording || canStart);
+        updateStorageStatus();
+    }
+
+    // Updates available space and the estimated uncompressed recording size
+    void RecordingWidget::updateStorageStatus()
+    {
+        QStringList details;
+        const QString saveDir = m_saveDirLineEdit->text().trimmed();
+        QStorageInfo storage(saveDir);
+        storage.refresh();
+        if (storage.isValid() && storage.isReady())
+        {
+            details.append(QStringLiteral("%1 free").arg(formatByteCount(storage.bytesAvailable())));
+        }
+
+        const QStringList cameraIds = selectedCameraIds();
+        QStringList layerKeys;
+        layerKeys.reserve(cameraIds.size());
+        for (const QString& cameraId : cameraIds)
+        {
+            layerKeys.append(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
+        }
+        const QList<scopeone::core::ImageFrame> frames = m_scopeonecore->graphFrames(layerKeys);
+        qint64 bytesPerPlane = 0;
+        int validFrameCount = 0;
+        for (const auto& frame : frames)
+        {
+            if (frame.isValid())
+            {
+                bytesPerPlane += frame.payloadByteCount();
+                ++validFrameCount;
+            }
+        }
+        if (!cameraIds.isEmpty() && validFrameCount == cameraIds.size() && bytesPerPlane > 0)
+        {
+            const qint64 burstCount = m_burstModeCheck->isChecked() ? m_burstCountSpin->value() : 1;
+            const qint64 zCount = m_mdaEnableZCheck->isChecked() ? m_mdaZCountSpin->value() : 1;
+            const qint64 positionCount = m_mdaEnableXYCheck->isChecked()
+                                               ? static_cast<qint64>(m_mdaXCountSpin->value())
+                                                   * m_mdaYCountSpin->value()
+                                               : 1;
+            const long double estimatedBytes = static_cast<long double>(bytesPerPlane)
+                * m_framesSpin->value() * burstCount * zCount * positionCount;
+            const qint64 estimate = estimatedBytes > static_cast<long double>((std::numeric_limits<qint64>::max)())
+                                        ? (std::numeric_limits<qint64>::max)()
+                                        : static_cast<qint64>(estimatedBytes);
+            details.append(QStringLiteral("%1 estimated raw").arg(formatByteCount(estimate)));
+            if (storage.isValid() && storage.isReady() && estimate > storage.bytesAvailable())
+            {
+                details.append(QStringLiteral("insufficient free space"));
+            }
+        }
+
+        m_storageStatusLabel->setText(details.isEmpty()
+                                          ? QStringLiteral("Storage: unavailable")
+                                          : QStringLiteral("Storage: %1").arg(details.join(QStringLiteral(", "))));
     }
 
     // Reads the last save directory from settings

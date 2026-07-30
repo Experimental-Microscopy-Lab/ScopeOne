@@ -170,6 +170,12 @@ function Import-MsvcEnvironment {
         return
     }
 
+    if ($env:VSCMD_VER -and (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+        $env:CC = "cl.exe"
+        $env:CXX = "cl.exe"
+        return
+    }
+
     $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
         throw "Visual Studio Installer was not found."
@@ -182,28 +188,26 @@ function Import-MsvcEnvironment {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
         throw "A Visual Studio installation with the C++ toolchain was not found."
     }
-    $vsDevCmd = Join-Path $installationPath "Common7\Tools\VsDevCmd.bat"
-    if (-not (Test-Path $vsDevCmd)) {
-        throw "Visual Studio developer environment was not found."
+
+    $devShellModule = Join-Path $installationPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+    if (-not (Test-Path $devShellModule)) {
+        throw "Visual Studio developer PowerShell module was not found."
     }
-    $environment = & $env:ComSpec /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to initialize the Visual Studio developer environment."
+    try {
+        Import-Module $devShellModule -ErrorAction Stop
+        Enter-VsDevShell `
+            -VsInstallPath $installationPath `
+            -SkipAutomaticLocation `
+            -Arch amd64 `
+            -HostArch amd64 `
+            -DevCmdArguments "-no_logo" `
+            -ErrorAction Stop | Out-Null
     }
-    foreach ($line in $environment) {
-        $separator = $line.IndexOf('=')
-        if ($separator -gt 0) {
-            $name = $line.Substring(0, $separator)
-            $value = $line.Substring($separator + 1)
-            if ($name.Equals("Path", [StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item Env:PATH -ErrorAction SilentlyContinue
-                Remove-Item Env:Path -ErrorAction SilentlyContinue
-                $env:Path = $value
-            }
-            else {
-                [Environment]::SetEnvironmentVariable($name, $value, "Process")
-            }
-        }
+    catch {
+        throw "Failed to initialize the Visual Studio developer environment: $($_.Exception.Message)"
+    }
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+        throw "Visual Studio developer environment did not provide cl.exe."
     }
     $env:CC = "cl.exe"
     $env:CXX = "cl.exe"

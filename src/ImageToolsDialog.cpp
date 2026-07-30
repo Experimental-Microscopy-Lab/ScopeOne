@@ -41,6 +41,83 @@ namespace scopeone::ui
 
     }
 
+    // Create the per camera image scale editor
+    CameraScaleDialog::CameraScaleDialog(scopeone::core::ScopeOneCore* core,
+                                         QWidget* parent)
+        : QDialog(parent)
+          , m_core(core)
+    {
+        if (!core)
+        {
+            qFatal("CameraScaleDialog requires ScopeOneCore");
+        }
+
+        setWindowTitle(tr("Scale"));
+        auto* mainLayout = new QVBoxLayout(this);
+        auto* formLayout = new QFormLayout();
+        m_cameraCombo = new QComboBox(this);
+        m_cameraCombo->addItems(m_core->cameraIds());
+        formLayout->addRow(tr("Camera"), m_cameraCombo);
+
+        m_pixelSizeSpinBox = new QDoubleSpinBox(this);
+        m_pixelSizeSpinBox->setRange(0.0, 1000000.0);
+        m_pixelSizeSpinBox->setDecimals(6);
+        m_pixelSizeSpinBox->setSingleStep(0.01);
+        m_pixelSizeSpinBox->setSuffix(QStringLiteral(" µm/px"));
+        m_pixelSizeSpinBox->setSpecialValueText(tr("Unset"));
+        m_pixelSizeSpinBox->setKeyboardTracking(false);
+        formLayout->addRow(tr("Pixel Size"), m_pixelSizeSpinBox);
+        mainLayout->addLayout(formLayout);
+
+        m_statusLabel = new QLabel(tr("Scale is applied globally to the selected camera"), this);
+        m_statusLabel->setWordWrap(true);
+        mainLayout->addWidget(m_statusLabel);
+
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Close, this);
+        connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked,
+                this, &CameraScaleDialog::applyScale);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        mainLayout->addWidget(buttons);
+
+        connect(m_cameraCombo, &QComboBox::currentTextChanged,
+                this, [this]() { loadSelectedCamera(); });
+        loadSelectedCamera();
+    }
+
+    // Load the global scale for the selected camera
+    void CameraScaleDialog::loadSelectedCamera()
+    {
+        const QString cameraId = m_cameraCombo->currentText().trimmed();
+        m_pixelSizeSpinBox->setEnabled(!cameraId.isEmpty());
+        m_pixelSizeSpinBox->setValue(cameraId.isEmpty() ? 0.0 : m_core->cameraPixelSizeUm(cameraId));
+    }
+
+    // Apply and persist one camera scale
+    void CameraScaleDialog::applyScale()
+    {
+        const QString cameraId = m_cameraCombo->currentText().trimmed();
+        const double pixelSizeUm = m_pixelSizeSpinBox->value();
+        if (!m_core->setCameraPixelSizeUm(cameraId, pixelSizeUm))
+        {
+            m_statusLabel->setText(tr("Failed to update camera scale"));
+            return;
+        }
+
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QVariantMap pixelSizes = settings.value(QStringLiteral("Scale/CameraPixelSizesUm")).toMap();
+        if (pixelSizeUm > 0.0)
+        {
+            pixelSizes.insert(cameraId, pixelSizeUm);
+            m_statusLabel->setText(tr("Scale updated for %1").arg(cameraId));
+        }
+        else
+        {
+            pixelSizes.remove(cameraId);
+            m_statusLabel->setText(tr("Scale cleared for %1").arg(cameraId));
+        }
+        settings.setValue(QStringLiteral("Scale/CameraPixelSizesUm"), pixelSizes);
+    }
+
     // Create a stage driven mosaic tool
     StageMosaicDialog::StageMosaicDialog(scopeone::core::ScopeOneCore* core,
                                          PreviewWidget* previewWidget,
@@ -101,13 +178,6 @@ namespace scopeone::ui
         m_columnsSpinBox->setRange(1, 100);
         m_columnsSpinBox->setValue(3);
 
-        m_pixelSizeSpinBox = new QDoubleSpinBox(captureGroup);
-        m_pixelSizeSpinBox->setRange(0.001, 1000000.0);
-        m_pixelSizeSpinBox->setDecimals(4);
-        m_pixelSizeSpinBox->setValue(1.0);
-        m_pixelSizeSpinBox->setSuffix(QStringLiteral(" um/px"));
-        m_pixelSizeSpinBox->setKeyboardTracking(false);
-
         m_stepXSpinBox = new QDoubleSpinBox(captureGroup);
         m_stepXSpinBox->setRange(-1000000.0, 1000000.0);
         m_stepXSpinBox->setDecimals(3);
@@ -135,7 +205,6 @@ namespace scopeone::ui
         captureLayout->addRow(tr("XY Stage"), m_stageCombo);
         captureLayout->addRow(tr("Rows"), m_rowsSpinBox);
         captureLayout->addRow(tr("Columns"), m_columnsSpinBox);
-        captureLayout->addRow(tr("Pixel Size"), m_pixelSizeSpinBox);
         captureLayout->addRow(tr("Step X"), m_stepXSpinBox);
         captureLayout->addRow(tr("Step Y"), m_stepYSpinBox);
         captureLayout->addRow(tr("Settle"), m_settleMsSpinBox);
@@ -204,7 +273,7 @@ namespace scopeone::ui
         plan.xyStageId = selectedStageId();
         plan.rows = m_rowsSpinBox->value();
         plan.columns = m_columnsSpinBox->value();
-        plan.pixelSizeUm = m_pixelSizeSpinBox->value();
+        plan.pixelSizeUm = m_core->cameraPixelSizeUm(m_activeCameraId);
         plan.stepXUm = m_stepXSpinBox->value();
         plan.stepYUm = m_stepYSpinBox->value();
         plan.settleMs = m_settleMsSpinBox->value();
@@ -213,6 +282,11 @@ namespace scopeone::ui
         if (plan.cameraId.isEmpty() || plan.xyStageId.isEmpty())
         {
             m_statusLabel->setText(tr("Select a camera and XY stage"));
+            return;
+        }
+        if (plan.pixelSizeUm <= 0.0)
+        {
+            m_statusLabel->setText(tr("Set the camera scale in Tools > Scale"));
             return;
         }
 
@@ -243,7 +317,6 @@ namespace scopeone::ui
         m_stageCombo->setEnabled(!running);
         m_rowsSpinBox->setEnabled(!running);
         m_columnsSpinBox->setEnabled(!running);
-        m_pixelSizeSpinBox->setEnabled(!running);
         m_stepXSpinBox->setEnabled(!running);
         m_stepYSpinBox->setEnabled(!running);
         m_settleMsSpinBox->setEnabled(!running);

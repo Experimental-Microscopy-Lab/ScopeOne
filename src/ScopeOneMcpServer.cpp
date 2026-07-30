@@ -797,11 +797,6 @@ namespace
                              inputProperty(QStringLiteral("integer"), QStringLiteral("Mosaic column count"), 1),
                              1.0),
                          10000.0)},
-                    {QStringLiteral("pixelSizeUm"),
-                     withMinimum(
-                         inputProperty(QStringLiteral("number"), QStringLiteral("Image pixel size in micrometers"),
-                                       1.0),
-                         1e-12)},
                     {QStringLiteral("stepXUm"),
                      inputProperty(QStringLiteral("number"), QStringLiteral("Horizontal tile step in micrometers"),
                                    0.0)},
@@ -972,12 +967,6 @@ namespace
                     {QStringLiteral("mdaIntervalMs"),
                      withMinimum(
                          inputProperty(QStringLiteral("number"), QStringLiteral("MDA time interval in milliseconds"),
-                                       0.0),
-                         0.0)},
-                    {QStringLiteral("pixelSizeUm"),
-                     withMinimum(
-                         inputProperty(QStringLiteral("number"),
-                                       QStringLiteral("Sample pixel size in micrometers or zero when unknown"),
                                        0.0),
                          0.0)},
                     {QStringLiteral("zPositions"),

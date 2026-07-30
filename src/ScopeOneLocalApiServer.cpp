@@ -393,7 +393,10 @@ namespace scopeone::ui
             object.insert(QStringLiteral("phase"), recordingWriterPhaseName(status.phase()));
             object.insert(QStringLiteral("pendingWriteBytes"), status.pendingWriteBytes());
             object.insert(QStringLiteral("maxPendingWriteBytes"), status.maxPendingWriteBytes());
+            object.insert(QStringLiteral("framesCaptured"), status.framesCaptured());
             object.insert(QStringLiteral("framesWritten"), status.framesWritten());
+            object.insert(QStringLiteral("droppedFrames"), status.droppedFrames());
+            object.insert(QStringLiteral("bytesWritten"), status.bytesWritten());
             object.insert(QStringLiteral("error"), status.errorMessage());
             return object;
         }
@@ -953,16 +956,6 @@ namespace scopeone::ui
                 return false;
             }
             plan.mdaIntervalMs = intervalValue.isUndefined() ? 0.0 : intervalValue.toDouble();
-            const QJsonValue pixelSizeValue = request.value(QStringLiteral("pixelSizeUm"));
-            if (!pixelSizeValue.isUndefined()
-                && (!pixelSizeValue.isDouble()
-                    || !std::isfinite(pixelSizeValue.toDouble())
-                    || pixelSizeValue.toDouble() < 0.0))
-            {
-                errorMessage = QStringLiteral("pixelSizeUm must be a finite non-negative number");
-                return false;
-            }
-            plan.pixelSizeUm = pixelSizeValue.isUndefined() ? 0.0 : pixelSizeValue.toDouble();
             if (!doubleArrayFromJson(request.value(QStringLiteral("zPositions")),
                                      QStringLiteral("zPositions"),
                                      plan.zPositions,
@@ -3364,7 +3357,6 @@ namespace scopeone::ui
                 || plan.xyStageId.isEmpty()
                 || !readOptionalInt(QStringLiteral("rows"), plan.rows)
                 || !readOptionalInt(QStringLiteral("columns"), plan.columns)
-                || !readOptionalDouble(QStringLiteral("pixelSizeUm"), plan.pixelSizeUm)
                 || !readOptionalDouble(QStringLiteral("stepXUm"), plan.stepXUm)
                 || !readOptionalDouble(QStringLiteral("stepYUm"), plan.stepYUm)
                 || !readOptionalInt(QStringLiteral("settleMs"), plan.settleMs)

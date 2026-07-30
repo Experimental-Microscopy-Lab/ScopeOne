@@ -248,6 +248,7 @@ namespace scopeone::ui
                     m_propertyBrowser->setEnabled(!configurationRunning);
                     m_configPresetWidget->setEnabled(!configurationRunning);
                     m_deviceControlWidget->setEnabled(!configurationRunning);
+                    m_scaleAction->setEnabled(!configurationRunning && !m_scopeonecore->cameraIds().isEmpty());
                     m_stageMosaicAction->setEnabled(!configurationRunning);
                     m_particleDetectionAction->setEnabled(!configurationRunning);
                     if (m_stageMosaicDialog)
@@ -489,6 +490,44 @@ namespace scopeone::ui
                     m_previewWidget->clearCrossSection();
                 });
 
+        connect(m_inspectWidget, &InspectWidget::requestDrawMeasurementLine,
+                this, [this](const QString& layerKey)
+                {
+                    m_previewWidget->startMeasurementLineDrawingForLayer(layerKey);
+                    showStatusMessage(tr("Drag a line on the preview"), 5000);
+                });
+        connect(m_inspectWidget, &InspectWidget::requestClearMeasurementLines,
+                this, [this](const QString& layerKey)
+                {
+                    m_imageSceneModel->clearRole(ImageSceneModel::MarkupRole::Measurement, layerKey);
+                    m_inspectWidget->clearMeasurementLine();
+                });
+        connect(m_previewWidget, &PreviewWidget::measurementLineDrawn,
+                this, [this](const QString& layerKey, const QPoint& start, const QPoint& end)
+                {
+                    const QString markupId = m_imageSceneModel->createLine(
+                        layerKey,
+                        start,
+                        end,
+                        QString(),
+                        ImageSceneModel::MarkupRole::Measurement);
+                    m_imageSceneModel->selectOnly(markupId);
+                    const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+                    m_inspectWidget->setMeasurementLine(
+                        layerKey, start, end, m_scopeonecore->cameraPixelSizeUm(cameraId));
+                });
+        connect(m_previewWidget, &PreviewWidget::measurementLineInspected,
+                this, [this](const QString& layerKey,
+                             const QPoint& start,
+                             const QPoint& end)
+                {
+                    const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+                    m_inspectWidget->setMeasurementLine(
+                        layerKey, start, end, m_scopeonecore->cameraPixelSizeUm(cameraId));
+                });
+        connect(m_previewWidget, &PreviewWidget::measurementLineCleared,
+                m_inspectWidget, &InspectWidget::clearMeasurementLine);
+
         m_inspectWidget->setAvailableLayers(m_previewWidget->availableLayerKeys());
         m_inspectWidget->setCurrentLayer(m_deviceControlWidget->currentLayerKey());
 
@@ -560,6 +599,8 @@ namespace scopeone::ui
                 this, &MainWindow::openStageMosaicTool);
         connect(m_particleDetectionAction, &QAction::triggered,
                 this, &MainWindow::openParticleDetectionTool);
+        connect(m_scaleAction, &QAction::triggered,
+                this, &MainWindow::openScaleDialog);
         connect(m_settingsAction, &QAction::triggered,
                 this, &MainWindow::openSettingsDialog);
 
@@ -804,6 +845,8 @@ namespace scopeone::ui
         m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
 
         m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
+        m_scaleAction = m_toolsMenu->addAction(tr("&Scale..."));
+        m_scaleAction->setEnabled(!m_scopeonecore->cameraIds().isEmpty());
         m_stageMosaicAction = m_toolsMenu->addAction(tr("Stage &Mosaic..."));
         m_particleDetectionAction = m_toolsMenu->addAction(tr("&Particle Detection..."));
         m_toolsMenu->addSeparator();
@@ -1083,6 +1126,11 @@ namespace scopeone::ui
                                             QStringLiteral("Recording/MaxPendingWriteBytes"), kDefaultRecordedMaxBytes)
                                         .toLongLong();
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
+        const QVariantMap pixelSizesUm = settings.value(QStringLiteral("Scale/CameraPixelSizesUm")).toMap();
+        for (auto it = pixelSizesUm.constBegin(); it != pixelSizesUm.constEnd(); ++it)
+        {
+            m_scopeonecore->setCameraPixelSizeUm(it.key(), it.value().toDouble());
+        }
     }
 
     // Record the application startup state in one place
@@ -1349,6 +1397,13 @@ namespace scopeone::ui
         showStatusMessage(
             tr("Recording buffer limit updated to %1 bytes").arg(recordedMaxBytes),
             5000);
+    }
+
+    // Edit the global per camera image scale
+    void MainWindow::openScaleDialog()
+    {
+        CameraScaleDialog dialog(m_scopeonecore, this);
+        dialog.exec();
     }
 
     // Open the stage driven image mosaic tool
