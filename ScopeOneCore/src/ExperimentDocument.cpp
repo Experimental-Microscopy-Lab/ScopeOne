@@ -995,20 +995,6 @@ namespace scopeone::core
             {
                 return fail(errorMessage, QStringLiteral("%1.order must contain Time").arg(path));
             }
-            const auto firstNonPositionAxis = std::find_if(plan.order.cbegin(),
-                                                           plan.order.cend(),
-                                                           [](RecordingAxis axis)
-                                                           {
-                                                               return axis != RecordingAxis::XY;
-                                                           });
-            if (plan.format == RecordingFormat::OmeZarr
-                && (firstNonPositionAxis == plan.order.cend()
-                    || *firstNonPositionAxis != RecordingAxis::Time))
-            {
-                return fail(errorMessage,
-                            QStringLiteral("%1.order must place Time before Z for OME-Zarr recording")
-                                .arg(path));
-            }
             if (plan.mdaIntervalMs > 0.0
                 && plan.framesPerBurst > 1
                 && plan.order.front() != RecordingAxis::Time)

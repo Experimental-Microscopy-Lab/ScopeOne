@@ -51,7 +51,7 @@ namespace scopeone::ui
         void setMeasurementLine(const QString& layerKey,
                                 const QPoint& start,
                                 const QPoint& end,
-                                double pixelSizeUm);
+                                double actualLengthUm);
         void clearMeasurementLine();
 
     signals:

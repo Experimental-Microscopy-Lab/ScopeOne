@@ -288,6 +288,18 @@ namespace scopeone::core::internal
             return static_cast<qint64>(frame.width) * static_cast<qint64>(frame.height) * bytesPerPixel;
         }
 
+        double physicalPixelSizeUm(int imageExtent,
+                                   int sourceExtent,
+                                   double cameraPixelSizeUm)
+        {
+            if (cameraPixelSizeUm <= 0.0 || imageExtent <= 0 || sourceExtent <= 0)
+            {
+                return cameraPixelSizeUm;
+            }
+            return cameraPixelSizeUm * static_cast<double>(sourceExtent)
+                / static_cast<double>(imageExtent);
+        }
+
         FramePayloadView framePayloadForWrite(const ImageFrame& frame, RecordingFormat format)
         {
             FramePayloadView payload;
@@ -421,7 +433,8 @@ namespace scopeone::core::internal
                                ImagePixelFormat pixelFormat,
                                int bitsPerSample,
                                const ExperimentPlan& plan,
-                               double pixelSizeUm,
+                               double physicalSizeXUm,
+                               double physicalSizeYUm,
                                quint64 acquisitionStartTimestampNs,
                                const QString& imageName,
                                const QJsonObject& cameraProperties,
@@ -485,8 +498,8 @@ namespace scopeone::core::internal
                                                  plan.order.end(),
                                                  RecordingAxis::Z);
                     settings.acquisitionOrder = zAxis < timeAxis ? "ZTC" : "TZC";
-                    settings.physicalSizeXUm = pixelSizeUm;
-                    settings.physicalSizeYUm = pixelSizeUm;
+                    settings.physicalSizeXUm = physicalSizeXUm;
+                    settings.physicalSizeYUm = physicalSizeYUm;
                     settings.timeIncrementMs = uniformTimeIncrementMs(plan);
                     if (plan.zPositions.size() > 1)
                     {
@@ -573,7 +586,9 @@ namespace scopeone::core::internal
                     metadata.cameraId = frame.cameraId.toStdString();
                     metadata.frameIndex = frame.frameIndex;
                     metadata.timestampNs = frame.timestampNs;
-                    metadata.stride = static_cast<std::size_t>(frame.stride);
+                    metadata.stride = m_omePlan.format == RecordingFormat::Binary
+                        ? static_cast<std::size_t>(frame.stride)
+                        : static_cast<std::size_t>(frame.width * frame.bytesPerPixel());
                     metadata.sourceRoiX = frame.sourceRoiX;
                     metadata.sourceRoiY = frame.sourceRoiY;
                     metadata.sourceRoiWidth = frame.sourceRoiWidth;
@@ -1228,7 +1243,12 @@ namespace scopeone::core::internal
                                            task.frame.pixelFormat,
                                            task.frame.bitsPerSample,
                                            m_mdaState.plan,
-                                           output.pixelSizeUm,
+                                           physicalPixelSizeUm(task.frame.width,
+                                                               task.frame.sourceRoiWidth,
+                                                               output.pixelSizeUm),
+                                           physicalPixelSizeUm(task.frame.height,
+                                                               task.frame.sourceRoiHeight,
+                                                               output.pixelSizeUm),
                                            output.acquisitionStartTimestampNs,
                                            output.cameraId,
                                            output.cameraProperties,
@@ -2287,7 +2307,12 @@ namespace scopeone::core::internal
                                         firstImageFrame.pixelFormat,
                                         firstImageFrame.bitsPerSample,
                                         capturePlan,
-                                        session->cameraPixelSizeUm(cameraId),
+                                        physicalPixelSizeUm(firstImageFrame.width,
+                                                            firstImageFrame.sourceRoiWidth,
+                                                            session->cameraPixelSizeUm(cameraId)),
+                                        physicalPixelSizeUm(firstImageFrame.height,
+                                                            firstImageFrame.sourceRoiHeight,
+                                                            session->cameraPixelSizeUm(cameraId)),
                                         session->experimentDocument().startedTimestampNs,
                                         cameraId,
                                         session->experimentDocument().deviceProperties

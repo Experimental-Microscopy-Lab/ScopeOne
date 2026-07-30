@@ -82,6 +82,9 @@ namespace scopeone::ui
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
         void schedulePreviewCursorStatusRefresh();
+        void showMeasurementLine(const QString& layerKey,
+                                 const QPoint& start,
+                                 const QPoint& end);
         void registerGallerySessionFrameControls(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
             int frameIndex);

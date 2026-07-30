@@ -600,7 +600,7 @@ namespace scopeone::ui
     void InspectWidget::setMeasurementLine(const QString& layerKey,
                                            const QPoint& start,
                                            const QPoint& end,
-                                           double pixelSizeUm)
+                                           double actualLengthUm)
     {
         m_measurementLayerKey = layerKey.trimmed();
         const double dx = static_cast<double>(end.x() - start.x());
@@ -617,11 +617,10 @@ namespace scopeone::ui
             QStringLiteral("Angle: %1°").arg(angleDegrees, 0, 'f', 1),
             QStringLiteral("Length: %1 px").arg(lengthPixels, 0, 'f', 2)
         };
-        const bool calibrated = pixelSizeUm > 0.0;
-        if (calibrated)
+        if (actualLengthUm > 0.0)
         {
             lines.append(QStringLiteral("Actual: %1 µm")
-                             .arg(lengthPixels * pixelSizeUm, 0, 'f', 3));
+                             .arg(actualLengthUm, 0, 'f', 3));
         }
         m_measurementInfoLabel->setText(lines.join('\n'));
         m_measurementInfoLabel->show();

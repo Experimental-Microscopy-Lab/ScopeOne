@@ -70,19 +70,7 @@ namespace
         return QStringLiteral("Idle");
     }
 
-    QString formatStatusText(int phase,
-                             qint64 waitRemainingMs,
-                             int mdaTimeIndex,
-                             int mdaTimeCount,
-                             int mdaZIndex,
-                             int mdaZCount,
-                             int mdaPositionIndex,
-                             int mdaPositionCount,
-                             bool hasXY,
-                             double x,
-                             double y,
-                             bool hasZ,
-                             double z)
+    QString formatStatusText(int phase, qint64 waitRemainingMs)
     {
         QString status = phaseText(phase);
         if (phase == scopeone::core::kRecordingPhaseWaitingNextBurst && waitRemainingMs > 0)
@@ -90,56 +78,67 @@ namespace
             status += QString(" (%1 ms)").arg(waitRemainingMs);
         }
 
+        return status;
+    }
+
+    QString formatMdaStatusText(int phase,
+                                int mdaTimeIndex,
+                                int mdaTimeCount,
+                                int mdaZIndex,
+                                int mdaZCount,
+                                int mdaPositionIndex,
+                                int mdaPositionCount,
+                                bool hasXY,
+                                double x,
+                                double y,
+                                bool hasZ,
+                                double z)
+    {
         if (phase != scopeone::core::kRecordingPhaseRecordingMda || mdaTimeIndex <= 0)
         {
-            return status;
+            return {};
         }
 
-        QString axis = QString("T %1/%2").arg(mdaTimeIndex).arg((std::max)(1, mdaTimeCount));
+        QStringList axes;
+        axes.append(QString("T %1/%2").arg(mdaTimeIndex).arg((std::max)(1, mdaTimeCount)));
         if (mdaZCount > 1 && mdaZIndex > 0)
         {
-            axis += QString(" Z %1/%2").arg(mdaZIndex).arg(mdaZCount);
+            axes.append(QString("Z %1/%2").arg(mdaZIndex).arg(mdaZCount));
         }
         if (mdaPositionCount > 1 && mdaPositionIndex > 0)
         {
-            axis += QString(" XY %1/%2").arg(mdaPositionIndex).arg(mdaPositionCount);
+            axes.append(QString("XY %1/%2").arg(mdaPositionIndex).arg(mdaPositionCount));
         }
 
-        QString pos;
+        QStringList position;
         if (hasXY)
         {
-            pos = QString("X=%1 Y=%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
+            position.append(QString("X %1  Y %2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3));
         }
         if (hasZ)
         {
-            const QString zText = QString("Current Z=%1").arg(z, 0, 'f', 3);
-            pos = pos.isEmpty() ? zText : (pos + " " + zText);
+            position.append(QString("Z %1").arg(z, 0, 'f', 3));
         }
 
-        if (!axis.isEmpty() && !pos.isEmpty())
-        {
-            return QString("%1 [%2 | %3]").arg(status, axis, pos);
-        }
-        if (!axis.isEmpty())
-        {
-            return QString("%1 [%2]").arg(status, axis);
-        }
-        return status;
+        const QString axisText = axes.join(QStringLiteral("  "));
+        return position.isEmpty()
+                   ? axisText
+                   : QStringLiteral("%1 | %2").arg(axisText, position.join(QStringLiteral("  ")));
     }
 
     QString formatFramesText(qint64 frameCurrent, qint64 frameTarget)
     {
         const qint64 target = (std::max)(0ll, frameTarget);
-        return QString("Frames: %1 / %2").arg(frameCurrent).arg(target);
+        return QString("%1 / %2 frames").arg(frameCurrent).arg(target);
     }
 
     QString formatBurstsText(int burstCurrent, int burstTarget)
     {
         if (burstTarget <= 0)
         {
-            return QStringLiteral("Bursts: 0");
+            return {};
         }
-        return QString("Bursts: %1/%2").arg(burstCurrent).arg(burstTarget);
+        return QString("Burst %1 / %2").arg(burstCurrent).arg(burstTarget);
     }
 
     QString formatByteCount(qint64 bytes)
@@ -182,14 +181,12 @@ namespace
 
     QString formatWriterStatusText(const scopeone::core::ScopeOneCore::RecordingWriterStatus& status)
     {
-        QString text = QStringLiteral("Writer: %1").arg(writerPhaseText(status.phase()));
+        QString text = QStringLiteral("Disk: %1").arg(writerPhaseText(status.phase()));
         QStringList details;
-        if (status.framesCaptured() > 0 || status.framesWritten() > 0 || status.phase() ==
+        if (status.framesWritten() > 0 || status.phase() ==
             scopeone::core::ScopeOneCore::RecordingWriterPhase::Completed)
         {
-            details.append(QStringLiteral("%1 captured, %2 written")
-                           .arg(status.framesCaptured())
-                           .arg(status.framesWritten()));
+            details.append(QStringLiteral("%1 frames written").arg(status.framesWritten()));
         }
         if (status.droppedFrames() > 0)
         {
@@ -197,17 +194,17 @@ namespace
         }
         if (status.bytesWritten() > 0)
         {
-            details.append(QStringLiteral("%1 written").arg(formatByteCount(status.bytesWritten())));
+            details.append(QStringLiteral("%1 data").arg(formatByteCount(status.bytesWritten())));
         }
         if (status.maxPendingWriteBytes() > 0)
         {
-            details.append(QStringLiteral("%1 / %2 queued")
+            details.append(QStringLiteral("Queue %1 / %2")
                            .arg(formatByteCount(status.pendingWriteBytes()))
                            .arg(formatByteCount(status.maxPendingWriteBytes())));
         }
         else if (status.pendingWriteBytes() > 0)
         {
-            details.append(QStringLiteral("%1 queued").arg(formatByteCount(status.pendingWriteBytes())));
+            details.append(QStringLiteral("Queue %1").arg(formatByteCount(status.pendingWriteBytes())));
         }
         if (!status.errorMessage().isEmpty())
         {
@@ -286,21 +283,28 @@ namespace scopeone::ui
                        bool hasZ,
                        double z)
                 {
-                    m_statusLabel->setText(formatStatusText(phase,
-                                                            waitRemainingMs,
-                                                            mdaTimeIndex,
-                                                            mdaTimeCount,
-                                                            mdaZIndex,
-                                                            mdaZCount,
-                                                            mdaPositionIndex,
-                                                            mdaPositionCount,
-                                                            hasXY,
-                                                            x,
-                                                            y,
-                                                            hasZ,
-                                                            z));
+                    m_statusLabel->setText(formatStatusText(phase, waitRemainingMs));
+                    const QString mdaStatus = formatMdaStatusText(phase,
+                                                                 mdaTimeIndex,
+                                                                 mdaTimeCount,
+                                                                 mdaZIndex,
+                                                                 mdaZCount,
+                                                                 mdaPositionIndex,
+                                                                 mdaPositionCount,
+                                                                 hasXY,
+                                                                 x,
+                                                                 y,
+                                                                 hasZ,
+                                                                 z);
+                    m_mdaStatusLabel->setText(mdaStatus);
+                    m_mdaStatusLabel->setVisible(!mdaStatus.isEmpty());
                     m_frameCountLabel->setText(formatFramesText(frameCurrent, frameTarget));
-                    m_burstCountLabel->setText(formatBurstsText(burstCurrent, burstTarget));
+                    const bool progressVisible = phase != scopeone::core::kRecordingPhaseIdle
+                        && phase != scopeone::core::kRecordingPhaseStopped;
+                    m_frameCountLabel->setVisible(progressVisible);
+                    const QString burstStatus = formatBurstsText(burstCurrent, burstTarget);
+                    m_burstCountLabel->setText(burstStatus);
+                    m_burstCountLabel->setVisible(progressVisible && !burstStatus.isEmpty());
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStateChanged, this,
                 [this](bool recording)
@@ -321,6 +325,8 @@ namespace scopeone::ui
                 [this](const scopeone::core::ScopeOneCore::RecordingWriterStatus& status)
                 {
                     m_writerStatusLabel->setText(formatWriterStatusText(status));
+                    m_writerStatusLabel->setVisible(
+                        status.phase() != scopeone::core::ScopeOneCore::RecordingWriterPhase::Idle);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
@@ -347,16 +353,18 @@ namespace scopeone::ui
                     const bool saved = recordingResultSuccess(session);
                     if (saved)
                     {
-                        m_writerStatusLabel->setText(QStringLiteral("Writer: Completed"));
+                        m_writerStatusLabel->setText(
+                            formatWriterStatusText(m_scopeonecore->recordingWriterStatus()));
                     }
                     else if (!result.isEmpty())
                     {
-                        m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - %1").arg(result));
+                        m_writerStatusLabel->setText(QStringLiteral("Disk: Failed - %1").arg(result));
                     }
                     else
                     {
-                        m_writerStatusLabel->setText(QStringLiteral("Writer: Failed - Error: no session data"));
+                        m_writerStatusLabel->setText(QStringLiteral("Disk: Failed - Error: no session data"));
                     }
+                    m_writerStatusLabel->show();
                     if (result.isEmpty())
                     {
                         qWarning().noquote() << "Error: no session data";
@@ -486,20 +494,24 @@ namespace scopeone::ui
         m_mdaZStartSpin->setRange(-1000000.0, 1000000.0);
         m_mdaZStartSpin->setDecimals(3);
         m_mdaZStartSpin->setValue(0.0);
+        m_mdaZStartSpin->setFixedWidth(60);
         m_mdaZStepSpin = new QDoubleSpinBox(this);
         m_mdaZStepSpin->setRange(-1000000.0, 1000000.0);
         m_mdaZStepSpin->setDecimals(3);
         m_mdaZStepSpin->setValue(1.0);
+        m_mdaZStepSpin->setFixedWidth(60);
         m_mdaZCountSpin = new QSpinBox(this);
         m_mdaZCountSpin->setRange(1, 10000);
         m_mdaZCountSpin->setValue(1);
+        m_mdaZCountSpin->setFixedWidth(60);
         zRowLayout->addWidget(new QLabel("Start", this));
         zRowLayout->addWidget(m_mdaZStartSpin);
+        zRowLayout->addStretch();
         zRowLayout->addWidget(new QLabel("Step", this));
         zRowLayout->addWidget(m_mdaZStepSpin);
+        zRowLayout->addStretch();
         zRowLayout->addWidget(new QLabel("Count", this));
         zRowLayout->addWidget(m_mdaZCountSpin);
-        zRowLayout->addStretch();
         mdaLayout->addRow("Z:", zRowLayout);
 
         m_mdaEnableXYCheck = new QCheckBox("Enable XY Grid", this);
@@ -511,20 +523,24 @@ namespace scopeone::ui
         m_mdaXStartSpin->setRange(-1000000.0, 1000000.0);
         m_mdaXStartSpin->setDecimals(3);
         m_mdaXStartSpin->setValue(0.0);
+        m_mdaXStartSpin->setFixedWidth(60);
         m_mdaXStepSpin = new QDoubleSpinBox(this);
         m_mdaXStepSpin->setRange(-1000000.0, 1000000.0);
         m_mdaXStepSpin->setDecimals(3);
         m_mdaXStepSpin->setValue(1.0);
+        m_mdaXStepSpin->setFixedWidth(60);
         m_mdaXCountSpin = new QSpinBox(this);
         m_mdaXCountSpin->setRange(1, 10000);
         m_mdaXCountSpin->setValue(1);
+        m_mdaXCountSpin->setFixedWidth(60);
         xRowLayout->addWidget(new QLabel("Start", this));
         xRowLayout->addWidget(m_mdaXStartSpin);
+        xRowLayout->addStretch();
         xRowLayout->addWidget(new QLabel("Step", this));
         xRowLayout->addWidget(m_mdaXStepSpin);
+        xRowLayout->addStretch();
         xRowLayout->addWidget(new QLabel("Count", this));
         xRowLayout->addWidget(m_mdaXCountSpin);
-        xRowLayout->addStretch();
         mdaLayout->addRow("X:", xRowLayout);
 
         auto* yRowLayout = new QHBoxLayout();
@@ -533,24 +549,29 @@ namespace scopeone::ui
         m_mdaYStartSpin->setRange(-1000000.0, 1000000.0);
         m_mdaYStartSpin->setDecimals(3);
         m_mdaYStartSpin->setValue(0.0);
+        m_mdaYStartSpin->setFixedWidth(60);
         m_mdaYStepSpin = new QDoubleSpinBox(this);
         m_mdaYStepSpin->setRange(-1000000.0, 1000000.0);
         m_mdaYStepSpin->setDecimals(3);
         m_mdaYStepSpin->setValue(1.0);
+        m_mdaYStepSpin->setFixedWidth(60);
         m_mdaYCountSpin = new QSpinBox(this);
         m_mdaYCountSpin->setRange(1, 10000);
         m_mdaYCountSpin->setValue(1);
+        m_mdaYCountSpin->setFixedWidth(60);
         yRowLayout->addWidget(new QLabel("Start", this));
         yRowLayout->addWidget(m_mdaYStartSpin);
+        yRowLayout->addStretch();
         yRowLayout->addWidget(new QLabel("Step", this));
         yRowLayout->addWidget(m_mdaYStepSpin);
+        yRowLayout->addStretch();
         yRowLayout->addWidget(new QLabel("Count", this));
         yRowLayout->addWidget(m_mdaYCountSpin);
-        yRowLayout->addStretch();
         mdaLayout->addRow("Y:", yRowLayout);
 
         m_mdaOrderList = new QListWidget(this);
         m_mdaOrderList->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_mdaOrderList->setFixedHeight(72);
         m_orderPreference = {
             static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time),
             static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z),
@@ -597,18 +618,31 @@ namespace scopeone::ui
         contentLayout->addWidget(mdaGroup);
 
         auto* statusGroup = new QGroupBox("Status", this);
-        auto* statusLayout = new QVBoxLayout(statusGroup);
+        auto* statusLayout = new QGridLayout(statusGroup);
+        statusLayout->setHorizontalSpacing(8);
+        statusLayout->setVerticalSpacing(2);
+        statusLayout->setColumnStretch(0, 1);
         m_statusLabel = new QLabel("Idle", this);
-        m_writerStatusLabel = new QLabel("Writer: Idle", this);
+        m_mdaStatusLabel = new QLabel(this);
+        m_mdaStatusLabel->setWordWrap(true);
+        m_mdaStatusLabel->hide();
+        m_writerStatusLabel = new QLabel(this);
         m_writerStatusLabel->setWordWrap(true);
-        m_frameCountLabel = new QLabel("Frames: 0", this);
-        m_burstCountLabel = new QLabel("Bursts: 0", this);
+        m_writerStatusLabel->hide();
+        m_frameCountLabel = new QLabel(this);
+        m_frameCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_frameCountLabel->hide();
+        m_burstCountLabel = new QLabel(this);
+        m_burstCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_burstCountLabel->hide();
         m_storageStatusLabel = new QLabel("Storage: unavailable", this);
-        statusLayout->addWidget(m_statusLabel);
-        statusLayout->addWidget(m_writerStatusLabel);
-        statusLayout->addWidget(m_frameCountLabel);
-        statusLayout->addWidget(m_burstCountLabel);
-        statusLayout->addWidget(m_storageStatusLabel);
+        m_storageStatusLabel->setWordWrap(true);
+        statusLayout->addWidget(m_statusLabel, 0, 0);
+        statusLayout->addWidget(m_frameCountLabel, 0, 1);
+        statusLayout->addWidget(m_mdaStatusLabel, 1, 0);
+        statusLayout->addWidget(m_burstCountLabel, 1, 1);
+        statusLayout->addWidget(m_writerStatusLabel, 2, 0, 1, 2);
+        statusLayout->addWidget(m_storageStatusLabel, 3, 0, 1, 2);
         contentLayout->addWidget(statusGroup);
 
         m_startStopButton = new QPushButton("Start", this);

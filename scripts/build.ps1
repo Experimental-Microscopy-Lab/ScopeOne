@@ -202,6 +202,10 @@ function Import-MsvcEnvironment {
             -HostArch amd64 `
             -DevCmdArguments "-no_logo" `
             -ErrorAction Stop | Out-Null
+        $msvcPath = $env:Path
+        Remove-Item Env:PATH -ErrorAction SilentlyContinue
+        Remove-Item Env:Path -ErrorAction SilentlyContinue
+        $env:Path = $msvcPath
     }
     catch {
         throw "Failed to initialize the Visual Studio developer environment: $($_.Exception.Message)"

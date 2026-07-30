@@ -69,7 +69,7 @@ namespace scopeone::ui
         formLayout->addRow(tr("Pixel Size"), m_pixelSizeSpinBox);
         mainLayout->addLayout(formLayout);
 
-        m_statusLabel = new QLabel(tr("Scale is applied globally to the selected camera"), this);
+        m_statusLabel = new QLabel(tr("Scale applies to the selected camera for this session"), this);
         m_statusLabel->setWordWrap(true);
         mainLayout->addWidget(m_statusLabel);
 
@@ -92,7 +92,7 @@ namespace scopeone::ui
         m_pixelSizeSpinBox->setValue(cameraId.isEmpty() ? 0.0 : m_core->cameraPixelSizeUm(cameraId));
     }
 
-    // Apply and persist one camera scale
+    // Apply one camera scale for the current application session
     void CameraScaleDialog::applyScale()
     {
         const QString cameraId = m_cameraCombo->currentText().trimmed();
@@ -103,19 +103,14 @@ namespace scopeone::ui
             return;
         }
 
-        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        QVariantMap pixelSizes = settings.value(QStringLiteral("Scale/CameraPixelSizesUm")).toMap();
         if (pixelSizeUm > 0.0)
         {
-            pixelSizes.insert(cameraId, pixelSizeUm);
             m_statusLabel->setText(tr("Scale updated for %1").arg(cameraId));
         }
         else
         {
-            pixelSizes.remove(cameraId);
             m_statusLabel->setText(tr("Scale cleared for %1").arg(cameraId));
         }
-        settings.setValue(QStringLiteral("Scale/CameraPixelSizesUm"), pixelSizes);
     }
 
     // Create a stage driven mosaic tool

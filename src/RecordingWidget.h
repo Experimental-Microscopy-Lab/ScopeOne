@@ -93,6 +93,7 @@ namespace scopeone::ui
 
         QPushButton* m_startStopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
+        QLabel* m_mdaStatusLabel{nullptr};
         QLabel* m_writerStatusLabel{nullptr};
         QLabel* m_frameCountLabel{nullptr};
         QLabel* m_burstCountLabel{nullptr};

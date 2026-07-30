@@ -36,6 +36,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QVector>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -512,21 +513,32 @@ namespace scopeone::ui
                         QString(),
                         ImageSceneModel::MarkupRole::Measurement);
                     m_imageSceneModel->selectOnly(markupId);
-                    const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
-                    m_inspectWidget->setMeasurementLine(
-                        layerKey, start, end, m_scopeonecore->cameraPixelSizeUm(cameraId));
+                    showMeasurementLine(layerKey, start, end);
                 });
         connect(m_previewWidget, &PreviewWidget::measurementLineInspected,
                 this, [this](const QString& layerKey,
                              const QPoint& start,
                              const QPoint& end)
                 {
-                    const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
-                    m_inspectWidget->setMeasurementLine(
-                        layerKey, start, end, m_scopeonecore->cameraPixelSizeUm(cameraId));
+                    showMeasurementLine(layerKey, start, end);
                 });
         connect(m_previewWidget, &PreviewWidget::measurementLineCleared,
                 m_inspectWidget, &InspectWidget::clearMeasurementLine);
+        connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
+                this, [this]()
+                {
+                    for (const ImageSceneModel::Markup& markup : m_imageSceneModel->markups())
+                    {
+                        if (markup.selected
+                            && markup.type == ImageSceneModel::MarkupType::Line
+                            && markup.role == ImageSceneModel::MarkupRole::Measurement)
+                        {
+                            showMeasurementLine(markup.layerKey, markup.start, markup.end);
+                            return;
+                        }
+                    }
+                    m_inspectWidget->clearMeasurementLine();
+                });
 
         m_inspectWidget->setAvailableLayers(m_previewWidget->availableLayerKeys());
         m_inspectWidget->setCurrentLayer(m_deviceControlWidget->currentLayerKey());
@@ -1126,11 +1138,6 @@ namespace scopeone::ui
                                             QStringLiteral("Recording/MaxPendingWriteBytes"), kDefaultRecordedMaxBytes)
                                         .toLongLong();
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
-        const QVariantMap pixelSizesUm = settings.value(QStringLiteral("Scale/CameraPixelSizesUm")).toMap();
-        for (auto it = pixelSizesUm.constBegin(); it != pixelSizesUm.constEnd(); ++it)
-        {
-            m_scopeonecore->setCameraPixelSizeUm(it.key(), it.value().toDouble());
-        }
     }
 
     // Record the application startup state in one place
@@ -1218,6 +1225,36 @@ namespace scopeone::ui
         {
             m_cursorRefreshTimer->start();
         }
+    }
+
+    // Display a line measurement using the layer to sensor transform
+    void MainWindow::showMeasurementLine(const QString& layerKey,
+                                         const QPoint& start,
+                                         const QPoint& end)
+    {
+        double actualLengthUm = 0.0;
+        double pixelSizeUm = 0.0;
+        const auto galleryControl = m_galleryLayerFrameControls.constFind(layerKey);
+        if (galleryControl != m_galleryLayerFrameControls.constEnd()
+            && galleryControl->session)
+        {
+            pixelSizeUm = galleryControl->session->cameraPixelSizeUm(galleryControl->cameraId);
+        }
+        else
+        {
+            const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+            pixelSizeUm = m_scopeonecore->cameraPixelSizeUm(cameraId);
+        }
+        scopeone::core::DocumentLayer layer;
+        if (pixelSizeUm > 0.0 && m_imageSceneModel->findLayer(layerKey, layer))
+        {
+            const QPointF sensorStart = layer.pixelToSensor.map(QPointF(start));
+            const QPointF sensorEnd = layer.pixelToSensor.map(QPointF(end));
+            actualLengthUm = std::hypot(sensorEnd.x() - sensorStart.x(),
+                                        sensorEnd.y() - sensorStart.y())
+                * pixelSizeUm;
+        }
+        m_inspectWidget->setMeasurementLine(layerKey, start, end, actualLengthUm);
     }
 
     // Registers right panel frame sliders for stack backed gallery layers
