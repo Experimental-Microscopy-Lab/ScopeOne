@@ -3,7 +3,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "internal/MDAManager.h"
 #include <QElapsedTimer>
-#include <QFile>
 #include <QHash>
 #include <QStringList>
 #include <QTimer>
@@ -49,7 +48,8 @@ namespace scopeone::core::internal
 
         bool start(const ExperimentPlan& requestedPlan,
                    const QStringList& activeCameraIds,
-                   const QJsonObject& deviceProperties);
+                   const QJsonObject& deviceProperties,
+                   const QHash<QString, double>& cameraPixelSizesUm);
         void stop();
         void shutdown();
         void setRecordedMaxBytes(qint64 bytes);
@@ -58,7 +58,7 @@ namespace scopeone::core::internal
         bool isRecording() const { return m_captureState.isRecording; }
 
         void onRawFramesReady(const QList<ImageFrame>& frames);
-        void onFrameDeliveryFailed(const QString& errorMessage);
+        void onFrameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
 
         static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
 
@@ -96,11 +96,15 @@ namespace scopeone::core::internal
 
             ImageFrame frame;
             Source source{Source::PreviewStream};
+            AcquisitionEvent event;
+            bool hasEvent{false};
         };
 
         struct WriteTask
         {
             ImageFrame frame;
+            AcquisitionEvent event;
+            bool hasEvent{false};
         };
 
         struct CameraOutput
@@ -109,8 +113,10 @@ namespace scopeone::core::internal
             QString rawPath;
             QString frameInfoPath;
             QString metadataFileName;
-            QFile frameInfoFile;
+            QJsonObject cameraProperties;
+            double pixelSizeUm{0.0};
             void* backend{nullptr};
+            quint64 acquisitionStartTimestampNs{0};
             int width{0};
             int height{0};
             int bits{0};
@@ -154,7 +160,7 @@ namespace scopeone::core::internal
             QElapsedTimer elapsedTimer;
             qint64 lastBurstEndMs{0};
             int phase{kRecordingPhaseIdle};
-            RecordingFormat format{RecordingFormat::Tiff};
+            RecordingFormat format{RecordingFormat::OmeTiff};
             bool streamToDisk{true};
             bool enableCompression{false};
             int compressionLevel{6};
@@ -183,12 +189,15 @@ namespace scopeone::core::internal
         bool planUsesMda(const ExperimentPlan& plan) const;
         bool planStreamsMda(const ExperimentPlan& plan) const;
         void resetCaptureState(const ExperimentPlan& plan);
-        void resetSessionState(const ExperimentPlan& plan, const QJsonObject& deviceProperties);
+        void resetSessionState(const ExperimentPlan& plan,
+                               const QJsonObject& deviceProperties,
+                               const QHash<QString, double>& cameraPixelSizesUm);
         void finalizeActiveSession(ExperimentRunState state, const QString& errorMessage);
         void finishRecording(ExperimentRunState state, const QString& errorMessage = QString());
         static bool writeSessionDocument(const std::shared_ptr<RecordingSessionData>& session,
                                          QString& errorMessage);
-        void appendPreviewEventRecord(const ImageFrame& frame);
+        void appendPreviewEventRecord(const ImageFrame& frame,
+                                      const AcquisitionEvent& event);
         void primeLastFrameIndices();
         void emitProgress(bool force = false);
         bool startStreamingOutputs(const ExperimentPlan& plan);
@@ -205,7 +214,8 @@ namespace scopeone::core::internal
         static QString updateSessionResult(const std::shared_ptr<RecordingSessionData>& session,
                                            const QString& result,
                                            bool saved);
-        bool enqueueFrame(const ImageFrame& frame);
+        bool enqueueFrame(const ImageFrame& frame,
+                          const AcquisitionEvent* event = nullptr);
         bool shouldAcceptFrame(const FramePacket& packet) const;
 
         void ingestFrame(const FramePacket& packet);

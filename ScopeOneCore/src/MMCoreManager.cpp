@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QDir>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -28,11 +29,25 @@ namespace scopeone::core::internal
         };
 
         // Sets adapter search paths relative to the application directory
-        void configureAdapterSearchPaths(CMMCore& core)
+        void configureAdapterSearchPaths(CMMCore& core, const QStringList& additionalPaths)
         {
             const QString appDir = QCoreApplication::applicationDirPath();
+            QStringList paths{appDir};
+            for (const QString& path : additionalPaths)
+            {
+                const QString normalizedPath = QDir::cleanPath(path.trimmed());
+                if (!normalizedPath.isEmpty() && !paths.contains(normalizedPath, Qt::CaseInsensitive))
+                {
+                    paths.append(normalizedPath);
+                }
+            }
+
             std::vector<std::string> searchPaths;
-            searchPaths.push_back(appDir.toStdString());
+            searchPaths.reserve(static_cast<size_t>(paths.size()));
+            for (const QString& path : paths)
+            {
+                searchPaths.push_back(path.toStdString());
+            }
             core.setDeviceAdapterSearchPaths(searchPaths);
         }
 
@@ -172,7 +187,10 @@ namespace scopeone::core::internal
     } // namespace
 
     // Loads one config file into MMCore
-    bool loadConfigurationFile(CMMCore& core, const QString& configPath, QString* errorMessage)
+    bool loadConfigurationFile(CMMCore& core,
+                               const QString& configPath,
+                               const QStringList& additionalPaths,
+                               QString* errorMessage)
     {
         if (configPath.trimmed().isEmpty())
         {
@@ -185,7 +203,7 @@ namespace scopeone::core::internal
 
         try
         {
-            configureAdapterSearchPaths(core);
+            configureAdapterSearchPaths(core, additionalPaths);
             core.loadSystemConfiguration(configPath.toStdString().c_str());
             return true;
         }
@@ -297,7 +315,8 @@ namespace scopeone::core::internal
                                                  QString& errorMessage)
     {
         result = LoadConfigResult{};
-        if (!loadConfigurationFile(*m_mmcore, configPath, &errorMessage))
+        if (!loadConfigurationFile(
+                *m_mmcore, configPath, m_additionalDeviceAdapterSearchPaths, &errorMessage))
         {
             return false;
         }

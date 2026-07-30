@@ -393,7 +393,10 @@ namespace scopeone::ui
             object.insert(QStringLiteral("phase"), recordingWriterPhaseName(status.phase()));
             object.insert(QStringLiteral("pendingWriteBytes"), status.pendingWriteBytes());
             object.insert(QStringLiteral("maxPendingWriteBytes"), status.maxPendingWriteBytes());
+            object.insert(QStringLiteral("framesCaptured"), status.framesCaptured());
             object.insert(QStringLiteral("framesWritten"), status.framesWritten());
+            object.insert(QStringLiteral("droppedFrames"), status.droppedFrames());
+            object.insert(QStringLiteral("bytesWritten"), status.bytesWritten());
             object.insert(QStringLiteral("error"), status.errorMessage());
             return object;
         }
@@ -836,6 +839,22 @@ namespace scopeone::ui
             {
                 return QStringLiteral("Missing baseName");
             }
+            const QJsonValue formatValue = request.value(QStringLiteral("format"));
+            if (!formatValue.isUndefined())
+            {
+                if (!formatValue.isString())
+                {
+                    return QStringLiteral("format must be a string");
+                }
+                const QString formatName = formatValue.toString().trimmed().toLower();
+                if (formatName != QStringLiteral("ome-tiff")
+                    && formatName != QStringLiteral("ome-zarr")
+                    && formatName != QStringLiteral("tiff")
+                    && formatName != QStringLiteral("binary"))
+                {
+                    return QStringLiteral("Unsupported recording format: %1").arg(formatName);
+                }
+            }
             return {};
         }
 
@@ -845,12 +864,25 @@ namespace scopeone::ui
             capturePlan.saveDir = request.value(QStringLiteral("saveDir")).toString().trimmed();
             capturePlan.baseName = request.value(QStringLiteral("baseName")).toString().trimmed();
             const QString formatName = request.value(QStringLiteral("format"))
-                                           .toString(QStringLiteral("tiff"))
+                                           .toString(QStringLiteral("ome-tiff"))
                                            .trimmed()
                                            .toLower();
-            capturePlan.format = (formatName == QStringLiteral("binary") || formatName == QStringLiteral("bin"))
-                                     ? scopeone::core::RecordingFormat::Binary
-                                     : scopeone::core::RecordingFormat::Tiff;
+            if (formatName == QStringLiteral("binary"))
+            {
+                capturePlan.format = scopeone::core::RecordingFormat::Binary;
+            }
+            else if (formatName == QStringLiteral("tiff"))
+            {
+                capturePlan.format = scopeone::core::RecordingFormat::Tiff;
+            }
+            else if (formatName == QStringLiteral("ome-zarr"))
+            {
+                capturePlan.format = scopeone::core::RecordingFormat::OmeZarr;
+            }
+            else
+            {
+                capturePlan.format = scopeone::core::RecordingFormat::OmeTiff;
+            }
             capturePlan.enableCompression = request.value(QStringLiteral("compression")).toBool(false);
             capturePlan.compressionLevel = request.value(QStringLiteral("compressionLevel")).toInt(6);
         }
@@ -907,7 +939,7 @@ namespace scopeone::ui
             plan.cameraIds = resolveCameraIds(
                 core,
                 cameraValue.isUndefined() ? QStringLiteral("All") : cameraValue.toString());
-            plan.format = scopeone::core::RecordingFormat::Tiff;
+            plan.format = scopeone::core::RecordingFormat::OmeTiff;
             plan.streamToDisk = false;
             plan.framesPerBurst = framesValue.toInt();
             plan.burstMode = false;
@@ -3325,7 +3357,6 @@ namespace scopeone::ui
                 || plan.xyStageId.isEmpty()
                 || !readOptionalInt(QStringLiteral("rows"), plan.rows)
                 || !readOptionalInt(QStringLiteral("columns"), plan.columns)
-                || !readOptionalDouble(QStringLiteral("pixelSizeUm"), plan.pixelSizeUm)
                 || !readOptionalDouble(QStringLiteral("stepXUm"), plan.stepXUm)
                 || !readOptionalDouble(QStringLiteral("stepYUm"), plan.stepYUm)
                 || !readOptionalInt(QStringLiteral("settleMs"), plan.settleMs)

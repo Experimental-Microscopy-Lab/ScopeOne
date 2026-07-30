@@ -30,7 +30,7 @@ Download the latest release package from the [Releases](https://github.com/Exper
 
 **Device Adapter Setup:**
 
-ScopeOne loads Micro-Manager configuration files (.cfg) directly. We recommend installing [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/) to access the full device adapter library. The release package includes only a minimal set of device adapter DLLs. To add support for additional devices, simply copy the required DLLs(`mmgr_dal_xxx.dll`) from your Micro-Manager installation directory (typically `C:\Program Files\Micro-Manager-2.0`) to the root folder containing `ScopeOne.exe`. Besides, we kindly remind you first ensure your devices are working properly in Micro-Manager before using them in ScopeOne, as device compatibility issues are often related to the device adapter itself.
+ScopeOne loads Micro-Manager configuration files (.cfg) directly and includes the basic adapters required for its demo configurations. To access additional hardware adapters, install [Micro-Manager 2.0](https://download.micro-manager.org/nightly/2.0/Windows/). ScopeOne automatically detects the standard `C:\Program Files\Micro-Manager-2.0` installation; custom locations can be selected under Settings. Bundled adapters take precedence over external adapters. We recommend confirming that hardware works in the selected Micro-Manager installation before using it in ScopeOne.
 
 **Dual-camera Setup:**
 
@@ -44,11 +44,21 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
 - [Qt](https://www.qt.io/development/download-qt-installer-oss) 6.9.1 (msvc2022_64)
 - OpenCV 4.12.0
-- libtiff 4.7.1,
-- zlib 1.3.1
 - mmCoreAndDevices
 
-Extract the bundled third-party dependencies into `ScopeOneCore/external` under this repository. Expected third-party dependencies path layout:
+Clone ScopeOne and initialize all submodules with:
+
+```powershell
+git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+```
+
+For an existing checkout, initialize the submodules with:
+
+```powershell
+git submodule update --init --recursive
+```
+
+The expected layout is:
 
 ```text
 ScopeOne/
@@ -56,11 +66,10 @@ ScopeOne/
     external/
       mmCoreAndDevices/
       opencv-4.12.0/
-      tiff-4.7.1/
-      zlib-1.3.1/
+      ScopeWriter/
 ```
 
-<!-- Setting up these dependencies can be time-consuming. To simplify this, we provide a pre-packaged development source archive that includes OpenCV, MMCore, libtiff and zlib except Qt, VS and CMake. Download the development package from [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases). -->
+ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zstd and crc32c under its own `third_party` directory. It builds these dependencies from source without downloading packages during CMake configuration.
 
 **Windows Build Steps:**
 
@@ -183,7 +192,7 @@ cp ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmg
 
 ## 🤖 Automation and AI Agents
 
-The desktop app exposes a language-neutral local control API and shared-memory frame channel. An AI agent does not run inside ScopeOne or depend on Python. A tool adapter can discover supported operation groups with the `capabilities` request, read a structured observation with `state_snapshot`, and invoke the exposed camera, stage, mosaic, processing, image analysis, experiment, recording, layer, and markup operations. Requests may carry an ID that is echoed by the app for correlation.
+The desktop app exposes a language-neutral local control API and shared-memory frame channel. An AI agent does not run inside ScopeOne or depend on Python. A tool adapter can discover supported operation groups with the `capabilities` request, read a structured observation with `state_snapshot`, and invoke the exposed camera, stage, mosaic, processing, image analysis, experiment, recording, layer, and markup operations. Requests may carry an ID that is echoed by the app for correlation. Recording save operations use `ome-tiff` by default and also accept `ome-zarr`, `tiff` and `binary`.
 
 The API reports which operations mutate hardware, write files, remove state, or may run for a long time. An agent adapter should request user confirmation before those operations and verify the result with the returned read-back value, experiment status, or a new state snapshot. The Python package is one optional client implementation. See the [Python client and Local API protocol guide](ScopeOneCore/python/scopeone/README.md) for protocol details and runnable examples.
 

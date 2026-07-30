@@ -93,7 +93,7 @@ namespace scopeone::core::internal
         void rawFrameReady(const scopeone::core::ImageFrame& frame);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
-        void frameDeliveryFailed(const QString& errorMessage);
+        void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
         void previewStateChanged(bool running);
         void agentControlServerListening(const QString& cameraId, const QString& serverName);
 
@@ -136,6 +136,7 @@ namespace scopeone::core::internal
         QHash<QString, quint64> m_pendingAcquiredFrameCounts;
         QList<scopeone::core::ImageFrame> m_pendingRecordingFrames;
         qint64 m_pendingRecordingBytes{0};
+        quint64 m_pendingDroppedRecordingFrames{0};
         QString m_pendingDeliveryError;
         std::atomic_bool m_recordingFrameDeliveryEnabled{false};
         std::atomic_bool m_highRateFrameDeliveryEnabled{false};

@@ -1,33 +1,35 @@
-*
-!src/
-!src/**
-!ScopeOneCore/
-!ScopeOneCore/**
-ScopeOneCore/install/**
-ScopeOneCore/build/**
-ScopeOneCore/external/**
-ScopeOneCore/python/**
-!scripts/
-!scripts/**
+/*
+!/src/
+!/src/**
+!/ScopeOneCore/
+!/ScopeOneCore/**
+/ScopeOneCore/install/
+/ScopeOneCore/build/
+/ScopeOneCore/external/*
+!/ScopeOneCore/external/ScopeWriter/
+!/ScopeOneCore/external/ScopeWriter/**
+/ScopeOneCore/python/*
+!/scripts/
+!/scripts/**
 
-!.github/
-!.github/**
+!/.github/
+!/.github/**
 
-!resources/
-!resources/**
+!/resources/
+!/resources/**
 
-!config/
-config/*
-!config/MMConfig_demo.cfg
-!config/dual_hamamatsu_897D.cfg
-!config/MMConfig_demo_dual.cfg
+!/config/
+/config/*
+!/config/MMConfig_demo.cfg
+!/config/dual_hamamatsu_897D.cfg
+!/config/MMConfig_demo_dual.cfg
 
-!CMakeLists.txt
-!README.md
-!VERSION
+!/CMakeLists.txt
+!/README.md
+!/VERSION
 
-!.gitignore
+!/.gitignore
 
-build/**
-ref/**
+/build/
+/ref/
 **/.DS_Store

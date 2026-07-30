@@ -73,6 +73,7 @@ namespace scopeone::ui
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
+        void openScaleDialog();
         void openStageMosaicTool();
         void openParticleDetectionTool();
         void connectPropertyPanels();
@@ -81,6 +82,9 @@ namespace scopeone::ui
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
         void schedulePreviewCursorStatusRefresh();
+        void showMeasurementLine(const QString& layerKey,
+                                 const QPoint& start,
+                                 const QPoint& end);
         void registerGallerySessionFrameControls(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
             int frameIndex);
@@ -166,6 +170,7 @@ namespace scopeone::ui
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_settingsAction{nullptr};
+        QAction* m_scaleAction{nullptr};
         QAction* m_stageMosaicAction{nullptr};
         QAction* m_particleDetectionAction{nullptr};
         QAction* m_aboutAction{nullptr};

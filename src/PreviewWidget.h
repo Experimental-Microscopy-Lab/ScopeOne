@@ -77,6 +77,7 @@ namespace scopeone::ui
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
         void startROIDrawing(const QString& cameraId);
+        void startMeasurementLineDrawingForLayer(const QString& layerKey);
         void startCrossSectionDrawingForLayer(const QString& layerKey);
         void clearCrossSection();
 
@@ -100,6 +101,11 @@ signals:
                       int height,
                       int sourceRoiX,
                       int sourceRoiY);
+        void measurementLineDrawn(const QString& layerKey, const QPoint& start, const QPoint& end);
+        void measurementLineInspected(const QString& layerKey,
+                                      const QPoint& start,
+                                      const QPoint& end);
+        void measurementLineCleared();
 
     protected:
         void initializeGL() override;
@@ -234,6 +240,11 @@ signals:
         QPoint m_crossSectionStart;
         QPoint m_crossSectionEnd;
         bool m_crossSectionDragging{false};
+        bool m_measurementLineDrawingMode{false};
+        QString m_measurementLineTargetLayerKey;
+        QPoint m_measurementLineStart;
+        QPoint m_measurementLineEnd;
+        bool m_measurementLineDragging{false};
         QString m_dragMarkupId;
         ImageSceneModel::Markup m_dragMarkupOriginal;
         QPoint m_dragMarkupStartImagePos;
@@ -326,6 +337,7 @@ signals:
         GLuint getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat);
         void cleanupTextureCache();
         void cancelROIDrawing();
+        void cancelMeasurementLineDrawing();
         void cancelCrossSectionDrawing();
     };
 }

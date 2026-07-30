@@ -15,6 +15,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QListWidget;
+class QTimer;
 
 namespace scopeone::ui
 {
@@ -42,6 +43,7 @@ namespace scopeone::ui
 
         void setupUI();
         void updateUiState();
+        void updateStorageStatus();
         void moveOrderItem(int delta);
         void syncOrderList();
         bool appendSelectedFramesToGallery();
@@ -91,9 +93,12 @@ namespace scopeone::ui
 
         QPushButton* m_startStopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
+        QLabel* m_mdaStatusLabel{nullptr};
         QLabel* m_writerStatusLabel{nullptr};
         QLabel* m_frameCountLabel{nullptr};
         QLabel* m_burstCountLabel{nullptr};
+        QLabel* m_storageStatusLabel{nullptr};
+        QTimer* m_storageStatusTimer{nullptr};
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QStringList m_availableCameraIds;

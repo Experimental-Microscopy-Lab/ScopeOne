@@ -56,7 +56,7 @@ namespace scopeone::core
 
         struct RecordingSaveOptions
         {
-            RecordingFormat format{RecordingFormat::Tiff};
+            RecordingFormat format{RecordingFormat::OmeTiff};
             bool enableCompression{false};
             int compressionLevel{6};
             QString saveDir;
@@ -194,7 +194,10 @@ namespace scopeone::core
             RecordingWriterPhase phase() const { return m_phase; }
             qint64 pendingWriteBytes() const { return m_pendingWriteBytes; }
             qint64 maxPendingWriteBytes() const { return m_maxPendingWriteBytes; }
+            qint64 framesCaptured() const { return m_framesCaptured; }
             qint64 framesWritten() const { return m_framesWritten; }
+            qint64 droppedFrames() const { return m_droppedFrames; }
+            qint64 bytesWritten() const { return m_bytesWritten; }
             const QString& errorMessage() const { return m_errorMessage; }
 
             bool isTerminal() const
@@ -208,7 +211,10 @@ namespace scopeone::core
                 m_phase = RecordingWriterPhase::Idle;
                 m_pendingWriteBytes = 0;
                 m_maxPendingWriteBytes = maxPendingWriteBytes;
+                m_framesCaptured = 0;
                 m_framesWritten = 0;
+                m_droppedFrames = 0;
+                m_bytesWritten = 0;
                 m_errorMessage.clear();
             }
 
@@ -239,9 +245,24 @@ namespace scopeone::core
                 m_maxPendingWriteBytes = maxPendingWriteBytes;
             }
 
+            void setFramesCaptured(qint64 framesCaptured)
+            {
+                m_framesCaptured = framesCaptured;
+            }
+
             void addWrittenFrames(qint64 framesWritten)
             {
                 m_framesWritten += framesWritten;
+            }
+
+            void addDroppedFrames(qint64 droppedFrames)
+            {
+                m_droppedFrames += droppedFrames;
+            }
+
+            void addWrittenBytes(qint64 bytesWritten)
+            {
+                m_bytesWritten += bytesWritten;
             }
 
             void setFrom(const RecordingWriterStatus& other)
@@ -249,7 +270,10 @@ namespace scopeone::core
                 m_phase = other.m_phase;
                 m_pendingWriteBytes = other.m_pendingWriteBytes;
                 m_maxPendingWriteBytes = other.m_maxPendingWriteBytes;
+                m_framesCaptured = other.m_framesCaptured;
                 m_framesWritten = other.m_framesWritten;
+                m_droppedFrames = other.m_droppedFrames;
+                m_bytesWritten = other.m_bytesWritten;
                 m_errorMessage = other.m_errorMessage;
             }
 
@@ -257,7 +281,10 @@ namespace scopeone::core
             RecordingWriterPhase m_phase{RecordingWriterPhase::Idle};
             qint64 m_pendingWriteBytes{0};
             qint64 m_maxPendingWriteBytes{0};
+            qint64 m_framesCaptured{0};
             qint64 m_framesWritten{0};
+            qint64 m_droppedFrames{0};
+            qint64 m_bytesWritten{0};
             QString m_errorMessage;
         };
 
@@ -270,6 +297,10 @@ namespace scopeone::core
             ExperimentRunState runState() const { return m_manifest.runState; }
             const QString& errorMessage() const { return m_manifest.errorMessage; }
             bool streamedToDisk() const { return m_manifest.output.streamedToDisk; }
+            double cameraPixelSizeUm(const QString& cameraId) const
+            {
+                return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
+            }
 
             QStringList recordedCameraIds() const
             {
@@ -422,6 +453,10 @@ namespace scopeone::core
             }
             void setSoftwareSnapshot(const SoftwareSnapshot& software) { m_manifest.software = software; }
             void setDeviceProperties(const QJsonObject& properties) { m_manifest.deviceProperties = properties; }
+            void setCameraPixelSizesUm(const QHash<QString, double>& pixelSizesUm)
+            {
+                m_cameraPixelSizesUm = pixelSizesUm;
+            }
             void setRunState(ExperimentRunState state,
                              quint64 completedTimestampNs = 0,
                              const QString& errorMessage = QString())
@@ -482,12 +517,14 @@ namespace scopeone::core
                 clone->m_frames = m_frames;
                 clone->m_saveResult = m_saveResult;
                 clone->m_writerStatus = m_writerStatus;
+                clone->m_cameraPixelSizesUm = m_cameraPixelSizesUm;
                 return clone;
             }
             void applySaveStateFrom(const RecordingSessionData& source)
             {
                 m_saveResult = source.m_saveResult;
                 m_writerStatus = source.m_writerStatus;
+                m_cameraPixelSizesUm = source.m_cameraPixelSizesUm;
                 if (source.m_saveResult.saved())
                 {
                     m_manifest.plan = source.m_manifest.plan;
@@ -500,6 +537,7 @@ namespace scopeone::core
 
             ExperimentDocument m_manifest;
             QHash<QString, std::vector<ImageFrame>> m_frames;
+            QHash<QString, double> m_cameraPixelSizesUm;
             RecordingSaveResult m_saveResult;
             RecordingWriterStatus m_writerStatus;
         };
@@ -579,9 +617,13 @@ namespace scopeone::core
         bool configurationOperationRunning() const { return m_configurationOperationRunning; }
         QString loadedConfigurationPath() const { return m_loadedConfigPath; }
         QString loadedConfigurationSha256() const { return m_loadedConfigSha256; }
+        QStringList additionalDeviceAdapterSearchPaths() const;
+        bool setAdditionalDeviceAdapterSearchPaths(const QStringList& paths);
 
         QStringList cameraIds() const { return m_cameraIds; }
         QStringList runningPreviewCameraIds() const;
+        double cameraPixelSizeUm(const QString& cameraId) const;
+        bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
 
         bool startPreview(const QString& cameraIdOrAll);
         bool stopPreview(const QString& cameraIdOrAll);
@@ -822,7 +864,7 @@ namespace scopeone::core
         {
             bool inFlight{false};
             bool retryScheduled{false};
-            qint64 lastScheduledMs{0};
+            QElapsedTimer lastScheduledTimer;
             quint64 activeSequence{0};
             ImageFrame queuedFrame;
         };

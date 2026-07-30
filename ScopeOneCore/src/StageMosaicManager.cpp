@@ -382,11 +382,13 @@ namespace scopeone::core::internal
         QString finalMessage = message;
         if (success)
         {
-            const ImageFrame frame = m_core->graphFrame(ScopeOneCore::staticLayerKey(kMosaicLayerId));
+            ImageFrame frame = m_core->graphFrame(ScopeOneCore::staticLayerKey(kMosaicLayerId));
+            frame.cameraId = m_plan.cameraId;
             ExperimentPlan capturePlan;
-            capturePlan.cameraIds = {frame.cameraId};
+            capturePlan.cameraIds = {m_plan.cameraId};
             capturePlan.streamToDisk = false;
-            capturePlan.format = RecordingFormat::Tiff;
+            capturePlan.format = RecordingFormat::OmeTiff;
+            capturePlan.pixelSizeUm = m_plan.pixelSizeUm;
             capturePlan.saveDir = m_plan.gallerySaveDir;
             capturePlan.baseName = QStringLiteral("stage_mosaic_")
                 + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));

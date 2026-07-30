@@ -77,8 +77,8 @@ stage = session.process_frame("Camera", 0, end_module_index=0)
 edited_stage = np.clip(stage.image * 1.2, 0, (1 << stage.bits_per_sample) - 1)
 result = scopeone.continue_pipeline(stage, image=edited_stage)
 scopeone.show_frame(result, layer_id="python_result", name="Python Result")
-paths = scopeone.save_frame(result, r"C:\data", base_name="python_result", format="tiff")
-session_paths = session.save(r"C:\data", base_name="raw_session", format="tiff")
+paths = scopeone.save_frame(result, r"C:\data", base_name="python_result", format="ome-tiff")
+session_paths = session.save(r"C:\data", base_name="raw_session", format="ome-tiff")
 session.close()
 
 scopeone.stop_preview("Camera")
@@ -157,7 +157,7 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.move_z_relative(dz, device=None)`
 - `ScopeOne.move_xy_to(x, y, device=None)`
 - `ScopeOne.move_z_to(z, device=None)`
-- `ScopeOne.start_stage_mosaic(camera_id, xy_stage_id, rows=1, columns=1, pixel_size_um=1.0, step_x_um=0.0, step_y_um=0.0, settle_ms=150, return_to_start=True, gallery_save_dir=None)`
+- `ScopeOne.start_stage_mosaic(camera_id, xy_stage_id, rows=1, columns=1, step_x_um=0.0, step_y_um=0.0, settle_ms=150, return_to_start=True, gallery_save_dir=None)`
 - `ScopeOne.stage_mosaic_status()`
 - `ScopeOne.cancel_stage_mosaic()`
 - `ScopeOne.processing_state()`
@@ -189,19 +189,19 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.latest_raw_frame(camera)`
 - `ScopeOne.layer_frame(layer_key)`
 - `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
-- `ScopeOne.save_frame_mapping(save_dir, base_name, format="tiff", compression=False, compression_level=6, camera=None)`
+- `ScopeOne.save_frame_mapping(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera=None)`
 - `ScopeOne.continue_pipeline(frame, image=None)`
 - `ScopeOne.show_frame(frame, image=None, layer_id="python_result", name="Python Result")`
 - `ScopeOne.show_image(image, layer_id="python_result", name="Python Result", camera="python", bits_per_sample=None)`
-- `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="tiff", compression=False, compression_level=6)`
-- `ScopeOne.save_image(image, save_dir, base_name, format="tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
+- `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="ome-tiff", compression=False, compression_level=6)`
+- `ScopeOne.save_image(image, save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
 - `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
 - `RecordingSession.frame(camera, index)`
 - `RecordingSession.process_frame(camera, index, start_module_index=None, end_module_index=None)`
 - `RecordingSession.frames(camera)`
-- `RecordingSession.save(save_dir, base_name, format="tiff", compression=False, compression_level=6)`
+- `RecordingSession.save(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6)`
 - `RecordingSession.close()`
 - `FrameResult.write(image=None)`
 
@@ -225,7 +225,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 - `ping`: health check.
 - `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
-- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status.
+- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status. Writer status includes captured, written, and dropped frame counts, written bytes, and queued bytes.
 - `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
 - `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, live acquisition and writer progress, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
@@ -283,7 +283,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `move_z_relative`: fields `device`, `dz`.
 - `move_xy_to`: fields `device`, `x`, `y`.
 - `move_z_to`: fields `device`, `z`.
-- `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `pixelSizeUm`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
+- `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
 - `processing_modules`: response `bitDepth`, `realTime`, and `modules`.
@@ -293,7 +293,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
-- `experiment_document`: returns the shared schema version 1 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
+- `experiment_document`: returns the shared schema version 2 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
 - `validate_experiment`: field `document`; response contains the canonical validated `document`.
 - `save_experiment`: fields `filePath`, `document`; validates and atomically saves the document.
 - `load_experiment`: field `filePath`; replaces the shared UI document when no experiment is running and responds with `document`.
@@ -309,8 +309,8 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `session_process_frame`: fields `sessionId`, `camera`, `index`, optional `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `process_frame_mapping`: optional fields `camera`, `startModuleIndex` or `endModuleIndex`; response `mappingName`, `mappingSize`, frame metadata, and optional stage metadata.
 - `show_frame_mapping_as_layer`: optional fields `camera`, `layerId`, `name`; imports the current shared memory frame as a preview layer and returns `layerKey`.
-- `save_frame_mapping`: fields `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`, optional field `camera`; imports the current shared memory frame and saves it as a one-frame output.
-- `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format`, `compression`, `compressionLevel`; response `paths`.
+- `save_frame_mapping`: fields `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, `compressionLevel`, optional field `camera`; imports the current shared memory frame and saves it as a one-frame output.
+- `session_save`: fields `sessionId`, `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, `compressionLevel`; response `paths`.
 
 ### Record request
 
@@ -343,7 +343,7 @@ Processing module editing follows the desktop UI rules: stop real-time processin
 - Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
 - Python reads this through `scopeone.shm.frame_to_ndarray()`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
-- Session frames can come from memory, saved TIFF stacks, or saved binary streams.
+- Session frames can come from memory, saved OME-TIFF or OME-Zarr outputs, TIFF stacks, or saved binary streams.
 - `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
 
 `latest_raw_frame` exports the current live raw frame for Python processing, while `layer_frame` accepts any key returned by `list_layers`. Particle detection can return its mask as a `FrameResult` with `export_mask=True` or publish the mask directly with `publish_mask=True`. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported or explicitly imported camera id when `camera` is omitted. Provide `camera` the first time a mapping was written by an external client.

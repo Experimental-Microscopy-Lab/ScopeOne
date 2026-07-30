@@ -1296,6 +1296,53 @@ namespace scopeone::ui
     void PreviewWidget::drawActiveInteractionMarkup(QPainter& painter,
                                                     const std::vector<RenderItem>& renderItems) const
     {
+        if (m_measurementLineDrawingMode
+            && m_measurementLineDragging
+            && !m_measurementLineTargetLayerKey.isEmpty())
+        {
+            for (const RenderItem& item : renderItems)
+            {
+                if (item.layerKey != m_measurementLineTargetLayerKey || !item.info || !item.info->frameState)
+                {
+                    continue;
+                }
+
+                ImageSceneModel::Markup markup;
+                markup.type = ImageSceneModel::MarkupType::Line;
+                markup.role = ImageSceneModel::MarkupRole::Measurement;
+                markup.layerKey = m_measurementLineTargetLayerKey;
+                QRect displayRect;
+                QSize imageSize;
+                QPoint clippedStart;
+                QPoint clippedEnd;
+                if (!resolveDisplayGeometry(*item.info->frameState,
+                                            item.processed,
+                                            item.area,
+                                            displayRect,
+                                            imageSize)
+                    || !clipLineToRect(m_measurementLineStart,
+                                       m_measurementLineEnd,
+                                       displayRect,
+                                       clippedStart,
+                                       clippedEnd)
+                    || !mapWidgetPositionToImage(*item.info->frameState,
+                                                 item.processed,
+                                                 item.area,
+                                                 clippedStart,
+                                                 markup.start)
+                    || !mapWidgetPositionToImage(*item.info->frameState,
+                                                 item.processed,
+                                                 item.area,
+                                                 clippedEnd,
+                                                 markup.end))
+                {
+                    break;
+                }
+                drawMarkup(painter, markup, item);
+                break;
+            }
+        }
+
         if (m_crossSectionDrawingMode && m_crossSectionDragging && !m_crossSectionTargetLayerKey.isEmpty())
         {
             for (const RenderItem& item : renderItems)
@@ -1525,13 +1572,20 @@ namespace scopeone::ui
         }
 
         const QList<ImageSceneModel::Markup> markups = m_sceneModel->markups();
+        bool measurementRemoved = false;
         for (const ImageSceneModel::Markup& markup : markups)
         {
             if (!markup.selected)
             {
                 continue;
             }
+            measurementRemoved = measurementRemoved
+                || markup.role == ImageSceneModel::MarkupRole::Measurement;
             m_sceneModel->remove(markup.id);
+        }
+        if (measurementRemoved)
+        {
+            emit measurementLineCleared();
         }
     }
 
@@ -2287,6 +2341,7 @@ namespace scopeone::ui
     // Starts ROI drawing for one camera
     void PreviewWidget::startROIDrawing(const QString& cameraId)
     {
+        cancelMeasurementLineDrawing();
         if (m_crossSectionDrawingMode)
         {
             cancelCrossSectionDrawing();
@@ -2297,6 +2352,33 @@ namespace scopeone::ui
         m_roiDragging = false;
         setFocus();
         setCursor(Qt::CrossCursor);
+        update();
+    }
+
+    // Starts a measurement line for one exact preview layer
+    void PreviewWidget::startMeasurementLineDrawingForLayer(const QString& layerKey)
+    {
+        cancelROIDrawing();
+        cancelCrossSectionDrawing();
+        m_measurementLineDrawingMode = true;
+        m_measurementLineTargetLayerKey = layerKey.trimmed();
+        m_measurementLineDragging = false;
+        setFocus();
+        setCursor(Qt::CrossCursor);
+        update();
+    }
+
+    // Cancels active measurement line drawing
+    void PreviewWidget::cancelMeasurementLineDrawing()
+    {
+        if (!m_measurementLineDrawingMode)
+        {
+            return;
+        }
+        m_measurementLineDrawingMode = false;
+        m_measurementLineDragging = false;
+        m_measurementLineTargetLayerKey.clear();
+        unsetCursor();
         update();
     }
 
@@ -2318,6 +2400,7 @@ namespace scopeone::ui
     // Starts cross section drawing for one exact preview layer
     void PreviewWidget::startCrossSectionDrawingForLayer(const QString& layerKey)
     {
+        cancelMeasurementLineDrawing();
         if (m_roiDrawingMode)
         {
             cancelROIDrawing();
@@ -2358,10 +2441,29 @@ namespace scopeone::ui
         update();
     }
 
-    // Starts ROI or cross section interaction from a mouse press
+    // Starts active drawing interactions from a mouse press
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_measurementLineDrawingMode && event->button() == Qt::LeftButton)
+        {
+            PreviewInteractionTarget target;
+            const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(m_measurementLineTargetLayerKey);
+            if (!resolveInteractionTarget(event->pos(),
+                                          target,
+                                          sourceId,
+                                          false,
+                                          m_measurementLineTargetLayerKey))
+            {
+                return;
+            }
+            m_measurementLineStart = event->pos();
+            m_measurementLineEnd = event->pos();
+            m_measurementLineDragging = true;
+            update();
+            return;
+        }
+
         if (m_crossSectionDrawingMode && event->button() == Qt::LeftButton)
         {
             QString sourceId = m_crossSectionTargetSourceId;
@@ -2414,6 +2516,11 @@ namespace scopeone::ui
             if (markupAtWidgetPosition(event->pos(), markup, target, editMode))
             {
                 m_sceneModel->selectOnly(markup.id);
+                if (markup.type == ImageSceneModel::MarkupType::Line
+                    && markup.role == ImageSceneModel::MarkupRole::Measurement)
+                {
+                    emit measurementLineInspected(markup.layerKey, markup.start, markup.end);
+                }
                 m_dragMarkupId = markup.id;
                 m_dragMarkupOriginal = markup;
                 m_dragMarkupStartImagePos = target.imagePos;
@@ -2428,10 +2535,17 @@ namespace scopeone::ui
         QOpenGLWidget::mousePressEvent(event);
     }
 
-    // Updates active ROI or cross section interaction during mouse move
+    // Updates active drawing interactions during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_measurementLineDrawingMode && m_measurementLineDragging)
+        {
+            m_measurementLineEnd = event->pos();
+            update();
+            return;
+        }
+
         if (m_crossSectionDrawingMode && m_crossSectionDragging)
         {
             m_crossSectionEnd = event->pos();
@@ -2464,20 +2578,26 @@ namespace scopeone::ui
             {
                 if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Line)
                 {
+                    QPoint start = m_dragMarkupOriginal.start;
+                    QPoint end = m_dragMarkupOriginal.end;
                     if (m_dragMarkupEditMode == MarkupEditMode::LineStart)
                     {
-                        m_sceneModel->updateLine(m_dragMarkupId, imagePos, m_dragMarkupOriginal.end);
+                        start = imagePos;
                     }
                     else if (m_dragMarkupEditMode == MarkupEditMode::LineEnd)
                     {
-                        m_sceneModel->updateLine(m_dragMarkupId, m_dragMarkupOriginal.start, imagePos);
+                        end = imagePos;
                     }
                     else
                     {
                         const QPoint delta = imagePos - m_dragMarkupStartImagePos;
-                        m_sceneModel->updateLine(m_dragMarkupId,
-                                                  m_dragMarkupOriginal.start + delta,
-                                                  m_dragMarkupOriginal.end + delta);
+                        start += delta;
+                        end += delta;
+                    }
+                    if (m_sceneModel->updateLine(m_dragMarkupId, start, end)
+                        && m_dragMarkupOriginal.role == ImageSceneModel::MarkupRole::Measurement)
+                    {
+                        emit measurementLineInspected(m_dragMarkupOriginal.layerKey, start, end);
                     }
                 }
                 else if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Rect)
@@ -2520,10 +2640,71 @@ namespace scopeone::ui
         QOpenGLWidget::mouseMoveEvent(event);
     }
 
-    // Finishes ROI or cross section drawing in image coordinates
+    // Finishes active drawing interactions in image coordinates
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_measurementLineDrawingMode
+            && event->button() == Qt::LeftButton
+            && m_measurementLineDragging)
+        {
+            m_measurementLineDragging = false;
+            m_measurementLineEnd = event->pos();
+
+            PreviewInteractionTarget startTarget;
+            const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(m_measurementLineTargetLayerKey);
+            FrameSourceState frameState;
+            bool processed = false;
+            QRect itemArea;
+            QRect displayRect;
+            QSize imageSize;
+            if (!resolveInteractionTarget(m_measurementLineStart,
+                                          startTarget,
+                                          sourceId,
+                                          false,
+                                          m_measurementLineTargetLayerKey)
+                || !resolveLayerDisplayGeometry(m_measurementLineTargetLayerKey,
+                                                frameState,
+                                                processed,
+                                                itemArea,
+                                                displayRect,
+                                                imageSize))
+            {
+                cancelMeasurementLineDrawing();
+                return;
+            }
+
+            QPoint clippedStart;
+            QPoint clippedEnd;
+            QPoint imageStart;
+            QPoint imageEnd;
+            if (!clipLineToRect(m_measurementLineStart,
+                                m_measurementLineEnd,
+                                displayRect,
+                                clippedStart,
+                                clippedEnd)
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             itemArea,
+                                             clippedStart,
+                                             imageStart)
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             itemArea,
+                                             clippedEnd,
+                                             imageEnd)
+                || imageStart == imageEnd)
+            {
+                cancelMeasurementLineDrawing();
+                return;
+            }
+            const QString layerKey = m_measurementLineTargetLayerKey;
+            cancelMeasurementLineDrawing();
+            emit measurementLineDrawn(layerKey, imageStart, imageEnd);
+            update();
+            return;
+        }
+
         if (m_crossSectionDrawingMode && event->button() == Qt::LeftButton && m_crossSectionDragging)
         {
             m_crossSectionDragging = false;
@@ -2733,6 +2914,13 @@ namespace scopeone::ui
     // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
+        if (m_measurementLineDrawingMode && event->key() == Qt::Key_Escape)
+        {
+            cancelMeasurementLineDrawing();
+            event->accept();
+            return;
+        }
+
         if (m_crossSectionDrawingMode && event->key() == Qt::Key_Escape)
         {
             cancelCrossSectionDrawing();

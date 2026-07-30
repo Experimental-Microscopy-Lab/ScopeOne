@@ -51,6 +51,7 @@ namespace scopeone::core::internal
         m_recordingFrameDeliveryEnabled.store(enabled, std::memory_order_relaxed);
         m_pendingRecordingFrames.clear();
         m_pendingRecordingBytes = 0;
+        m_pendingDroppedRecordingFrames = 0;
         m_pendingDeliveryError.clear();
         return true;
     }
@@ -211,8 +212,10 @@ namespace scopeone::core::internal
             QMutexLocker lock(&m_frameDeliveryMutex);
             bool recordingDeliveryEnabled =
                 m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed);
+            const bool recordingWasEnabled = recordingDeliveryEnabled;
             QString acquiredCameraId;
             quint64 validFrameCount = 0;
+            quint64 queuedFrameCount = 0;
             for (const ImageFrame& frame : frames)
             {
                 const QString cameraId = frame.cameraId.trimmed();
@@ -247,6 +250,7 @@ namespace scopeone::core::internal
 
                 m_pendingRecordingFrames.append(normalizedFrame);
                 m_pendingRecordingBytes += frameBytes;
+                ++queuedFrameCount;
             }
 
             if (!acquiredCameraId.isEmpty() && acquiredFrameCount > 0)
@@ -260,6 +264,16 @@ namespace scopeone::core::internal
                 m_pendingDeliveryError = QStringLiteral(
                     "Recording frame delivery detected dropped camera frames");
                 m_recordingFrameDeliveryEnabled.store(false, std::memory_order_relaxed);
+            }
+            if (recordingWasEnabled && !m_pendingDeliveryError.isEmpty())
+            {
+                const quint64 submittedFrameCount = acquiredFrameCount > 0
+                                                        ? acquiredFrameCount
+                                                        : validFrameCount;
+                if (submittedFrameCount > queuedFrameCount)
+                {
+                    m_pendingDroppedRecordingFrames += submittedFrameCount - queuedFrameCount;
+                }
             }
 
             if ((!m_pendingLatestFrames.isEmpty()
@@ -305,13 +319,16 @@ namespace scopeone::core::internal
         QHash<QString, quint64> acquiredFrameCounts;
         QList<ImageFrame> recordingFrames;
         QString deliveryError;
+        quint64 droppedRecordingFrames = 0;
         {
             QMutexLocker lock(&m_frameDeliveryMutex);
             latestFrames.swap(m_pendingLatestFrames);
             acquiredFrameCounts.swap(m_pendingAcquiredFrameCounts);
             recordingFrames.swap(m_pendingRecordingFrames);
             deliveryError.swap(m_pendingDeliveryError);
+            droppedRecordingFrames = m_pendingDroppedRecordingFrames;
             m_pendingRecordingBytes = 0;
+            m_pendingDroppedRecordingFrames = 0;
             m_frameFlushQueued = false;
         }
 
@@ -325,8 +342,9 @@ namespace scopeone::core::internal
         }
         if (!deliveryError.isEmpty())
         {
+            droppedRecordingFrames += static_cast<quint64>(recordingFrames.size());
             recordingFrames.clear();
-            emit frameDeliveryFailed(deliveryError);
+            emit frameDeliveryFailed(deliveryError, droppedRecordingFrames);
         }
         else if (!recordingFrames.isEmpty())
         {

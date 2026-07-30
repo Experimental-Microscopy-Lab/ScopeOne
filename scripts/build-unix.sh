@@ -50,6 +50,9 @@ for command_name in git cmake make; do
   require_command "$command_name"
 done
 
+step "Initializing ScopeOne submodules"
+run git -C "$ROOT_DIR" submodule update --init --recursive
+
 step "Preparing Micro-Manager checkout for $PLATFORM_NAME"
 run mkdir -p "$EXTERNAL_DIR"
 

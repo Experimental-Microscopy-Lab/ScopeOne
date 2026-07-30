@@ -3,6 +3,7 @@
 #include "scopeone/ScopeOneCore.h"
 
 #include <QHash>
+#include <QPoint>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -47,10 +48,17 @@ namespace scopeone::ui
         void clearLayerInspect(const QString& layerKey);
         void clearCrossSectionProfile();
         void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
+        void setMeasurementLine(const QString& layerKey,
+                                const QPoint& start,
+                                const QPoint& end,
+                                double actualLengthUm);
+        void clearMeasurementLine();
 
     signals:
         void requestDrawCrossSectionLayer(const QString& layerKey);
         void requestClearCrossSection();
+        void requestDrawMeasurementLine(const QString& layerKey);
+        void requestClearMeasurementLines(const QString& layerKey);
 
     private:
         struct LayerInfoGroup
@@ -99,12 +107,16 @@ namespace scopeone::ui
         QStringList m_availableLayerKeys;
         QStringList m_availableCameraIds;
         QVBoxLayout* m_histogramContainerLayout{nullptr};
+        QPushButton* m_drawMeasurementLineButton{nullptr};
+        QPushButton* m_clearMeasurementLinesButton{nullptr};
+        QLabel* m_measurementInfoLabel{nullptr};
         InspectCrossSectionWidget* m_crossSectionWidget{nullptr};
         QGroupBox* m_crossSectionGroup{nullptr};
         QPushButton* m_drawCrossSectionButton{nullptr};
         QPushButton* m_clearCrossSectionButton{nullptr};
         bool m_cameraInitialized{false};
         QString m_currentLayerKey;
+        QString m_measurementLayerKey;
         QString m_crossSectionLayerKey;
     };
 }

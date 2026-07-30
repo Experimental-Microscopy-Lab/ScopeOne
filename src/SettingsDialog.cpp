@@ -2,10 +2,15 @@
 
 #include <QDialogButtonBox>
 #include <QDoubleValidator>
+#include <QDir>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace
@@ -16,7 +21,9 @@ namespace
 namespace scopeone::ui
 {
     // Create the settings dialog for recording limits
-    SettingsDialog::SettingsDialog(qint64 maxPendingWriteBytes, QWidget* parent)
+    SettingsDialog::SettingsDialog(qint64 maxPendingWriteBytes,
+                                   const QString& microManagerDirectory,
+                                   QWidget* parent)
         : QDialog(parent)
     {
         setWindowTitle(QStringLiteral("Settings"));
@@ -42,10 +49,60 @@ namespace scopeone::ui
         bufferLimitLayout->addWidget(new QLabel(QStringLiteral("GiB"), bufferLimitRow));
         bufferLimitLayout->addStretch();
         formLayout->addRow(QStringLiteral("Recording Buffer Limit"), bufferLimitRow);
+
+        auto* microManagerRow = new QWidget(this);
+        auto* microManagerLayout = new QHBoxLayout(microManagerRow);
+        microManagerLayout->setContentsMargins(0, 0, 0, 0);
+        microManagerLayout->setSpacing(6);
+        m_microManagerDirectoryEdit = new QLineEdit(microManagerDirectory, microManagerRow);
+        m_microManagerDirectoryEdit->setPlaceholderText(QStringLiteral("Bundled adapters only"));
+        microManagerLayout->addWidget(m_microManagerDirectoryEdit, 1);
+        auto* browseButton = new QToolButton(microManagerRow);
+        browseButton->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+        browseButton->setToolTip(QStringLiteral("Select Micro-Manager directory"));
+        browseButton->setAutoRaise(true);
+        microManagerLayout->addWidget(browseButton);
+        formLayout->addRow(QStringLiteral("Micro-Manager Directory"), microManagerRow);
+
+        connect(browseButton, &QToolButton::clicked,
+                this, [this]()
+                {
+                    const QString directory = QFileDialog::getExistingDirectory(
+                        this,
+                        QStringLiteral("Select Micro-Manager Directory"),
+                        m_microManagerDirectoryEdit->text().trimmed());
+                    if (!directory.isEmpty())
+                    {
+                        m_microManagerDirectoryEdit->setText(QDir::toNativeSeparators(directory));
+                    }
+                });
         layout->addLayout(formLayout);
 
         auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-        connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttonBox, &QDialogButtonBox::accepted,
+                this, [this]()
+                {
+                    const QString directoryPath = this->microManagerDirectory();
+                    if (!directoryPath.isEmpty())
+                    {
+                        QDir directory(directoryPath);
+#ifdef Q_OS_WIN
+                        const QStringList adapterFilters{QStringLiteral("mmgr_dal_*.dll")};
+#else
+                        const QStringList adapterFilters{QStringLiteral("libmmgr_dal_*")};
+#endif
+                        if (!directory.exists()
+                            || directory.entryList(adapterFilters, QDir::Files).isEmpty())
+                        {
+                            QMessageBox::warning(
+                                this,
+                                QStringLiteral("Invalid Micro-Manager Directory"),
+                                QStringLiteral("Select a directory containing Micro-Manager device adapters."));
+                            return;
+                        }
+                    }
+                    accept();
+                });
         connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
         layout->addWidget(buttonBox);
     }
@@ -54,5 +111,12 @@ namespace scopeone::ui
     qint64 SettingsDialog::maxPendingWriteBytes() const
     {
         return static_cast<qint64>(m_recordingBufferLimitEdit->text().toDouble() * kBytesPerGiB);
+    }
+
+    // Return the optional external adapter directory
+    QString SettingsDialog::microManagerDirectory() const
+    {
+        const QString directory = m_microManagerDirectoryEdit->text().trimmed();
+        return directory.isEmpty() ? QString() : QDir::cleanPath(directory);
     }
 } // namespace scopeone::ui

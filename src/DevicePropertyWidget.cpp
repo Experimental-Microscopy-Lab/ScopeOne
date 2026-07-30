@@ -2,7 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
-#include <QCheckBox>
+#include <QAction>
 #include <QComboBox>
 #include <QDoubleValidator>
 #include <QDoubleSpinBox>
@@ -11,11 +11,14 @@
 #include <QIntValidator>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -105,22 +108,45 @@ namespace scopeone::ui
         refreshButton->setMaximumWidth(60);
         connect(refreshButton, &QPushButton::clicked, this, &DevicePropertyWidget::onRefreshClicked);
 
-        auto* showReadOnlyCheckBox = new QCheckBox("Show Read-Only", this);
-        showReadOnlyCheckBox->setChecked(m_showReadOnly);
-        connect(showReadOnlyCheckBox, &QCheckBox::toggled, this, &DevicePropertyWidget::onShowReadOnlyToggled);
+        auto* optionsButton = new QToolButton(this);
+        optionsButton->setText("Options");
+        optionsButton->setPopupMode(QToolButton::InstantPopup);
 
-        auto* showPreInitCheckBox = new QCheckBox("Show Pre-Init", this);
-        showPreInitCheckBox->setChecked(m_showPreInit);
-        connect(showPreInitCheckBox, &QCheckBox::toggled, this, &DevicePropertyWidget::onShowPreInitToggled);
+        auto* optionsMenu = new QMenu(optionsButton);
+        auto* showReadOnlyAction = optionsMenu->addAction("Show Read-Only Properties");
+        showReadOnlyAction->setCheckable(true);
+        showReadOnlyAction->setChecked(m_showReadOnly);
+        connect(showReadOnlyAction, &QAction::toggled, this, &DevicePropertyWidget::onShowReadOnlyToggled);
 
-        auto* autoRefreshCheckBox = new QCheckBox("Auto Refresh", this);
-        autoRefreshCheckBox->setChecked(m_autoRefresh);
-        connect(autoRefreshCheckBox, &QCheckBox::toggled, this, &DevicePropertyWidget::onAutoRefreshToggled);
+        auto* showPreInitAction = optionsMenu->addAction("Show Pre-Init Properties");
+        showPreInitAction->setCheckable(true);
+        showPreInitAction->setChecked(m_showPreInit);
+        connect(showPreInitAction, &QAction::toggled, this, &DevicePropertyWidget::onShowPreInitToggled);
+
+        auto* autoRefreshAction = optionsMenu->addAction("Auto Refresh");
+        autoRefreshAction->setCheckable(true);
+        autoRefreshAction->setChecked(m_autoRefresh);
+        connect(autoRefreshAction, &QAction::toggled, this, &DevicePropertyWidget::onAutoRefreshToggled);
+
+        optionsMenu->addSeparator();
+        auto* columnsMenu = optionsMenu->addMenu("Columns");
+        const auto addColumnAction = [this, columnsMenu](const QString& text, int column, bool visible)
+        {
+            QAction* action = columnsMenu->addAction(text);
+            action->setCheckable(true);
+            action->setChecked(visible);
+            connect(action, &QAction::toggled, this, [this, column](bool visible)
+            {
+                m_propertyTree->setColumnHidden(column, !visible);
+            });
+        };
+        addColumnAction("Value", ValueColumn, true);
+        addColumnAction("Type", TypeColumn, false);
+        addColumnAction("Read-Only", ReadOnlyColumn, false);
+        optionsButton->setMenu(optionsMenu);
 
         controlLayout->addWidget(refreshButton);
-        controlLayout->addWidget(showReadOnlyCheckBox);
-        controlLayout->addWidget(showPreInitCheckBox);
-        controlLayout->addWidget(autoRefreshCheckBox);
+        controlLayout->addWidget(optionsButton);
         controlLayout->addStretch();
 
         m_propertyTree = new QTreeWidget(this);
@@ -131,10 +157,13 @@ namespace scopeone::ui
         m_propertyTree->sortByColumn(0, Qt::AscendingOrder);
         m_propertyTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
-        m_propertyTree->header()->resizeSection(NameColumn, 200);
-        m_propertyTree->header()->resizeSection(ValueColumn, 150);
+        m_propertyTree->header()->setSectionResizeMode(QHeaderView::Interactive);
+        m_propertyTree->header()->resizeSection(NameColumn, 160);
+        m_propertyTree->header()->resizeSection(ValueColumn, 130);
         m_propertyTree->header()->resizeSection(TypeColumn, 70);
         m_propertyTree->header()->resizeSection(ReadOnlyColumn, 70);
+        m_propertyTree->setColumnHidden(TypeColumn, true);
+        m_propertyTree->setColumnHidden(ReadOnlyColumn, true);
 
         {
             QComboBox comboProbe;
@@ -161,35 +190,87 @@ namespace scopeone::ui
         mainLayout->addWidget(m_propertyTree);
     }
 
-    // Rebuild visible properties while preserving scroll position
+    // Refresh values in place and rebuild only when the visible structure changes
     void DevicePropertyWidget::refresh(bool fromCache)
     {
-        // Rebuild the tree and keep the scroll position
         if (m_updating || m_scopeonecore->configurationOperationRunning())
         {
             return;
         }
 
-        const int oldScrollValue = m_propertyTree->verticalScrollBar()->value();
-
         m_updating = true;
-        m_propertyTree->clear();
-
         try
         {
+            if (updateExistingValues(fromCache))
+            {
+                m_updating = false;
+                return;
+            }
+
+            const bool hadItems = m_propertyTree->topLevelItemCount() > 0;
+            const int oldScrollValue = m_propertyTree->verticalScrollBar()->value();
+            QSet<QString> expandedDevices;
+            for (int i = 0; i < m_propertyTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem* deviceItem = m_propertyTree->topLevelItem(i);
+                if (deviceItem->isExpanded())
+                {
+                    expandedDevices.insert(deviceItem->text(NameColumn));
+                }
+            }
+
+            QString selectedDevice;
+            QString selectedProperty;
+            if (QTreeWidgetItem* selectedItem = m_propertyTree->currentItem())
+            {
+                selectedDevice = selectedItem->data(NameColumn, Qt::UserRole).toString();
+                selectedProperty = selectedItem->data(NameColumn, Qt::UserRole + 1).toString();
+                if (selectedDevice.isEmpty())
+                {
+                    selectedDevice = selectedItem->text(NameColumn);
+                }
+            }
+
+            m_propertyTree->setSortingEnabled(false);
+            m_propertyTree->clear();
             populateDeviceTree(fromCache);
+            m_propertyTree->setSortingEnabled(true);
+            m_propertyTree->sortByColumn(NameColumn, Qt::AscendingOrder);
+
+            for (int i = 0; i < m_propertyTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem* deviceItem = m_propertyTree->topLevelItem(i);
+                deviceItem->setExpanded(!hadItems || expandedDevices.contains(deviceItem->text(NameColumn)));
+                if (deviceItem->text(NameColumn) != selectedDevice)
+                {
+                    continue;
+                }
+                if (selectedProperty.isEmpty())
+                {
+                    m_propertyTree->setCurrentItem(deviceItem);
+                    continue;
+                }
+                for (int childIndex = 0; childIndex < deviceItem->childCount(); ++childIndex)
+                {
+                    QTreeWidgetItem* propertyItem = deviceItem->child(childIndex);
+                    if (propertyItem->data(NameColumn, Qt::UserRole + 1).toString() == selectedProperty)
+                    {
+                        m_propertyTree->setCurrentItem(propertyItem);
+                        break;
+                    }
+                }
+            }
+
+            QTimer::singleShot(0, this, [this, oldScrollValue]()
+            {
+                m_propertyTree->verticalScrollBar()->setValue(oldScrollValue);
+            });
         }
         catch (const std::exception& e)
         {
             emit errorOccurred(QString("Error refreshing properties: %1").arg(e.what()));
             qWarning() << "Error refreshing properties:" << e.what();
         }
-
-        QTimer::singleShot(0, this, [this, oldScrollValue]()
-        {
-            m_propertyTree->verticalScrollBar()->setValue(oldScrollValue);
-        });
-
         m_updating = false;
     }
 
@@ -202,7 +283,124 @@ namespace scopeone::ui
             addDeviceToTree(deviceLabel, fromCache);
         }
 
-        m_propertyTree->expandAll();
+    }
+
+    // Update existing property editors without rebuilding the tree
+    bool DevicePropertyWidget::updateExistingValues(bool fromCache)
+    {
+        const QStringList devices = m_scopeonecore->loadedDevices();
+        if (m_propertyTree->topLevelItemCount() != devices.size())
+        {
+            return false;
+        }
+
+        for (const QString& deviceLabel : devices)
+        {
+            QTreeWidgetItem* deviceItem = nullptr;
+            for (int i = 0; i < m_propertyTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem* candidate = m_propertyTree->topLevelItem(i);
+                if (candidate->text(NameColumn) == deviceLabel)
+                {
+                    deviceItem = candidate;
+                    break;
+                }
+            }
+            if (!deviceItem)
+            {
+                return false;
+            }
+
+            const auto properties = m_scopeonecore->deviceProperties(deviceLabel, fromCache);
+            int visiblePropertyCount = 0;
+            for (const auto& propertyInfo : properties)
+            {
+                if ((!m_showReadOnly && propertyInfo.isReadOnly())
+                    || (!m_showPreInit && propertyInfo.isPreInit()))
+                {
+                    continue;
+                }
+                ++visiblePropertyCount;
+
+                QTreeWidgetItem* propertyItem = nullptr;
+                for (int i = 0; i < deviceItem->childCount(); ++i)
+                {
+                    QTreeWidgetItem* candidate = deviceItem->child(i);
+                    if (candidate->data(NameColumn, Qt::UserRole + 1).toString() == propertyInfo.name())
+                    {
+                        propertyItem = candidate;
+                        break;
+                    }
+                }
+                if (!propertyItem)
+                {
+                    return false;
+                }
+
+                const QString type = propertyInfo.type();
+                const QString displayType = type.isEmpty() ? QStringLiteral("Unknown") : type;
+                const QString readOnlyText = propertyInfo.isReadOnly() ? QStringLiteral("Yes") : QStringLiteral("No");
+                if (propertyItem->text(TypeColumn) != displayType
+                    || propertyItem->text(ReadOnlyColumn) != readOnlyText)
+                {
+                    return false;
+                }
+
+                const bool isInteger = type == QStringLiteral("Integer");
+                const bool isFloat = type == QStringLiteral("Float");
+                const QStringList allowedValues = propertyInfo.allowedValues();
+                const QString value = allowedValues.isEmpty() && (isInteger || isFloat)
+                                          ? formatPropertyDisplayValue(propertyInfo.value(), isInteger, isFloat)
+                                          : propertyInfo.value();
+                QWidget* editor = m_propertyTree->itemWidget(propertyItem, ValueColumn);
+                if (auto* combo = qobject_cast<QComboBox*>(editor))
+                {
+                    if (combo->count() != allowedValues.size())
+                    {
+                        return false;
+                    }
+                    for (int i = 0; i < allowedValues.size(); ++i)
+                    {
+                        if (combo->itemText(i) != allowedValues.at(i))
+                        {
+                            return false;
+                        }
+                    }
+                    if (!combo->hasFocus())
+                    {
+                        const QSignalBlocker blocker(combo);
+                        combo->setCurrentText(value);
+                    }
+                }
+                else if (auto* lineEdit = qobject_cast<QLineEdit*>(editor))
+                {
+                    if (!allowedValues.isEmpty() || (!isInteger && !isFloat))
+                    {
+                        return false;
+                    }
+                    if (!lineEdit->hasFocus())
+                    {
+                        const QSignalBlocker blocker(lineEdit);
+                        lineEdit->setText(value);
+                    }
+                }
+                else
+                {
+                    const bool needsEditor = !propertyInfo.isReadOnly()
+                        && (!allowedValues.isEmpty() || isInteger || isFloat);
+                    if (needsEditor)
+                    {
+                        return false;
+                    }
+                    propertyItem->setText(ValueColumn, value);
+                }
+            }
+            if (deviceItem->childCount() != visiblePropertyCount)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Submit a property value and read back the actual accepted value
@@ -233,6 +431,7 @@ namespace scopeone::ui
             deviceItem->setText(ValueColumn, "");
             deviceItem->setText(TypeColumn, "Device");
             deviceItem->setText(ReadOnlyColumn, "");
+            deviceItem->setData(NameColumn, Qt::UserRole, deviceLabel);
 
             QFont font = deviceItem->font(NameColumn);
             font.setBold(true);

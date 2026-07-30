@@ -33,6 +33,7 @@ namespace scopeone::ui
 
         void setupUI();
         void populateDeviceTree(bool fromCache);
+        bool updateExistingValues(bool fromCache);
         bool applyPropertyValue(const QString& deviceLabel,
                                 const QString& propertyName,
                                 const QString& requestedValue,

@@ -17,6 +17,24 @@ namespace scopeone::ui
 {
     class PreviewWidget;
 
+    class CameraScaleDialog : public QDialog
+    {
+        Q_OBJECT
+
+    public:
+        explicit CameraScaleDialog(scopeone::core::ScopeOneCore* core,
+                                   QWidget* parent = nullptr);
+
+    private:
+        void loadSelectedCamera();
+        void applyScale();
+
+        scopeone::core::ScopeOneCore* m_core{nullptr};
+        QComboBox* m_cameraCombo{nullptr};
+        QDoubleSpinBox* m_pixelSizeSpinBox{nullptr};
+        QLabel* m_statusLabel{nullptr};
+    };
+
     class StageMosaicDialog : public QDialog
     {
         Q_OBJECT
@@ -43,7 +61,6 @@ namespace scopeone::ui
         QComboBox* m_stageCombo{nullptr};
         QSpinBox* m_rowsSpinBox{nullptr};
         QSpinBox* m_columnsSpinBox{nullptr};
-        QDoubleSpinBox* m_pixelSizeSpinBox{nullptr};
         QDoubleSpinBox* m_stepXSpinBox{nullptr};
         QDoubleSpinBox* m_stepYSpinBox{nullptr};
         QSpinBox* m_settleMsSpinBox{nullptr};

@@ -68,7 +68,7 @@ class RecordingSession:
         self,
         save_dir: str,
         base_name: str,
-        format: str = "tiff",
+        format: str = "ome-tiff",
         compression: bool = False,
         compression_level: int = 6,
     ):

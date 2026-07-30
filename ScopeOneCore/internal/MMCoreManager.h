@@ -40,6 +40,14 @@ namespace scopeone::core::internal
         ~MMCoreManager() override = default;
 
         std::shared_ptr<CMMCore> getCore() const { return m_mmcore; }
+        const QStringList& additionalDeviceAdapterSearchPaths() const
+        {
+            return m_additionalDeviceAdapterSearchPaths;
+        }
+        void setAdditionalDeviceAdapterSearchPaths(const QStringList& paths)
+        {
+            m_additionalDeviceAdapterSearchPaths = paths;
+        }
 
         bool loadConfigurationDevices(const QString& configPath,
                                       LoadConfigResult& result,
@@ -48,5 +56,6 @@ namespace scopeone::core::internal
                                  LoadConfigResult& result);
     private:
         std::shared_ptr<CMMCore> m_mmcore;
+        QStringList m_additionalDeviceAdapterSearchPaths;
     };
 }

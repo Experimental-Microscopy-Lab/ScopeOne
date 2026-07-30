@@ -627,6 +627,10 @@ namespace scopeone::core
         {
             switch (format)
             {
+            case RecordingFormat::OmeTiff:
+                return QStringLiteral("OmeTiff");
+            case RecordingFormat::OmeZarr:
+                return QStringLiteral("OmeZarr");
             case RecordingFormat::Tiff:
                 return QStringLiteral("Tiff");
             case RecordingFormat::Binary:
@@ -651,6 +655,16 @@ namespace scopeone::core
 
         bool parseRecordingFormat(const QString& name, RecordingFormat& format)
         {
+            if (name == QStringLiteral("OmeTiff"))
+            {
+                format = RecordingFormat::OmeTiff;
+                return true;
+            }
+            if (name == QStringLiteral("OmeZarr"))
+            {
+                format = RecordingFormat::OmeZarr;
+                return true;
+            }
             if (name == QStringLiteral("Tiff"))
             {
                 format = RecordingFormat::Tiff;
@@ -897,7 +911,10 @@ namespace scopeone::core
                 cameraIds.insert(cameraId);
             }
 
-            if (plan.format != RecordingFormat::Tiff && plan.format != RecordingFormat::Binary)
+            if (plan.format != RecordingFormat::OmeTiff
+                && plan.format != RecordingFormat::OmeZarr
+                && plan.format != RecordingFormat::Tiff
+                && plan.format != RecordingFormat::Binary)
             {
                 return fail(errorMessage, QStringLiteral("%1.format is invalid").arg(path));
             }
@@ -906,10 +923,13 @@ namespace scopeone::core
                 return fail(errorMessage,
                             QStringLiteral("%1.compressionLevel must be between 0 and 9").arg(path));
             }
-            if (plan.enableCompression && plan.format != RecordingFormat::Tiff)
+            if (plan.enableCompression
+                && plan.format != RecordingFormat::OmeTiff
+                && plan.format != RecordingFormat::OmeZarr
+                && plan.format != RecordingFormat::Tiff)
             {
                 return fail(errorMessage,
-                            QStringLiteral("%1.enableCompression is only supported for Tiff recording").arg(path));
+                            QStringLiteral("%1.enableCompression is only supported for OME-Zarr or TIFF-based recording").arg(path));
             }
             if (plan.framesPerBurst < 1)
             {
@@ -940,6 +960,11 @@ namespace scopeone::core
             {
                 return fail(errorMessage,
                             QStringLiteral("%1.exposureMs must be a finite non-negative number").arg(path));
+            }
+            if (!isFinite(plan.pixelSizeUm) || plan.pixelSizeUm < 0.0)
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.pixelSizeUm must be a finite non-negative number").arg(path));
             }
 
             if (plan.order.empty())
@@ -1619,6 +1644,7 @@ namespace scopeone::core
             object.insert(QStringLiteral("burstIntervalMs"), plan.burstIntervalMs);
             object.insert(QStringLiteral("mdaIntervalMs"), plan.mdaIntervalMs);
             object.insert(QStringLiteral("exposureMs"), plan.exposureMs);
+            object.insert(QStringLiteral("pixelSizeUm"), plan.pixelSizeUm);
             object.insert(QStringLiteral("order"), order);
             object.insert(QStringLiteral("positions"), positions);
             object.insert(QStringLiteral("zPositions"), zPositions);
@@ -1786,6 +1812,7 @@ namespace scopeone::core
                                     QStringLiteral("burstIntervalMs"),
                                     QStringLiteral("mdaIntervalMs"),
                                     QStringLiteral("exposureMs"),
+                                    QStringLiteral("pixelSizeUm"),
                                     QStringLiteral("order"),
                                     QStringLiteral("positions"),
                                     QStringLiteral("zPositions"),
@@ -1839,7 +1866,7 @@ namespace scopeone::core
             if (!parseRecordingFormat(formatName, parsed.format))
             {
                 return fail(errorMessage,
-                            QStringLiteral("%1.format must be 'Tiff' or 'Binary'").arg(path));
+                            QStringLiteral("%1.format must be 'OmeTiff', 'OmeZarr', 'Tiff' or 'Binary'").arg(path));
             }
 
             if (!readBool(object,
@@ -1885,6 +1912,11 @@ namespace scopeone::core
                 || !readDouble(object,
                                QStringLiteral("exposureMs"),
                                parsed.exposureMs,
+                               path,
+                               errorMessage)
+                || !readDouble(object,
+                               QStringLiteral("pixelSizeUm"),
+                               parsed.pixelSizeUm,
                                path,
                                errorMessage))
             {

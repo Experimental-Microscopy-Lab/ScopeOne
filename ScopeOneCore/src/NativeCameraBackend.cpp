@@ -947,7 +947,7 @@ namespace scopeone::core::internal
             notifyPreviewStopped();
             if (wasRecording)
             {
-                emit frameDeliveryFailed(message);
+                emit frameDeliveryFailed(message, 0);
             }
         }
 

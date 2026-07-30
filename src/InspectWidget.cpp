@@ -18,6 +18,7 @@
 #include <QVBoxLayout>
 #include <QtMath>
 #include <QtGlobal>
+#include <cmath>
 
 namespace scopeone::ui
 {
@@ -450,6 +451,10 @@ namespace scopeone::ui
             clearCrossSectionProfile();
             emit requestClearCrossSection();
         }
+        if (!m_measurementLayerKey.isEmpty() && m_measurementLayerKey != m_currentLayerKey)
+        {
+            clearMeasurementLine();
+        }
         updateLayerVisibility();
         updateControlsState();
     }
@@ -488,6 +493,10 @@ namespace scopeone::ui
         {
             clearCrossSectionProfile();
             emit requestClearCrossSection();
+        }
+        if (!m_measurementLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_measurementLayerKey))
+        {
+            clearMeasurementLine();
         }
 
         if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
@@ -552,6 +561,7 @@ namespace scopeone::ui
     // Clear all layer inspect groups
     void InspectWidget::clearInspect()
     {
+        clearMeasurementLine();
         setAvailableLayers({});
         setAvailableCameras({});
     }
@@ -571,6 +581,10 @@ namespace scopeone::ui
         {
             clearCrossSectionProfile();
         }
+        if (m_measurementLayerKey == trimmedLayerKey)
+        {
+            clearMeasurementLine();
+        }
         updateLayerVisibility();
         updateControlsState();
     }
@@ -580,6 +594,44 @@ namespace scopeone::ui
     {
         m_crossSectionLayerKey.clear();
         m_crossSectionWidget->clear();
+    }
+
+    // Display one line measurement for the inspected layer
+    void InspectWidget::setMeasurementLine(const QString& layerKey,
+                                           const QPoint& start,
+                                           const QPoint& end,
+                                           double actualLengthUm)
+    {
+        m_measurementLayerKey = layerKey.trimmed();
+        const double dx = static_cast<double>(end.x() - start.x());
+        const double dy = static_cast<double>(end.y() - start.y());
+        const double lengthPixels = std::hypot(dx, dy);
+        double angleDegrees = std::atan2(-dy, dx) * 180.0 / 3.14159265358979323846;
+        if (angleDegrees < 0.0)
+        {
+            angleDegrees += 360.0;
+        }
+
+        QStringList lines{
+            QStringLiteral("Start: (%1, %2)").arg(start.x()).arg(start.y()),
+            QStringLiteral("Angle: %1°").arg(angleDegrees, 0, 'f', 1),
+            QStringLiteral("Length: %1 px").arg(lengthPixels, 0, 'f', 2)
+        };
+        if (actualLengthUm > 0.0)
+        {
+            lines.append(QStringLiteral("Actual: %1 µm")
+                             .arg(actualLengthUm, 0, 'f', 3));
+        }
+        m_measurementInfoLabel->setText(lines.join('\n'));
+        m_measurementInfoLabel->show();
+    }
+
+    // Clear the current line measurement display
+    void InspectWidget::clearMeasurementLine()
+    {
+        m_measurementLayerKey.clear();
+        m_measurementInfoLabel->clear();
+        m_measurementInfoLabel->hide();
     }
 
     // Display a freshly computed cross section profile for one layer
@@ -613,6 +665,19 @@ namespace scopeone::ui
         contentLayout->setSpacing(8);
         contentLayout->setContentsMargins(5, 5, 5, 5);
 
+        auto* annotationGroup = new QGroupBox(QStringLiteral("Annotation"), contentContainer);
+        auto* annotationLayout = new QVBoxLayout(annotationGroup);
+        auto* annotationButtons = new QHBoxLayout();
+        m_drawMeasurementLineButton = new QPushButton(QStringLiteral("Line"), annotationGroup);
+        m_clearMeasurementLinesButton = new QPushButton(QStringLiteral("Clear"), annotationGroup);
+        annotationButtons->addWidget(m_drawMeasurementLineButton);
+        annotationButtons->addWidget(m_clearMeasurementLinesButton);
+        annotationLayout->addLayout(annotationButtons);
+        m_measurementInfoLabel = new QLabel(annotationGroup);
+        m_measurementInfoLabel->hide();
+        annotationLayout->addWidget(m_measurementInfoLabel);
+        contentLayout->addWidget(annotationGroup);
+
         m_crossSectionGroup = new QGroupBox(QStringLiteral("Cross Section"), contentContainer);
         auto* crossSectionLayout = new QVBoxLayout(m_crossSectionGroup);
         auto* crossSectionButtons = new QHBoxLayout();
@@ -644,6 +709,14 @@ namespace scopeone::ui
         {
             clearCrossSectionProfile();
             emit requestClearCrossSection();
+        });
+        connect(m_drawMeasurementLineButton, &QPushButton::clicked, this, [this]()
+        {
+            emit requestDrawMeasurementLine(m_currentLayerKey);
+        });
+        connect(m_clearMeasurementLinesButton, &QPushButton::clicked, this, [this]()
+        {
+            emit requestClearMeasurementLines(m_currentLayerKey);
         });
 
         scrollArea->setWidget(contentContainer);
@@ -959,6 +1032,10 @@ namespace scopeone::ui
                                          && (liveCrossSectionEnabled || staticCrossSectionEnabled);
         m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
         m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !m_currentLayerKey.isEmpty());
+        const bool annotationEnabled = !m_currentLayerKey.isEmpty()
+                                       && m_availableLayerKeys.contains(m_currentLayerKey);
+        m_drawMeasurementLineButton->setEnabled(annotationEnabled);
+        m_clearMeasurementLinesButton->setEnabled(annotationEnabled);
 
         for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
         {
