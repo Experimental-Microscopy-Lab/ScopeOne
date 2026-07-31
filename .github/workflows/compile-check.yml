@@ -39,10 +39,15 @@ jobs:
             autoconf-archive \
             pkg-config \
             libboost-all-dev \
-            qt6-base-dev \
             libopencv-dev \
             libtiff-dev \
             zlib1g-dev
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.0'
+          cache: true
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
