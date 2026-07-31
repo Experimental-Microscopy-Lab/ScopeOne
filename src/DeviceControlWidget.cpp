@@ -5,7 +5,6 @@
 
 #include <QAbstractItemView>
 #include <QCheckBox>
-#include <QColor>
 #include <QComboBox>
 #include <QDebug>
 #include <QDoubleSpinBox>
@@ -485,7 +484,6 @@ namespace scopeone::ui
             QTableWidgetItem* infoItem = new QTableWidgetItem(m_previewWidget->layerInfoText(layerKey));
             infoItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             infoItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            infoItem->setForeground(QColor(102, 102, 102));
             m_layerTable->setItem(row, 2, infoItem);
 
             m_layerRows.insert(layerKey, visibleCheckBox);

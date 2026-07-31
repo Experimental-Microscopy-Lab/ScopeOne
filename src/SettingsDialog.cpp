@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleValidator>
 #include <QDir>
@@ -20,9 +21,10 @@ namespace
 
 namespace scopeone::ui
 {
-    // Create the settings dialog for recording limits
+    // Create the application settings dialog
     SettingsDialog::SettingsDialog(qint64 maxPendingWriteBytes,
                                    const QString& microManagerDirectory,
+                                   const QString& colorScheme,
                                    QWidget* parent)
         : QDialog(parent)
     {
@@ -32,6 +34,14 @@ namespace scopeone::ui
         auto* layout = new QVBoxLayout(this);
 
         auto* formLayout = new QFormLayout();
+        m_colorSchemeComboBox = new QComboBox(this);
+        m_colorSchemeComboBox->addItem(QStringLiteral("System"), QStringLiteral("system"));
+        m_colorSchemeComboBox->addItem(QStringLiteral("Light"), QStringLiteral("light"));
+        m_colorSchemeComboBox->addItem(QStringLiteral("Dark"), QStringLiteral("dark"));
+        const int colorSchemeIndex = m_colorSchemeComboBox->findData(colorScheme);
+        m_colorSchemeComboBox->setCurrentIndex(colorSchemeIndex >= 0 ? colorSchemeIndex : 0);
+        formLayout->addRow(QStringLiteral("Theme"), m_colorSchemeComboBox);
+
         m_recordingBufferLimitEdit = new QLineEdit(this);
         auto* validator = new QDoubleValidator(m_recordingBufferLimitEdit);
         validator->setNotation(QDoubleValidator::StandardNotation);
@@ -118,5 +128,11 @@ namespace scopeone::ui
     {
         const QString directory = m_microManagerDirectoryEdit->text().trimmed();
         return directory.isEmpty() ? QString() : QDir::cleanPath(directory);
+    }
+
+    // Return the selected application color scheme
+    QString SettingsDialog::colorScheme() const
+    {
+        return m_colorSchemeComboBox->currentData().toString();
     }
 } // namespace scopeone::ui

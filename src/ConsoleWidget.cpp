@@ -155,10 +155,8 @@ namespace scopeone::ui
         m_filterComboBox->addItem("All");
         m_filterComboBox->addItem("INFO");
         m_filterComboBox->addItem("DEBUG");
-        m_filterComboBox->addItem("SUCCESS");
         m_filterComboBox->addItem("WARNING");
         m_filterComboBox->addItem("ERROR");
-        m_filterComboBox->addItem("SYSTEM");
         m_filterComboBox->setMaximumWidth(120);
 
         m_messageCountLabel = new QLabel("Messages: 0", this);
@@ -296,7 +294,7 @@ namespace scopeone::ui
             timestamp = QString("[%1] ").arg(msg.timestamp.toString("hh:mm:ss"));
         }
 
-        QString typePrefix = QString("[%1] ").arg(msg.type.leftJustified(7));
+        QString typePrefix = QString("[%1] ").arg(msg.type);
         QString color = getTypeColor(msg.type);
         QString escapedMessage = msg.message.toHtmlEscaped();
         escapedMessage.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
@@ -312,10 +310,8 @@ namespace scopeone::ui
     QString ConsoleWidget::getTypeColor(const QString& type) const
     {
         if (type == "ERROR") return "#ff6b6b";
-        if (type == "SUCCESS") return "#51cf66";
         if (type == "WARNING") return "#f59f00";
-        if (type == "SYSTEM") return "#74c0fc";
-        if (type == "DEBUG") return "#adb5bd";
+        if (type == "DEBUG") return "#1581ed";
         return "#dee2e6";
     }
 

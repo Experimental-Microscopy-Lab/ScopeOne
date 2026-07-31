@@ -339,35 +339,33 @@ namespace scopeone::core::internal
         {
             try
             {
-                bool isCamera = false;
-                try
+                const std::string label = deviceName.toStdString();
+                const MM::DeviceType deviceType = m_mmcore->getDeviceType(label.c_str());
+                if (deviceType == MM::CoreDevice)
                 {
-                    const MM::DeviceType deviceType = m_mmcore->getDeviceType(deviceName.toStdString().c_str());
-                    isCamera = (deviceType == MM::CameraDevice);
-                }
-                catch (const CMMError&)
-                {
-                    isCamera = false;
+                    continue;
                 }
 
-                if (isCamera && !useSingleCamera)
+                if (deviceType == MM::CameraDevice && !useSingleCamera)
                 {
                     skippedCameraCount++;
                     continue;
                 }
 
-                const DeviceInitializationState state = m_mmcore->getDeviceInitializationState(
-                    deviceName.toStdString().c_str());
+                const DeviceInitializationState state = m_mmcore->getDeviceInitializationState(label.c_str());
                 if (state != InitializedSuccessfully)
                 {
                     try
                     {
-                        m_mmcore->initializeDevice(deviceName.toStdString().c_str());
+                        m_mmcore->initializeDevice(label.c_str());
                         successCount++;
                     }
-                    catch (const CMMError&)
+                    catch (const CMMError& error)
                     {
                         failCount++;
+                        qWarning().noquote()
+                            << QString("Failed to initialize device '%1': %2")
+                            .arg(deviceName, QString::fromStdString(error.getMsg()));
                     }
                 }
                 else
@@ -375,9 +373,12 @@ namespace scopeone::core::internal
                     successCount++;
                 }
             }
-            catch (const CMMError&)
+            catch (const CMMError& error)
             {
                 failCount++;
+                qWarning().noquote()
+                    << QString("Failed to inspect device '%1': %2")
+                    .arg(deviceName, QString::fromStdString(error.getMsg()));
             }
         }
 

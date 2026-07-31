@@ -5,12 +5,14 @@
 #include <QColor>
 #include <QFrame>
 #include <QFont>
+#include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QList>
 #include <QPainter>
+#include <QPalette>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -74,18 +76,19 @@ namespace scopeone::ui
         void paintEvent(QPaintEvent*) override
         {
             QPainter painter(this);
-            painter.fillRect(rect(), QColor(24, 24, 24));
+            const QPalette& colors = palette();
+            painter.fillRect(rect(), colors.brush(QPalette::Base));
             painter.setRenderHint(QPainter::Antialiasing, true);
 
             if (m_values.isEmpty())
             {
-                painter.setPen(QColor(150, 150, 150));
+                painter.setPen(colors.color(QPalette::PlaceholderText));
                 painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("No cross section"));
                 return;
             }
 
             const QRect plotRect = rect().adjusted(40, 24, -12, -28);
-            painter.setPen(QColor(100, 100, 100));
+            painter.setPen(colors.color(QPalette::Mid));
             painter.drawLine(plotRect.bottomLeft(), plotRect.bottomRight());
             painter.drawLine(plotRect.bottomLeft(), plotRect.topLeft());
 
@@ -98,7 +101,7 @@ namespace scopeone::ui
             }
             const int valueRange = qMax(1, maxValue - minValue);
 
-            painter.setPen(QColor(220, 220, 220));
+            painter.setPen(colors.color(QPalette::Text));
             painter.drawText(QRect(8, 4, width() - 16, 16),
                              Qt::AlignLeft | Qt::AlignVCenter,
                              QStringLiteral("%1  N=%2  Min=%3  Max=%4")
@@ -107,7 +110,6 @@ namespace scopeone::ui
                              .arg(minValue)
                              .arg(maxValue));
 
-            painter.setPen(QColor(180, 180, 180));
             painter.drawText(QRect(0, plotRect.top() - 6, 36, 16),
                              Qt::AlignRight | Qt::AlignVCenter,
                              QString::number(maxValue));
@@ -146,7 +148,7 @@ namespace scopeone::ui
                 line << QPointF(x, y);
             }
 
-            painter.setPen(QPen(QColor(255, 200, 0), 1.5));
+            painter.setPen(QPen(colors.color(QPalette::Highlight), 1.5));
             if (line.size() == 1)
             {
                 painter.drawEllipse(line.first(), 2.0, 2.0);
@@ -204,15 +206,25 @@ namespace scopeone::ui
         {
             QPainter painter(this);
             painter.setRenderHint(QPainter::Antialiasing);
+            const QPalette& colors = palette();
+            const QFontMetrics metrics = painter.fontMetrics();
+            const int labelHeight = metrics.height() + 4;
+            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
+            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
 
-            const QRect rect = this->rect().adjusted(30, 10, -10, -20);
+            const QRect rect = this->rect().adjusted(
+                yLabelWidth + 6,
+                labelHeight / 2 + 2,
+                -(xLabelWidth / 2 + 4),
+                -(labelHeight + 8));
 
-            painter.fillRect(rect, QColor(240, 240, 240));
-            painter.setPen(QPen(Qt::black, 1));
+            painter.fillRect(rect, colors.brush(QPalette::Base));
+            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
             painter.drawRect(rect);
 
             if (m_layerData.isEmpty())
             {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
                 painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Layer Data"));
                 return;
             }
@@ -234,6 +246,7 @@ namespace scopeone::ui
 
             if (globalMaxCount == 0)
             {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
                 painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
                 return;
             }
@@ -273,14 +286,20 @@ namespace scopeone::ui
                 }
             }
 
-            drawAxes(painter, rect, globalMaxValue);
+            drawAxes(painter, rect, globalMaxValue, xLabelWidth, labelHeight);
         }
 
     private:
         // Draw intensity and count axes for the histogram plot
-        void drawAxes(QPainter& painter, const QRect& rect, int maxValue)
+        void drawAxes(QPainter& painter,
+                      const QRect& rect,
+                      int maxValue,
+                      int xLabelWidth,
+                      int labelHeight)
         {
-            painter.setPen(QPen(Qt::black, 1));
+            const QColor axisColor = palette().color(QPalette::Mid);
+            const QColor textColor = palette().color(QPalette::Text);
+            painter.setPen(QPen(axisColor, 1));
 
             QList<int> xTicks;
             xTicks << 0 << maxValue / 4 << maxValue / 2 << (maxValue * 3) / 4 << maxValue;
@@ -291,8 +310,14 @@ namespace scopeone::ui
                 painter.drawLine(x, rect.bottom(), x, rect.bottom() + 5);
 
                 const QString label = QString::number(xTicks[i]);
-                const QRect textRect(x - 25, rect.bottom() + 5, 50, 20);
+                const QRect textRect(
+                    x - xLabelWidth / 2,
+                    rect.bottom() + 5,
+                    xLabelWidth,
+                    labelHeight);
+                painter.setPen(textColor);
                 painter.drawText(textRect, Qt::AlignCenter, label);
+                painter.setPen(QPen(axisColor, 1));
             }
 
             painter.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom());
@@ -366,7 +391,15 @@ namespace scopeone::ui
                 painter.drawLine(rect.left() - 5, y, rect.left(), y);
 
                 QString label;
-                if (count >= 1000)
+                if (count >= 1000000000)
+                {
+                    label = QStringLiteral("%1G").arg(count / 1000000000.0, 0, 'f', 1);
+                }
+                else if (count >= 1000000)
+                {
+                    label = QStringLiteral("%1M").arg(count / 1000000.0, 0, 'f', 1);
+                }
+                else if (count >= 1000)
                 {
                     label = QStringLiteral("%1k").arg(count / 1000.0, 0, 'f', 1);
                 }
@@ -374,8 +407,14 @@ namespace scopeone::ui
                 {
                     label = QString::number(count);
                 }
-                const QRect textRect(0, y - 10, 25, 20);
+                const QRect textRect(
+                    0,
+                    y - labelHeight / 2,
+                    rect.left() - 8,
+                    labelHeight);
+                painter.setPen(textColor);
                 painter.drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, label);
+                painter.setPen(QPen(axisColor, 1));
             }
         }
 

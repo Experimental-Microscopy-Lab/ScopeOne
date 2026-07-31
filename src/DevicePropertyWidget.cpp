@@ -158,7 +158,7 @@ namespace scopeone::ui
         m_propertyTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
         m_propertyTree->header()->setSectionResizeMode(QHeaderView::Interactive);
-        m_propertyTree->header()->resizeSection(NameColumn, 160);
+        m_propertyTree->header()->resizeSection(NameColumn, 250);
         m_propertyTree->header()->resizeSection(ValueColumn, 130);
         m_propertyTree->header()->resizeSection(TypeColumn, 70);
         m_propertyTree->header()->resizeSection(ReadOnlyColumn, 70);
@@ -486,15 +486,10 @@ namespace scopeone::ui
             if (isReadOnly)
             {
                 flags &= ~Qt::ItemIsEditable;
-                for (int col = 0; col < m_propertyTree->columnCount(); ++col)
-                {
-                    propertyItem->setForeground(col, QColor(128, 128, 128));
-                }
             }
             else
             {
                 flags &= ~Qt::ItemIsEditable;
-                propertyItem->setForeground(ValueColumn, QColor(0, 0, 200));
 
                 QWidget* editor = nullptr;
 
