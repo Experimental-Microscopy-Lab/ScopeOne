@@ -891,9 +891,10 @@ namespace scopeone::core
                               const QString& name,
                               DocumentLayerKind kind);
         void handleIncomingRawFrame(const ImageFrame& frame);
-        void processGraphRawFrameAsync(const ImageFrame& frame);
+        void submitProcessingFrame(const ImageFrame& frame);
+        void handleProcessedFrame(const ImageFrame& frame);
+        void flushProcessedFrames();
         void queuePreviewRawFrame(const ImageFrame& frame);
-        void queuePreviewProcessedFrame(const ImageFrame& frame);
         void schedulePreviewFlush();
         void flushPreviewFrames();
         bool histogramUpdatesEnabled(const QString& layerKey) const;

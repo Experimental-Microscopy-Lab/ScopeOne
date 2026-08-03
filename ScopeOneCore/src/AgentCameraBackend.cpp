@@ -419,7 +419,7 @@ namespace scopeone::core::internal
         void removeCamera(const QString& cameraId);
         void clear();
         bool ensureSharedMemory(const QString& cameraId);
-        ImageFrame consumeFrames(const QString& cameraId);
+        ImageFrame consumeFrames(const QString& cameraId, bool publishFrames);
         void consumeFramesAsync(const QString& cameraId);
 
     private:
@@ -1570,8 +1570,8 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Copies frames on the reader thread and forwards only completed images
-    ImageFrame AgentFrameWorker::consumeFrames(const QString& cameraId)
+    // Reads frames on the worker thread and optionally publishes the batch
+    ImageFrame AgentFrameWorker::consumeFrames(const QString& cameraId, bool publishFrames)
     {
         const auto it = m_readers.find(cameraId);
         if (it == m_readers.end())
@@ -1595,7 +1595,7 @@ namespace scopeone::core::internal
             }
         }
 
-        if (!frames.isEmpty())
+        if (publishFrames && !frames.isEmpty())
         {
             m_owner->submitFrames(frames, acquiredFrameCount);
         }
@@ -1606,7 +1606,7 @@ namespace scopeone::core::internal
     {
         if (!m_owner->m_frameDeliveryPaused.load(std::memory_order_relaxed))
         {
-            consumeFrames(cameraId);
+            consumeFrames(cameraId, true);
         }
         AgentCameraBackend* const owner = m_owner;
         QMetaObject::invokeMethod(owner,
@@ -1625,7 +1625,7 @@ namespace scopeone::core::internal
         AgentFrameWorker* const worker = m_frameWorker;
         const bool invoked = QMetaObject::invokeMethod(
             worker,
-            [worker, cameraId, &frame]() { frame = worker->consumeFrames(cameraId); },
+            [worker, cameraId, &frame]() { frame = worker->consumeFrames(cameraId, false); },
             Qt::BlockingQueuedConnection);
         return invoked ? frame : ImageFrame{};
     }

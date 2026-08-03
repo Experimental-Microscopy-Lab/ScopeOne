@@ -71,6 +71,7 @@ namespace scopeone::core::internal
 
     signals:
         void newRawFrameReady(const scopeone::core::ImageFrame& frame);
+        void processingFrameReady(const scopeone::core::ImageFrame& frame);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);

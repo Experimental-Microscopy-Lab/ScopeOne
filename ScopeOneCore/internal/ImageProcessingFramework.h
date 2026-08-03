@@ -3,7 +3,6 @@
 #include <QObject>
 #include <QMutex>
 #include <QThreadPool>
-#include <QTimer>
 #include <QHash>
 #include <functional>
 #include <memory>
@@ -68,7 +67,7 @@ namespace scopeone::core::internal
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame);
 
     signals:
-        void imageProcessed(const ImageFrame& frame, quint64 completedFrameCount);
+        void imageProcessed(const ImageFrame& frame);
         void processingError(const QString& error);
 
     private:
@@ -78,8 +77,6 @@ namespace scopeone::core::internal
             quint64 latestFrameGeneration{0};
             bool hasFrame{false};
             bool processing{false};
-            ImageFrame latestProcessedFrame;
-            quint64 completedFrameCount{0};
         };
 
         QString getCameraKey(const ImageFrame& frame) const;
@@ -89,7 +86,6 @@ namespace scopeone::core::internal
             QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>>& pipelines,
             const QString& cameraKey);
         void processCameraQueue(const QString& cameraKey);
-        void flushProcessedOutputs();
         ImageFrame frameFromResult(ProcessingResult result);
 
         ProcessingPipelineDefinition m_definition;
@@ -102,6 +98,5 @@ namespace scopeone::core::internal
         quint64 m_liveGeneration{1};
 
         QThreadPool m_threadPool;
-        QTimer m_outputTimer;
     };
 }

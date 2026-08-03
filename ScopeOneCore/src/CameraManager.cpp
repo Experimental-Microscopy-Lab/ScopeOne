@@ -46,6 +46,10 @@ namespace scopeone::core::internal
 
         connect(m_backend.get(), &CameraBackend::rawFrameReady,
                 this, &CameraManager::newRawFrameReady);
+        // Keeps processing input on the producer thread
+        connect(m_backend.get(), &CameraBackend::processingFrameReady,
+                this, &CameraManager::processingFrameReady,
+                Qt::DirectConnection);
         connect(m_backend.get(), &CameraBackend::rawFramesAcquired,
                 this, &CameraManager::rawFramesAcquired);
         connect(m_backend.get(), &CameraBackend::recordingFramesReady,
@@ -98,6 +102,7 @@ namespace scopeone::core::internal
     {
         m_backend.reset();
         m_recordingFrameDeliveryEnabled = false;
+        m_highRateFrameDeliveryEnabled = false;
         m_propertyDetailsCache.clear();
     }
 
@@ -107,6 +112,7 @@ namespace scopeone::core::internal
         if (!m_backend)
         {
             m_recordingFrameDeliveryEnabled = false;
+            m_highRateFrameDeliveryEnabled = false;
             m_propertyDetailsCache.clear();
             if (completion)
             {
@@ -131,6 +137,7 @@ namespace scopeone::core::internal
                 if (errorMessage.isEmpty())
                 {
                     m_recordingFrameDeliveryEnabled = false;
+                    m_highRateFrameDeliveryEnabled = false;
                     m_propertyDetailsCache.clear();
                 }
                 if (completion)

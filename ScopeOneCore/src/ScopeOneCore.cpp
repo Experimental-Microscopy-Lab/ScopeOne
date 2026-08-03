@@ -23,6 +23,7 @@
 #include <QFutureWatcher>
 #include <QJsonObject>
 #include <QList>
+#include <QMutex>
 #include <QStringList>
 #include <QSysInfo>
 #include <QThreadPool>
@@ -51,6 +52,9 @@ namespace
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
+    // Change to true temporarily when pipeline FPS diagnostics are needed
+    constexpr bool kFrameRateDiagnosticsEnabled = true;
+    constexpr int kFrameRateDiagnosticIntervalMs = 3000;
 
     // Convert a histogram bin to its lower source value
     int histogramBinLowerValue(int binIndex, int maxValue)
@@ -874,6 +878,19 @@ namespace scopeone::core
 
     struct ScopeOneCore::Managers
     {
+        struct FrameRateCounters
+        {
+            quint64 acquired{0};
+            quint64 input{0};
+            quint64 processed{0};
+        };
+
+        struct PendingProcessedFrame
+        {
+            ImageFrame frame;
+            quint64 completedCount{0};
+        };
+
         MMCoreManager* mmcoreManager{nullptr};
         CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
@@ -887,6 +904,12 @@ namespace scopeone::core
         RecordingProgress recordingProgress;
         RecordingWriterStatus recordingWriterStatus;
         QHash<QString, double> cameraPixelSizesUm;
+        QMutex frameRateCountersMutex;
+        QHash<QString, FrameRateCounters> frameRateCounters;
+        QElapsedTimer frameRateTimer;
+        QMutex processedDeliveryMutex;
+        QHash<QString, PendingProcessedFrame> pendingProcessedFrames;
+        bool processedFlushQueued{false};
     };
 
     // Return the compiled core version string
@@ -1009,6 +1032,49 @@ namespace scopeone::core
         m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
         connect(m_previewFlushTimer, &QTimer::timeout,
                 this, &ScopeOneCore::flushPreviewFrames);
+        if constexpr (kFrameRateDiagnosticsEnabled)
+        {
+            auto* frameRateDiagnosticTimer = new QTimer(this);
+            frameRateDiagnosticTimer->setInterval(kFrameRateDiagnosticIntervalMs);
+            connect(frameRateDiagnosticTimer, &QTimer::timeout, this, [this]()
+            {
+                if (!isRealTimeProcessingEnabled())
+                {
+                    QMutexLocker locker(&m_managers->frameRateCountersMutex);
+                    m_managers->frameRateCounters.clear();
+                    m_managers->frameRateTimer.restart();
+                    return;
+                }
+
+                QHash<QString, Managers::FrameRateCounters> counters;
+                qint64 elapsedNs = 0;
+                {
+                    QMutexLocker locker(&m_managers->frameRateCountersMutex);
+                    elapsedNs = m_managers->frameRateTimer.nsecsElapsed();
+                    counters.swap(m_managers->frameRateCounters);
+                    m_managers->frameRateTimer.restart();
+                }
+                if (elapsedNs <= 0)
+                {
+                    return;
+                }
+                const double elapsedSeconds = static_cast<double>(elapsedNs) / 1000000000.0;
+                QStringList cameraIds = counters.keys();
+                cameraIds.sort(Qt::CaseInsensitive);
+                for (const QString& cameraId : cameraIds)
+                {
+                    const Managers::FrameRateCounters frameCounters = counters.value(cameraId);
+                    qDebug().noquote()
+                        << QString("Frame pipeline FPS [%1]: acquired=%2, input=%3, processed=%4")
+                               .arg(cameraId)
+                               .arg(frameCounters.acquired / elapsedSeconds, 0, 'f', 1)
+                               .arg(frameCounters.input / elapsedSeconds, 0, 'f', 1)
+                               .arg(frameCounters.processed / elapsedSeconds, 0, 'f', 1);
+                }
+            });
+            m_managers->frameRateTimer.start();
+            frameRateDiagnosticTimer->start();
+        }
         m_imageSceneModel = new ImageSceneModel(this);
         connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
                 this, &ScopeOneCore::syncLineProfileFromScene);
@@ -1030,8 +1096,22 @@ namespace scopeone::core
 
         connect(m_managers->cameraManager, &CameraManager::newRawFrameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
+        connect(m_managers->cameraManager, &CameraManager::processingFrameReady,
+                this, &ScopeOneCore::submitProcessingFrame,
+                Qt::DirectConnection);
         connect(m_managers->cameraManager, &CameraManager::rawFramesAcquired,
-                this, &ScopeOneCore::rawFramesAcquired);
+                this, [this](const QString& cameraId, quint64 frameCount)
+                {
+                    if constexpr (kFrameRateDiagnosticsEnabled)
+                    {
+                        if (isRealTimeProcessingEnabled())
+                        {
+                            QMutexLocker locker(&m_managers->frameRateCountersMutex);
+                            m_managers->frameRateCounters[cameraId].acquired += frameCount;
+                        }
+                    }
+                    emit rawFramesAcquired(cameraId, frameCount);
+                });
         connect(m_managers->cameraManager, &CameraManager::recordingFramesReady,
                 m_managers->recordingManager, &RecordingManager::onRawFramesReady);
         connect(m_managers->cameraManager, &CameraManager::frameDeliveryFailed,
@@ -1042,7 +1122,12 @@ namespace scopeone::core
                 this, &ScopeOneCore::agentControlServerListening);
 
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
-                this, &ScopeOneCore::handleIncomingRawFrame, Qt::QueuedConnection);
+                this, [this](const ImageFrame& frame)
+                {
+                    handleIncomingRawFrame(frame);
+                    submitProcessingFrame(frame);
+                },
+                Qt::QueuedConnection);
 
         connect(m_managers->recordingManager, &RecordingManager::progressChanged,
                 this,
@@ -1122,21 +1207,8 @@ namespace scopeone::core
                 this, &ScopeOneCore::stageMosaicFinished);
 
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::imageProcessed,
-                this, [this](const ImageFrame& frame, quint64 completedFrameCount)
-                {
-                    if (!frame.isValid() || completedFrameCount == 0)
-                    {
-                        return;
-                    }
-                    const QString layerKey = processedLayerKey(frame.cameraId);
-                    m_imageSceneModel->updateLayerFrame(layerKey, frame);
-                    m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
-                    emit processedFramesCompleted(frame.cameraId, completedFrameCount);
-                    emit processedFrameReady(frame);
-                    queuePreviewProcessedFrame(frame);
-                    scheduleHistogramStats(layerKey, frame);
-                    updateLineProfile(frame.cameraId, true, frame);
-                });
+                this, &ScopeOneCore::handleProcessedFrame,
+                Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
     }
@@ -1341,6 +1413,8 @@ namespace scopeone::core
     {
         ++m_analysisGeneration;
         m_managers->stageMosaicManager->cancel();
+        const bool processingWasEnabled = isRealTimeProcessingEnabled();
+        m_managers->imageProcessingManager->enableRealTimeProcessing(false);
         const QStringList cameraIds = m_cameraIds;
         if (shutdownCameraBackend)
         {
@@ -1364,6 +1438,10 @@ namespace scopeone::core
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
+        if (notify && processingWasEnabled)
+        {
+            emit processingSettingsChanged();
+        }
         if (notify)
         {
             emit hardwareConfigurationChanged();
@@ -1788,10 +1866,84 @@ namespace scopeone::core
         queuePreviewRawFrame(normalizedFrame);
         scheduleHistogramStats(layerKey, normalizedFrame);
         updateLineProfile(cameraId, false, normalizedFrame);
+    }
 
-        if (isRealTimeProcessingEnabled())
+    // Submits one acquisition frame without crossing the UI event queue
+    void ScopeOneCore::submitProcessingFrame(const ImageFrame& frame)
+    {
+        if (!frame.isValid()
+            || !m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
         {
-            processGraphRawFrameAsync(normalizedFrame);
+            return;
+        }
+        if constexpr (kFrameRateDiagnosticsEnabled)
+        {
+            QMutexLocker locker(&m_managers->frameRateCountersMutex);
+            ++m_managers->frameRateCounters[frame.cameraId].input;
+        }
+        m_managers->imageProcessingManager->processFrameAsync(frame);
+    }
+
+    // Publishes every completed frame and coalesces main thread state updates
+    void ScopeOneCore::handleProcessedFrame(const ImageFrame& frame)
+    {
+        if (!frame.isValid())
+        {
+            return;
+        }
+
+        bool queueFlush = false;
+        {
+            QMutexLocker locker(&m_managers->processedDeliveryMutex);
+            if (!m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
+            {
+                return;
+            }
+            Managers::PendingProcessedFrame& pending =
+                m_managers->pendingProcessedFrames[frame.cameraId];
+            pending.frame = frame;
+            ++pending.completedCount;
+            if (!m_managers->processedFlushQueued)
+            {
+                m_managers->processedFlushQueued = true;
+                queueFlush = true;
+            }
+        }
+        if constexpr (kFrameRateDiagnosticsEnabled)
+        {
+            QMutexLocker locker(&m_managers->frameRateCountersMutex);
+            ++m_managers->frameRateCounters[frame.cameraId].processed;
+        }
+        emit processedFrameReady(frame);
+
+        if (queueFlush)
+        {
+            QMetaObject::invokeMethod(this,
+                                      [this]() { schedulePreviewFlush(); },
+                                      Qt::QueuedConnection);
+        }
+    }
+
+    // Applies only the latest processed frame per camera on the main thread
+    void ScopeOneCore::flushProcessedFrames()
+    {
+        QHash<QString, Managers::PendingProcessedFrame> frames;
+        {
+            QMutexLocker locker(&m_managers->processedDeliveryMutex);
+            frames.swap(m_managers->pendingProcessedFrames);
+            m_managers->processedFlushQueued = false;
+        }
+
+        for (auto it = frames.constBegin(); it != frames.constEnd(); ++it)
+        {
+            const ImageFrame& frame = it.value().frame;
+            const QString layerKey = processedLayerKey(frame.cameraId);
+            m_imageSceneModel->updateLayerFrame(layerKey, frame);
+            m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
+            emit processedFramesCompleted(frame.cameraId, it.value().completedCount);
+            m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
+            scheduleHistogramStats(layerKey, frame);
+            updateLineProfile(frame.cameraId, true, frame);
         }
     }
 
@@ -1799,13 +1951,6 @@ namespace scopeone::core
     void ScopeOneCore::queuePreviewRawFrame(const ImageFrame& frame)
     {
         m_pendingPreviewRawFrames.insert(frame.cameraId, frame);
-        schedulePreviewFlush();
-    }
-
-    // Queue the newest processed frame for the display path
-    void ScopeOneCore::queuePreviewProcessedFrame(const ImageFrame& frame)
-    {
-        m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
         schedulePreviewFlush();
     }
 
@@ -1830,6 +1975,7 @@ namespace scopeone::core
     void ScopeOneCore::flushPreviewFrames()
     {
         m_previewPublishTimer.restart();
+        flushProcessedFrames();
         QHash<QString, ImageFrame> rawFrames;
         QHash<QString, ImageFrame> processedFrames;
         rawFrames.swap(m_pendingPreviewRawFrames);
@@ -2092,6 +2238,10 @@ namespace scopeone::core
 
         m_frameGraph.remove(FrameGraphStream::Raw, trimmedCameraId);
         m_frameGraph.remove(FrameGraphStream::Processed, trimmedCameraId);
+        {
+            QMutexLocker locker(&m_managers->processedDeliveryMutex);
+            m_managers->pendingProcessedFrames.remove(trimmedCameraId);
+        }
         m_pendingPreviewRawFrames.remove(trimmedCameraId);
         m_pendingPreviewProcessedFrames.remove(trimmedCameraId);
         const QString rawLayerKey = histogramLayerKey(trimmedCameraId, false);
@@ -2112,6 +2262,11 @@ namespace scopeone::core
     // Clear all processed graph frames
     void ScopeOneCore::clearProcessedFrames()
     {
+        {
+            QMutexLocker locker(&m_managers->processedDeliveryMutex);
+            m_managers->pendingProcessedFrames.clear();
+            m_managers->processedFlushQueued = false;
+        }
         m_frameGraph.clear(FrameGraphStream::Processed);
         m_pendingPreviewProcessedFrames.clear();
         for (const QString& cameraId : m_cameraIds)
@@ -3420,6 +3575,12 @@ namespace scopeone::core
         {
             return false;
         }
+        if constexpr (kFrameRateDiagnosticsEnabled)
+        {
+            QMutexLocker locker(&m_managers->frameRateCountersMutex);
+            m_managers->frameRateCounters.clear();
+            m_managers->frameRateTimer.restart();
+        }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
             if (!enabled)
@@ -3554,16 +3715,6 @@ namespace scopeone::core
         emit processingModulesChanged();
         emit processingSettingsChanged();
         return true;
-    }
-
-    // Queue one graph raw frame for asynchronous live processing
-    void ScopeOneCore::processGraphRawFrameAsync(const ImageFrame& frame)
-    {
-        if (!frame.isValid())
-        {
-            return;
-        }
-        m_managers->imageProcessingManager->processFrameAsync(frame);
     }
 
     // Run one frame through the runtime pipeline synchronously

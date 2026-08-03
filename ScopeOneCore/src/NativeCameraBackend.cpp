@@ -235,9 +235,11 @@ namespace scopeone::core::internal
                         return;
                     }
 
+                    // Preserve every available frame for recording and live processing
                     const bool requiresAllFrames = owner->requiresAllFrames();
+                    const bool requiresHighRateFrames = owner->requiresHighRateFrames();
                     const bool deliverLatest = requiresAllFrames
-                        || owner->requiresHighRateFrames()
+                        || requiresHighRateFrames
                         || !m_deliveryTimer.isValid()
                         || m_deliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs;
                     QList<ImageFrame> frames;
@@ -251,7 +253,9 @@ namespace scopeone::core::internal
                         }
                         const quint64 frameIndex = ++m_frameIndex;
                         ++frameCount;
-                        if (!requiresAllFrames && (remaining > 0 || !deliverLatest))
+                        if (!requiresAllFrames
+                            && !requiresHighRateFrames
+                            && (remaining > 0 || !deliverLatest))
                         {
                             continue;
                         }

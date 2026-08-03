@@ -205,13 +205,17 @@ namespace scopeone::core::internal
         }
     }
 
+    // Routes one producer batch to processing, preview, and recording consumers
     void CameraBackend::submitFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount)
     {
         bool queueFlush = false;
+        QList<ImageFrame> processingFrames;
         {
             QMutexLocker lock(&m_frameDeliveryMutex);
             bool recordingDeliveryEnabled =
                 m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed);
+            const bool processingDeliveryEnabled =
+                m_highRateFrameDeliveryEnabled.load(std::memory_order_relaxed);
             const bool recordingWasEnabled = recordingDeliveryEnabled;
             QString acquiredCameraId;
             quint64 validFrameCount = 0;
@@ -229,6 +233,10 @@ namespace scopeone::core::internal
                 acquiredCameraId = cameraId;
                 ++validFrameCount;
                 m_pendingLatestFrames.insert(cameraId, normalizedFrame);
+                if (processingDeliveryEnabled)
+                {
+                    processingFrames.append(normalizedFrame);
+                }
 
                 if (!recordingDeliveryEnabled)
                 {
@@ -293,6 +301,10 @@ namespace scopeone::core::internal
                 this,
                 [this]() { flushPendingFrames(); },
                 Qt::QueuedConnection);
+        }
+        for (const ImageFrame& frame : processingFrames)
+        {
+            emit processingFrameReady(frame);
         }
     }
 
