@@ -21,7 +21,6 @@ endif ()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 include(GNUInstallDirs)
 
@@ -30,9 +29,6 @@ set(ScopeOneCore_ROOT
         CACHE PATH "ScopeOneCore install prefix"
 )
 if (WIN32)
-    set(OPENCV_DIR "${CMAKE_SOURCE_DIR}/ScopeOneCore/external/opencv-4.12.0")
-    set(OpenCV_DIR "${OPENCV_DIR}/build")
-    set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
     list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
 endif ()
 list(PREPEND CMAKE_PREFIX_PATH "${ScopeOneCore_ROOT}")
@@ -56,13 +52,6 @@ find_package(Qt6 COMPONENTS
 )
 
 find_package(ScopeOneCore CONFIG REQUIRED)
-find_package(OpenCV REQUIRED)
-
-file(GLOB OPENCV_RUNTIME_DLLS
-        LIST_DIRECTORIES false
-        "${OPENCV_BIN_DIR}/opencv_world*.dll"
-        "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
-)
 
 if (WIN32 AND TARGET Qt6::qmake)
     get_target_property(qmake_executable Qt6::qmake IMPORTED_LOCATION)
@@ -131,7 +120,6 @@ target_link_libraries(ScopeOne PRIVATE
         Qt::OpenGLWidgets
         Qt::Network
         Qt::Concurrent
-        ${OpenCV_LIBS}
 )
 target_compile_definitions(ScopeOne PRIVATE
         SCOPEONE_GIT_COMMIT="${SCOPEONE_GIT_COMMIT}"
@@ -143,7 +131,6 @@ target_link_libraries(ScopeOneMcpServer PRIVATE
 target_include_directories(ScopeOne PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_BINARY_DIR}/include
-        ${OpenCV_INCLUDE_DIRS}
 )
 target_include_directories(ScopeOneMcpServer PRIVATE
         ${CMAKE_BINARY_DIR}/include
@@ -183,13 +170,17 @@ target_precompile_headers(ScopeOne PRIVATE
 install(TARGETS ScopeOne ScopeOneMcpServer
         RUNTIME DESTINATION .
 )
+install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/MMConfig_demo.cfg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/MMConfig_demo_dual.cfg"
+        DESTINATION .
+)
 
 file(GLOB SCOPEONE_CORE_RUNTIME_FILES
         LIST_DIRECTORIES false
         "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/*.dll"
         "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_Agent.exe"
 )
-list(APPEND SCOPEONE_CORE_RUNTIME_FILES ${OPENCV_RUNTIME_DLLS})
 
 if (SCOPEONE_CORE_RUNTIME_FILES)
     add_custom_command(TARGET ScopeOne POST_BUILD
@@ -226,18 +217,12 @@ endif ()
 # LTO Release build
 if (MSVC)
     target_compile_options(ScopeOne PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-    )
-    target_compile_definitions(ScopeOne PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
+            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
     )
     target_link_options(ScopeOne PRIVATE
             $<$<CONFIG:Release>:/LTCG>
     )
 endif ()
-
-
-
 if (WIN32)
     install(CODE "
         file(GLOB _core_runtime_files
@@ -265,8 +250,6 @@ if (WIN32)
             D3Dcompiler_47.dll
             dxcompiler.dll
             dxil.dll
-            opencv_world*.dll
-            opencv_videoio_ffmpeg*_64.dll
         )
             file(GLOB _qt_files \"\${_runtime_dir}/\${_pattern}\")
             if (_qt_files)
@@ -282,10 +265,7 @@ if (WIN32)
             platforms
             imageformats
             iconengines
-            networkinformation
             styles
-            tls
-            generic
         )
             if (EXISTS \"\${_runtime_dir}/\${_subdir}\")
                 file(INSTALL
@@ -331,7 +311,6 @@ if (WIN32)
         set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
         set(CPACK_NSIS_INSTALLED_ICON_NAME "ScopeOne.exe")
         set(CPACK_PACKAGE_EXECUTABLES "ScopeOne" "ScopeOne")
-        set(CPACK_CREATE_DESKTOP_LINKS "ScopeOne")
         set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/resources/icon.ico")
         set(CPACK_NSIS_MUI_UNIICON "${CMAKE_SOURCE_DIR}/resources/icon.ico")
         set(CPACK_NSIS_MUI_FINISHPAGE_RUN "ScopeOne.exe")

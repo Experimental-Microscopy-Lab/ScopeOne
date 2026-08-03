@@ -2731,9 +2731,10 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Missing group or config"));
                 return response;
             }
-            if (!m_scopeonecore->setConfig(group, config))
+            QString errorMessage;
+            if (!m_scopeonecore->setConfig(group, config, &errorMessage))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set config"));
+                response.insert(QStringLiteral("error"), errorMessage);
                 return response;
             }
             response = makeResponse(type, true);

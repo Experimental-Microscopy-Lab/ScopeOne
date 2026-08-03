@@ -277,17 +277,14 @@ namespace scopeone::core::internal
                 if (m_exposureMs > 0.0)
                 {
                     m_mmcore->setExposure(m_exposureMs);
-                    finalExposure = m_mmcore->getExposure();
                 }
-                else
+                m_mmcore->waitForDevice(label.c_str());
+                finalExposure = m_mmcore->getExposure();
+                if (finalExposure <= 0.0)
                 {
-                    finalExposure = m_mmcore->getExposure();
-                    if (finalExposure <= 0.0)
-                    {
-                        m_lastError = QStringLiteral("Camera reported an invalid exposure");
-                        setState(State::Error, m_lastError);
-                        return false;
-                    }
+                    m_lastError = QStringLiteral("Camera reported an invalid exposure");
+                    setState(State::Error, m_lastError);
+                    return false;
                 }
                 m_exposureMs = finalExposure;
             }
@@ -790,6 +787,7 @@ namespace scopeone::core::internal
                 m_mmcore->setProperty(m_cameraId.toStdString().c_str(),
                                       name.toStdString().c_str(),
                                       value.toStdString().c_str());
+                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
             }
             catch (const CMMError& mmError)
             {

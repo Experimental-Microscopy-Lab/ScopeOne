@@ -21,7 +21,7 @@ As an open-source project, ScopeOne builds on existing community efforts to redu
 
 ### For Users
 
-Download the latest release package from the [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases) page and extract it. Run `ScopeOne.exe` to start the application.
+Download the latest release installer from the [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases) page.
 
 **System Requirements:**
 
@@ -148,10 +148,11 @@ make -C mmCoreAndDevices/MMDevice -j4
 make -C mmCoreAndDevices/MMCore -j4
 ```
 
-5. Build the specific device adapters you need. The DemoCamera adapter is included for testing and demonstration purposes. You can build additional adapters as needed.
+5. Build the adapters required by the demo configuration. You can build additional adapters as needed.
 
 ```bash
 make -C mmCoreAndDevices/DeviceAdapters/DemoCamera -j4
+make -C mmCoreAndDevices/DeviceAdapters/Utilities -j4
 ```
 
 6. Build and install `ScopeOneCore`:
@@ -176,18 +177,24 @@ The Linux or macOS executable is expected at:
 build/ScopeOne
 ```
 
-To run `config/MMConfig_demo.cfg`, copy the DemoCamera runtime adapter next to the ScopeOne executable.
+To run `config/MMConfig_demo.cfg`, copy its runtime adapters next to the ScopeOne executable.
 
 Linux:
 
 ```bash
-cp -L ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera.so.0 build/
+cp -L \
+  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera.so.0 \
+  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/Utilities/.libs/libmmgr_dal_Utilities.so.0 \
+  build/
 ```
 
 macOS uses an extensionless Mach-O bundle rather than the static `.a` file:
 
 ```bash
-cp ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera build/
+cp \
+  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera \
+  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/Utilities/.libs/libmmgr_dal_Utilities \
+  build/
 ```
 
 ## 🤖 Automation and AI Agents

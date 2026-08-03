@@ -601,6 +601,7 @@ namespace scopeone::core
         ~ScopeOneCore() override;
         static QString getVersion();
         static QString getMMCoreVersion();
+        static QString getOpenCVVersion();
         static QString getLibTiffVersion();
         static QString getZlibVersion();
         static QString rawLayerKey(const QString& cameraId);
@@ -685,7 +686,9 @@ namespace scopeone::core
         QStringList availableConfigGroups() const;
         QStringList availableConfigs(const QString& configGroup) const;
         QString currentConfig(const QString& groupName) const;
-        bool setConfig(const QString& groupName, const QString& configName);
+        bool setConfig(const QString& groupName,
+                       const QString& configName,
+                       QString* errorMessage = nullptr);
 
 
         QStringList loadedDevices() const;
@@ -870,6 +873,7 @@ namespace scopeone::core
         };
 
         void unloadConfigurationForShutdown();
+        void applySystemShutdownPreset();
         void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
         void clearConfigurationRuntime(bool notify, bool shutdownCameraBackend);

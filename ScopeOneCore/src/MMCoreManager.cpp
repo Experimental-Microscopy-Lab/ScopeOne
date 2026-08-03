@@ -60,12 +60,12 @@ namespace scopeone::core::internal
             return QString::fromUtf8(QJsonDocument(property).toJson(QJsonDocument::Compact));
         }
 
-        // Splits one configuration line into command fields
-        QStringList splitConfigLine(const QString& line)
+        // Splits one configuration line while preserving commas in the final field
+        QStringList splitConfigLine(const QString& line, int fieldCount)
         {
             QStringList parts;
             int start = 0;
-            for (int i = 0; i < 3; ++i)
+            for (int i = 1; i < fieldCount; ++i)
             {
                 const int comma = line.indexOf(QLatin1Char(','), start);
                 if (comma < 0)
@@ -79,14 +79,20 @@ namespace scopeone::core::internal
             return parts;
         }
 
-        // Reads explicit property entries from a configuration file
-        QHash<QString, QList<ConfigProperty>> explicitConfigProperties(const QString& configPath)
+        struct ConfigPropertyReplay
         {
-            QHash<QString, QList<ConfigProperty>> properties;
+            QHash<QString, QList<ConfigProperty>> explicitProperties;
+            QHash<QString, QList<ConfigProperty>> startupProperties;
+        };
+
+        // Reads camera property entries that must be replayed by agent processes
+        ConfigPropertyReplay configPropertyReplay(const QString& configPath)
+        {
+            ConfigPropertyReplay replay;
             QFile file(configPath);
             if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
             {
-                return properties;
+                return replay;
             }
 
             QTextStream stream(&file);
@@ -98,21 +104,34 @@ namespace scopeone::core::internal
                     continue;
                 }
 
-                const QStringList parts = splitConfigLine(line);
-                if (parts.size() != 4 || parts[0] != QStringLiteral("Property"))
+                const QStringList propertyParts = splitConfigLine(line, 4);
+                if (propertyParts.size() == 4
+                    && propertyParts[0] == QStringLiteral("Property"))
                 {
+                    const QString deviceLabel = propertyParts[1];
+                    const QString propertyName = propertyParts[2];
+                    const QString propertyValue = propertyParts[3];
+                    if (!deviceLabel.isEmpty() && !propertyName.isEmpty())
+                    {
+                        replay.explicitProperties[deviceLabel].append(
+                            ConfigProperty{propertyName, propertyValue});
+                    }
                     continue;
                 }
 
-                const QString deviceLabel = parts[1];
-                const QString propertyName = parts[2];
-                const QString propertyValue = parts[3];
-                if (!deviceLabel.isEmpty() && !propertyName.isEmpty() && !propertyValue.isEmpty())
+                const QStringList configParts = splitConfigLine(line, 6);
+                if (configParts.size() == 6
+                    && configParts[0] == QStringLiteral("ConfigGroup")
+                    && configParts[1] == QString::fromLatin1(MM::g_CFGGroup_System)
+                    && configParts[2] == QString::fromLatin1(MM::g_CFGGroup_System_Startup)
+                    && !configParts[3].isEmpty()
+                    && !configParts[4].isEmpty())
                 {
-                    properties[deviceLabel].append(ConfigProperty{propertyName, propertyValue});
+                    replay.startupProperties[configParts[3]].append(
+                        ConfigProperty{configParts[4], configParts[5]});
                 }
             }
-            return properties;
+            return replay;
         }
 
         // Separates replayable config properties by initialization phase
@@ -135,7 +154,7 @@ namespace scopeone::core::internal
                     const QString propertyName = configProperty.name.trimmed();
                     const QString propertyValue = configProperty.value.trimmed();
 
-                    if (propertyName.isEmpty() || propertyValue.isEmpty())
+                    if (propertyName.isEmpty())
                     {
                         continue;
                     }
@@ -244,7 +263,7 @@ namespace scopeone::core::internal
     QList<MMCoreManager::CameraLoadInfo> loadedCameraInfos(
         CMMCore& core,
         const QStringList& loadedDevices,
-        const QHash<QString, QList<ConfigProperty>>& explicitProperties)
+        const ConfigPropertyReplay& replay)
     {
         QList<MMCoreManager::CameraLoadInfo> cameras;
         cameras.reserve(loadedDevices.size());
@@ -289,9 +308,13 @@ namespace scopeone::core::internal
                 const DevicePropertyState propertyState = prepareConfigPropertyReplay(
                     core,
                     deviceName,
-                    explicitProperties.value(deviceName));
+                    replay.explicitProperties.value(deviceName));
                 info.preInitProperties = propertyState.preInitProperties;
                 info.properties = propertyState.properties;
+                for (const ConfigProperty& property : replay.startupProperties.value(deviceName))
+                {
+                    info.properties.append(encodePropertyPayload(property.name, property.value));
+                }
 
                 cameras.append(std::move(info));
             }
@@ -327,9 +350,9 @@ namespace scopeone::core::internal
         {
             qWarning().noquote() << QString("Failed to query loaded devices: %1").arg(listError);
         }
-        const QHash<QString, QList<ConfigProperty>> explicitProperties = explicitConfigProperties(configPath);
+        const ConfigPropertyReplay propertyReplay = configPropertyReplay(configPath);
         const QList<CameraLoadInfo> cameraInfos =
-            loadedCameraInfos(*m_mmcore, loadedDevices, explicitProperties);
+            loadedCameraInfos(*m_mmcore, loadedDevices, propertyReplay);
         const bool useSingleCamera = cameraInfos.size() == 1;
 
         int successCount = 0;

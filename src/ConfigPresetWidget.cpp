@@ -124,7 +124,10 @@ namespace scopeone::ui
             const QString currentPreset = m_scopeonecore->currentConfig(group);
 
             auto* combo = new NoWheelComboBox(m_configTree);
-            combo->addItems(presets);
+            for (const QString& preset : presets)
+            {
+                combo->addItem(preset, true);
+            }
             combo->setEnabled(!presets.isEmpty());
 
             const int currentIndex = combo->findText(currentPreset);
@@ -132,22 +135,23 @@ namespace scopeone::ui
             {
                 combo->setCurrentIndex(currentIndex);
             }
-            else if (!currentPreset.isEmpty())
+            else
             {
-                combo->addItem(currentPreset);
-                combo->setCurrentText(currentPreset);
+                combo->insertItem(0, tr("Custom"), false);
+                combo->setCurrentIndex(0);
             }
 
             connect(combo, &QComboBox::currentTextChanged, this,
                     [this, group, combo](const QString& preset)
                     {
-                        if (m_updating || preset.isEmpty())
+                        if (m_updating || !combo->currentData().toBool())
                         {
                             return;
                         }
-                        if (!m_scopeonecore->setConfig(group, preset))
+                        QString errorMessage;
+                        if (!m_scopeonecore->setConfig(group, preset, &errorMessage))
                         {
-                            emit errorOccurred(QString("Failed to set config %1 = %2").arg(group, preset));
+                            emit errorOccurred(errorMessage);
                             refresh();
                             return;
                         }

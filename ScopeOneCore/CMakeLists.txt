@@ -8,7 +8,9 @@ set(CMAKE_CXX_STANDARD 20)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install")
+if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install" CACHE PATH "Install path" FORCE)
+endif ()
 if (WIN32)
     list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
 endif ()
@@ -23,26 +25,19 @@ set(SCOPEWRITER_BUILD_TESTS OFF)
 add_subdirectory(external/ScopeWriter)
 
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 if (WIN32)
     set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
 
-    set(OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0")
-    set(OpenCV_DIR "${OPENCV_DIR}/build")
-    set(OPENCV_BIN_DIR "${OPENCV_DIR}/build/x64/vc16/bin")
+    set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0/build")
 
-    find_package(OpenCV REQUIRED)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    set(SCOPEONE_OPENCV_LIBRARIES opencv_world)
 
-    file(GLOB OPENCV_RUNTIME_DLLS
-            "${OPENCV_BIN_DIR}/opencv_world*.dll"
-            "${OPENCV_BIN_DIR}/opencv_videoio_ffmpeg*_64.dll"
-    )
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
 
     set(SCOPEONE_RUNTIME_DLLS
-            ${OPENCV_RUNTIME_DLLS}
+            $<TARGET_FILE:opencv_world>
             ${MMCORE_RUNTIME_DLLS}
     )
 
@@ -57,6 +52,7 @@ else ()
     # built from the sibling micro-manager checkout (symlinked into
     # external/mmCoreAndDevices). No runtime DLLs to stage.
     find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    set(SCOPEONE_OPENCV_LIBRARIES ${OpenCV_LIBS})
     set(MMCORE_BIN_DIR "")
 
     add_library(MMCore STATIC IMPORTED GLOBAL)
@@ -136,7 +132,7 @@ target_link_libraries(ScopeOneCore
         MMCore
         Qt::Network
         Qt::Concurrent
-        ${OpenCV_LIBS}
+        ${SCOPEONE_OPENCV_LIBRARIES}
         ScopeWriter::ScopeWriter
 )
 target_compile_definitions(ScopeOneCore PRIVATE
@@ -220,20 +216,14 @@ scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Age
 # LTO Release build
 if (MSVC)
     target_compile_options(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-    )
-    target_compile_definitions(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
+            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
     )
     target_link_options(ScopeOneCore PRIVATE
             $<$<CONFIG:Release>:/LTCG>
     )
 
     target_compile_options(ScopeOne_Agent PRIVATE
-            $<$<CONFIG:Release>:/O2 /GL /fp:fast /arch:AVX2>
-    )
-    target_compile_definitions(ScopeOne_Agent PRIVATE
-            $<$<CONFIG:Release>:NDEBUG>
+            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
     )
     target_link_options(ScopeOne_Agent PRIVATE
             $<$<CONFIG:Release>:/LTCG>
@@ -246,10 +236,6 @@ configure_package_config_file(
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfig.cmake"
         INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ScopeOneCore"
 )
-export(TARGETS ScopeOneCore
-        FILE "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreTargets.cmake"
-        NAMESPACE scopeone::
-)
 write_basic_package_version_file(
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfigVersion.cmake"
         VERSION "${PROJECT_VERSION}"
@@ -261,7 +247,6 @@ install(TARGETS ScopeOneCore
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-        INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 install(TARGETS ScopeOne_Agent
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"

@@ -8,7 +8,6 @@
 #include <QPushButton>
 #include <QSysInfo>
 #include <QTextBrowser>
-#include <opencv2/core/version.hpp>
 
 namespace scopeone::ui
 {
@@ -61,6 +60,7 @@ namespace scopeone::ui
         const QString title = QStringLiteral(SCOPEONE_APP_NAME " " SCOPEONE_APP_VERSION_STRING);
         const QString coreVersion = scopeone::core::ScopeOneCore::getVersion();
         const QString mmCoreVersion = scopeone::core::ScopeOneCore::getMMCoreVersion();
+        const QString openCvVersion = scopeone::core::ScopeOneCore::getOpenCVVersion();
         const QString libTiffVersion = scopeone::core::ScopeOneCore::getLibTiffVersion();
         const QString zlibVersion = scopeone::core::ScopeOneCore::getZlibVersion();
         const QString commit = QStringLiteral(SCOPEONE_GIT_COMMIT);
@@ -103,7 +103,7 @@ Licensed under the BSD 3-Clause License.
                  coreVersion.toHtmlEscaped(),
                  mmCoreVersion.toHtmlEscaped(),
                  QString::fromLatin1(qVersion()).toHtmlEscaped(),
-                 QStringLiteral(CV_VERSION).toHtmlEscaped(),
+                 openCvVersion.toHtmlEscaped(),
                  libTiffVersion.toHtmlEscaped(),
                  zlibVersion.toHtmlEscaped(),
                  platformInfo.toHtmlEscaped()));

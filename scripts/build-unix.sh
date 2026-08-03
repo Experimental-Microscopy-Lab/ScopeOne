@@ -12,11 +12,13 @@ case "$(uname -s)" in
   Linux*)
     PLATFORM_NAME="Linux"
     DEMO_ADAPTER_NAME="libmmgr_dal_DemoCamera.so.0"
+    UTILITIES_ADAPTER_NAME="libmmgr_dal_Utilities.so.0"
     DEFAULT_JOBS="$(nproc)"
     ;;
   Darwin*)
     PLATFORM_NAME="macOS"
     DEMO_ADAPTER_NAME="libmmgr_dal_DemoCamera"
+    UTILITIES_ADAPTER_NAME="libmmgr_dal_Utilities"
     DEFAULT_JOBS="$(sysctl -n hw.logicalcpu)"
     ;;
   *)
@@ -27,6 +29,7 @@ esac
 
 JOBS="${JOBS:-$DEFAULT_JOBS}"
 DEMO_ADAPTER="$MMCORE_LINK/DeviceAdapters/DemoCamera/.libs/$DEMO_ADAPTER_NAME"
+UTILITIES_ADAPTER="$MMCORE_LINK/DeviceAdapters/Utilities/.libs/$UTILITIES_ADAPTER_NAME"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -80,6 +83,7 @@ step "Building required Micro-Manager components"
   run make -C "$MMCORE_LINK/MMDevice" -j "$JOBS"
   run make -C "$MMCORE_LINK/MMCore" -j "$JOBS"
   run make -C "$MMCORE_LINK/DeviceAdapters/DemoCamera" -j "$JOBS"
+  run make -C "$MMCORE_LINK/DeviceAdapters/Utilities" -j "$JOBS"
 )
 
 step "Building and installing ScopeOneCore"
@@ -91,12 +95,16 @@ step "Building ScopeOne GUI"
 run cmake -S "$ROOT_DIR" -B "$ROOT_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 run cmake --build "$ROOT_DIR/build" --parallel "$JOBS"
 
-step "Copying DemoCamera adapter"
+step "Copying demo adapters"
 if [[ ! -f "$DEMO_ADAPTER" ]]; then
   echo "DemoCamera adapter was not found: $DEMO_ADAPTER" >&2
   exit 1
 fi
-run cp -L "$DEMO_ADAPTER" "$ROOT_DIR/build/"
+if [[ ! -f "$UTILITIES_ADAPTER" ]]; then
+  echo "Utilities adapter was not found: $UTILITIES_ADAPTER" >&2
+  exit 1
+fi
+run cp -L "$DEMO_ADAPTER" "$UTILITIES_ADAPTER" "$ROOT_DIR/build/"
 
 step "Done"
 echo "GUI executable: $ROOT_DIR/build/ScopeOne"

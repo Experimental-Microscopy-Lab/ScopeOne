@@ -29,6 +29,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <QtConcurrent>
+#include <opencv2/core/version.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -903,6 +904,12 @@ namespace scopeone::core
             .arg(CMMCore::getMMCoreVersionPatch());
     }
 
+    // Return the compiled OpenCV version
+    QString ScopeOneCore::getOpenCVVersion()
+    {
+        return QStringLiteral(CV_VERSION);
+    }
+
     // Return the ScopeWriter libtiff version
     QString ScopeOneCore::getLibTiffVersion()
     {
@@ -1193,13 +1200,25 @@ namespace scopeone::core
         return running;
     }
 
-    // Return the global scale assigned to one camera
+    // Return the effective scale for one camera
     double ScopeOneCore::cameraPixelSizeUm(const QString& cameraId) const
     {
-        return m_managers->cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
+        const QString camera = cameraId.trimmed();
+        const auto overrideIt = m_managers->cameraPixelSizesUm.constFind(camera);
+        if (overrideIt != m_managers->cameraPixelSizesUm.constEnd())
+        {
+            return overrideIt.value();
+        }
+        if (!m_managers->cameraManager->usesAgentBackend()
+            && m_cameraIds.size() == 1
+            && m_cameraIds.first() == camera)
+        {
+            return core()->getPixelSizeUm();
+        }
+        return 0.0;
     }
 
-    // Assign one global scale to a camera
+    // Assign a session scale override to one camera
     bool ScopeOneCore::setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm)
     {
         const QString camera = cameraId.trimmed();
@@ -1283,6 +1302,7 @@ namespace scopeone::core
     // Releases hardware synchronously during facade destruction
     void ScopeOneCore::unloadConfigurationForShutdown()
     {
+        applySystemShutdownPreset();
         clearConfigurationRuntime(false, true);
         auto handle = core();
         try
@@ -1291,6 +1311,28 @@ namespace scopeone::core
         }
         catch (const CMMError&)
         {
+        }
+    }
+
+    // Apply the configured hardware shutdown state before releasing devices
+    void ScopeOneCore::applySystemShutdownPreset()
+    {
+        auto handle = core();
+        try
+        {
+            if (!handle->isConfigDefined(
+                    MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown))
+            {
+                return;
+            }
+            m_managers->cameraManager->stopPreview();
+            setConfig(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown);
+        }
+        catch (const CMMError& error)
+        {
+            qWarning().noquote()
+                << QString("Failed to inspect System/Shutdown preset: %1")
+                       .arg(QString::fromStdString(error.getMsg()));
         }
     }
 
@@ -1340,6 +1382,7 @@ namespace scopeone::core
             return false;
         }
 
+        applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
         m_managers->cameraManager->shutdown(
@@ -1423,6 +1466,7 @@ namespace scopeone::core
             return false;
         }
 
+        applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
         m_managers->cameraManager->shutdown(
@@ -2758,7 +2802,71 @@ namespace scopeone::core
         }
         try
         {
-            return QString::fromStdString(handle->getCurrentConfig(groupName.toStdString().c_str()));
+            if (m_managers->cameraManager->usesAgentBackend())
+            {
+                const std::string group = groupName.toStdString();
+                const std::vector<std::string> configs = handle->getAvailableConfigs(group.c_str());
+                QHash<QString, QString> currentValues;
+                QSet<QString> failedProperties;
+                for (const std::string& config : configs)
+                {
+                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
+                    bool matches = true;
+                    for (size_t index = 0; index < preset.size(); ++index)
+                    {
+                        const PropertySetting setting = preset.getSetting(index);
+                        const QString device = QString::fromStdString(setting.getDeviceLabel());
+                        const QString property = QString::fromStdString(setting.getPropertyName());
+                        const QString key = device + QChar(0x1f) + property;
+                        if (!currentValues.contains(key) && !failedProperties.contains(key))
+                        {
+                            if (isConfiguredCamera(device))
+                            {
+                                const QString value = m_managers->cameraManager->getProperty(
+                                    device, property, false);
+                                if (value.isNull())
+                                {
+                                    failedProperties.insert(key);
+                                }
+                                else
+                                {
+                                    currentValues.insert(key, value);
+                                }
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    currentValues.insert(
+                                        key,
+                                        QString::fromStdString(
+                                            handle->getProperty(
+                                                setting.getDeviceLabel().c_str(),
+                                                setting.getPropertyName().c_str())));
+                                }
+                                catch (const CMMError&)
+                                {
+                                    failedProperties.insert(key);
+                                }
+                            }
+                        }
+                        if (failedProperties.contains(key)
+                            || currentValues.value(key)
+                                   != QString::fromStdString(setting.getPropertyValue()))
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches)
+                    {
+                        return QString::fromStdString(config);
+                    }
+                }
+                return {};
+            }
+            return QString::fromStdString(
+                handle->getCurrentConfig(groupName.toStdString().c_str()));
         }
         catch (const CMMError&)
         {
@@ -2767,14 +2875,35 @@ namespace scopeone::core
     }
 
     // Apply a configuration preset while camera previews are paused
-    bool ScopeOneCore::setConfig(const QString& groupName, const QString& configName)
+    bool ScopeOneCore::setConfig(const QString& groupName,
+                                 const QString& configName,
+                                 QString* errorMessage)
     {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
         auto handle = core();
         if (m_configurationOperationRunning
             || m_pendingStageCommands > 0
             || groupName.isEmpty()
             || configName.isEmpty())
         {
+            if (errorMessage)
+            {
+                if (m_configurationOperationRunning)
+                {
+                    *errorMessage = QStringLiteral("A configuration operation is running");
+                }
+                else if (m_pendingStageCommands > 0)
+                {
+                    *errorMessage = QStringLiteral("A stage command is running");
+                }
+                else
+                {
+                    *errorMessage = QStringLiteral("Invalid config preset");
+                }
+            }
             return false;
         }
         const QStringList runningPreviewIds = runningPreviewCameraIds();
@@ -2782,13 +2911,102 @@ namespace scopeone::core
         {
             try
             {
-                handle->setConfig(groupName.toStdString().c_str(), configName.toStdString().c_str());
-                handle->waitForSystem();
+                const std::string group = groupName.toStdString();
+                const std::string config = configName.toStdString();
+                const bool agentMode = m_managers->cameraManager->usesAgentBackend();
+                if (!agentMode)
+                {
+                    handle->setConfig(group.c_str(), config.c_str());
+                }
+                else
+                {
+                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
+                    std::vector<PropertySetting> pending;
+                    pending.reserve(preset.size());
+                    for (size_t index = 0; index < preset.size(); ++index)
+                    {
+                        pending.push_back(preset.getSetting(index));
+                    }
+                    while (!pending.empty())
+                    {
+                        std::vector<PropertySetting> failed;
+                        QString failureDescription;
+                        for (const PropertySetting& setting : pending)
+                        {
+                            const QString device = QString::fromStdString(setting.getDeviceLabel());
+                            const QString property = QString::fromStdString(setting.getPropertyName());
+                            const QString value = QString::fromStdString(setting.getPropertyValue());
+                            if (isConfiguredCamera(device))
+                            {
+                                QString error;
+                                if (!m_managers->cameraManager->setProperty(
+                                        device, property, value, &error))
+                                {
+                                    failed.push_back(setting);
+                                    failureDescription = QString("%1.%2 = %3: %4")
+                                        .arg(device, property, value, error);
+                                }
+                                continue;
+                            }
+                            try
+                            {
+                                handle->setProperty(setting.getDeviceLabel().c_str(),
+                                                    setting.getPropertyName().c_str(),
+                                                    setting.getPropertyValue().c_str());
+                            }
+                            catch (const CMMError& error)
+                            {
+                                failed.push_back(setting);
+                                failureDescription = QString("%1.%2 = %3: %4")
+                                    .arg(device,
+                                         property,
+                                         value,
+                                         QString::fromStdString(error.getMsg()));
+                            }
+                        }
+                        if (failed.empty())
+                        {
+                            break;
+                        }
+                        if (failed.size() == pending.size())
+                        {
+                            const QString message =
+                                QString("Failed to apply config preset %1 = %2 at %3")
+                                    .arg(groupName, configName, failureDescription);
+                            if (errorMessage)
+                            {
+                                *errorMessage = message;
+                            }
+                            qWarning().noquote()
+                                << message;
+                            return false;
+                        }
+                        pending = std::move(failed);
+                    }
+                }
+                if (agentMode)
+                {
+                    handle->waitForSystem();
+                }
+                else
+                {
+                    handle->waitForConfig(group.c_str(), config.c_str());
+                }
                 handle->updateSystemStateCache();
                 return true;
             }
-            catch (const CMMError&)
+            catch (const CMMError& error)
             {
+                const QString message = QString("Failed to apply config preset %1 = %2: %3")
+                                            .arg(groupName,
+                                                 configName,
+                                                 QString::fromStdString(error.getMsg()));
+                if (errorMessage)
+                {
+                    *errorMessage = message;
+                }
+                qWarning().noquote()
+                    << message;
                 return false;
             }
         });

@@ -151,6 +151,12 @@ namespace scopeone::core::internal
         return m_backend && m_backend->stopPreview();
     }
 
+    // Report whether cameras are isolated in agent processes
+    bool CameraManager::usesAgentBackend() const
+    {
+        return m_backend && m_backend->kind() == CameraBackend::Kind::Agent;
+    }
+
     bool CameraManager::startPreviewFor(const QString& cameraId)
     {
         const QString normalizedId = normalizedCameraId(cameraId);

@@ -36,6 +36,7 @@ namespace scopeone::core::internal
 
         bool startPreview();
         bool stopPreview();
+        bool usesAgentBackend() const;
         bool startPreviewFor(const QString& cameraId);
         bool stopPreviewFor(const QString& cameraId);
         bool isPreviewRunning(const QString& cameraId) const;
