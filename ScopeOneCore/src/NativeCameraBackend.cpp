@@ -124,10 +124,12 @@ namespace scopeone::core::internal
             bool startNativeStream();
             bool stopNativeStream();
             void setWorkerPaused(bool paused);
-            void submitWorkerFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount);
+            void submitWorkerFrames(const QList<ImageFrame>& frames,
+                                    quint64 acquiredFrameCount,
+                                    quint64 recordingToken);
             void submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token);
             quint64 tryAcquireWorkerProcessingFrame();
-            bool requiresAllFrames() const;
+            quint64 workerRecordingFrameDeliveryToken() const;
             bool requiresHighRateFrames() const;
             void handleStreamFailure(quint64 generation,
                                      const QString& cameraId,
@@ -238,7 +240,8 @@ namespace scopeone::core::internal
                     }
 
                     // Copy all recording frames but admit only one live processing frame at a time
-                    const bool requiresAllFrames = owner->requiresAllFrames();
+                    const quint64 recordingToken = owner->workerRecordingFrameDeliveryToken();
+                    const bool requiresAllFrames = recordingToken != 0;
                     const bool requiresHighRateFrames = owner->requiresHighRateFrames();
                     const bool deliverLatest = requiresAllFrames
                         || !m_deliveryTimer.isValid()
@@ -298,7 +301,8 @@ namespace scopeone::core::internal
                         if (!frames.isEmpty())
                         {
                             owner->submitWorkerFrames(frames,
-                                                      static_cast<quint64>(frameCount));
+                                                      static_cast<quint64>(frameCount),
+                                                      recordingToken);
                         }
                     }
                     else
@@ -309,7 +313,9 @@ namespace scopeone::core::internal
                             const quint64 acquiredFrameCount = m_pendingAcquiredFrameCount;
                             m_pendingAcquiredFrameCount = 0;
                             m_deliveryTimer.restart();
-                            owner->submitWorkerFrames(frames, acquiredFrameCount);
+                            owner->submitWorkerFrames(frames,
+                                                      acquiredFrameCount,
+                                                      recordingToken);
                         }
                     }
                     updatePollingInterval(frameCount);
@@ -927,13 +933,10 @@ namespace scopeone::core::internal
         }
 
         void NativeCameraBackend::submitWorkerFrames(const QList<ImageFrame>& frames,
-                                                      quint64 acquiredFrameCount)
+                                                      quint64 acquiredFrameCount,
+                                                      quint64 recordingToken)
         {
-            if (frames.isEmpty())
-            {
-                return;
-            }
-            submitFrames(frames, acquiredFrameCount);
+            submitFrames(frames, acquiredFrameCount, recordingToken);
         }
 
         void NativeCameraBackend::submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token)
@@ -946,9 +949,9 @@ namespace scopeone::core::internal
             return tryAcquireProcessingFrame(m_cameraId);
         }
 
-        bool NativeCameraBackend::requiresAllFrames() const
+        quint64 NativeCameraBackend::workerRecordingFrameDeliveryToken() const
         {
-            return recordingFrameDeliveryEnabled();
+            return recordingFrameDeliveryToken();
         }
 
         bool NativeCameraBackend::requiresHighRateFrames() const

@@ -74,10 +74,16 @@ namespace scopeone::core::internal
                                               double exposureMs)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
-        return core
+        const bool configured = core
             && !normalizedId.isEmpty()
             && activateBackend(CameraBackend::Kind::Native)
             && m_backend->configureNativeCamera(core, normalizedId, exposureMs);
+        if (configured)
+        {
+            m_propertyNamesCache.remove(normalizedId);
+            m_propertyDetailsCache.clear();
+        }
+        return configured;
     }
 
     bool CameraManager::addAgentCamera(const QString& cameraId,
@@ -88,7 +94,7 @@ namespace scopeone::core::internal
                                        double exposureMs)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
-        return !normalizedId.isEmpty()
+        const bool configured = !normalizedId.isEmpty()
             && activateBackend(CameraBackend::Kind::Agent)
             && m_backend->addAgentCamera(normalizedId,
                                          adapter,
@@ -96,6 +102,12 @@ namespace scopeone::core::internal
                                          preInitProperties,
                                          properties,
                                          exposureMs);
+        if (configured)
+        {
+            m_propertyNamesCache.remove(normalizedId);
+            m_propertyDetailsCache.clear();
+        }
+        return configured;
     }
 
     void CameraManager::shutdownNow()
@@ -104,6 +116,7 @@ namespace scopeone::core::internal
         m_backend.reset();
         m_recordingFrameDeliveryEnabled = false;
         m_highRateFrameDeliveryEnabled = false;
+        m_propertyNamesCache.clear();
         m_propertyDetailsCache.clear();
     }
 
@@ -115,6 +128,7 @@ namespace scopeone::core::internal
         {
             m_recordingFrameDeliveryEnabled = false;
             m_highRateFrameDeliveryEnabled = false;
+            m_propertyNamesCache.clear();
             m_propertyDetailsCache.clear();
             if (completion)
             {
@@ -140,6 +154,7 @@ namespace scopeone::core::internal
                 {
                     m_recordingFrameDeliveryEnabled = false;
                     m_highRateFrameDeliveryEnabled = false;
+                    m_propertyNamesCache.clear();
                     m_propertyDetailsCache.clear();
                 }
                 if (completion)
@@ -195,7 +210,7 @@ namespace scopeone::core::internal
     bool CameraManager::setRecordingFrameDeliveryEnabled(bool enabled)
     {
         const bool ok = !m_backend || m_backend->setRecordingFrameDeliveryEnabled(enabled);
-        if (ok)
+        if (ok || !enabled)
         {
             m_recordingFrameDeliveryEnabled = enabled;
         }
@@ -232,15 +247,32 @@ namespace scopeone::core::internal
     bool CameraManager::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
         const QString target = cameraIdOrAll.trimmed();
-        return !target.isEmpty() && m_backend && m_backend->setExposure(target, exposureMs);
+        const bool ok = !target.isEmpty() && m_backend && m_backend->setExposure(target, exposureMs);
+        if (ok)
+        {
+            m_propertyDetailsCache.clear();
+        }
+        return ok;
     }
 
     QStringList CameraManager::listProperties(const QString& cameraId)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
-        return normalizedId.isEmpty() || !m_backend
-                   ? QStringList{}
-                   : m_backend->listProperties(normalizedId);
+        if (normalizedId.isEmpty() || !m_backend)
+        {
+            return {};
+        }
+        const auto cached = m_propertyNamesCache.constFind(normalizedId);
+        if (cached != m_propertyNamesCache.constEnd())
+        {
+            return cached.value();
+        }
+        const QStringList names = m_backend->listProperties(normalizedId);
+        if (!names.isEmpty())
+        {
+            m_propertyNamesCache.insert(normalizedId, names);
+        }
+        return names;
     }
 
     QString CameraManager::getProperty(const QString& cameraId,
@@ -249,6 +281,14 @@ namespace scopeone::core::internal
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const QString cacheKey = propertyCacheKey(normalizedId, name);
+        if (fromCache)
+        {
+            const auto cached = m_propertyDetailsCache.constFind(cacheKey);
+            if (cached != m_propertyDetailsCache.constEnd())
+            {
+                return cached.value().value;
+            }
+        }
         CameraPropertyReadback readback;
         if (normalizedId.isEmpty()
             || !m_backend
@@ -275,7 +315,7 @@ namespace scopeone::core::internal
         const bool ok = m_backend->setProperty(normalizedId, name, value, errorMessage);
         if (ok)
         {
-            m_propertyDetailsCache.remove(propertyCacheKey(normalizedId, name));
+            m_propertyDetailsCache.clear();
         }
         return ok;
     }
@@ -360,15 +400,25 @@ namespace scopeone::core::internal
     bool CameraManager::setROI(const QString& cameraId, int x, int y, int width, int height)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
-        return !normalizedId.isEmpty()
+        const bool ok = !normalizedId.isEmpty()
             && m_backend
             && m_backend->setROI(normalizedId, x, y, width, height);
+        if (ok)
+        {
+            m_propertyDetailsCache.clear();
+        }
+        return ok;
     }
 
     bool CameraManager::clearROI(const QString& cameraId)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
-        return !normalizedId.isEmpty() && m_backend && m_backend->clearROI(normalizedId);
+        const bool ok = !normalizedId.isEmpty() && m_backend && m_backend->clearROI(normalizedId);
+        if (ok)
+        {
+            m_propertyDetailsCache.clear();
+        }
+        return ok;
     }
 
     bool CameraManager::getROI(const QString& cameraId, int& x, int& y, int& width, int& height)

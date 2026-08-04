@@ -858,7 +858,8 @@ namespace scopeone::core::internal
                                 const QJsonObject& request,
                                 QJsonObject* response,
                                 int timeoutMs);
-        bool sendFrameDeliveryMode(const QString& cameraId, AgentFrameDeliveryMode mode);
+        bool sendFrameDeliveryModes(const QStringList& cameraIds,
+                                    AgentFrameDeliveryMode mode);
         void stopAgentProcessesAsync();
         void completeAsyncShutdown();
 
@@ -1402,16 +1403,62 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Selects the requested producer delivery policy in one agent
-    bool AgentCameraBackend::sendFrameDeliveryMode(const QString& cameraId,
-                                                   AgentFrameDeliveryMode mode)
+    // Switches multiple agent producers within one bounded wait
+    bool AgentCameraBackend::sendFrameDeliveryModes(const QStringList& cameraIds,
+                                                    AgentFrameDeliveryMode mode)
     {
         QJsonObject request;
         request.insert(agent::kMessageTypeField, agent::kCommandSetFrameDeliveryMode);
         request.insert(QStringLiteral("mode"), frameDeliveryModeName(mode));
-        QJsonObject response;
-        return sendControlCommand(cameraId, request, &response, 1200)
-            && response.value(QStringLiteral("ok")).toBool(false);
+
+        struct BatchState
+        {
+            int pendingRequests{0};
+            bool allSucceeded{true};
+            QPointer<QEventLoop> loop;
+        };
+        auto state = std::make_shared<BatchState>();
+        QEventLoop loop;
+        state->loop = &loop;
+        for (const QString& cameraId : cameraIds)
+        {
+            const auto it = m_cameras.constFind(cameraId);
+            if (it == m_cameras.constEnd() || !it.value() || !it.value()->control)
+            {
+                state->allSucceeded = false;
+                continue;
+            }
+
+            ++state->pendingRequests;
+            if (!it.value()->control->sendRequest(
+                    request,
+                    1200,
+                    [state](bool requestOk,
+                            const QJsonObject& response,
+                            const QString&)
+                    {
+                        if (!requestOk || !response.value(QStringLiteral("ok")).toBool(false))
+                        {
+                            state->allSucceeded = false;
+                        }
+                        --state->pendingRequests;
+                        if (state->pendingRequests == 0 && state->loop)
+                        {
+                            state->loop->quit();
+                        }
+                    }))
+            {
+                --state->pendingRequests;
+                state->allSucceeded = false;
+            }
+        }
+
+        if (state->pendingRequests > 0)
+        {
+            loop.exec();
+        }
+        state->loop.clear();
+        return state->allSucceeded;
     }
 
     bool AgentFrameWorker::copyFrame(ReaderSlot& slot,
@@ -1603,7 +1650,8 @@ namespace scopeone::core::internal
         ReaderSlot& slot = *it.value();
         QList<ImageFrame> frames;
         quint64 acquiredFrameCount = 0;
-        const bool recording = m_owner->recordingFrameDeliveryEnabled();
+        const quint64 recordingToken = m_owner->recordingFrameDeliveryToken();
+        const bool recording = recordingToken != 0;
         const bool highRate = m_owner->highRateFrameDeliveryEnabled();
         const quint64 processingToken = publishFrames && highRate
             ? m_owner->tryAcquireProcessingFrame(cameraId)
@@ -1650,7 +1698,9 @@ namespace scopeone::core::internal
             && !frames.isEmpty()
             && (recording || !highRate || previewFrameSelected))
         {
-            m_owner->submitFrames(frames, slot.pendingAcquiredFrameCount);
+            m_owner->submitFrames(frames,
+                                  slot.pendingAcquiredFrameCount,
+                                  recordingToken);
             slot.pendingAcquiredFrameCount = 0;
             slot.previewDeliveryTimer.restart();
         }
@@ -1817,37 +1867,21 @@ namespace scopeone::core::internal
         if (!enabled)
         {
             CameraBackend::setRecordingFrameDeliveryEnabled(false);
-            bool ok = true;
-            for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it)
-            {
-                ok = it.value() && sendFrameDeliveryMode(it.key(), previewMode) && ok;
-            }
-            return ok;
+            return sendFrameDeliveryModes(m_cameras.keys(), previewMode);
         }
 
-        QStringList updatedCameraIds;
-        for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it)
+        const QStringList cameraIds = m_cameras.keys();
+        if (!sendFrameDeliveryModes(cameraIds, AgentFrameDeliveryMode::AllFrames))
         {
-            if (!it.value()
-                || !sendFrameDeliveryMode(it.key(), AgentFrameDeliveryMode::AllFrames))
-            {
-                for (const QString& cameraId : updatedCameraIds)
-                {
-                    sendFrameDeliveryMode(cameraId, previewMode);
-                }
-                return false;
-            }
-            updatedCameraIds.append(it.key());
+            sendFrameDeliveryModes(cameraIds, previewMode);
+            return false;
         }
 
-        for (const QString& cameraId : updatedCameraIds)
+        for (const QString& cameraId : cameraIds)
         {
             if (!prepareFrameReader(cameraId))
             {
-                for (const QString& updatedCameraId : updatedCameraIds)
-                {
-                    sendFrameDeliveryMode(updatedCameraId, previewMode);
-                }
+                sendFrameDeliveryModes(cameraIds, previewMode);
                 return false;
             }
             consumeFrameNow(cameraId);
@@ -1871,18 +1905,11 @@ namespace scopeone::core::internal
         const AgentFrameDeliveryMode targetMode = nonRecordingDeliveryMode(enabled);
         const AgentFrameDeliveryMode rollbackMode =
             nonRecordingDeliveryMode(highRateFrameDeliveryEnabled());
-        QStringList updatedCameraIds;
-        for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it)
+        const QStringList cameraIds = m_cameras.keys();
+        if (!sendFrameDeliveryModes(cameraIds, targetMode))
         {
-            if (!it.value() || !sendFrameDeliveryMode(it.key(), targetMode))
-            {
-                for (const QString& cameraId : updatedCameraIds)
-                {
-                    sendFrameDeliveryMode(cameraId, rollbackMode);
-                }
-                return false;
-            }
-            updatedCameraIds.append(it.key());
+            sendFrameDeliveryModes(cameraIds, rollbackMode);
+            return false;
         }
         return CameraBackend::setHighRateFrameDeliveryEnabled(enabled);
     }
@@ -2066,7 +2093,7 @@ namespace scopeone::core::internal
                                                         ? AgentFrameDeliveryMode::AllFrames
                                                         : nonRecordingDeliveryMode(
                                                               highRateFrameDeliveryEnabled());
-        if (!sendFrameDeliveryMode(normalizedId, deliveryMode))
+        if (!sendFrameDeliveryModes(QStringList{normalizedId}, deliveryMode))
         {
             removeAgentCamera(normalizedId);
             return false;

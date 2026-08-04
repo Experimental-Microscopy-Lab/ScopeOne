@@ -106,13 +106,19 @@ namespace scopeone::core
         {
             return false;
         }
+        applyValidatedDocument(document);
+        return true;
+    }
+
+    void ImageSceneModel::applyValidatedDocument(
+        const scopeone::core::ExperimentDocument& document)
+    {
         m_document = document;
         m_sourceDisplayTransforms.clear();
         m_autoStretchLayerIds.clear();
         m_nextMarkupId = 1;
         emit layersChanged();
         emit markupsChanged();
-        return true;
     }
 
     QStringList ImageSceneModel::layerIds() const

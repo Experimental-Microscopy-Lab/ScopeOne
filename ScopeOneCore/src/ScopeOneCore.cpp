@@ -379,7 +379,7 @@ namespace
         QString errorMessage;
     };
 
-    // Capture current device properties for recording metadata
+    // Capture cached device properties for recording metadata
     QJsonObject buildDevicePropertyMetadata(const scopeone::core::ScopeOneCore& core)
     {
         QStringList deviceLabels = core.loadedDevices();
@@ -397,7 +397,7 @@ namespace
 
             QJsonObject propertyValuesObject;
             const QList<scopeone::core::ScopeOneCore::DevicePropertyInfo> properties =
-                core.deviceProperties(trimmedDeviceLabel, false);
+                core.deviceProperties(trimmedDeviceLabel, true);
             for (const auto& property : properties)
             {
                 const QString propertyName = property.name().trimmed();
@@ -411,6 +411,32 @@ namespace
         }
 
         return devicePropertiesObject;
+    }
+
+    // Keep only presentation entries backed by a valid image layer
+    void filterRecordingPresentation(
+        const scopeone::core::ExperimentDocument& presentation,
+        QList<scopeone::core::DocumentLayer>& layers,
+        QList<scopeone::core::DocumentMarkup>& markups)
+    {
+        layers.clear();
+        markups.clear();
+        QSet<QString> layerIds;
+        for (const auto& layer : presentation.layers)
+        {
+            if (layer.width > 0 && layer.height > 0)
+            {
+                layers.append(layer);
+                layerIds.insert(layer.id);
+            }
+        }
+        for (const auto& markup : presentation.markups)
+        {
+            if (layerIds.contains(markup.layerId))
+            {
+                markups.append(markup);
+            }
+        }
     }
 
 }
@@ -573,17 +599,6 @@ namespace scopeone::core
         return frame ? *frame : outputImageFrameAt(trimmedCameraId, index);
     }
 
-    // Append all valid frames through the same session frame path
-    bool ScopeOneCore::RecordingSessionData::appendImageFrames(const QList<ImageFrame>& frames)
-    {
-        bool appended = false;
-        for (const ImageFrame& frame : frames)
-        {
-            appended = appendImageFrame(frame) || appended;
-        }
-        return appended;
-    }
-
     // Build a frame-backed recording session for gallery and save sinks
     std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::RecordingSessionData::fromImageFrames(
         const QList<ImageFrame>& frames,
@@ -628,9 +643,13 @@ namespace scopeone::core
             framePlan.framesPerBurst = qMax(framePlan.framesPerBurst, it.value());
         }
         session->setCapturePlan(framePlan);
-        if (!session->appendImageFrames(normalizedFrames))
+        if (normalizedFrames.isEmpty())
         {
             return {};
+        }
+        for (const ImageFrame& frame : normalizedFrames)
+        {
+            session->appendImageFrame(frame);
         }
         QHash<QString, int> timeIndices;
         quint64 sequenceIndex = 0;
@@ -1093,6 +1112,14 @@ namespace scopeone::core
                 frame = graphFrame(rawLayerKey(cameraId));
                 return frame.isValid();
             });
+        m_managers->recordingManager->setSessionPreparationCallback(
+            [this](RecordingSessionData& session)
+            {
+                QList<DocumentLayer> layers;
+                QList<DocumentMarkup> markups;
+                filterRecordingPresentation(m_imageSceneModel->document(), layers, markups);
+                session.setPresentationState(layers, markups);
+            });
 
         connect(m_managers->cameraManager, &CameraManager::newRawFrameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
@@ -1458,7 +1485,8 @@ namespace scopeone::core
         if (path.isEmpty()
             || m_configurationOperationRunning
             || m_pendingStageCommands > 0
-            || isRecording())
+            || isRecording()
+            || m_managers->recordingManager->isFinalizing())
         {
             return false;
         }
@@ -1542,7 +1570,10 @@ namespace scopeone::core
     // Unloads devices on the serialized hardware worker
     bool ScopeOneCore::unloadConfiguration()
     {
-        if (m_configurationOperationRunning || m_pendingStageCommands > 0 || isRecording())
+        if (m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || isRecording()
+            || m_managers->recordingManager->isFinalizing())
         {
             return false;
         }
@@ -4280,15 +4311,6 @@ namespace scopeone::core
         ExperimentDocument completedDocument;
         if (session)
         {
-            QString presentationError;
-            if (!setRecordingSessionPresentation(session,
-                                                 currentPresentation,
-                                                 &presentationError))
-            {
-                qWarning().noquote()
-                    << QStringLiteral("Failed to persist completed experiment presentation: %1")
-                           .arg(presentationError);
-            }
             registerRecordingSession(session);
             completedDocument = session->experimentDocument();
         }
@@ -4304,11 +4326,18 @@ namespace scopeone::core
 
         if (currentPresentation.plan.experimentId == activeExperimentId)
         {
-            QString documentError;
-            if (!m_imageSceneModel->setDocument(completedDocument, &documentError))
+            if (session && session->isSaved())
             {
-                qWarning().noquote()
-                    << QStringLiteral("Failed to publish completed experiment: %1").arg(documentError);
+                m_imageSceneModel->applyValidatedDocument(completedDocument);
+            }
+            else
+            {
+                QString documentError;
+                if (!m_imageSceneModel->setDocument(completedDocument, &documentError))
+                {
+                    qWarning().noquote()
+                        << QStringLiteral("Failed to publish completed experiment: %1").arg(documentError);
+                }
             }
         }
 
@@ -4319,6 +4348,7 @@ namespace scopeone::core
         m_managers->experimentStartedPreviewCameraIds.clear();
         m_managers->activeExperimentId.clear();
         m_managers->experimentCancelRequested = false;
+        emit stagePositionChanged();
     }
 
     // Attaches shared layer and markup state to one completed recording
@@ -4334,24 +4364,7 @@ namespace scopeone::core
         }
 
         ExperimentDocument candidate = session->experimentDocument();
-        candidate.layers.clear();
-        candidate.markups.clear();
-        QSet<QString> layerIds;
-        for (const DocumentLayer& layer : presentation.layers)
-        {
-            if (layer.width > 0 && layer.height > 0)
-            {
-                candidate.layers.append(layer);
-                layerIds.insert(layer.id);
-            }
-        }
-        for (const DocumentMarkup& markup : presentation.markups)
-        {
-            if (layerIds.contains(markup.layerId))
-            {
-                candidate.markups.append(markup);
-            }
-        }
+        filterRecordingPresentation(presentation, candidate.layers, candidate.markups);
         if (!validateExperimentDocument(candidate, errorMessage))
         {
             return false;

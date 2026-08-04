@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QDebug>
@@ -21,10 +22,12 @@
 #include <QSettings>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStorageInfo>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -38,16 +41,6 @@ namespace
         if (unit.compare(QStringLiteral("min"), Qt::CaseInsensitive) == 0) return value * 60000.0;
         if (unit.compare(QStringLiteral("h"), Qt::CaseInsensitive) == 0) return value * 3600000.0;
         return value;
-    }
-
-    QString recordingResultMessage(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
-    {
-        return session ? session->saveMessage() : QString();
-    }
-
-    bool recordingResultSuccess(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
-    {
-        return session && session->isSaved();
     }
 
     QString phaseText(int phase)
@@ -170,7 +163,7 @@ namespace
         case RecordingWriterPhase::Writing:
             return QStringLiteral("Writing");
         case RecordingWriterPhase::Stopping:
-            return QStringLiteral("Stopping");
+            return QStringLiteral("Finalizing");
         case RecordingWriterPhase::Completed:
             return QStringLiteral("Completed");
         case RecordingWriterPhase::Failed:
@@ -230,9 +223,10 @@ namespace scopeone::ui
         connect(m_browseButton, &QPushButton::clicked, this, &RecordingWidget::onBrowseClicked);
         connect(m_autoNameButton, &QPushButton::clicked, this, &RecordingWidget::onAutoNameClicked);
         connect(m_startStopButton, &QPushButton::clicked, this, &RecordingWidget::onStartStopClicked);
-        connect(m_burstModeCheck, &QCheckBox::toggled, this, &RecordingWidget::onBurstModeToggled);
-        connect(m_detectorCombo, &QComboBox::currentTextChanged, this, &RecordingWidget::onDetectorChanged);
-        connect(m_snapToGalleryButton, &QPushButton::clicked, this, &RecordingWidget::onSnapToGalleryClicked);
+        connect(m_burstModeCheck, &QCheckBox::toggled, this, [this]() { updateUiState(); });
+        connect(m_detectorCombo, &QComboBox::currentTextChanged, this, [this]() { updateUiState(); });
+        connect(m_snapToGalleryButton, &QPushButton::clicked, this,
+                [this]() { appendSelectedFramesToGallery(); });
         connect(m_saveDirLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_fileNameLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -324,15 +318,22 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingWriterStatusChanged, this,
                 [this](const scopeone::core::ScopeOneCore::RecordingWriterStatus& status)
                 {
+                    const bool writerFinalizing =
+                        status.phase() == scopeone::core::ScopeOneCore::RecordingWriterPhase::Stopping;
                     m_writerStatusLabel->setText(formatWriterStatusText(status));
                     m_writerStatusLabel->setVisible(
                         status.phase() != scopeone::core::ScopeOneCore::RecordingWriterPhase::Idle);
+                    if (m_writerFinalizing != writerFinalizing)
+                    {
+                        m_writerFinalizing = writerFinalizing;
+                        updateUiState();
+                    }
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QString result = recordingResultMessage(session);
-                    const bool saved = recordingResultSuccess(session);
+                    const QString result = session ? session->saveMessage() : QString();
+                    const bool saved = session && session->isSaved();
                     if (result.isEmpty())
                     {
                         return;
@@ -349,8 +350,8 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QString result = recordingResultMessage(session);
-                    const bool saved = recordingResultSuccess(session);
+                    const QString result = session ? session->saveMessage() : QString();
+                    const bool saved = session && session->isSaved();
                     if (saved)
                     {
                         m_writerStatusLabel->setText(
@@ -394,7 +395,7 @@ namespace scopeone::ui
 
     RecordingWidget::~RecordingWidget()
     {
-        stopRecording();
+        m_scopeonecore->stopRecording();
     }
 
     // Builds the recording control panel
@@ -624,10 +625,8 @@ namespace scopeone::ui
         statusLayout->setColumnStretch(0, 1);
         m_statusLabel = new QLabel("Idle", this);
         m_mdaStatusLabel = new QLabel(this);
-        m_mdaStatusLabel->setWordWrap(true);
         m_mdaStatusLabel->hide();
         m_writerStatusLabel = new QLabel(this);
-        m_writerStatusLabel->setWordWrap(true);
         m_writerStatusLabel->hide();
         m_frameCountLabel = new QLabel(this);
         m_frameCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -636,7 +635,11 @@ namespace scopeone::ui
         m_burstCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         m_burstCountLabel->hide();
         m_storageStatusLabel = new QLabel("Storage: unavailable", this);
-        m_storageStatusLabel->setWordWrap(true);
+        for (QLabel* label : {m_mdaStatusLabel, m_writerStatusLabel, m_storageStatusLabel})
+        {
+            label->setWordWrap(true);
+            label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        }
         statusLayout->addWidget(m_statusLabel, 0, 0);
         statusLayout->addWidget(m_frameCountLabel, 0, 1);
         statusLayout->addWidget(m_mdaStatusLabel, 1, 0);
@@ -697,7 +700,7 @@ namespace scopeone::ui
     {
         if (m_isRecording)
         {
-            stopRecording();
+            m_scopeonecore->stopRecording();
         }
         else
         {
@@ -705,28 +708,10 @@ namespace scopeone::ui
         }
     }
 
-    // Refreshes UI state when burst mode changes
-    void RecordingWidget::onBurstModeToggled(bool)
-    {
-        updateUiState();
-    }
-
-    // Refreshes UI state when detector selection changes
-    void RecordingWidget::onDetectorChanged(const QString&)
-    {
-        updateUiState();
-    }
-
-    // Appends current frames to the gallery
-    void RecordingWidget::onSnapToGalleryClicked()
-    {
-        appendSelectedFramesToGallery();
-    }
-
     // Updates widget enabled state from recording settings
     void RecordingWidget::updateUiState()
     {
-        const bool editingEnabled = !m_isRecording;
+        const bool editingEnabled = !m_isRecording && !m_writerFinalizing;
         const bool burstEnabled = m_burstModeCheck->isChecked();
         const bool hasSelectedCameras = !selectedCameraIds().isEmpty();
 
@@ -747,43 +732,81 @@ namespace scopeone::ui
         m_burstIntervalSpin->setEnabled(editingEnabled && burstEnabled);
         m_burstIntervalUnitCombo->setEnabled(editingEnabled && burstEnabled);
 
-        const bool mdaEnabled = editingEnabled;
-        m_mdaIntervalSpin->setEnabled(mdaEnabled);
-        m_mdaOrderList->setEnabled(mdaEnabled);
-        m_mdaEnableZCheck->setEnabled(mdaEnabled);
-        m_mdaEnableXYCheck->setEnabled(mdaEnabled);
-        m_mdaZStartSpin->setEnabled(mdaEnabled && m_mdaEnableZCheck->isChecked());
-        m_mdaZStepSpin->setEnabled(mdaEnabled && m_mdaEnableZCheck->isChecked());
-        m_mdaZCountSpin->setEnabled(mdaEnabled && m_mdaEnableZCheck->isChecked());
-        m_mdaXStartSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
-        m_mdaXStepSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
-        m_mdaXCountSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
-        m_mdaYStartSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
-        m_mdaYStepSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
-        m_mdaYCountSpin->setEnabled(mdaEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaIntervalSpin->setEnabled(editingEnabled);
+        m_mdaOrderList->setEnabled(editingEnabled);
+        m_mdaEnableZCheck->setEnabled(editingEnabled);
+        m_mdaEnableXYCheck->setEnabled(editingEnabled);
+        m_mdaZStartSpin->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_mdaZStepSpin->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_mdaZCountSpin->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_mdaXStartSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaXStepSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaXCountSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaYStartSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaYStepSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaYCountSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
         const int orderRow = m_mdaOrderList->currentRow();
         const int orderCount = m_mdaOrderList->count();
-        m_mdaOrderUpButton->setEnabled(mdaEnabled && orderRow > 0);
-        m_mdaOrderDownButton->setEnabled(mdaEnabled && orderRow >= 0 && orderRow < orderCount - 1);
+        m_mdaOrderUpButton->setEnabled(editingEnabled && orderRow > 0);
+        m_mdaOrderDownButton->setEnabled(editingEnabled && orderRow >= 0 && orderRow < orderCount - 1);
 
-        const bool hasCameras = hasSelectedCameras;
         const bool hasDir = !m_saveDirLineEdit->text().trimmed().isEmpty();
         const bool hasName = !normalizedBaseName().isEmpty();
-        const bool canStart = !m_isRecording && hasCameras && hasDir && hasName;
+        const bool canStart = editingEnabled
+            && hasSelectedCameras
+            && hasDir
+            && hasName;
         m_startStopButton->setEnabled(m_isRecording || canStart);
         updateStorageStatus();
     }
 
-    // Updates available space and the estimated uncompressed recording size
+    // Queries available storage without blocking the UI thread
     void RecordingWidget::updateStorageStatus()
     {
-        QStringList details;
-        const QString saveDir = m_saveDirLineEdit->text().trimmed();
-        QStorageInfo storage(saveDir);
-        storage.refresh();
-        if (storage.isValid() && storage.isReady())
+        if (m_storageQueryPending)
         {
-            details.append(QStringLiteral("%1 free").arg(formatByteCount(storage.bytesAvailable())));
+            return;
+        }
+
+        m_storageQueryPending = true;
+        const QString saveDir = m_saveDirLineEdit->text().trimmed();
+        auto* watcher = new QFutureWatcher<qint64>(this);
+        connect(watcher, &QFutureWatcher<qint64>::finished, this,
+                [this, watcher, saveDir]()
+                {
+                    const qint64 availableBytes = watcher->result();
+                    m_storageQueryPending = false;
+                    if (saveDir == m_saveDirLineEdit->text().trimmed())
+                    {
+                        updateStorageStatusText(availableBytes);
+                    }
+                    else
+                    {
+                        updateStorageStatus();
+                    }
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run([saveDir]()
+        {
+            if (saveDir.isEmpty())
+            {
+                return qint64{-1};
+            }
+            QStorageInfo storage(saveDir);
+            storage.refresh();
+            return storage.isValid() && storage.isReady()
+                       ? storage.bytesAvailable()
+                       : qint64{-1};
+        }));
+    }
+
+    // Updates storage text from one completed background query
+    void RecordingWidget::updateStorageStatusText(qint64 availableBytes)
+    {
+        QStringList details;
+        if (availableBytes >= 0)
+        {
+            details.append(QStringLiteral("%1 free").arg(formatByteCount(availableBytes)));
         }
 
         const QStringList cameraIds = selectedCameraIds();
@@ -818,7 +841,7 @@ namespace scopeone::ui
                                         ? (std::numeric_limits<qint64>::max)()
                                         : static_cast<qint64>(estimatedBytes);
             details.append(QStringLiteral("%1 estimated raw").arg(formatByteCount(estimate)));
-            if (storage.isValid() && storage.isReady() && estimate > storage.bytesAvailable())
+            if (availableBytes >= 0 && estimate > availableBytes)
             {
                 details.append(QStringLiteral("insufficient free space"));
             }
@@ -911,31 +934,10 @@ namespace scopeone::ui
         plan.order.clear();
         for (int i = 0; i < m_mdaOrderList->count(); ++i)
         {
-            auto* item = m_mdaOrderList->item(i);
-            switch (item->data(Qt::UserRole).toInt())
-            {
-            case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time):
-                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Time);
-                break;
-            case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z):
-                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::Z);
-                break;
-            case static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY):
-                plan.order.push_back(scopeone::core::ScopeOneCore::RecordingAxis::XY);
-                break;
-            default:
-                break;
-            }
+            plan.order.push_back(static_cast<scopeone::core::ScopeOneCore::RecordingAxis>(
+                m_mdaOrderList->item(i)->data(Qt::UserRole).toInt()));
         }
         std::reverse(plan.order.begin(), plan.order.end());
-        if (plan.order.empty())
-        {
-            plan.order = {
-                scopeone::core::ScopeOneCore::RecordingAxis::Time,
-                scopeone::core::ScopeOneCore::RecordingAxis::Z,
-                scopeone::core::ScopeOneCore::RecordingAxis::XY
-            };
-        }
 
         if (m_mdaEnableZCheck->isChecked())
         {
@@ -1028,46 +1030,27 @@ namespace scopeone::ui
         QListWidgetItem* item = m_mdaOrderList->takeItem(row);
         m_mdaOrderList->insertItem(newRow, item);
         m_mdaOrderList->setCurrentRow(newRow);
-        if (!m_orderPreference.empty())
+        std::vector<int> next;
+        next.reserve(m_orderPreference.size());
+        for (int i = 0; i < m_mdaOrderList->count(); ++i)
         {
-            std::vector<int> visibleDisplay;
-            visibleDisplay.reserve(m_mdaOrderList->count());
-            for (int i = 0; i < m_mdaOrderList->count(); ++i)
-            {
-                auto* it = m_mdaOrderList->item(i);
-                visibleDisplay.push_back(it->data(Qt::UserRole).toInt());
-            }
-            std::vector<int> internalVisible;
-            internalVisible.reserve(visibleDisplay.size());
-            for (int i = static_cast<int>(visibleDisplay.size()) - 1; i >= 0; --i)
-            {
-                internalVisible.push_back(visibleDisplay[static_cast<size_t>(i)]);
-            }
-            std::vector<int> next = internalVisible;
-            for (int axis : m_orderPreference)
-            {
-                if (std::find(internalVisible.begin(), internalVisible.end(), axis) == internalVisible.end())
-                {
-                    next.push_back(axis);
-                }
-            }
-            m_orderPreference = next;
+            next.push_back(m_mdaOrderList->item(i)->data(Qt::UserRole).toInt());
         }
+        std::reverse(next.begin(), next.end());
+        for (int axis : m_orderPreference)
+        {
+            if (std::find(next.begin(), next.end(), axis) == next.end())
+            {
+                next.push_back(axis);
+            }
+        }
+        m_orderPreference = std::move(next);
         updateUiState();
     }
 
     // Rebuilds the visible MDA order list from preferences
     void RecordingWidget::syncOrderList()
     {
-        if (m_orderPreference.empty())
-        {
-            m_orderPreference = {
-                static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time),
-                static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z),
-                static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY)
-            };
-        }
-
         const int currentAxis = m_mdaOrderList->currentItem()
                                     ? m_mdaOrderList->currentItem()->data(Qt::UserRole).toInt()
                                     : static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time);
@@ -1100,13 +1083,8 @@ namespace scopeone::ui
 
         QSignalBlocker blocker(m_mdaOrderList);
         m_mdaOrderList->clear();
-        std::vector<int> visibleDisplay;
-        visibleDisplay.reserve(visibleInternal.size());
-        for (int i = static_cast<int>(visibleInternal.size()) - 1; i >= 0; --i)
-        {
-            visibleDisplay.push_back(visibleInternal[static_cast<size_t>(i)]);
-        }
-        for (int axis : visibleDisplay)
+        std::reverse(visibleInternal.begin(), visibleInternal.end());
+        for (int axis : visibleInternal)
         {
             QString label;
             switch (static_cast<scopeone::core::ScopeOneCore::RecordingAxis>(axis))
@@ -1138,9 +1116,4 @@ namespace scopeone::ui
         m_mdaOrderList->setCurrentRow(selectRow);
     }
 
-    // Stops the active recording through core
-    void RecordingWidget::stopRecording()
-    {
-        m_scopeonecore->stopRecording();
-    }
 } // namespace scopeone::ui

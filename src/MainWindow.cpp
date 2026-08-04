@@ -171,13 +171,6 @@ namespace scopeone::ui
             }
         }
 
-        // Return the current recording save result if one exists
-        QString recordingSessionMessage(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
-        {
-            return session ? session->saveMessage() : QStringLiteral("Error: no session data");
-        }
-
         void updateSessionPresentation(
             scopeone::core::ScopeOneCore& core,
             const scopeone::core::ImageSceneModel& sceneModel,
@@ -704,11 +697,12 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
-                    m_deviceControlWidget->refreshCameraParameters();
-                    refreshDevicePanels(false);
-                    const QString result = recordingSessionMessage(session);
+                    QTimer::singleShot(0, m_deviceControlWidget,
+                                       [this]() { m_deviceControlWidget->refreshCameraParameters(); });
+                    const QString result = session
+                                               ? session->saveMessage()
+                                               : QStringLiteral("Error: no session data");
                     if (!result.isEmpty())
                     {
                         showStatusMessage(result, session && session->isSaved() ? 5000 : 8000);
@@ -731,7 +725,9 @@ namespace scopeone::ui
                     {
                         m_imageGalleryWidget->markSessionSaved(session);
                     }
-                    const QString result = recordingSessionMessage(session);
+                    const QString result = session
+                                               ? session->saveMessage()
+                                               : QStringLiteral("Error: no session data");
                     if (!result.isEmpty())
                     {
                         showStatusMessage(result, session && session->isSaved() ? 5000 : 8000);

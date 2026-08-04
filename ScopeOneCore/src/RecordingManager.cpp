@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QJsonObject>
 #include <QCoreApplication>
 #include <QDebug>
@@ -16,11 +17,15 @@
 #include <QStringList>
 #include <QTimer>
 #include <QUuid>
+#include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <limits>
+#include <thread>
 #include <utility>
 
 namespace scopeone::core::internal
@@ -51,19 +56,6 @@ namespace scopeone::core::internal
                 return QStringLiteral("Binary");
             }
             return QStringLiteral("Unknown");
-        }
-
-        QString pixelFormatName(ImagePixelFormat pixelFormat)
-        {
-            switch (pixelFormat)
-            {
-            case ImagePixelFormat::Mono8:
-                return QStringLiteral("Mono8");
-            case ImagePixelFormat::Mono16:
-                return QStringLiteral("Mono16");
-            default:
-                return QStringLiteral("Unknown");
-            }
         }
 
         QString recordingExtension(scopeone::core::RecordingFormat format)
@@ -345,10 +337,6 @@ namespace scopeone::core::internal
         void discardIncompleteOutput(const QString& path)
         {
             const QFileInfo info(path);
-            if (!info.exists())
-            {
-                return;
-            }
             if (info.isDir())
             {
                 QDir(info.absoluteFilePath()).removeRecursively();
@@ -377,15 +365,9 @@ namespace scopeone::core::internal
             return true;
         }
 
-        QString savedSessionOutputDir(
-            const std::shared_ptr<ScopeOneCore::RecordingSessionData>& session)
+        QString savedSessionOutputDir(const ScopeOneCore::RecordingSessionData& session)
         {
-            if (!session)
-            {
-                return {};
-            }
-
-            for (auto it = session->outputFiles().constBegin(); it != session->outputFiles().constEnd(); ++it)
+            for (auto it = session.outputFiles().constBegin(); it != session.outputFiles().constEnd(); ++it)
             {
                 const QString path = !it.value().rawPath.isEmpty()
                                          ? it.value().rawPath
@@ -396,7 +378,7 @@ namespace scopeone::core::internal
                 }
             }
 
-            const auto& plan = session->capturePlan();
+            const auto& plan = session.capturePlan();
             if (!plan.saveDir.trimmed().isEmpty() && !plan.baseName.trimmed().isEmpty())
             {
                 return sessionOutputDir(plan.saveDir, plan.baseName);
@@ -416,12 +398,10 @@ namespace scopeone::core::internal
         public:
             struct TiffOptions
             {
-                bool useDeflate;
-                int zipQuality;
-                TiffOptions() : useDeflate(true), zipQuality(6) {}
+                bool useDeflate{true};
+                int zipQuality{6};
             };
 
-            SaveBackend() = default;
             ~SaveBackend() { (void)stopStack(); }
 
             bool startStackRaw(const QString& filePath,
@@ -574,67 +554,66 @@ namespace scopeone::core::internal
                            const ImageFrame& frame,
                            const AcquisitionEvent* event = nullptr)
             {
-                if (!data) return false;
-                if (m_writer)
+                if (!data || !m_writer)
                 {
-                    if (rawBytes <= 0)
-                    {
-                        m_lastError = QStringLiteral("Invalid frame size");
-                        return false;
-                    }
-                    scopewriter::FrameMetadata metadata;
-                    metadata.cameraId = frame.cameraId.toStdString();
-                    metadata.frameIndex = frame.frameIndex;
-                    metadata.timestampNs = frame.timestampNs;
-                    metadata.stride = m_omePlan.format == RecordingFormat::Binary
-                        ? static_cast<std::size_t>(frame.stride)
-                        : static_cast<std::size_t>(frame.width * frame.bytesPerPixel());
-                    metadata.sourceRoiX = frame.sourceRoiX;
-                    metadata.sourceRoiY = frame.sourceRoiY;
-                    metadata.sourceRoiWidth = frame.sourceRoiWidth;
-                    metadata.sourceRoiHeight = frame.sourceRoiHeight;
-                    if (event)
-                    {
-                        metadata.positionIndex = event->positionIndex;
-                        metadata.t = static_cast<std::int64_t>(event->burstIndex)
-                                * (std::max)(1, m_omePlan.framesPerBurst)
-                            + event->timeIndex;
-                        metadata.z = event->zIndex;
-                        metadata.exposureMs = event->exposureMs;
-                        if (event->hasXY)
-                        {
-                            metadata.positionXUm = event->x;
-                            metadata.positionYUm = event->y;
-                        }
-                        if (event->hasZ)
-                        {
-                            metadata.positionZUm = event->z;
-                        }
-                    }
-                    if (!m_writer->append(data,
-                                          static_cast<std::size_t>(rawBytes),
-                                          metadata))
-                    {
-                        m_lastError = QString::fromStdString(m_writer->lastError());
-                        return false;
-                    }
-                    return true;
+                    return false;
                 }
-                return false;
+                if (rawBytes <= 0)
+                {
+                    m_lastError = QStringLiteral("Invalid frame size");
+                    return false;
+                }
+                scopewriter::FrameMetadata metadata;
+                metadata.cameraId = frame.cameraId.toStdString();
+                metadata.frameIndex = frame.frameIndex;
+                metadata.timestampNs = frame.timestampNs;
+                metadata.stride = m_omePlan.format == RecordingFormat::Binary
+                    ? static_cast<std::size_t>(frame.stride)
+                    : static_cast<std::size_t>(frame.width * frame.bytesPerPixel());
+                metadata.sourceRoiX = frame.sourceRoiX;
+                metadata.sourceRoiY = frame.sourceRoiY;
+                metadata.sourceRoiWidth = frame.sourceRoiWidth;
+                metadata.sourceRoiHeight = frame.sourceRoiHeight;
+                if (event)
+                {
+                    metadata.positionIndex = event->positionIndex;
+                    metadata.t = static_cast<std::int64_t>(event->burstIndex)
+                            * (std::max)(1, m_omePlan.framesPerBurst)
+                        + event->timeIndex;
+                    metadata.z = event->zIndex;
+                    metadata.exposureMs = event->exposureMs;
+                    if (event->hasXY)
+                    {
+                        metadata.positionXUm = event->x;
+                        metadata.positionYUm = event->y;
+                    }
+                    if (event->hasZ)
+                    {
+                        metadata.positionZUm = event->z;
+                    }
+                }
+                if (!m_writer->append(data,
+                                      static_cast<std::size_t>(rawBytes),
+                                      metadata))
+                {
+                    m_lastError = QString::fromStdString(m_writer->lastError());
+                    return false;
+                }
+                return true;
             }
 
             bool stopStack()
             {
-                bool success = true;
-                if (m_writer)
+                if (!m_writer)
                 {
-                    if (!m_writer->close())
-                    {
-                        m_lastError = QString::fromStdString(m_writer->lastError());
-                        success = false;
-                    }
-                    m_writer.reset();
+                    return true;
                 }
+                const bool success = m_writer->close();
+                if (!success)
+                {
+                    m_lastError = QString::fromStdString(m_writer->lastError());
+                }
+                m_writer.reset();
                 return success;
             }
 
@@ -647,9 +626,40 @@ namespace scopeone::core::internal
         };
     } // namespace
 
+    struct RecordingManager::WriteTask
+    {
+        ImageFrame frame;
+        AcquisitionEvent event;
+        bool hasEvent{false};
+    };
+
+    struct RecordingManager::CameraOutput
+    {
+        QString cameraId;
+        QString rawPath;
+        QString frameInfoPath;
+        QString metadataFileName;
+        QJsonObject cameraProperties;
+        double pixelSizeUm{0.0};
+        std::unique_ptr<SaveBackend> backend;
+        quint64 acquisitionStartTimestampNs{0};
+        int width{0};
+        int height{0};
+        int bits{0};
+        ImagePixelFormat pixelFormat{ImagePixelFormat::Invalid};
+        std::deque<WriteTask> writeQueue;
+        std::mutex queueMutex;
+        std::condition_variable writeCondition;
+        std::thread writerThread;
+        std::atomic_bool writerFinished{false};
+        bool stopRequested{false};
+        qint64 framesWritten{0};
+    };
+
     RecordingManager::RecordingManager(QObject* parent)
         : QObject(parent)
     {
+        m_finalizationThreadPool.setMaxThreadCount(1);
         m_writerStatusTimer.setInterval(100);
         connect(&m_writerStatusTimer, &QTimer::timeout, this, [this]()
         {
@@ -675,6 +685,7 @@ namespace scopeone::core::internal
             m_mdaState.manager->cancelAndWait();
         }
         stopStreamingOutputs();
+        m_finalizationThreadPool.waitForDone();
     }
 
     // Sets the maximum queued write buffer size
@@ -721,9 +732,9 @@ namespace scopeone::core::internal
             capturedFrames += it.value();
         }
         status.setFramesCaptured(capturedFrames);
-        if (m_sessionState.activeSession)
+        if (m_activeSession)
         {
-            m_sessionState.activeSession->setWriterStatusSnapshot(status);
+            m_activeSession->setWriterStatusSnapshot(status);
         }
         emit writerStatusChanged(status);
     }
@@ -756,14 +767,11 @@ namespace scopeone::core::internal
 
     // Update the persisted save result on a recording session
     QString RecordingManager::updateSessionResult(
-        const std::shared_ptr<RecordingSessionData>& session,
+        RecordingSessionData& session,
         const QString& result,
         bool saved)
     {
-        if (session)
-        {
-            session->setSaveResult(saved, result);
-        }
+        session.setSaveResult(saved, result);
         return result;
     }
 
@@ -871,8 +879,8 @@ namespace scopeone::core::internal
                                              const QJsonObject& deviceProperties,
                                              const QHash<QString, double>& cameraPixelSizesUm)
     {
-        m_sessionState.activeSession = std::make_shared<RecordingSessionData>();
-        m_sessionState.activeSession->setCapturePlan(plan);
+        m_activeSession = std::make_shared<RecordingSessionData>();
+        m_activeSession->setCapturePlan(plan);
         SoftwareSnapshot software;
         software.applicationVersion = QCoreApplication::applicationVersion();
         software.coreVersion = ScopeOneCore::getVersion();
@@ -880,22 +888,17 @@ namespace scopeone::core::internal
         software.libTiffVersion = ScopeOneCore::getLibTiffVersion();
         software.zlibVersion = ScopeOneCore::getZlibVersion();
         software.operatingSystem = QSysInfo::prettyProductName();
-        m_sessionState.activeSession->setSoftwareSnapshot(software);
-        m_sessionState.activeSession->setDeviceProperties(deviceProperties);
-        m_sessionState.activeSession->setCameraPixelSizesUm(cameraPixelSizesUm);
-        m_sessionState.activeSession->prepareForSave(plan.streamToDisk, recordedMaxBytes());
-        m_sessionState.activeSession->clearFrames();
-        m_sessionState.activeSession->setStartedTimestampNs(currentTimestampNs());
-        m_sessionState.activeSession->setRunState(ExperimentRunState::Running);
+        m_activeSession->setSoftwareSnapshot(software);
+        m_activeSession->setDeviceProperties(deviceProperties);
+        m_activeSession->setCameraPixelSizesUm(cameraPixelSizesUm);
+        m_activeSession->prepareForSave(plan.streamToDisk, recordedMaxBytes());
+        m_activeSession->setStartedTimestampNs(currentTimestampNs());
+        m_activeSession->setRunState(ExperimentRunState::Running);
     }
 
     // Writes final save result information into the active session
     void RecordingManager::finalizeActiveSession(ExperimentRunState state, const QString& errorMessage)
     {
-        if (!m_sessionState.activeSession)
-        {
-            return;
-        }
         QString finalError = errorMessage;
         const QString writerError = writerErrorSnapshot();
         if (finalError.isEmpty() && !writerError.isEmpty())
@@ -905,7 +908,7 @@ namespace scopeone::core::internal
         if (state == ExperimentRunState::Completed
             && m_captureState.streamToDisk
             && finalError.isEmpty()
-            && !m_sessionState.activeSession->hasRecordedOutput())
+            && !m_activeSession->hasRecordedOutput())
         {
             finalError = QStringLiteral("No frames captured");
         }
@@ -913,7 +916,7 @@ namespace scopeone::core::internal
         {
             state = ExperimentRunState::Failed;
         }
-        m_sessionState.activeSession->setRunState(state, currentTimestampNs(), finalError);
+        m_activeSession->setRunState(state, currentTimestampNs(), finalError);
 
         if (!m_captureState.streamToDisk)
         {
@@ -921,39 +924,34 @@ namespace scopeone::core::internal
         }
         if (state == ExperimentRunState::Canceled)
         {
-            const bool hasOutput = m_sessionState.activeSession->hasRecordedOutput();
+            const bool hasOutput = m_activeSession->hasRecordedOutput();
             const QString result = hasOutput
                                        ? saveSuccessMessage(
                                            QStringLiteral("Success: Saved partial %1 recording")
-                                               .arg(formatName(m_captureState.format)),
-                                           savedSessionOutputDir(m_sessionState.activeSession))
+                                               .arg(recordingFormatName(m_captureState.format)),
+                                           savedSessionOutputDir(*m_activeSession))
                                        : QStringLiteral("Canceled: No frames captured");
-            updateSessionResult(m_sessionState.activeSession, result, hasOutput);
+            updateSessionResult(*m_activeSession, result, hasOutput);
             return;
         }
         const QString result = finalError.isEmpty()
                                    ? saveSuccessMessage(
                                        QStringLiteral("Success: Saved %1 recording during acquisition").arg(
-                                           formatName(m_captureState.format)),
-                                       savedSessionOutputDir(m_sessionState.activeSession))
+                                           recordingFormatName(m_captureState.format)),
+                                       savedSessionOutputDir(*m_activeSession))
                                    : QStringLiteral("Error: %1").arg(finalError);
-        updateSessionResult(m_sessionState.activeSession, result, finalError.isEmpty());
+        updateSessionResult(*m_activeSession, result, finalError.isEmpty());
     }
 
     // Writes the complete experiment document beside recorded payload files
-    bool RecordingManager::writeSessionDocument(const std::shared_ptr<RecordingSessionData>& session,
+    bool RecordingManager::writeSessionDocument(const RecordingSessionData& session,
                                                  QString& errorMessage)
     {
-        if (!session)
-        {
-            errorMessage = QStringLiteral("Missing recording session");
-            return false;
-        }
-        const ExperimentPlan& plan = session->capturePlan();
+        const ExperimentPlan& plan = session.capturePlan();
         return saveExperimentDocument(sessionDocumentPath(plan.saveDir,
                                                           plan.baseName,
                                                           plan.metadataFileName),
-                                      session->experimentDocument(),
+                                      session.experimentDocument(),
                                       &errorMessage);
     }
 
@@ -963,22 +961,13 @@ namespace scopeone::core::internal
         stopStreamingOutputs();
 
         setWriterError(QString());
-        m_writerState.cameraOutputs.clear();
         {
             std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
             m_writerState.status = RecordingWriterStatus{};
             m_writerState.status.setMaxPendingWriteBytes(static_cast<qint64>(m_writerState.recordedMaxBytes));
         }
-        if (m_sessionState.activeSession)
-        {
-            m_sessionState.activeSession->clearOutputFiles();
-            m_sessionState.activeSession->resetSaveResult();
-            m_sessionState.activeSession->resetWriterStatus(recordedMaxBytes());
-        }
-        const quint64 acquisitionStartTimestampNs = m_sessionState.activeSession
-                                                        ? m_sessionState.activeSession->experimentDocument()
-                                                              .startedTimestampNs
-                                                        : 0;
+        const quint64 acquisitionStartTimestampNs =
+            m_activeSession->experimentDocument().startedTimestampNs;
         setWriterStatus(RecordingWriterPhase::Starting);
 
         SessionOutputInfo outputInfo;
@@ -1004,12 +993,9 @@ namespace scopeone::core::internal
             output->rawPath = paths.rawPath;
             output->metadataFileName = outputInfo.metadataFileName;
             output->acquisitionStartTimestampNs = acquisitionStartTimestampNs;
-            if (m_sessionState.activeSession)
-            {
-                output->cameraProperties = m_sessionState.activeSession->experimentDocument()
-                                               .deviceProperties.value(cameraId).toObject();
-                output->pixelSizeUm = m_sessionState.activeSession->cameraPixelSizeUm(cameraId);
-            }
+            output->cameraProperties = m_activeSession->experimentDocument()
+                                           .deviceProperties.value(cameraId).toObject();
+            output->pixelSizeUm = m_activeSession->cameraPixelSizeUm(cameraId);
             if (requiresFrameInfo(plan.format))
             {
                 output->frameInfoPath = paths.frameInfoPath;
@@ -1018,23 +1004,10 @@ namespace scopeone::core::internal
             m_writerState.cameraOutputs.insert(cameraId, output);
         }
 
-        {
-            std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-            m_writerState.pendingWriteBytes = 0;
-        }
         const quint64 generation = m_captureState.generation;
         for (auto it = m_writerState.cameraOutputs.begin(); it != m_writerState.cameraOutputs.end(); ++it)
         {
             const auto& output = it.value();
-            if (!output)
-            {
-                continue;
-            }
-            {
-                std::lock_guard<std::mutex> lock(output->queueMutex);
-                output->writeQueue.clear();
-                output->stopRequested = false;
-            }
             output->writerThread = std::thread([this, output, generation]()
             {
                 writerLoop(output, generation);
@@ -1045,20 +1018,19 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Takes a stable snapshot of active camera outputs
+    QList<std::shared_ptr<RecordingManager::CameraOutput>>
+    RecordingManager::writerOutputsSnapshot() const
+    {
+        std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
+        return m_writerState.cameraOutputs.values();
+    }
+
     // Requests all writer threads to stop after queued work
     void RecordingManager::requestWriterStop()
     {
-        QList<std::shared_ptr<CameraOutput>> outputs;
+        for (const auto& output : writerOutputsSnapshot())
         {
-            std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-            outputs = m_writerState.cameraOutputs.values();
-        }
-        for (const auto& output : outputs)
-        {
-            if (!output)
-            {
-                continue;
-            }
             {
                 std::lock_guard<std::mutex> lock(output->queueMutex);
                 output->stopRequested = true;
@@ -1067,82 +1039,68 @@ namespace scopeone::core::internal
         }
     }
 
+    // Completes finalization after every writer has drained and closed
+    void RecordingManager::checkWriterFinalization()
+    {
+        if (!m_writerFinalizationCompletion)
+        {
+            return;
+        }
+
+        for (const auto& output : writerOutputsSnapshot())
+        {
+            if (!output->writerFinished.load(std::memory_order_acquire))
+            {
+                return;
+            }
+        }
+
+        stopStreamingOutputs(true);
+    }
+
     // Stops writer threads and closes all output files
     void RecordingManager::stopStreamingOutputs(bool applyOutputManifest)
     {
-        QList<std::shared_ptr<CameraOutput>> outputs;
-        {
-            std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
-            outputs = m_writerState.cameraOutputs.values();
-        }
+        auto completion = std::move(m_writerFinalizationCompletion);
+        const auto outputs = writerOutputsSnapshot();
         requestWriterStop();
 
         for (const auto& output : outputs)
         {
-            if (!output)
-            {
-                continue;
-            }
             if (output->writerThread.joinable())
             {
                 output->writerThread.join();
             }
-            if (output->backend)
-            {
-                auto* backend = reinterpret_cast<SaveBackend*>(output->backend);
-                if (!backend->stopStack() && writerErrorSnapshot().isEmpty())
-                {
-                    setWriterError(QStringLiteral("Failed to finalize output for %1: %2")
-                                       .arg(output->cameraId)
-                                       .arg(backend->lastError()));
-                }
-                delete backend;
-                output->backend = nullptr;
-            }
-            {
-                std::lock_guard<std::mutex> lock(output->queueMutex);
-                output->writeQueue.clear();
-                output->stopRequested = false;
-            }
         }
-        if (applyOutputManifest
-            && m_sessionState.activeSession
-            && writerErrorSnapshot().isEmpty())
+        const bool writerFailed = !writerErrorSnapshot().isEmpty();
+        if (applyOutputManifest && !writerFailed)
         {
-            m_sessionState.activeSession->clearOutputFiles();
+            m_activeSession->clearOutputFiles();
             for (const auto& output : outputs)
             {
-                if (!output || output->framesWritten <= 0)
+                if (output->framesWritten <= 0)
                 {
                     continue;
                 }
-                m_sessionState.activeSession->setOutputFilePaths(output->cameraId,
-                                                                 output->rawPath,
-                                                                 output->frameInfoPath);
-                m_sessionState.activeSession->setOutputFramesWritten(output->cameraId,
-                                                                      output->framesWritten);
+                m_activeSession->setOutputFilePaths(output->cameraId,
+                                                     output->rawPath,
+                                                     output->frameInfoPath);
+                m_activeSession->setOutputFramesWritten(output->cameraId,
+                                                        output->framesWritten);
             }
         }
-        if (!writerErrorSnapshot().isEmpty())
+        if (writerFailed)
         {
-            QStringList outputDirs;
             for (const auto& output : outputs)
             {
-                if (!output)
+                if (!output->rawPath.isEmpty())
                 {
-                    continue;
+                    m_incompleteOutputPaths.append(output->rawPath);
                 }
-                discardIncompleteOutput(output->rawPath);
-                discardIncompleteOutput(output->frameInfoPath);
-                const QString outputDir = QFileInfo(output->rawPath).absolutePath();
-                if (!outputDir.isEmpty() && !outputDirs.contains(outputDir))
+                if (!output->frameInfoPath.isEmpty())
                 {
-                    outputDirs.append(outputDir);
+                    m_incompleteOutputPaths.append(output->frameInfoPath);
                 }
-            }
-            for (const QString& outputDir : outputDirs)
-            {
-                QDir().rmdir(outputDir);
             }
         }
         {
@@ -1152,6 +1110,10 @@ namespace scopeone::core::internal
         }
         m_writerStatusTimer.stop();
         emitWriterStatus();
+        if (completion)
+        {
+            completion();
+        }
     }
 
     // Drains queued frames for one camera writer thread
@@ -1221,12 +1183,32 @@ namespace scopeone::core::internal
             output->framesWritten += 1;
             markWriterStatusDirty();
         }
+
+        if (output->backend)
+        {
+            if (!output->backend->stopStack())
+            {
+                std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
+                if (m_writerState.writerError.isEmpty())
+                {
+                    m_writerState.writerError =
+                        QStringLiteral("Failed to finalize output for %1: %2")
+                            .arg(output->cameraId)
+                            .arg(output->backend->lastError());
+                }
+            }
+            output->backend.reset();
+        }
+        output->writerFinished.store(true, std::memory_order_release);
+        QMetaObject::invokeMethod(this,
+                                  [this]() { checkWriterFinalization(); },
+                                  Qt::QueuedConnection);
     }
 
     // Writes one queued frame to its camera output
     bool RecordingManager::writeTask(CameraOutput& output, const WriteTask& task, QString& errorMessage)
     {
-        auto* backend = reinterpret_cast<SaveBackend*>(output.backend);
+        SaveBackend* backend = output.backend.get();
         if (!backend)
         {
             SaveBackend::TiffOptions tiffOpts;
@@ -1259,12 +1241,12 @@ namespace scopeone::core::internal
                                .arg(newBackend->lastError());
                 return false;
             }
-            output.backend = newBackend.release();
+            output.backend = std::move(newBackend);
             output.width = task.frame.width;
             output.height = task.frame.height;
             output.bits = task.frame.bitsPerSample;
             output.pixelFormat = task.frame.pixelFormat;
-            backend = reinterpret_cast<SaveBackend*>(output.backend);
+            backend = output.backend.get();
         }
         else if (task.frame.width != output.width
             || task.frame.height != output.height
@@ -1296,21 +1278,17 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Converts a recording format enum into its display name
-    QString RecordingManager::formatName(RecordingFormat format) const
-    {
-        return recordingFormatName(format);
-    }
-
     // Starts a recording session using the requested plan
     bool RecordingManager::start(const ExperimentPlan& requestedPlan,
                                  const QStringList& activeCameraIds,
                                  const QJsonObject& deviceProperties,
                                  const QHash<QString, double>& cameraPixelSizesUm)
     {
-        if (m_captureState.isRecording)
+        if (m_captureState.isRecording || isFinalizing())
         {
-            qWarning().noquote() << "Recording already running";
+            qWarning().noquote() << (m_captureState.isRecording
+                                         ? QStringLiteral("Recording already running")
+                                         : QStringLiteral("Previous recording is still being finalized"));
             return false;
         }
 
@@ -1369,7 +1347,7 @@ namespace scopeone::core::internal
                                              ? QStringLiteral("Failed to start streaming outputs")
                                              : writerError);
                 finalizeActiveSession(ExperimentRunState::Failed, writerError);
-                m_sessionState.activeSession.reset();
+                m_activeSession.reset();
                 return false;
             }
         }
@@ -1415,6 +1393,19 @@ namespace scopeone::core::internal
     void RecordingManager::finishRecording(ExperimentRunState state, const QString& errorMessage)
     {
         if (!m_captureState.isRecording) return;
+
+        const bool streamToDisk = m_captureState.streamToDisk;
+        auto session = m_activeSession;
+        m_completionPending = true;
+        if (streamToDisk)
+        {
+            setWriterStatus(RecordingWriterPhase::Stopping);
+        }
+        m_captureState.isRecording = false;
+        m_captureState.phase = kRecordingPhaseStopped;
+        emit recordingStateChanged(false);
+        emitProgress(true);
+
         if (m_cameraManager)
         {
             m_cameraManager->setRecordingFrameDeliveryEnabled(false);
@@ -1428,50 +1419,88 @@ namespace scopeone::core::internal
             m_cameraManager->setFrameDeliveryPaused(false);
         }
 
-        if (m_captureState.streamToDisk)
-        {
-            setWriterStatus(RecordingWriterPhase::Stopping);
-            stopStreamingOutputs(true);
-        }
-
-        m_captureState.isRecording = false;
-        m_captureState.phase = kRecordingPhaseStopped;
-        emit recordingStateChanged(false);
-        emitProgress(true);
-
         qInfo().noquote() << "Recording stopped";
 
-        auto session = m_sessionState.activeSession;
-        finalizeActiveSession(state, errorMessage);
-        if (m_captureState.streamToDisk)
+        if (streamToDisk)
         {
-            const QString payloadError = writerErrorSnapshot();
-            if (!payloadError.isEmpty())
-            {
-                setWriterStatus(RecordingWriterPhase::Failed, payloadError);
-            }
-            else
-            {
-                setWriterStatus(RecordingWriterPhase::Completed);
-                QString metadataError;
-                if (session && !writeSessionDocument(session, metadataError))
+            m_writerFinalizationCompletion = [this, state, errorMessage, session]()
                 {
-                    setWriterError(metadataError);
-                    setWriterStatus(RecordingWriterPhase::Failed, metadataError);
-                    updateSessionResult(session, QStringLiteral("Error: %1").arg(metadataError), false);
-                }
-            }
+                    completeRecording(state, errorMessage, session);
+                };
+            requestWriterStop();
+            checkWriterFinalization();
+            return;
         }
-        m_sessionState.activeSession.reset();
-        m_mdaState.usingMda = false;
-        m_mdaState.streamMda = false;
-        m_mdaState.streamIntervalMs = 0.0;
-        m_mdaState.lastStreamCaptureMs = 0;
-        m_mdaState.cameraId.clear();
-        m_mdaState.frameIndex = 0;
-        m_mdaState.burstsRemaining = 0;
-        m_mdaState.plan = ExperimentPlan{};
-        m_mdaState.hasLastEvent = false;
+        completeRecording(state, errorMessage, session);
+    }
+
+    // Finalizes metadata and failed output cleanup without blocking the manager thread
+    void RecordingManager::completeRecording(
+        ExperimentRunState state,
+        const QString& errorMessage,
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        finalizeActiveSession(state, errorMessage);
+        if (m_sessionPreparationCallback)
+        {
+            m_sessionPreparationCallback(*session);
+        }
+        if (!m_captureState.streamToDisk)
+        {
+            publishRecordingStopped(session);
+            return;
+        }
+
+        const QString payloadError = writerErrorSnapshot();
+        const QStringList incompleteOutputPaths = std::exchange(m_incompleteOutputPaths, {});
+        auto* watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished, this,
+                [this, watcher, session]()
+                {
+                    const QString finalizationError = watcher->result();
+                    if (finalizationError.isEmpty())
+                    {
+                        setWriterStatus(RecordingWriterPhase::Completed);
+                    }
+                    else
+                    {
+                        setWriterError(finalizationError);
+                        setWriterStatus(RecordingWriterPhase::Failed, finalizationError);
+                        updateSessionResult(*session,
+                                            QStringLiteral("Error: %1").arg(finalizationError),
+                                            false);
+                    }
+                    publishRecordingStopped(session);
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run(
+            &m_finalizationThreadPool,
+            [session, payloadError, incompleteOutputPaths]()
+            {
+                QString finalizationError = payloadError;
+                if (finalizationError.isEmpty())
+                {
+                    writeSessionDocument(*session, finalizationError);
+                }
+
+                for (const QString& path : incompleteOutputPaths)
+                {
+                    discardIncompleteOutput(path);
+                    QDir().rmdir(QFileInfo(path).absolutePath());
+                }
+                return finalizationError;
+            }));
+    }
+
+    // Resets recording state and publishes one completed session
+    void RecordingManager::publishRecordingStopped(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        m_activeSession.reset();
+        MDAManager* const manager = m_mdaState.manager;
+        m_mdaState = MdaState{};
+        m_mdaState.manager = manager;
+        m_completionPending = false;
         emit recordingStopped(session);
     }
 
@@ -1697,7 +1726,6 @@ namespace scopeone::core::internal
         if (cameraId.isEmpty()) return false;
         if (!m_captureState.activeCameraIds.contains(cameraId)) return false;
         if (m_mdaState.usingMda && packet.source != FramePacket::Source::Mda) return false;
-        if (!m_sessionState.activeSession) return false;
         return packet.frame.frameIndex > m_captureState.lastFrameIndex.value(cameraId, 0);
     }
 
@@ -1745,7 +1773,9 @@ namespace scopeone::core::internal
             m_mdaState.lastStreamCaptureMs = now;
         }
 
-        if (!m_mdaState.usingMda && !shouldCaptureCamera(cameraId))
+        if (!m_mdaState.usingMda
+            && m_captureState.framesCapturedThisBurst.value(cameraId, 0)
+                >= m_captureState.framesPerBurst)
         {
             return;
         }
@@ -1762,18 +1792,16 @@ namespace scopeone::core::internal
         AcquisitionEvent previewEvent;
         if (!m_mdaState.usingMda)
         {
-            previewEvent.sequenceIndex = m_sessionState.activeSession
-                                             ? static_cast<quint64>(
-                                                   m_sessionState.activeSession->experimentDocument().events.size())
-                                             : 0;
+            previewEvent.sequenceIndex = static_cast<quint64>(
+                m_activeSession->experimentDocument().events.size());
             previewEvent.burstIndex = m_captureState.currentBurst;
             previewEvent.timeIndex = static_cast<int>(
                 m_captureState.framesCapturedThisBurst.value(frame.cameraId, 0));
             previewEvent.exposureMs = m_mdaState.plan.exposureMs;
-            if (previewEvent.exposureMs <= 0.0 && m_sessionState.activeSession)
+            if (previewEvent.exposureMs <= 0.0)
             {
                 double exposureMs = 0.0;
-                const QJsonObject cameraProperties = m_sessionState.activeSession->experimentDocument()
+                const QJsonObject cameraProperties = m_activeSession->experimentDocument()
                                                          .deviceProperties.value(frame.cameraId).toObject();
                 if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), exposureMs)
                     && exposureMs > 0.0)
@@ -1794,9 +1822,9 @@ namespace scopeone::core::internal
                 return;
             }
         }
-        else if (m_sessionState.activeSession)
+        else
         {
-            m_sessionState.activeSession->appendImageFrame(frame);
+            m_activeSession->appendImageFrame(frame);
         }
         m_captureState.lastFrameIndex[cameraId] = frame.frameIndex;
 
@@ -1809,24 +1837,20 @@ namespace scopeone::core::internal
         m_captureState.framesCapturedTotal[cameraId] += 1;
         emitProgress();
 
-        (void)advanceBurstStateIfNeeded();
+        advanceBurstStateIfNeeded();
     }
 
     // Records one accepted preview frame as an actual acquisition event
     void RecordingManager::appendPreviewEventRecord(const ImageFrame& frame,
                                                      const AcquisitionEvent& event)
     {
-        if (!m_sessionState.activeSession)
-        {
-            return;
-        }
         AcquisitionEventRecord record;
         record.event = event;
         record.startedTimestampNs = frame.timestampNs;
         record.completedTimestampNs = record.startedTimestampNs;
         record.succeeded = true;
         record.frames.insert(frame.cameraId, frameRecordFromImageFrame(frame));
-        m_sessionState.activeSession->appendEventRecord(record);
+        m_activeSession->appendEventRecord(record);
     }
 
     // Converts one completed MDA event into metadata and recording frame packets
@@ -1863,10 +1887,7 @@ namespace scopeone::core::internal
                 }
                 record.frames.insert(cameraId, frameRecordFromImageFrame(frame));
             }
-            if (m_sessionState.activeSession)
-            {
-                m_sessionState.activeSession->appendEventRecord(record);
-            }
+            m_activeSession->appendEventRecord(record);
             emitProgress(true);
             return;
         }
@@ -1898,10 +1919,7 @@ namespace scopeone::core::internal
 
         if (output.frames.isEmpty())
         {
-            if (m_sessionState.activeSession)
-            {
-                m_sessionState.activeSession->appendEventRecord(record);
-            }
+            m_activeSession->appendEventRecord(record);
             return;
         }
 
@@ -1929,10 +1947,7 @@ namespace scopeone::core::internal
             const ImageFrame normalizedFrame = dispatchMdaFrame(rawFrame);
             record.frames.insert(cameraId, frameRecordFromImageFrame(normalizedFrame));
         }
-        if (m_sessionState.activeSession)
-        {
-            m_sessionState.activeSession->appendEventRecord(record);
-        }
+        m_activeSession->appendEventRecord(record);
     }
 
     // Starts MDA driven recording capture
@@ -2126,46 +2141,37 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Checks whether one camera still needs frames in the current burst
-    bool RecordingManager::shouldCaptureCamera(const QString& cameraId) const
-    {
-        return m_captureState.framesCapturedThisBurst.value(cameraId, 0) < m_captureState.framesPerBurst;
-    }
-
     // Checks whether all cameras reached the current frame target
     bool RecordingManager::allCamerasReachedTarget() const
     {
-        if (m_captureState.activeCameraIds.isEmpty()) return true;
-        for (const QString& cameraId : m_captureState.activeCameraIds)
-        {
-            if (m_captureState.framesCapturedThisBurst.value(cameraId, 0) < m_captureState.framesPerBurst)
-            {
-                return false;
-            }
-        }
-        return true;
+        return std::all_of(m_captureState.activeCameraIds.cbegin(),
+                           m_captureState.activeCameraIds.cend(),
+                           [this](const QString& cameraId)
+                           {
+                               return m_captureState.framesCapturedThisBurst.value(cameraId, 0)
+                                   >= m_captureState.framesPerBurst;
+                           });
     }
 
     // Advances burst state after an accepted frame
-    bool RecordingManager::advanceBurstStateIfNeeded()
+    void RecordingManager::advanceBurstStateIfNeeded()
     {
         if (m_mdaState.usingMda)
         {
-            return false;
+            return;
         }
         if (!m_captureState.burstMode)
         {
             if (allCamerasReachedTarget())
             {
                 finishRecording(ExperimentRunState::Completed);
-                return true;
             }
-            return false;
+            return;
         }
 
         if (!allCamerasReachedTarget())
         {
-            return false;
+            return;
         }
 
         m_captureState.currentBurst += 1;
@@ -2175,7 +2181,7 @@ namespace scopeone::core::internal
         if (m_captureState.currentBurst >= m_captureState.targetBursts)
         {
             finishRecording(ExperimentRunState::Completed);
-            return true;
+            return;
         }
 
         for (const QString& cameraId : m_captureState.activeCameraIds)
@@ -2185,7 +2191,6 @@ namespace scopeone::core::internal
 
         m_captureState.waitingBetweenBursts = true;
         m_captureState.lastBurstEndMs = m_captureState.elapsedTimer.elapsed();
-        return false;
     }
 
     // Saves buffered sessions and preserves direct writer outputs
@@ -2198,20 +2203,20 @@ namespace scopeone::core::internal
         ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.cameraIds.isEmpty())
         {
-            return updateSessionResult(session, QStringLiteral("Error: No cameras to save"), false);
+            return updateSessionResult(*session, QStringLiteral("Error: No cameras to save"), false);
         }
         if (capturePlan.saveDir.trimmed().isEmpty())
         {
-            return updateSessionResult(session, QStringLiteral("Error: Save directory is empty"), false);
+            return updateSessionResult(*session, QStringLiteral("Error: Save directory is empty"), false);
         }
         if (capturePlan.baseName.trimmed().isEmpty())
         {
-            return updateSessionResult(session, QStringLiteral("Error: Base name is empty"), false);
+            return updateSessionResult(*session, QStringLiteral("Error: Base name is empty"), false);
         }
         QString planError;
         if (!validateExperimentPlan(capturePlan, &planError))
         {
-            return updateSessionResult(session, QStringLiteral("Error: %1").arg(planError), false);
+            return updateSessionResult(*session, QStringLiteral("Error: %1").arg(planError), false);
         }
 
         if (!session->hasAnyFrames())
@@ -2220,28 +2225,22 @@ namespace scopeone::core::internal
             {
                 return session->saveMessage();
             }
-            if (session->isSaved())
-            {
-                return saveSuccessMessage(
-                    QStringLiteral("Success: Recording was already saved during acquisition"),
-                    savedSessionOutputDir(session));
-            }
             if (session->streamedToDisk() && session->hasRecordedOutput())
             {
                 return updateSessionResult(
-                    session,
+                    *session,
                     saveSuccessMessage(
                         QStringLiteral("Success: Recording was already saved during acquisition"),
-                        savedSessionOutputDir(session)),
+                        savedSessionOutputDir(*session)),
                     true);
             }
-            return updateSessionResult(session, QStringLiteral("Error: No frames captured"), false);
+            return updateSessionResult(*session, QStringLiteral("Error: No frames captured"), false);
         }
 
         if (session->runState() == ExperimentRunState::Draft
             || session->runState() == ExperimentRunState::Running)
         {
-            return updateSessionResult(session,
+            return updateSessionResult(*session,
                                        QStringLiteral("Error: Recording session is not complete"),
                                        false);
         }
@@ -2250,7 +2249,7 @@ namespace scopeone::core::internal
         QString outputErrorMessage;
         if (!reserveUniqueSessionOutput(capturePlan, outputInfo, outputErrorMessage))
         {
-            return updateSessionResult(session, QStringLiteral("Error: %1").arg(outputErrorMessage), false);
+            return updateSessionResult(*session, QStringLiteral("Error: %1").arg(outputErrorMessage), false);
         }
         session->setCapturePlan(capturePlan);
 
@@ -2261,7 +2260,7 @@ namespace scopeone::core::internal
             QDir(outputInfo.outputDir).removeRecursively();
             session->clearOutputFiles();
             session->setWriterPhase(RecordingWriterPhase::Failed, errorMessage);
-            return updateSessionResult(session, QStringLiteral("Error: %1").arg(errorMessage), false);
+            return updateSessionResult(*session, QStringLiteral("Error: %1").arg(errorMessage), false);
         };
         QHash<QString, RecordingFileManifest> completedOutputs;
         for (const QString& cameraId : session->cameraIds())
@@ -2383,12 +2382,12 @@ namespace scopeone::core::internal
             session->setOutputFramesWritten(it.key(), it.value().framesWritten);
         }
         session->setWriterPhase(RecordingWriterPhase::Completed);
-        if (!writeSessionDocument(session, outputErrorMessage))
+        if (!writeSessionDocument(*session, outputErrorMessage))
         {
             return failSave(outputErrorMessage);
         }
         return updateSessionResult(
-            session,
+            *session,
             saveSuccessMessage(
                 QStringLiteral("Success: Saved %1 recording").arg(recordingFormatName(capturePlan.format)),
                 outputInfo.outputDir),

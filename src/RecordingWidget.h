@@ -37,13 +37,11 @@ namespace scopeone::ui
         void onBrowseClicked();
         void onAutoNameClicked();
         void onStartStopClicked();
-        void onBurstModeToggled(bool enabled);
-        void onDetectorChanged(const QString& text);
-        void onSnapToGalleryClicked();
 
         void setupUI();
         void updateUiState();
         void updateStorageStatus();
+        void updateStorageStatusText(qint64 availableBytes);
         void moveOrderItem(int delta);
         void syncOrderList();
         bool appendSelectedFramesToGallery();
@@ -55,7 +53,6 @@ namespace scopeone::ui
 
         QStringList selectedCameraIds() const;
         bool startRecording();
-        void stopRecording();
 
     private:
         QComboBox* m_detectorCombo{nullptr};
@@ -104,5 +101,7 @@ namespace scopeone::ui
         QStringList m_availableCameraIds;
         std::vector<int> m_orderPreference;
         bool m_isRecording{false};
+        bool m_writerFinalizing{false};
+        bool m_storageQueryPending{false};
     };
 }

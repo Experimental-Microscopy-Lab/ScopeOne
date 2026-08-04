@@ -3,12 +3,26 @@
 #include <QDebug>
 #include <QMetaObject>
 #include <QMutexLocker>
+#include <QThreadPool>
+#include <utility>
 
 namespace scopeone::core::internal
 {
     namespace
     {
         constexpr qint64 kMaximumPendingRecordingBytes = 256ll * 1024 * 1024;
+        constexpr qint64 kMaximumRecordingFlushBytes = 16ll * 1024 * 1024;
+        constexpr qsizetype kMaximumRecordingFlushFrames = 16;
+
+        void releaseFramesAsync(std::deque<scopeone::core::ImageFrame>&& frames)
+        {
+            if (frames.empty())
+            {
+                return;
+            }
+            QThreadPool::globalInstance()->start(
+                [frames = std::move(frames)]() mutable { frames.clear(); });
+        }
     }
 
     void ProcessingFrameGate::setEnabled(bool enabled)
@@ -83,17 +97,22 @@ namespace scopeone::core::internal
 
     bool CameraBackend::setRecordingFrameDeliveryEnabled(bool enabled)
     {
-        QMutexLocker lock(&m_frameDeliveryMutex);
-        if (enabled && m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed))
+        std::deque<ImageFrame> discardedFrames;
         {
-            return true;
-        }
+            QMutexLocker lock(&m_frameDeliveryMutex);
+            if (enabled && m_recordingFrameDeliveryToken.load(std::memory_order_relaxed) != 0)
+            {
+                return true;
+            }
 
-        m_recordingFrameDeliveryEnabled.store(enabled, std::memory_order_relaxed);
-        m_pendingRecordingFrames.clear();
-        m_pendingRecordingBytes = 0;
-        m_pendingDroppedRecordingFrames = 0;
-        m_pendingDeliveryError.clear();
+            const quint64 token = enabled ? ++m_nextRecordingFrameDeliveryToken : 0;
+            m_recordingFrameDeliveryToken.store(token, std::memory_order_relaxed);
+            discardedFrames.swap(m_pendingRecordingFrames);
+            m_pendingRecordingBytes = 0;
+            m_pendingDroppedRecordingFrames = 0;
+            m_pendingDeliveryError.clear();
+        }
+        releaseFramesAsync(std::move(discardedFrames));
         return true;
     }
 
@@ -248,13 +267,17 @@ namespace scopeone::core::internal
     }
 
     // Routes one producer batch to processing, preview, and recording consumers
-    void CameraBackend::submitFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount)
+    void CameraBackend::submitFrames(const QList<ImageFrame>& frames,
+                                     quint64 acquiredFrameCount,
+                                     quint64 recordingToken)
     {
         bool queueFlush = false;
+        std::deque<ImageFrame> discardedFrames;
         {
             QMutexLocker lock(&m_frameDeliveryMutex);
             bool recordingDeliveryEnabled =
-                m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed);
+                recordingToken != 0
+                && recordingToken == m_recordingFrameDeliveryToken.load(std::memory_order_relaxed);
             const bool recordingWasEnabled = recordingDeliveryEnabled;
             QString acquiredCameraId;
             quint64 validFrameCount = 0;
@@ -286,11 +309,11 @@ namespace scopeone::core::internal
                             "Recording frame delivery exceeded the 256 MiB pending limit");
                     }
                     recordingDeliveryEnabled = false;
-                    m_recordingFrameDeliveryEnabled.store(false, std::memory_order_relaxed);
+                    m_recordingFrameDeliveryToken.store(0, std::memory_order_relaxed);
                     continue;
                 }
 
-                m_pendingRecordingFrames.append(normalizedFrame);
+                m_pendingRecordingFrames.push_back(std::move(normalizedFrame));
                 m_pendingRecordingBytes += frameBytes;
                 ++queuedFrameCount;
             }
@@ -305,7 +328,7 @@ namespace scopeone::core::internal
             {
                 m_pendingDeliveryError = QStringLiteral(
                     "Recording frame delivery detected dropped camera frames");
-                m_recordingFrameDeliveryEnabled.store(false, std::memory_order_relaxed);
+                m_recordingFrameDeliveryToken.store(0, std::memory_order_relaxed);
             }
             if (recordingWasEnabled && !m_pendingDeliveryError.isEmpty())
             {
@@ -316,11 +339,15 @@ namespace scopeone::core::internal
                 {
                     m_pendingDroppedRecordingFrames += submittedFrameCount - queuedFrameCount;
                 }
+                m_pendingDroppedRecordingFrames +=
+                    static_cast<quint64>(m_pendingRecordingFrames.size());
+                discardedFrames.swap(m_pendingRecordingFrames);
+                m_pendingRecordingBytes = 0;
             }
 
             if ((!m_pendingLatestFrames.isEmpty()
                  || !m_pendingAcquiredFrameCounts.isEmpty()
-                 || !m_pendingRecordingFrames.isEmpty()
+                 || !m_pendingRecordingFrames.empty()
                  || !m_pendingDeliveryError.isEmpty())
                 && !m_frameFlushQueued)
             {
@@ -328,6 +355,8 @@ namespace scopeone::core::internal
                 queueFlush = true;
             }
         }
+
+        releaseFramesAsync(std::move(discardedFrames));
 
         if (queueFlush)
         {
@@ -362,7 +391,12 @@ namespace scopeone::core::internal
 
     bool CameraBackend::recordingFrameDeliveryEnabled() const
     {
-        return m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed);
+        return recordingFrameDeliveryToken() != 0;
+    }
+
+    quint64 CameraBackend::recordingFrameDeliveryToken() const
+    {
+        return m_recordingFrameDeliveryToken.load(std::memory_order_relaxed);
     }
 
     bool CameraBackend::highRateFrameDeliveryEnabled() const
@@ -377,16 +411,31 @@ namespace scopeone::core::internal
         QList<ImageFrame> recordingFrames;
         QString deliveryError;
         quint64 droppedRecordingFrames = 0;
+        bool queueNextFlush = false;
         {
             QMutexLocker lock(&m_frameDeliveryMutex);
             latestFrames.swap(m_pendingLatestFrames);
             acquiredFrameCounts.swap(m_pendingAcquiredFrameCounts);
-            recordingFrames.swap(m_pendingRecordingFrames);
             deliveryError.swap(m_pendingDeliveryError);
             droppedRecordingFrames = m_pendingDroppedRecordingFrames;
-            m_pendingRecordingBytes = 0;
             m_pendingDroppedRecordingFrames = 0;
-            m_frameFlushQueued = false;
+            qint64 flushBytes = 0;
+            while (!m_pendingRecordingFrames.empty()
+                   && recordingFrames.size() < kMaximumRecordingFlushFrames)
+            {
+                const qint64 frameBytes = m_pendingRecordingFrames.front().payloadByteCount();
+                if (!recordingFrames.isEmpty()
+                    && flushBytes + frameBytes > kMaximumRecordingFlushBytes)
+                {
+                    break;
+                }
+                flushBytes += frameBytes;
+                recordingFrames.append(std::move(m_pendingRecordingFrames.front()));
+                m_pendingRecordingFrames.pop_front();
+            }
+            m_pendingRecordingBytes -= flushBytes;
+            queueNextFlush = !m_pendingRecordingFrames.empty();
+            m_frameFlushQueued = queueNextFlush;
         }
 
         for (auto it = acquiredFrameCounts.constBegin(); it != acquiredFrameCounts.constEnd(); ++it)
@@ -399,13 +448,19 @@ namespace scopeone::core::internal
         }
         if (!deliveryError.isEmpty())
         {
-            droppedRecordingFrames += static_cast<quint64>(recordingFrames.size());
             recordingFrames.clear();
             emit frameDeliveryFailed(deliveryError, droppedRecordingFrames);
         }
         else if (!recordingFrames.isEmpty())
         {
             emit recordingFramesReady(recordingFrames);
+        }
+        if (queueNextFlush)
+        {
+            QMetaObject::invokeMethod(
+                this,
+                [this]() { flushPendingFrames(); },
+                Qt::QueuedConnection);
         }
     }
 }

@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 
@@ -118,12 +119,15 @@ namespace scopeone::core::internal
         bool applyWithPreviewRestart(const QString& cameraId, const std::function<bool()>& operation);
         void notifyPreviewStarted(const QString& cameraId);
         void notifyPreviewStopped();
-        void submitFrames(const QList<scopeone::core::ImageFrame>& frames, quint64 acquiredFrameCount);
+        void submitFrames(const QList<scopeone::core::ImageFrame>& frames,
+                          quint64 acquiredFrameCount,
+                          quint64 recordingToken);
         void submitProcessingFrame(const scopeone::core::ImageFrame& frame, quint64 token);
         quint64 tryAcquireProcessingFrame(const QString& cameraId);
         void releaseProcessingFrame(const QString& cameraId, quint64 token);
         void discardPendingPreviewFrames();
         bool recordingFrameDeliveryEnabled() const;
+        quint64 recordingFrameDeliveryToken() const;
         bool highRateFrameDeliveryEnabled() const;
 
         virtual bool hasRunningCamera() const = 0;
@@ -154,11 +158,12 @@ namespace scopeone::core::internal
         mutable QMutex m_frameDeliveryMutex;
         QHash<QString, scopeone::core::ImageFrame> m_pendingLatestFrames;
         QHash<QString, quint64> m_pendingAcquiredFrameCounts;
-        QList<scopeone::core::ImageFrame> m_pendingRecordingFrames;
+        std::deque<scopeone::core::ImageFrame> m_pendingRecordingFrames;
         qint64 m_pendingRecordingBytes{0};
         quint64 m_pendingDroppedRecordingFrames{0};
         QString m_pendingDeliveryError;
-        std::atomic_bool m_recordingFrameDeliveryEnabled{false};
+        std::atomic<quint64> m_recordingFrameDeliveryToken{0};
+        quint64 m_nextRecordingFrameDeliveryToken{0};
         std::atomic_bool m_highRateFrameDeliveryEnabled{false};
         ProcessingFrameGate& m_processingFrameGate;
         bool m_frameFlushQueued{false};

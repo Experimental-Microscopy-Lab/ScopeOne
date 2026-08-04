@@ -155,29 +155,6 @@ namespace scopeone::core
             double z{0.0};
         };
 
-        class RecordingSaveResult
-        {
-        public:
-            bool saved() const { return m_saved; }
-            const QString& message() const { return m_message; }
-
-            void reset()
-            {
-                m_saved = false;
-                m_message.clear();
-            }
-
-            void set(bool saved, const QString& message)
-            {
-                m_saved = saved;
-                m_message = message;
-            }
-
-        private:
-            bool m_saved{false};
-            QString m_message;
-        };
-
         enum class RecordingWriterPhase
         {
             Idle,
@@ -200,39 +177,16 @@ namespace scopeone::core
             qint64 bytesWritten() const { return m_bytesWritten; }
             const QString& errorMessage() const { return m_errorMessage; }
 
-            bool isTerminal() const
-            {
-                return m_phase == RecordingWriterPhase::Completed
-                    || m_phase == RecordingWriterPhase::Failed;
-            }
-
             void reset(qint64 maxPendingWriteBytes = 0)
             {
-                m_phase = RecordingWriterPhase::Idle;
-                m_pendingWriteBytes = 0;
+                *this = RecordingWriterStatus{};
                 m_maxPendingWriteBytes = maxPendingWriteBytes;
-                m_framesCaptured = 0;
-                m_framesWritten = 0;
-                m_droppedFrames = 0;
-                m_bytesWritten = 0;
-                m_errorMessage.clear();
             }
 
             void setPhase(RecordingWriterPhase phase, const QString& errorMessage = QString())
             {
                 m_phase = phase;
-                if (phase == RecordingWriterPhase::Failed)
-                {
-                    m_errorMessage = errorMessage;
-                }
-                else if (!errorMessage.isNull())
-                {
-                    m_errorMessage = errorMessage;
-                }
-                else if (errorMessage.isEmpty())
-                {
-                    m_errorMessage.clear();
-                }
+                m_errorMessage = errorMessage;
             }
 
             void setPendingWriteBytes(qint64 pendingWriteBytes)
@@ -265,18 +219,6 @@ namespace scopeone::core
                 m_bytesWritten += bytesWritten;
             }
 
-            void setFrom(const RecordingWriterStatus& other)
-            {
-                m_phase = other.m_phase;
-                m_pendingWriteBytes = other.m_pendingWriteBytes;
-                m_maxPendingWriteBytes = other.m_maxPendingWriteBytes;
-                m_framesCaptured = other.m_framesCaptured;
-                m_framesWritten = other.m_framesWritten;
-                m_droppedFrames = other.m_droppedFrames;
-                m_bytesWritten = other.m_bytesWritten;
-                m_errorMessage = other.m_errorMessage;
-            }
-
         private:
             RecordingWriterPhase m_phase{RecordingWriterPhase::Idle};
             qint64 m_pendingWriteBytes{0};
@@ -295,7 +237,6 @@ namespace scopeone::core
             const ExperimentPlan& capturePlan() const { return m_manifest.plan; }
             const ExperimentDocument& experimentDocument() const { return m_manifest; }
             ExperimentRunState runState() const { return m_manifest.runState; }
-            const QString& errorMessage() const { return m_manifest.errorMessage; }
             bool streamedToDisk() const { return m_manifest.output.streamedToDisk; }
             double cameraPixelSizeUm(const QString& cameraId) const
             {
@@ -342,16 +283,6 @@ namespace scopeone::core
                 return it == m_manifest.output.files.constEnd() ? 0 : it.value().framesWritten;
             }
 
-            qint64 outputFrameCount() const
-            {
-                qint64 total = 0;
-                for (auto it = m_manifest.output.files.constBegin(); it != m_manifest.output.files.constEnd(); ++it)
-                {
-                    total += it.value().framesWritten;
-                }
-                return total;
-            }
-
             qint64 recordedFrameCount(const QString& cameraId) const
             {
                 const int bufferedFrames = frameCount(cameraId);
@@ -373,23 +304,13 @@ namespace scopeone::core
                 return recordedFrameCount() > 0;
             }
 
-            bool isSaved() const { return m_saveResult.saved(); }
-            const QString& saveMessage() const { return m_saveResult.message(); }
+            bool isSaved() const { return m_saved; }
+            const QString& saveMessage() const { return m_saveMessage; }
 
         private:
             friend class ScopeOneCore;
             friend class internal::RecordingManager;
 
-            void setStreamedToDisk(bool streamedToDisk) { m_manifest.output.streamedToDisk = streamedToDisk; }
-            int frameCount() const
-            {
-                int total = 0;
-                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
-                {
-                    total += static_cast<int>(it.value().size());
-                }
-                return total;
-            }
             int frameCount(const QString& cameraId) const
             {
                 const auto it = m_frames.constFind(cameraId.trimmed());
@@ -397,26 +318,12 @@ namespace scopeone::core
             }
             bool hasAnyFrames() const
             {
-                for (auto it = m_frames.constBegin(); it != m_frames.constEnd(); ++it)
-                {
-                    if (!it.value().empty())
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            void resetSaveResult()
-            {
-                m_saveResult.reset();
+                return !m_frames.isEmpty();
             }
             void setSaveResult(bool saved, const QString& message)
             {
-                m_saveResult.set(saved, message);
-            }
-            void resetWriterStatus(qint64 maxPendingWriteBytes = 0)
-            {
-                m_writerStatus.reset(maxPendingWriteBytes);
+                m_saved = saved;
+                m_saveMessage = message;
             }
             void setWriterPhase(RecordingWriterPhase phase, const QString& errorMessage = QString())
             {
@@ -428,14 +335,15 @@ namespace scopeone::core
             }
             void setWriterStatusSnapshot(const RecordingWriterStatus& status)
             {
-                m_writerStatus.setFrom(status);
+                m_writerStatus = status;
             }
             void prepareForSave(bool streamedToDisk, qint64 maxPendingWriteBytes = 0)
             {
-                setStreamedToDisk(streamedToDisk);
+                m_manifest.output.streamedToDisk = streamedToDisk;
                 clearOutputFiles();
-                resetSaveResult();
-                resetWriterStatus(maxPendingWriteBytes);
+                m_saved = false;
+                m_saveMessage.clear();
+                m_writerStatus.reset(maxPendingWriteBytes);
             }
             void setCapturePlan(const ExperimentPlan& plan)
             {
@@ -490,11 +398,9 @@ namespace scopeone::core
                 }
                 return true;
             }
-            bool appendImageFrames(const QList<ImageFrame>& frames);
             static std::shared_ptr<RecordingSessionData> fromImageFrames(
                 const QList<ImageFrame>& frames,
                 const ExperimentPlan& capturePlan);
-            void clearFrames() { m_frames.clear(); }
             void clearOutputFiles() { m_manifest.clearOutput(); }
             RecordingFileManifest& ensureFileManifest(const QString& cameraId)
             {
@@ -512,20 +418,14 @@ namespace scopeone::core
             }
             std::shared_ptr<RecordingSessionData> cloneForSave() const
             {
-                auto clone = std::make_shared<RecordingSessionData>();
-                clone->m_manifest = m_manifest;
-                clone->m_frames = m_frames;
-                clone->m_saveResult = m_saveResult;
-                clone->m_writerStatus = m_writerStatus;
-                clone->m_cameraPixelSizesUm = m_cameraPixelSizesUm;
-                return clone;
+                return std::make_shared<RecordingSessionData>(*this);
             }
             void applySaveStateFrom(const RecordingSessionData& source)
             {
-                m_saveResult = source.m_saveResult;
+                m_saved = source.m_saved;
+                m_saveMessage = source.m_saveMessage;
                 m_writerStatus = source.m_writerStatus;
-                m_cameraPixelSizesUm = source.m_cameraPixelSizesUm;
-                if (source.m_saveResult.saved())
+                if (source.m_saved)
                 {
                     m_manifest.plan = source.m_manifest.plan;
                     m_manifest.output = source.m_manifest.output;
@@ -538,7 +438,8 @@ namespace scopeone::core
             ExperimentDocument m_manifest;
             QHash<QString, std::vector<ImageFrame>> m_frames;
             QHash<QString, double> m_cameraPixelSizesUm;
-            RecordingSaveResult m_saveResult;
+            bool m_saved{false};
+            QString m_saveMessage;
             RecordingWriterStatus m_writerStatus;
         };
 

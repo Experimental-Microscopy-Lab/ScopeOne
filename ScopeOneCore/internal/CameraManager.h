@@ -87,6 +87,7 @@ namespace scopeone::core::internal
         std::unique_ptr<CameraBackend> m_backend;
         bool m_recordingFrameDeliveryEnabled{false};
         bool m_highRateFrameDeliveryEnabled{false};
+        QMap<QString, QStringList> m_propertyNamesCache;
         QMap<QString, CameraPropertyReadback> m_propertyDetailsCache;
     };
 }

@@ -121,6 +121,9 @@ namespace scopeone::core
         void markupsChanged();
 
     private:
+        friend class ScopeOneCore;
+
+        void applyValidatedDocument(const ExperimentDocument& document);
         bool setLayerDisplay(const QString& layerId,
                              const LayerDisplayState& display);
         QString addMarkup(Markup markup);
