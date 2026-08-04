@@ -37,8 +37,8 @@ namespace scopeone::core::internal
 
         shutdownNow();
         m_backend = kind == CameraBackend::Kind::Native
-                        ? createNativeCameraBackend()
-                        : createAgentCameraBackend();
+                        ? createNativeCameraBackend(m_processingFrameGate)
+                        : createAgentCameraBackend(m_processingFrameGate);
         if (!m_backend)
         {
             return false;
@@ -100,6 +100,7 @@ namespace scopeone::core::internal
 
     void CameraManager::shutdownNow()
     {
+        m_processingFrameGate.setEnabled(false);
         m_backend.reset();
         m_recordingFrameDeliveryEnabled = false;
         m_highRateFrameDeliveryEnabled = false;
@@ -109,6 +110,7 @@ namespace scopeone::core::internal
     // Releases the active backend after its asynchronous teardown completes
     void CameraManager::shutdown(std::function<void(const QString&)> completion)
     {
+        m_processingFrameGate.setEnabled(false);
         if (!m_backend)
         {
             m_recordingFrameDeliveryEnabled = false;
@@ -208,6 +210,16 @@ namespace scopeone::core::internal
             m_highRateFrameDeliveryEnabled = enabled;
         }
         return ok;
+    }
+
+    bool CameraManager::isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token)
+    {
+        return m_processingFrameGate.isCurrent(cameraId, token);
+    }
+
+    void CameraManager::finishProcessingFrame(const QString& cameraId, quint64 token)
+    {
+        m_processingFrameGate.release(cameraId, token);
     }
 
     bool CameraManager::getExposure(const QString& cameraIdOrAll, double& exposureMs) const

@@ -3,6 +3,7 @@
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QDebug>
+#include <QFile>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -21,6 +22,63 @@ namespace scopeone::ui
 
     namespace
     {
+        constexpr int kColormapSize = 256;
+
+        QByteArray loadImageJLut(const QString& name)
+        {
+            QFile file(QStringLiteral(":/luts/%1.lut").arg(name));
+            if (!file.open(QIODevice::ReadOnly))
+            {
+                return {};
+            }
+
+            const QByteArray planar = file.readAll();
+            if (planar.size() != kColormapSize * 3)
+            {
+                return {};
+            }
+
+            QByteArray interleaved;
+            interleaved.reserve(planar.size());
+            for (int index = 0; index < kColormapSize; ++index)
+            {
+                interleaved.append(planar[index]);
+                interleaved.append(planar[kColormapSize + index]);
+                interleaved.append(planar[2 * kColormapSize + index]);
+            }
+            return interleaved;
+        }
+
+        QByteArray buildColormapAtlas(const QStringList& names)
+        {
+            QByteArray atlas;
+            atlas.reserve(names.size() * kColormapSize * 3);
+            for (const QString& name : names)
+            {
+                const QByteArray data = loadImageJLut(name);
+                if (data.size() != kColormapSize * 3)
+                {
+                    qCritical() << "PreviewWidget: failed to load colormap" << name;
+                    return {};
+                }
+                atlas.append(data);
+            }
+            return atlas;
+        }
+
+        int colormapIndex(const QString& name)
+        {
+            const QStringList names = ImageSceneModel::supportedColormaps();
+            for (int index = 0; index < names.size(); ++index)
+            {
+                if (names[index].compare(name, Qt::CaseInsensitive) == 0)
+                {
+                    return index;
+                }
+            }
+            return 0;
+        }
+
         // Builds a stable layer key for raw or processed preview
         QString previewLayerKey(const QString& cameraId, bool processed)
         {
@@ -674,7 +732,8 @@ namespace scopeone::ui
         settings.visible = false;
         settings.opacityPercent = 100;
         settings.gamma = 1.0;
-        settings.colormap = processed ? Colormap::Green : Colormap::Gray;
+        settings.colormapIndex = colormapIndex(processed ? QStringLiteral("Green")
+                                                         : QStringLiteral("Gray"));
         settings.blending = Blending::Translucent;
         settings.levelMin = 0;
         settings.levelMax = 255;
@@ -692,7 +751,7 @@ namespace scopeone::ui
             settings.visible = layer.display.visible;
             settings.opacityPercent = layer.display.opacityPercent;
             settings.gamma = layer.display.gamma;
-            settings.colormap = colormapFromName(layer.display.colormap);
+            settings.colormapIndex = colormapIndex(layer.display.colormap);
             settings.blending = blendingFromName(layer.display.blending);
             settings.levelMin = layer.display.levelMin;
             settings.levelMax = layer.display.levelMax;
@@ -700,43 +759,6 @@ namespace scopeone::ui
             return settings;
         }
         return defaultLayerDisplaySettings(ScopeOneCore::isProcessedLayerKey(layerKey));
-    }
-
-    PreviewWidget::Colormap PreviewWidget::colormapFromName(const QString& name) const
-    {
-        const QString normalized = name.trimmed().toLower();
-        if (normalized == QStringLiteral("green")) return Colormap::Green;
-        if (normalized == QStringLiteral("magenta")) return Colormap::Magenta;
-        if (normalized == QStringLiteral("cyan")) return Colormap::Cyan;
-        if (normalized == QStringLiteral("red")) return Colormap::Red;
-        if (normalized == QStringLiteral("blue")) return Colormap::Blue;
-        if (normalized == QStringLiteral("yellow")) return Colormap::Yellow;
-        if (normalized == QStringLiteral("fire")) return Colormap::Fire;
-        return Colormap::Gray;
-    }
-
-    QString PreviewWidget::colormapName(Colormap colormap) const
-    {
-        switch (colormap)
-        {
-        case Colormap::Green:
-            return QStringLiteral("Green");
-        case Colormap::Magenta:
-            return QStringLiteral("Magenta");
-        case Colormap::Cyan:
-            return QStringLiteral("Cyan");
-        case Colormap::Red:
-            return QStringLiteral("Red");
-        case Colormap::Blue:
-            return QStringLiteral("Blue");
-        case Colormap::Yellow:
-            return QStringLiteral("Yellow");
-        case Colormap::Fire:
-            return QStringLiteral("Fire");
-        case Colormap::Gray:
-            return QStringLiteral("Gray");
-        }
-        return QStringLiteral("Gray");
     }
 
     PreviewWidget::Blending PreviewWidget::blendingFromName(const QString& name) const
@@ -2020,6 +2042,12 @@ namespace scopeone::ui
     void PreviewWidget::ensureGlPipeline()
     {
         if (m_glInited) return;
+        const QStringList colormaps = ImageSceneModel::supportedColormaps();
+        const QByteArray atlas = buildColormapAtlas(colormaps);
+        if (atlas.isEmpty())
+        {
+            return;
+        }
         const float verts[] = {
             -1.f, -1.f, 0.f, 0.f,
             1.f, -1.f, 1.f, 0.f,
@@ -2051,20 +2079,12 @@ namespace scopeone::ui
         uniform float uAlpha;
         uniform float uGamma;
         uniform int uColormap;
-        vec3 applyColormap(float t, int map){
-            if (map == 1) return vec3(0.0, t, 0.0);
-            if (map == 2) return vec3(t, 0.0, t);
-            if (map == 3) return vec3(0.0, t, t);
-            if (map == 4) return vec3(t, 0.0, 0.0);
-            if (map == 5) return vec3(0.0, 0.0, t);
-            if (map == 6) return vec3(t, t, 0.0);
-            if (map == 7) {
-                float r = smoothstep(0.0, 0.45, t);
-                float g = smoothstep(0.25, 0.80, t);
-                float b = smoothstep(0.70, 1.0, t);
-                return vec3(r, g, b);
-            }
-            return vec3(t, t, t);
+        uniform sampler2D uColormapLut;
+        vec3 applyColormap(float t, int map) {
+            vec2 lutSize = vec2(textureSize(uColormapLut, 0));
+            float column = (t * (lutSize.x - 1.0) + 0.5) / lutSize.x;
+            float row = (float(map) + 0.5) / lutSize.y;
+            return texture(uColormapLut, vec2(column, row)).rgb;
         }
         void main(){
             vec4 s = texture(uTex, vUV);
@@ -2104,8 +2124,23 @@ namespace scopeone::ui
         m_uAlpha = m_prog.uniformLocation("uAlpha");
         m_uGamma = m_prog.uniformLocation("uGamma");
         m_uColormap = m_prog.uniformLocation("uColormap");
+        m_uColormapLut = m_prog.uniformLocation("uColormapLut");
         m_uUvScale = m_prog.uniformLocation("uUvScale");
         m_uUvOffset = m_prog.uniformLocation("uUvOffset");
+
+        // Uploads all colormaps once for shader lookup
+        glGenTextures(1, &m_colormapTexture);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_colormapTexture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8,
+                     kColormapSize, colormaps.size(), 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, atlas.constData());
+        glActiveTexture(GL_TEXTURE0);
         m_prog.release();
         m_vao.release();
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -2181,6 +2216,10 @@ namespace scopeone::ui
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texId);
         m_prog.setUniformValue(m_uTex, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_colormapTexture);
+        m_prog.setUniformValue(m_uColormapLut, 1);
+        glActiveTexture(GL_TEXTURE0);
         const int levelDomain = qMax(1, display.levelDomainMax);
         m_prog.setUniformValue(m_uMinNorm, static_cast<float>(display.levelMin) / static_cast<float>(levelDomain));
         m_prog.setUniformValue(m_uMaxNorm, static_cast<float>(display.levelMax) / static_cast<float>(levelDomain));
@@ -2193,7 +2232,7 @@ namespace scopeone::ui
                                   : qBound(0.0f, static_cast<float>(display.opacityPercent) / 100.0f, 1.0f);
         m_prog.setUniformValue(m_uAlpha, opacity);
         m_prog.setUniformValue(m_uGamma, static_cast<float>(std::clamp(display.gamma, 0.2, 2.0)));
-        m_prog.setUniformValue(m_uColormap, static_cast<int>(display.colormap));
+        m_prog.setUniformValue(m_uColormap, display.colormapIndex);
         setUvTransform(flipX, flipY);
 
         if (display.blending == Blending::Opaque)
@@ -2335,6 +2374,11 @@ namespace scopeone::ui
             glDeleteTextures(1, &it.value().texId);
         }
         m_textureCache.clear();
+        if (m_colormapTexture != 0)
+        {
+            glDeleteTextures(1, &m_colormapTexture);
+            m_colormapTexture = 0;
+        }
         doneCurrent();
     }
 

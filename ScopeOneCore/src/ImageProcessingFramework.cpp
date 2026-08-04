@@ -223,7 +223,9 @@ namespace scopeone::core::internal
     }
 
     // Stores the newest frame and starts a worker when needed
-    void ImageProcessingManager::processFrameAsync(const ImageFrame& frame)
+    void ImageProcessingManager::processFrameAsync(const ImageFrame& frame,
+                                                   quint64 processingToken,
+                                                   const std::function<bool()>& tokenIsCurrent)
     {
         if (!m_realTimeEnabled || !frame.isValid())
         {
@@ -233,6 +235,7 @@ namespace scopeone::core::internal
         const ImageFrame normalizedFrame = normalizedFrameSource(frame);
         const QString cameraKey = getCameraKey(normalizedFrame);
         bool shouldStartWorker = false;
+        quint64 replacedProcessingToken = 0;
 
         {
             QMutexLocker locker(&m_frameMutex);
@@ -240,15 +243,29 @@ namespace scopeone::core::internal
             {
                 return;
             }
+            if (processingToken != 0 && (!tokenIsCurrent || !tokenIsCurrent()))
+            {
+                return;
+            }
             CameraSlot& slot = m_cameraSlots[cameraKey];
+            if (slot.hasFrame)
+            {
+                replacedProcessingToken = slot.processingToken;
+            }
             slot.latestFrame = normalizedFrame;
             slot.latestFrameGeneration = m_liveGeneration;
+            slot.processingToken = processingToken;
             slot.hasFrame = true;
             if (!slot.processing)
             {
                 slot.processing = true;
                 shouldStartWorker = true;
             }
+        }
+
+        if (replacedProcessingToken != 0)
+        {
+            emit processingFrameFinished(normalizedFrame.cameraId, replacedProcessingToken);
         }
 
         if (shouldStartWorker)
@@ -362,6 +379,7 @@ namespace scopeone::core::internal
         {
             ImageFrame frame;
             quint64 frameGeneration = 0;
+            quint64 processingToken = 0;
 
             {
                 QMutexLocker locker(&m_frameMutex);
@@ -376,13 +394,13 @@ namespace scopeone::core::internal
                 }
                 frame = it->latestFrame;
                 frameGeneration = it->latestFrameGeneration;
+                processingToken = it->processingToken;
                 it->hasFrame = false;
             }
 
-            std::shared_ptr<ProcessingPipelineRuntime> pipeline = livePipelineForCamera(cameraKey);
-
             try
             {
+                std::shared_ptr<ProcessingPipelineRuntime> pipeline = livePipelineForCamera(cameraKey);
                 ProcessingResult result = pipeline->process(frame, m_processingBitDepth.load());
                 if (result.succeeded())
                 {
@@ -410,6 +428,10 @@ namespace scopeone::core::internal
             catch (const std::exception& e)
             {
                 emit processingError(QString("Processing failed: %1").arg(e.what()));
+            }
+            if (processingToken != 0)
+            {
+                emit processingFrameFinished(frame.cameraId, processingToken);
             }
         }
     }

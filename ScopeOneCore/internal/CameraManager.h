@@ -43,6 +43,8 @@ namespace scopeone::core::internal
         void setFrameDeliveryPaused(bool paused);
         bool setRecordingFrameDeliveryEnabled(bool enabled);
         bool setHighRateFrameDeliveryEnabled(bool enabled);
+        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token);
+        void finishProcessingFrame(const QString& cameraId, quint64 token);
 
         bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;
         bool setExposure(const QString& cameraIdOrAll, double exposureMs);
@@ -71,7 +73,7 @@ namespace scopeone::core::internal
 
     signals:
         void newRawFrameReady(const scopeone::core::ImageFrame& frame);
-        void processingFrameReady(const scopeone::core::ImageFrame& frame);
+        void processingFrameReady(const scopeone::core::ImageFrame& frame, quint64 token);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
@@ -81,6 +83,7 @@ namespace scopeone::core::internal
     private:
         bool activateBackend(CameraBackend::Kind kind);
 
+        ProcessingFrameGate m_processingFrameGate;
         std::unique_ptr<CameraBackend> m_backend;
         bool m_recordingFrameDeliveryEnabled{false};
         bool m_highRateFrameDeliveryEnabled{false};

@@ -509,6 +509,12 @@ namespace scopeone::core
             QStringLiteral("Blue"),
             QStringLiteral("Yellow"),
             QStringLiteral("Fire"),
+            QStringLiteral("Inverted Gray"),
+            QStringLiteral("Ice"),
+            QStringLiteral("Viridis"),
+            QStringLiteral("Inferno"),
+            QStringLiteral("Magma"),
+            QStringLiteral("Cividis"),
         };
     }
 

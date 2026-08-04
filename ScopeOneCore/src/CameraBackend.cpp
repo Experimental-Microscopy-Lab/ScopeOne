@@ -11,8 +11,49 @@ namespace scopeone::core::internal
         constexpr qint64 kMaximumPendingRecordingBytes = 256ll * 1024 * 1024;
     }
 
-    CameraBackend::CameraBackend(QObject* parent)
+    void ProcessingFrameGate::setEnabled(bool enabled)
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_enabled == enabled)
+        {
+            return;
+        }
+        m_enabled = enabled;
+        m_inFlightTokens.clear();
+    }
+
+    quint64 ProcessingFrameGate::tryAcquire(const QString& cameraId)
+    {
+        QMutexLocker lock(&m_mutex);
+        if (!m_enabled || cameraId.isEmpty() || m_inFlightTokens.contains(cameraId))
+        {
+            return 0;
+        }
+        ++m_nextToken;
+        m_inFlightTokens.insert(cameraId, m_nextToken);
+        return m_nextToken;
+    }
+
+    bool ProcessingFrameGate::isCurrent(const QString& cameraId, quint64 token)
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_enabled && m_inFlightTokens.value(cameraId) == token;
+    }
+
+    void ProcessingFrameGate::release(const QString& cameraId, quint64 token)
+    {
+        QMutexLocker lock(&m_mutex);
+        const auto it = m_inFlightTokens.constFind(cameraId);
+        if (it != m_inFlightTokens.constEnd() && it.value() == token)
+        {
+            m_inFlightTokens.remove(cameraId);
+        }
+    }
+
+    CameraBackend::CameraBackend(ProcessingFrameGate& processingFrameGate,
+                                 QObject* parent)
         : QObject(parent)
+          , m_processingFrameGate(processingFrameGate)
     {
     }
 
@@ -59,6 +100,7 @@ namespace scopeone::core::internal
     // Selects full speed latest frame delivery for live processing consumers
     bool CameraBackend::setHighRateFrameDeliveryEnabled(bool enabled)
     {
+        m_processingFrameGate.setEnabled(enabled);
         m_highRateFrameDeliveryEnabled.store(enabled, std::memory_order_relaxed);
         return true;
     }
@@ -209,13 +251,10 @@ namespace scopeone::core::internal
     void CameraBackend::submitFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount)
     {
         bool queueFlush = false;
-        QList<ImageFrame> processingFrames;
         {
             QMutexLocker lock(&m_frameDeliveryMutex);
             bool recordingDeliveryEnabled =
                 m_recordingFrameDeliveryEnabled.load(std::memory_order_relaxed);
-            const bool processingDeliveryEnabled =
-                m_highRateFrameDeliveryEnabled.load(std::memory_order_relaxed);
             const bool recordingWasEnabled = recordingDeliveryEnabled;
             QString acquiredCameraId;
             quint64 validFrameCount = 0;
@@ -233,11 +272,6 @@ namespace scopeone::core::internal
                 acquiredCameraId = cameraId;
                 ++validFrameCount;
                 m_pendingLatestFrames.insert(cameraId, normalizedFrame);
-                if (processingDeliveryEnabled)
-                {
-                    processingFrames.append(normalizedFrame);
-                }
-
                 if (!recordingDeliveryEnabled)
                 {
                     continue;
@@ -302,10 +336,21 @@ namespace scopeone::core::internal
                 [this]() { flushPendingFrames(); },
                 Qt::QueuedConnection);
         }
-        for (const ImageFrame& frame : processingFrames)
-        {
-            emit processingFrameReady(frame);
-        }
+    }
+
+    void CameraBackend::submitProcessingFrame(const ImageFrame& frame, quint64 token)
+    {
+        emit processingFrameReady(frame, token);
+    }
+
+    quint64 CameraBackend::tryAcquireProcessingFrame(const QString& cameraId)
+    {
+        return m_processingFrameGate.tryAcquire(cameraId);
+    }
+
+    void CameraBackend::releaseProcessingFrame(const QString& cameraId, quint64 token)
+    {
+        m_processingFrameGate.release(cameraId, token);
     }
 
     void CameraBackend::discardPendingPreviewFrames()

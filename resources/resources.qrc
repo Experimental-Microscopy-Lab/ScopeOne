@@ -2,5 +2,19 @@
     <qresource prefix="/">
         <file>Scopeone_Icon.svg</file>
         <file>Scopeone_Logo.svg</file>
+        <file>luts/Gray.lut</file>
+        <file>luts/Green.lut</file>
+        <file>luts/Magenta.lut</file>
+        <file>luts/Cyan.lut</file>
+        <file>luts/Red.lut</file>
+        <file>luts/Blue.lut</file>
+        <file>luts/Yellow.lut</file>
+        <file>luts/Fire.lut</file>
+        <file>luts/Inverted Gray.lut</file>
+        <file>luts/Ice.lut</file>
+        <file>luts/Viridis.lut</file>
+        <file>luts/Inferno.lut</file>
+        <file>luts/Magma.lut</file>
+        <file>luts/Cividis.lut</file>
     </qresource>
 </RCC>

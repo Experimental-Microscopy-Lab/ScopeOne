@@ -53,7 +53,7 @@ namespace
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
     // Change to true temporarily when pipeline FPS diagnostics are needed
-    constexpr bool kFrameRateDiagnosticsEnabled = true;
+    constexpr bool kFrameRateDiagnosticsEnabled = false;
     constexpr int kFrameRateDiagnosticIntervalMs = 3000;
 
     // Convert a histogram bin to its lower source value
@@ -1209,6 +1209,9 @@ namespace scopeone::core
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::imageProcessed,
                 this, &ScopeOneCore::handleProcessedFrame,
                 Qt::DirectConnection);
+        connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingFrameFinished,
+                m_managers->cameraManager, &CameraManager::finishProcessingFrame,
+                Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
     }
@@ -1869,7 +1872,7 @@ namespace scopeone::core
     }
 
     // Submits one acquisition frame without crossing the UI event queue
-    void ScopeOneCore::submitProcessingFrame(const ImageFrame& frame)
+    void ScopeOneCore::submitProcessingFrame(const ImageFrame& frame, quint64 processingToken)
     {
         if (!frame.isValid()
             || !m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
@@ -1881,7 +1884,21 @@ namespace scopeone::core
             QMutexLocker locker(&m_managers->frameRateCountersMutex);
             ++m_managers->frameRateCounters[frame.cameraId].input;
         }
-        m_managers->imageProcessingManager->processFrameAsync(frame);
+        if (processingToken == 0)
+        {
+            m_managers->imageProcessingManager->processFrameAsync(frame);
+            return;
+        }
+        const QString cameraId = frame.cameraId;
+        m_managers->imageProcessingManager->processFrameAsync(
+            frame,
+            processingToken,
+            [this, cameraId, processingToken]()
+            {
+                return m_managers->cameraManager->isProcessingFrameTokenCurrent(
+                    cameraId,
+                    processingToken);
+            });
     }
 
     // Publishes every completed frame and coalesces main thread state updates
@@ -3571,10 +3588,6 @@ namespace scopeone::core
         {
             return false;
         }
-        if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(enabled))
-        {
-            return false;
-        }
         if constexpr (kFrameRateDiagnosticsEnabled)
         {
             QMutexLocker locker(&m_managers->frameRateCountersMutex);
@@ -3583,15 +3596,32 @@ namespace scopeone::core
         }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
+            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(enabled))
+            {
+                return false;
+            }
             if (!enabled)
             {
                 clearProcessedFrames();
             }
             return true;
         }
-        m_managers->imageProcessingManager->enableRealTimeProcessing(enabled);
-        if (!enabled)
+        if (enabled)
         {
+            m_managers->imageProcessingManager->enableRealTimeProcessing(true);
+            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(true))
+            {
+                m_managers->imageProcessingManager->enableRealTimeProcessing(false);
+                return false;
+            }
+        }
+        else
+        {
+            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(false))
+            {
+                return false;
+            }
+            m_managers->imageProcessingManager->enableRealTimeProcessing(false);
             clearProcessedFrames();
         }
         emit processingSettingsChanged();

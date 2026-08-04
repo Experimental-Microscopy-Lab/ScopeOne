@@ -79,7 +79,7 @@ namespace scopeone::core::internal
         class NativeCameraBackend final : public CameraBackend
         {
         public:
-            NativeCameraBackend();
+            explicit NativeCameraBackend(ProcessingFrameGate& processingFrameGate);
             ~NativeCameraBackend() override;
 
             Kind kind() const override { return Kind::Native; }
@@ -125,6 +125,8 @@ namespace scopeone::core::internal
             bool stopNativeStream();
             void setWorkerPaused(bool paused);
             void submitWorkerFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount);
+            void submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token);
+            quint64 tryAcquireWorkerProcessingFrame();
             bool requiresAllFrames() const;
             bool requiresHighRateFrames() const;
             void handleStreamFailure(quint64 generation,
@@ -235,11 +237,10 @@ namespace scopeone::core::internal
                         return;
                     }
 
-                    // Preserve every available frame for recording and live processing
+                    // Copy all recording frames but admit only one live processing frame at a time
                     const bool requiresAllFrames = owner->requiresAllFrames();
                     const bool requiresHighRateFrames = owner->requiresHighRateFrames();
                     const bool deliverLatest = requiresAllFrames
-                        || requiresHighRateFrames
                         || !m_deliveryTimer.isValid()
                         || m_deliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs;
                     QList<ImageFrame> frames;
@@ -253,9 +254,15 @@ namespace scopeone::core::internal
                         }
                         const quint64 frameIndex = ++m_frameIndex;
                         ++frameCount;
+                        const bool latestFrame = remaining == 0;
+                        const quint64 processingToken = requiresHighRateFrames && latestFrame
+                            ? owner->tryAcquireWorkerProcessingFrame()
+                            : 0;
+                        const bool processingFrameSelected = processingToken != 0;
+                        const bool previewFrameSelected = latestFrame && deliverLatest;
                         if (!requiresAllFrames
-                            && !requiresHighRateFrames
-                            && (remaining > 0 || !deliverLatest))
+                            && !processingFrameSelected
+                            && !previewFrameSelected)
                         {
                             continue;
                         }
@@ -275,8 +282,16 @@ namespace scopeone::core::internal
                         frame.sourceRoiHeight = m_configuration.sourceRoiHeight;
                         frame.bytes.resize(static_cast<qsizetype>(payloadByteCount));
                         memcpy(frame.bytes.data(), pixels, static_cast<size_t>(payloadByteCount));
-                        frames.append(std::move(frame));
+                        if (processingFrameSelected)
+                        {
+                            owner->submitWorkerProcessingFrame(frame, processingToken);
+                        }
+                        if (requiresAllFrames || previewFrameSelected)
+                        {
+                            frames.append(std::move(frame));
+                        }
                     }
+                    owner->m_lastFrameIndex.store(m_frameIndex, std::memory_order_relaxed);
                     if (requiresAllFrames)
                     {
                         m_pendingAcquiredFrameCount = 0;
@@ -363,7 +378,8 @@ namespace scopeone::core::internal
             bool m_paused{false};
         };
 
-        NativeCameraBackend::NativeCameraBackend()
+        NativeCameraBackend::NativeCameraBackend(ProcessingFrameGate& processingFrameGate)
+            : CameraBackend(processingFrameGate)
         {
             m_streamThread.setObjectName(QStringLiteral("ScopeOneNativeFrameWorker"));
             m_worker = new NativeFrameWorker(this);
@@ -917,8 +933,17 @@ namespace scopeone::core::internal
             {
                 return;
             }
-            m_lastFrameIndex.store(frames.constLast().frameIndex, std::memory_order_relaxed);
             submitFrames(frames, acquiredFrameCount);
+        }
+
+        void NativeCameraBackend::submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token)
+        {
+            submitProcessingFrame(frame, token);
+        }
+
+        quint64 NativeCameraBackend::tryAcquireWorkerProcessingFrame()
+        {
+            return tryAcquireProcessingFrame(m_cameraId);
         }
 
         bool NativeCameraBackend::requiresAllFrames() const
@@ -961,8 +986,9 @@ namespace scopeone::core::internal
         }
     }
 
-    std::unique_ptr<CameraBackend> createNativeCameraBackend()
+    std::unique_ptr<CameraBackend> createNativeCameraBackend(
+        ProcessingFrameGate& processingFrameGate)
     {
-        return std::make_unique<NativeCameraBackend>();
+        return std::make_unique<NativeCameraBackend>(processingFrameGate);
     }
 }

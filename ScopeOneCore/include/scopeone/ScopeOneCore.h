@@ -891,7 +891,7 @@ namespace scopeone::core
                               const QString& name,
                               DocumentLayerKind kind);
         void handleIncomingRawFrame(const ImageFrame& frame);
-        void submitProcessingFrame(const ImageFrame& frame);
+        void submitProcessingFrame(const ImageFrame& frame, quint64 processingToken = 0);
         void handleProcessedFrame(const ImageFrame& frame);
         void flushProcessedFrames();
         void queuePreviewRawFrame(const ImageFrame& frame);

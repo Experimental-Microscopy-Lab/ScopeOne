@@ -125,7 +125,6 @@ signals:
             quint64 framesSinceUpdate{0};
         };
 
-        enum class Colormap { Gray = 0, Green, Magenta, Cyan, Red, Blue, Yellow, Fire };
         enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
         enum class FrameRole { Raw, Processed };
         enum class MarkupEditMode
@@ -145,7 +144,7 @@ signals:
             bool visible{false};
             int opacityPercent{100};
             double gamma{1.0};
-            Colormap colormap{Colormap::Gray};
+            int colormapIndex{0};
             Blending blending{Blending::Translucent};
             int levelMin{0};
             int levelMax{255};
@@ -211,9 +210,10 @@ signals:
         bool m_glInited{false};
         QOpenGLVertexArrayObject m_vao;
         GLuint m_vbo{0};
+        GLuint m_colormapTexture{0};
         QOpenGLShaderProgram m_prog;
         GLint m_uTex{-1}, m_uMinNorm{-1}, m_uMaxNorm{-1}, m_uTexNormScale{-1}, m_uAlpha{-1};
-        GLint m_uGamma{-1}, m_uColormap{-1};
+        GLint m_uGamma{-1}, m_uColormap{-1}, m_uColormapLut{-1};
         GLint m_uUvScale{-1}, m_uUvOffset{-1};
 
         struct CachedTexture
@@ -262,8 +262,6 @@ signals:
         bool registerAvailableCamera(const QString& cameraId);
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
         LayerDisplaySettings layerDisplaySettings(const QString& layerKey) const;
-        Colormap colormapFromName(const QString& name) const;
-        QString colormapName(Colormap colormap) const;
         Blending blendingFromName(const QString& name) const;
         QString blendingName(Blending blending) const;
         void removeStaticLayerData(const QString& sourceId);

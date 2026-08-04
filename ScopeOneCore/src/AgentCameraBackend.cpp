@@ -46,6 +46,7 @@ namespace scopeone::core::internal
     namespace
     {
         constexpr int kAgentControlReadyTimeoutMs = 15000;
+        constexpr int kPreviewFrameDeliveryIntervalMs = 16;
 
         enum class AgentFrameDeliveryMode
         {
@@ -418,6 +419,7 @@ namespace scopeone::core::internal
         void addCamera(const QString& cameraId, const QString& shmKey);
         void removeCamera(const QString& cameraId);
         void clear();
+        void resetPreviewDeliveryState(const QString& cameraId);
         bool ensureSharedMemory(const QString& cameraId);
         ImageFrame consumeFrames(const QString& cameraId, bool publishFrames);
         void consumeFramesAsync(const QString& cameraId);
@@ -429,7 +431,9 @@ namespace scopeone::core::internal
             QString shmKey;
             std::unique_ptr<QSharedMemory> shm;
             quint64 lastFrameIndex{0};
+            quint64 pendingAcquiredFrameCount{0};
             ImageFrame latestFrame;
+            QElapsedTimer previewDeliveryTimer;
         };
 
         bool ensureSharedMemory(ReaderSlot& slot);
@@ -463,7 +467,7 @@ namespace scopeone::core::internal
     class AgentCameraBackend final : public CameraBackend
     {
     public:
-        AgentCameraBackend();
+        explicit AgentCameraBackend(ProcessingFrameGate& processingFrameGate);
         ~AgentCameraBackend() override;
 
         Kind kind() const override { return Kind::Agent; }
@@ -545,6 +549,11 @@ namespace scopeone::core::internal
             {
                 return true;
             }
+            AgentFrameWorker* const worker = m_frameWorker;
+            QMetaObject::invokeMethod(
+                worker,
+                [worker, cameraId]() { worker->resetPreviewDeliveryState(cameraId); },
+                Qt::BlockingQueuedConnection);
             QJsonObject req;
             req.insert(agent::kMessageTypeField, agent::kCommandStartPreview);
             QJsonObject resp;
@@ -941,7 +950,8 @@ namespace scopeone::core::internal
         std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
     }
 
-    AgentCameraBackend::AgentCameraBackend()
+    AgentCameraBackend::AgentCameraBackend(ProcessingFrameGate& processingFrameGate)
+        : CameraBackend(processingFrameGate)
     {
         m_frameThread.setObjectName(QStringLiteral("ScopeOneAgentFrameReader"));
         m_frameWorker = new AgentFrameWorker(this);
@@ -1229,6 +1239,17 @@ namespace scopeone::core::internal
     void AgentFrameWorker::clear()
     {
         m_readers.clear();
+    }
+
+    void AgentFrameWorker::resetPreviewDeliveryState(const QString& cameraId)
+    {
+        const auto it = m_readers.find(cameraId);
+        if (it == m_readers.end())
+        {
+            return;
+        }
+        it.value()->pendingAcquiredFrameCount = 0;
+        it.value()->previewDeliveryTimer.invalidate();
     }
 
     bool AgentFrameWorker::ensureSharedMemory(const QString& cameraId)
@@ -1582,22 +1603,56 @@ namespace scopeone::core::internal
         ReaderSlot& slot = *it.value();
         QList<ImageFrame> frames;
         quint64 acquiredFrameCount = 0;
+        const bool recording = m_owner->recordingFrameDeliveryEnabled();
+        const bool highRate = m_owner->highRateFrameDeliveryEnabled();
+        const quint64 processingToken = publishFrames && highRate
+            ? m_owner->tryAcquireProcessingFrame(cameraId)
+            : 0;
+        const bool processingFrameSelected = processingToken != 0;
+        const bool previewFrameSelected = publishFrames
+            && (!slot.previewDeliveryTimer.isValid()
+                || slot.previewDeliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs);
         if (ensureSharedMemory(slot))
         {
-            if (m_owner->recordingFrameDeliveryEnabled()
-                || m_owner->highRateFrameDeliveryEnabled())
+            if (recording && publishFrames)
             {
                 readAllFrames(slot, frames, acquiredFrameCount);
             }
-            else
+            else if (!publishFrames
+                     || !highRate
+                     || processingFrameSelected
+                     || previewFrameSelected)
             {
                 readLatestFrame(slot, frames, acquiredFrameCount);
             }
         }
 
-        if (publishFrames && !frames.isEmpty())
+        if (processingFrameSelected)
         {
-            m_owner->submitFrames(frames, acquiredFrameCount);
+            if (frames.isEmpty())
+            {
+                m_owner->releaseProcessingFrame(cameraId, processingToken);
+            }
+            else
+            {
+                m_owner->submitProcessingFrame(frames.constLast(), processingToken);
+            }
+        }
+        if (publishFrames)
+        {
+            slot.pendingAcquiredFrameCount += acquiredFrameCount;
+        }
+        else
+        {
+            slot.pendingAcquiredFrameCount = 0;
+        }
+        if (publishFrames
+            && !frames.isEmpty()
+            && (recording || !highRate || previewFrameSelected))
+        {
+            m_owner->submitFrames(frames, slot.pendingAcquiredFrameCount);
+            slot.pendingAcquiredFrameCount = 0;
+            slot.previewDeliveryTimer.restart();
         }
         return slot.latestFrame;
     }
@@ -2057,8 +2112,9 @@ namespace scopeone::core::internal
         }
     }
 
-    std::unique_ptr<CameraBackend> createAgentCameraBackend()
+    std::unique_ptr<CameraBackend> createAgentCameraBackend(
+        ProcessingFrameGate& processingFrameGate)
     {
-        return std::make_unique<AgentCameraBackend>();
+        return std::make_unique<AgentCameraBackend>(processingFrameGate);
     }
 }

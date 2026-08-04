@@ -16,6 +16,21 @@ class CMMCore;
 
 namespace scopeone::core::internal
 {
+    class ProcessingFrameGate
+    {
+    public:
+        void setEnabled(bool enabled);
+        quint64 tryAcquire(const QString& cameraId);
+        bool isCurrent(const QString& cameraId, quint64 token);
+        void release(const QString& cameraId, quint64 token);
+
+    private:
+        QMutex m_mutex;
+        QHash<QString, quint64> m_inFlightTokens;
+        quint64 m_nextToken{0};
+        bool m_enabled{false};
+    };
+
     struct CameraPropertyReadback
     {
         QString value;
@@ -39,7 +54,8 @@ namespace scopeone::core::internal
             Agent
         };
 
-        explicit CameraBackend(QObject* parent = nullptr);
+        explicit CameraBackend(ProcessingFrameGate& processingFrameGate,
+                               QObject* parent = nullptr);
         ~CameraBackend() override;
 
         virtual Kind kind() const = 0;
@@ -91,7 +107,7 @@ namespace scopeone::core::internal
 
     signals:
         void rawFrameReady(const scopeone::core::ImageFrame& frame);
-        void processingFrameReady(const scopeone::core::ImageFrame& frame);
+        void processingFrameReady(const scopeone::core::ImageFrame& frame, quint64 token);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
@@ -103,6 +119,9 @@ namespace scopeone::core::internal
         void notifyPreviewStarted(const QString& cameraId);
         void notifyPreviewStopped();
         void submitFrames(const QList<scopeone::core::ImageFrame>& frames, quint64 acquiredFrameCount);
+        void submitProcessingFrame(const scopeone::core::ImageFrame& frame, quint64 token);
+        quint64 tryAcquireProcessingFrame(const QString& cameraId);
+        void releaseProcessingFrame(const QString& cameraId, quint64 token);
         void discardPendingPreviewFrames();
         bool recordingFrameDeliveryEnabled() const;
         bool highRateFrameDeliveryEnabled() const;
@@ -141,9 +160,10 @@ namespace scopeone::core::internal
         QString m_pendingDeliveryError;
         std::atomic_bool m_recordingFrameDeliveryEnabled{false};
         std::atomic_bool m_highRateFrameDeliveryEnabled{false};
+        ProcessingFrameGate& m_processingFrameGate;
         bool m_frameFlushQueued{false};
     };
 
-    std::unique_ptr<CameraBackend> createNativeCameraBackend();
-    std::unique_ptr<CameraBackend> createAgentCameraBackend();
+    std::unique_ptr<CameraBackend> createNativeCameraBackend(ProcessingFrameGate& processingFrameGate);
+    std::unique_ptr<CameraBackend> createAgentCameraBackend(ProcessingFrameGate& processingFrameGate);
 }

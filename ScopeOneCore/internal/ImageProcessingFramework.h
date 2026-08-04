@@ -61,13 +61,16 @@ namespace scopeone::core::internal
         void setProcessingBitDepth(int bitDepth);
         void clearRuntimePipelines();
 
-        void processFrameAsync(const ImageFrame& frame);
+        void processFrameAsync(const ImageFrame& frame,
+                               quint64 processingToken = 0,
+                               const std::function<bool()>& tokenIsCurrent = {});
         ImageFrame processFrame(const ImageFrame& frame);
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame);
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame);
 
     signals:
         void imageProcessed(const ImageFrame& frame);
+        void processingFrameFinished(const QString& cameraId, quint64 token);
         void processingError(const QString& error);
 
     private:
@@ -75,6 +78,7 @@ namespace scopeone::core::internal
         {
             ImageFrame latestFrame;
             quint64 latestFrameGeneration{0};
+            quint64 processingToken{0};
             bool hasFrame{false};
             bool processing{false};
         };
