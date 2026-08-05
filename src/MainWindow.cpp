@@ -840,11 +840,8 @@ namespace scopeone::ui
         m_statusMessageLabel = new QLabel(tr("Ready"), this);
         configureStatusLabel(m_statusMessageLabel, 260, 0, tr("Latest operation message"));
 
-        m_statusCursorLabel = new QLabel(tr("Cursor: -"), this);
-        configureStatusLabel(m_statusCursorLabel, 300, 360, tr("Pixel readout"));
-
-        m_statusTargetLabel = new QLabel(tr("Target: All"), this);
-        configureStatusLabel(m_statusTargetLabel, 110, 160, tr("Current control target"));
+        m_statusCursorLabel = new QLabel(tr("x=- y=- value=-"), this);
+        configureStatusLabel(m_statusCursorLabel, 260, 260, tr("Pixel readout"));
 
         m_statusPreviewLabel = new QLabel(tr("Preview: Idle"), this);
         configureStatusLabel(m_statusPreviewLabel, 100, 130, tr("Preview state"));
@@ -857,7 +854,6 @@ namespace scopeone::ui
 
         bar->addWidget(m_statusMessageLabel, 1);
         bar->addPermanentWidget(m_statusCursorLabel);
-        bar->addPermanentWidget(m_statusTargetLabel);
         bar->addPermanentWidget(m_statusPreviewLabel);
         bar->addPermanentWidget(m_statusProcessingLabel);
         bar->addPermanentWidget(m_statusRecordingLabel);
@@ -1070,9 +1066,6 @@ namespace scopeone::ui
             return;
         }
         m_currentControlTarget = normalizedTarget;
-        setStatusLabelText(m_statusTargetLabel,
-                           tr("Target: %1").arg(normalizedTarget),
-                           tr("Current control target: %1").arg(normalizedTarget));
 
         showLivePreview();
 
@@ -1225,13 +1218,13 @@ namespace scopeone::ui
 
     void MainWindow::setCursorStatus(const QString& text)
     {
-        const QString statusText = text.trimmed().isEmpty() ? tr("Cursor: -") : text;
+        const QString statusText = text.trimmed().isEmpty() ? tr("x=- y=- value=-") : text;
         setStatusLabelText(m_statusCursorLabel, statusText, statusText);
     }
 
     void MainWindow::clearCursorStatus()
     {
-        const QString statusText = tr("Cursor: -");
+        const QString statusText = tr("x=- y=- value=-");
         const QString tooltip = tr("Pixel readout");
         setStatusLabelText(m_statusCursorLabel, statusText, tooltip);
     }
@@ -1253,19 +1246,12 @@ namespace scopeone::ui
 
         int value = 0;
         const bool valueOk = m_scopeonecore->graphPixelValue(target.layerKey, target.imagePos, value);
-        const int layerKeySeparator = target.layerKey.indexOf(QLatin1Char(':'));
-        const QString sourceKind = layerKeySeparator > 0
-                                       ? target.layerKey.left(layerKeySeparator)
-                                       : (target.processed ? QStringLiteral("proc") : QStringLiteral("raw"));
-        const QString layerName = m_previewWidget->layerName(target.layerKey);
-        const QString msg = valueOk
-                                ? QString("Cursor: %1 [%2] x=%3 y=%4 value=%5")
-                                  .arg(layerName, sourceKind)
-                                  .arg(target.imagePos.x()).arg(target.imagePos.y())
-                                  .arg(value)
-                                : QString("Cursor: %1 [%2] x=%3 y=%4 value=-")
-                                  .arg(layerName, sourceKind)
-                                  .arg(target.imagePos.x()).arg(target.imagePos.y());
+        const QString msg = QStringLiteral("x=%1 y=%2 value=%3")
+                                .arg(target.imagePos.x(), 5, 10, QLatin1Char(' '))
+                                .arg(target.imagePos.y(), 5, 10, QLatin1Char(' '))
+                                .arg(valueOk ? QString::number(value) : QStringLiteral("-"),
+                                     6,
+                                     QLatin1Char(' '));
         setCursorStatus(msg);
     }
 

@@ -21,6 +21,7 @@
 
 class QEvent;
 class QKeyEvent;
+class QLabel;
 class QMouseEvent;
 class QPainter;
 class QPointF;
@@ -198,6 +199,7 @@ signals:
         QMap<QString, FpsState> m_fpsStates;
         QTimer m_fpsUpdateTimer;
         ImageSceneModel* m_sceneModel{nullptr};
+        QLabel* m_placeholderLabel{nullptr};
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
@@ -303,7 +305,7 @@ signals:
                                       const QRect& area,
                                       const QPoint& imagePos,
                                       QPoint& widgetPos) const;
-        void paintPlaceholder(const QString& text);
+        void showPlaceholder(const QString& text);
         bool drawMarkup(QPainter& painter,
                         const ImageSceneModel::Markup& markup,
                         const RenderItem& item) const;

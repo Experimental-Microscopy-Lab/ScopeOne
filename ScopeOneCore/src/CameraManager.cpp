@@ -28,6 +28,7 @@ namespace scopeone::core::internal
         shutdownNow();
     }
 
+    // Selects one camera backend and forwards its runtime signals
     bool CameraManager::activateBackend(CameraBackend::Kind kind)
     {
         if (m_backend && m_backend->kind() == kind)
@@ -69,6 +70,7 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // Configures the in process backend for one MMCore camera
     bool CameraManager::configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                               const QString& cameraId,
                                               double exposureMs)
@@ -86,6 +88,7 @@ namespace scopeone::core::internal
         return configured;
     }
 
+    // Adds one process isolated camera to the agent backend
     bool CameraManager::addAgentCamera(const QString& cameraId,
                                        const QString& adapter,
                                        const QString& device,
@@ -110,6 +113,7 @@ namespace scopeone::core::internal
         return configured;
     }
 
+    // Tears down the active backend synchronously
     void CameraManager::shutdownNow()
     {
         m_processingFrameGate.setEnabled(false);
@@ -207,6 +211,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Switches the active backend between preview and lossless recording delivery
     bool CameraManager::setRecordingFrameDeliveryEnabled(bool enabled)
     {
         const bool ok = !m_backend || m_backend->setRecordingFrameDeliveryEnabled(enabled);
@@ -217,6 +222,7 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    // Switches processing delivery independently of preview display rate
     bool CameraManager::setHighRateFrameDeliveryEnabled(bool enabled)
     {
         const bool ok = !m_backend || m_backend->setHighRateFrameDeliveryEnabled(enabled);
@@ -227,11 +233,13 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    // Checks whether a completed processing task still owns its permit
     bool CameraManager::isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token)
     {
         return m_processingFrameGate.isCurrent(cameraId, token);
     }
 
+    // Releases the permit held by one completed processing task
     void CameraManager::finishProcessingFrame(const QString& cameraId, quint64 token)
     {
         m_processingFrameGate.release(cameraId, token);

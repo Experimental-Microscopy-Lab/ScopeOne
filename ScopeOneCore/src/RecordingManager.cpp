@@ -365,6 +365,7 @@ namespace scopeone::core::internal
             return true;
         }
 
+        // Resolves the output directory reported for a completed session
         QString savedSessionOutputDir(const ScopeOneCore::RecordingSessionData& session)
         {
             for (auto it = session.outputFiles().constBegin(); it != session.outputFiles().constEnd(); ++it)
@@ -402,8 +403,10 @@ namespace scopeone::core::internal
                 int zipQuality{6};
             };
 
+            // Closes any active writer before releasing backend resources
             ~SaveBackend() { (void)stopStack(); }
 
+            // Opens a streaming writer from the capture plan and camera metadata
             bool startStackRaw(const QString& filePath,
                                const QString& frameInfoPath,
                                const QString& metadataFileName,
@@ -549,6 +552,7 @@ namespace scopeone::core::internal
                 return false;
             }
 
+            // Appends one frame with its acquisition coordinates and timing
             bool appendRaw(const uchar* data,
                            qint64 rawBytes,
                            const ImageFrame& frame,
@@ -602,6 +606,7 @@ namespace scopeone::core::internal
                 return true;
             }
 
+            // Flushes and closes the active writer
             bool stopStack()
             {
                 if (!m_writer)
@@ -617,6 +622,7 @@ namespace scopeone::core::internal
                 return success;
             }
 
+            // Returns the latest writer failure
             QString lastError() const { return m_lastError; }
 
         private:
@@ -656,6 +662,7 @@ namespace scopeone::core::internal
         qint64 framesWritten{0};
     };
 
+    // Initializes serialized finalization and rate limited writer telemetry
     RecordingManager::RecordingManager(QObject* parent)
         : QObject(parent)
     {

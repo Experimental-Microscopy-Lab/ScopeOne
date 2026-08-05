@@ -182,7 +182,6 @@ namespace scopeone::ui
         QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
         QLabel* m_statusMessageLabel{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
-        QLabel* m_statusTargetLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
         QLabel* m_statusRecordingLabel{nullptr};

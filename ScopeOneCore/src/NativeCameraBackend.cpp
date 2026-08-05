@@ -746,6 +746,7 @@ namespace scopeone::core::internal
             }
         }
 
+        // Starts continuous MMCore acquisition and the native frame worker
         bool NativeCameraBackend::startNativeStream()
         {
             if (!m_core || !m_worker || !m_streamThread.isRunning())
@@ -887,6 +888,7 @@ namespace scopeone::core::internal
             }
         }
 
+        // Stops the frame worker before ending MMCore acquisition
         bool NativeCameraBackend::stopNativeStream()
         {
             ++m_streamGeneration;
@@ -919,6 +921,7 @@ namespace scopeone::core::internal
             return workerStopped && sequenceStopped;
         }
 
+        // Applies capture suspension on the native frame worker thread
         void NativeCameraBackend::setWorkerPaused(bool paused)
         {
             if (!m_worker || !m_streamThread.isRunning())
@@ -932,6 +935,7 @@ namespace scopeone::core::internal
                 Qt::BlockingQueuedConnection);
         }
 
+        // Routes one native worker batch through shared frame delivery
         void NativeCameraBackend::submitWorkerFrames(const QList<ImageFrame>& frames,
                                                       quint64 acquiredFrameCount,
                                                       quint64 recordingToken)
@@ -939,26 +943,31 @@ namespace scopeone::core::internal
             submitFrames(frames, acquiredFrameCount, recordingToken);
         }
 
+        // Publishes one admitted native frame for processing
         void NativeCameraBackend::submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token)
         {
             submitProcessingFrame(frame, token);
         }
 
+        // Requests one processing permit for the native camera
         quint64 NativeCameraBackend::tryAcquireWorkerProcessingFrame()
         {
             return tryAcquireProcessingFrame(m_cameraId);
         }
 
+        // Captures the recording generation used by the worker batch
         quint64 NativeCameraBackend::workerRecordingFrameDeliveryToken() const
         {
             return recordingFrameDeliveryToken();
         }
 
+        // Reports whether the worker should publish at processing rate
         bool NativeCameraBackend::requiresHighRateFrames() const
         {
             return highRateFrameDeliveryEnabled();
         }
 
+        // Handles failures only for the currently active stream generation
         void NativeCameraBackend::handleStreamFailure(quint64 generation,
                                                       const QString& cameraId,
                                                       const QString& error)

@@ -110,6 +110,7 @@ namespace scopeone::core
         return true;
     }
 
+    // Applies a trusted document without repeating schema validation
     void ImageSceneModel::applyValidatedDocument(
         const scopeone::core::ExperimentDocument& document)
     {

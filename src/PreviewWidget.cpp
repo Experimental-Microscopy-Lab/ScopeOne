@@ -4,8 +4,10 @@
 #include "scopeone/ScopeOneCore.h"
 #include <QDebug>
 #include <QFile>
+#include <QLabel>
 #include <QPainter>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QKeyEvent>
 #include <QLineF>
 #include <QOpenGLContext>
@@ -241,6 +243,20 @@ namespace scopeone::ui
         setMinimumSize(256, 256);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
+
+        m_placeholderLabel = new QLabel(m_placeholderText, this);
+        m_placeholderLabel->setAlignment(Qt::AlignCenter);
+        m_placeholderLabel->setWordWrap(true);
+        m_placeholderLabel->setTextFormat(Qt::PlainText);
+        m_placeholderLabel->setForegroundRole(QPalette::PlaceholderText);
+        m_placeholderLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        QFont placeholderFont = font();
+        if (placeholderFont.pointSizeF() > 0.0)
+        {
+            placeholderFont.setPointSizeF(placeholderFont.pointSizeF() + 1.0);
+        }
+        m_placeholderLabel->setFont(placeholderFont);
+        m_placeholderLabel->setGeometry(rect());
 
         m_fpsUpdateTimer.setInterval(3000);
         connect(&m_fpsUpdateTimer, &QTimer::timeout, this, &PreviewWidget::updateFrameRates);
@@ -1170,17 +1186,13 @@ namespace scopeone::ui
         return true;
     }
 
-    // Paints the placeholder text when no frame is available
-    void PreviewWidget::paintPlaceholder(const QString& text)
+    // Shows placeholder text above the OpenGL surface
+    void PreviewWidget::showPlaceholder(const QString& text)
     {
-        QPainter painter(this);
-        painter.setOpacity(1.0);
-        painter.setPen(QColor(136, 136, 136));
-        QFont placeholderFont = font();
-        placeholderFont.setPointSizeF(placeholderFont.pointSizeF() + 1);
-        painter.setFont(placeholderFont);
-        painter.drawText(rect(), Qt::AlignCenter,
-                         text.isEmpty() ? QStringLiteral("No image loaded") : text);
+        m_placeholderLabel->setText(
+            text.isEmpty() ? QStringLiteral("No image loaded") : text);
+        m_placeholderLabel->show();
+        m_placeholderLabel->raise();
     }
 
     // Draws one image-space markup over one render item
@@ -1837,6 +1849,7 @@ namespace scopeone::ui
     void PreviewWidget::resizeGL(int, int)
     {
         applyViewportForRect(rect());
+        m_placeholderLabel->setGeometry(rect());
     }
 
     // Computes tiled preview rectangles for visible layers
@@ -1999,7 +2012,7 @@ namespace scopeone::ui
 
         if (frameSourceRenderInfos.empty())
         {
-            paintPlaceholder(m_placeholderText);
+            showPlaceholder(m_placeholderText);
             return;
         }
 
@@ -2007,10 +2020,11 @@ namespace scopeone::ui
         {
             if (renderItems.empty())
             {
-                paintPlaceholder(m_placeholderText);
+                showPlaceholder(m_placeholderText);
                 return;
             }
 
+            m_placeholderLabel->hide();
             for (const auto& item : renderItems)
             {
                 drawRenderItem(item);
@@ -2033,7 +2047,7 @@ namespace scopeone::ui
             qWarning() << "PreviewWidget: GPU rendering unavailable; CPU rendering is not enabled";
             warned = true;
         }
-        paintPlaceholder(QStringLiteral(
+        showPlaceholder(QStringLiteral(
             "Preview unavailable\nOpenGL initialization failed on this system"));
         return;
     }

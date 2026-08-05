@@ -14,6 +14,7 @@ namespace scopeone::core::internal
         constexpr qint64 kMaximumRecordingFlushBytes = 16ll * 1024 * 1024;
         constexpr qsizetype kMaximumRecordingFlushFrames = 16;
 
+        // Releases discarded frame buffers away from the backend thread
         void releaseFramesAsync(std::deque<scopeone::core::ImageFrame>&& frames)
         {
             if (frames.empty())
@@ -25,6 +26,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Enables processing admission and invalidates outstanding permits
     void ProcessingFrameGate::setEnabled(bool enabled)
     {
         QMutexLocker lock(&m_mutex);
@@ -36,6 +38,7 @@ namespace scopeone::core::internal
         m_inFlightTokens.clear();
     }
 
+    // Grants one processing permit per camera
     quint64 ProcessingFrameGate::tryAcquire(const QString& cameraId)
     {
         QMutexLocker lock(&m_mutex);
@@ -48,12 +51,14 @@ namespace scopeone::core::internal
         return m_nextToken;
     }
 
+    // Checks whether a permit still belongs to the active request
     bool ProcessingFrameGate::isCurrent(const QString& cameraId, quint64 token)
     {
         QMutexLocker lock(&m_mutex);
         return m_enabled && m_inFlightTokens.value(cameraId) == token;
     }
 
+    // Releases a permit only when its generation still matches
     void ProcessingFrameGate::release(const QString& cameraId, quint64 token)
     {
         QMutexLocker lock(&m_mutex);
@@ -95,6 +100,7 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Starts or invalidates one generation of lossless recording delivery
     bool CameraBackend::setRecordingFrameDeliveryEnabled(bool enabled)
     {
         std::deque<ImageFrame> discardedFrames;
@@ -367,21 +373,25 @@ namespace scopeone::core::internal
         }
     }
 
+    // Publishes one admitted frame to the processing pipeline
     void CameraBackend::submitProcessingFrame(const ImageFrame& frame, quint64 token)
     {
         emit processingFrameReady(frame, token);
     }
 
+    // Requests one processing permit for a camera
     quint64 CameraBackend::tryAcquireProcessingFrame(const QString& cameraId)
     {
         return m_processingFrameGate.tryAcquire(cameraId);
     }
 
+    // Returns one processing permit to the shared gate
     void CameraBackend::releaseProcessingFrame(const QString& cameraId, quint64 token)
     {
         m_processingFrameGate.release(cameraId, token);
     }
 
+    // Drops coalesced preview frames after preview state changes
     void CameraBackend::discardPendingPreviewFrames()
     {
         QMutexLocker lock(&m_frameDeliveryMutex);
@@ -389,21 +399,25 @@ namespace scopeone::core::internal
         m_pendingAcquiredFrameCounts.clear();
     }
 
+    // Reports whether a recording delivery generation is active
     bool CameraBackend::recordingFrameDeliveryEnabled() const
     {
         return recordingFrameDeliveryToken() != 0;
     }
 
+    // Returns the generation accepted by the recording consumer
     quint64 CameraBackend::recordingFrameDeliveryToken() const
     {
         return m_recordingFrameDeliveryToken.load(std::memory_order_relaxed);
     }
 
+    // Reports whether processing consumes frames independently of display rate
     bool CameraBackend::highRateFrameDeliveryEnabled() const
     {
         return m_highRateFrameDeliveryEnabled.load(std::memory_order_relaxed);
     }
 
+    // Delivers one bounded batch without monopolizing the backend thread
     void CameraBackend::flushPendingFrames()
     {
         QHash<QString, ImageFrame> latestFrames;

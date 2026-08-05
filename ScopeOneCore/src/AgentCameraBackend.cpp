@@ -1221,6 +1221,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Registers one camera shared memory reader on the worker thread
     void AgentFrameWorker::addCamera(const QString& cameraId, const QString& shmKey)
     {
         removeCamera(cameraId);
@@ -1232,16 +1233,19 @@ namespace scopeone::core::internal
         m_readers.insert(cameraId, std::move(slot));
     }
 
+    // Removes one camera reader and releases its shared memory mapping
     void AgentFrameWorker::removeCamera(const QString& cameraId)
     {
         m_readers.remove(cameraId);
     }
 
+    // Releases every shared memory reader owned by the worker
     void AgentFrameWorker::clear()
     {
         m_readers.clear();
     }
 
+    // Resets preview coalescing after an agent delivery mode change
     void AgentFrameWorker::resetPreviewDeliveryState(const QString& cameraId)
     {
         const auto it = m_readers.find(cameraId);
@@ -1253,12 +1257,14 @@ namespace scopeone::core::internal
         it.value()->previewDeliveryTimer.invalidate();
     }
 
+    // Attaches the named camera reader when its mapping is unavailable
     bool AgentFrameWorker::ensureSharedMemory(const QString& cameraId)
     {
         const auto it = m_readers.find(cameraId);
         return it != m_readers.end() && ensureSharedMemory(*it.value());
     }
 
+    // Validates and attaches one shared memory reader slot
     bool AgentFrameWorker::ensureSharedMemory(ReaderSlot& slot)
     {
         const int expectedSize =
@@ -1298,6 +1304,7 @@ namespace scopeone::core::internal
         return slot.control && slot.control->waitForReady(timeoutMs);
     }
 
+    // Creates one shared memory reader on the dedicated frame thread
     bool AgentCameraBackend::addFrameReader(const QString& cameraId, const QString& shmKey)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
@@ -1311,6 +1318,7 @@ namespace scopeone::core::internal
             Qt::BlockingQueuedConnection);
     }
 
+    // Removes one shared memory reader on the dedicated frame thread
     void AgentCameraBackend::removeFrameReader(const QString& cameraId)
     {
         if (m_frameWorker && m_frameThread.isRunning())
@@ -1323,6 +1331,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Attaches one reader before preview begins
     bool AgentCameraBackend::prepareFrameReader(const QString& cameraId)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
@@ -1461,6 +1470,7 @@ namespace scopeone::core::internal
         return state->allSucceeded;
     }
 
+    // Copies one claimed shared memory slot into an owned frame
     bool AgentFrameWorker::copyFrame(ReaderSlot& slot,
                                      const SharedFrameHeader& header,
                                      const uchar* pixelData,
@@ -1707,6 +1717,7 @@ namespace scopeone::core::internal
         return slot.latestFrame;
     }
 
+    // Consumes one agent batch and reports completion on the backend thread
     void AgentFrameWorker::consumeFramesAsync(const QString& cameraId)
     {
         if (!m_owner->m_frameDeliveryPaused.load(std::memory_order_relaxed))
@@ -1719,6 +1730,7 @@ namespace scopeone::core::internal
                                   Qt::QueuedConnection);
     }
 
+    // Reads the newest frame synchronously for event capture
     ImageFrame AgentCameraBackend::consumeFrameNow(const QString& cameraId)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
@@ -1735,6 +1747,7 @@ namespace scopeone::core::internal
         return invoked ? frame : ImageFrame{};
     }
 
+    // Coalesces frame notifications into one worker request per camera
     void AgentCameraBackend::scheduleFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
@@ -1764,6 +1777,7 @@ namespace scopeone::core::internal
         }
     }
 
+    // Schedules one deferred read when notifications arrived during a request
     void AgentCameraBackend::completeFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
