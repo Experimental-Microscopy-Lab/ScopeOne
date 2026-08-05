@@ -407,6 +407,7 @@ namespace scopeone::core::internal
             ~SaveBackend() { (void)stopStack(); }
 
             // Opens a streaming writer from the capture plan and camera metadata
+            // Keeps writer options explicit for GCC compatibility
             bool startStackRaw(const QString& filePath,
                                const QString& frameInfoPath,
                                const QString& metadataFileName,
@@ -421,7 +422,7 @@ namespace scopeone::core::internal
                                quint64 acquisitionStartTimestampNs,
                                const QString& imageName,
                                const QJsonObject& cameraProperties,
-                               const TiffOptions& tiff = TiffOptions{})
+                               const TiffOptions& tiff)
             {
                 (void)stopStack();
                 m_lastError.clear();
