@@ -402,6 +402,23 @@ if ($target -in @("all", "core")) {
 }
 
 if ($target -in @("all", "gui")) {
+    if ($env:OS -eq "Windows_NT") {
+        $guiBuildPrefix = [System.IO.Path]::GetFullPath($guiBuildDir).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $mcpProcesses = @(Get-Process -Name "ScopeOneMcpServer" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Path -and $_.Path.StartsWith(
+                    $guiBuildPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase)
+            })
+        if ($mcpProcesses.Count -gt 0) {
+            Write-Step "Stopping build-tree ScopeOne MCP server"
+            $mcpProcesses | Stop-Process -Force
+            Wait-Process -Id $mcpProcesses.Id -Timeout 5 -ErrorAction SilentlyContinue
+        }
+    }
+
     if ($needGuiConfigure) {
         $guiConfigureArgs = @(
             "-S", $guiSourceDir,
