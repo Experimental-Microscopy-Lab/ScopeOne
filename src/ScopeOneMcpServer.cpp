@@ -158,7 +158,7 @@ namespace
                 QStringLiteral("Read a compact ScopeOne runtime status summary")),
             makeTool(
                 QStringLiteral("load_config"),
-                QStringLiteral("Load a Micro-Manager configuration and initialize its devices"),
+                QStringLiteral("Load a Micro-Manager configuration and report partial failures"),
                 inputProperties({
                     {QStringLiteral("configPath"),
                      inputProperty(
@@ -169,7 +169,7 @@ namespace
                 ToolAccess::Confirmed),
             makeTool(
                 QStringLiteral("unload_config"),
-                QStringLiteral("Stop acquisition and unload the current device configuration"),
+                QStringLiteral("Unload the current configuration and report cleanup failures"),
                 {},
                 {},
                 ToolAccess::Destructive),

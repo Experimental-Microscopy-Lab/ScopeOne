@@ -359,6 +359,7 @@ namespace
     {
         scopeone::core::ScopeOneCore::LoadConfigResult facade;
         facade.cameraIds = result.cameraIds;
+        facade.failedDevices = result.failedDevices;
         facade.successCount = result.successCount;
         facade.failCount = result.failCount;
         facade.skippedCameraCount = result.skippedCameraCount;
@@ -1256,6 +1257,27 @@ namespace scopeone::core
         m_histogramThreadPool->waitForDone();
     }
 
+    // Return the public configuration lifecycle state
+    QString ScopeOneCore::configurationState() const
+    {
+        switch (m_configurationState)
+        {
+        case ConfigurationState::Unloaded:
+            return QStringLiteral("unloaded");
+        case ConfigurationState::Loading:
+            return QStringLiteral("loading");
+        case ConfigurationState::Loaded:
+            return QStringLiteral("loaded");
+        case ConfigurationState::PartiallyLoaded:
+            return QStringLiteral("partially_loaded");
+        case ConfigurationState::Unloading:
+            return QStringLiteral("unloading");
+        case ConfigurationState::Failed:
+            return QStringLiteral("failed");
+        }
+        return QStringLiteral("failed");
+    }
+
     // Expose the native MMCore handle for low level callers
     std::shared_ptr<CMMCore> ScopeOneCore::core() const
     {
@@ -1376,6 +1398,11 @@ namespace scopeone::core
                                                 const LoadConfigResult& result)
     {
         m_cameraIds = result.cameraIds;
+        m_configurationFailedDevices = result.failedDevices;
+        m_configurationError.clear();
+        m_configurationState = result.failedDevices.isEmpty()
+                                  ? ConfigurationState::Loaded
+                                  : ConfigurationState::PartiallyLoaded;
         for (const QString& cameraId : m_cameraIds)
         {
             ensureSceneLayer(rawLayerKey(cameraId),
@@ -1399,6 +1426,20 @@ namespace scopeone::core
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
         emit hardwareConfigurationChanged();
+    }
+
+    // Complete a failed configuration load and publish one consistent result
+    void ScopeOneCore::finishConfigurationLoadFailure(const LoadConfigResult& result,
+                                                      const QString& errorMessage)
+    {
+        m_configurationState = ConfigurationState::Failed;
+        m_configurationError = errorMessage.isEmpty()
+                                   ? QStringLiteral("Failed to load configuration")
+                                   : errorMessage;
+        m_configurationFailedDevices = result.failedDevices;
+        m_configurationOperationRunning = false;
+        emit hardwareConfigurationChanged();
+        emit configurationLoadFinished(false, result, m_configurationError);
     }
 
     // Releases hardware synchronously during facade destruction
@@ -1482,15 +1523,35 @@ namespace scopeone::core
     bool ScopeOneCore::loadConfiguration(const QString& configPath)
     {
         const QString path = configPath.trimmed();
-        if (path.isEmpty()
-            || m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || isRecording()
-            || m_managers->recordingManager->isFinalizing())
+        if (path.isEmpty())
         {
+            m_configurationError = QStringLiteral("Configuration path is empty");
+            return false;
+        }
+        if (!QFileInfo(path).isFile())
+        {
+            m_configurationError = QStringLiteral("Configuration file does not exist: %1").arg(path);
+            return false;
+        }
+        if (m_configurationOperationRunning)
+        {
+            m_configurationError = QStringLiteral("Another configuration operation is running");
+            return false;
+        }
+        if (m_pendingStageCommands > 0)
+        {
+            m_configurationError = QStringLiteral("A stage command is running");
+            return false;
+        }
+        if (isRecording() || m_managers->recordingManager->isFinalizing())
+        {
+            m_configurationError = QStringLiteral("Recording is still active or finalizing");
             return false;
         }
 
+        m_configurationError.clear();
+        m_configurationFailedDevices.clear();
+        m_configurationState = ConfigurationState::Loading;
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
@@ -1499,9 +1560,7 @@ namespace scopeone::core
             {
                 if (!errorMessage.isEmpty())
                 {
-                    m_configurationOperationRunning = false;
-                    emit hardwareConfigurationChanged();
-                    emit configurationLoadFinished(false, {}, errorMessage);
+                    finishConfigurationLoadFailure({}, errorMessage);
                     return;
                 }
                 startConfigurationLoadTask(path);
@@ -1520,18 +1579,40 @@ namespace scopeone::core
             LoadConfigResult result;
             if (task.success)
             {
-                m_managers->mmcoreManager->startCameraBackends(
+                const bool backendsStarted = m_managers->mmcoreManager->startCameraBackends(
                     *m_managers->cameraManager, task.loadResult);
                 result = toFacadeLoadConfigResult(task.loadResult);
+                if (!backendsStarted)
+                {
+                    const QString errorMessage = result.failedDevices.isEmpty()
+                                                     ? QStringLiteral("Failed to initialize camera backend")
+                                                     : QStringLiteral("Failed to initialize camera backend: %1")
+                                                           .arg(result.failedDevices.join(QStringLiteral(", ")));
+                    m_managers->cameraManager->shutdown(
+                        [this, result, errorMessage](const QString& shutdownError)
+                        {
+                            if (!shutdownError.isEmpty())
+                            {
+                                finishConfigurationLoadFailure(
+                                    result,
+                                    QStringLiteral("%1; camera cleanup failed: %2")
+                                        .arg(errorMessage, shutdownError));
+                                return;
+                            }
+                            startConfigurationLoadCleanupTask(result, errorMessage);
+                        });
+                    watcher->deleteLater();
+                    return;
+                }
                 m_configurationOperationRunning = false;
                 applyLoadedConfiguration(path, result);
+                emit configurationLoadFinished(true, result, {});
             }
             else
             {
-                m_configurationOperationRunning = false;
-                emit hardwareConfigurationChanged();
+                result = toFacadeLoadConfigResult(task.loadResult);
+                finishConfigurationLoadFailure(result, task.errorMessage);
             }
-            emit configurationLoadFinished(task.success, result, task.errorMessage);
             watcher->deleteLater();
         });
 
@@ -1558,8 +1639,11 @@ namespace scopeone::core
                 {
                     handle->unloadAllDevices();
                 }
-                catch (const CMMError&)
+                catch (const CMMError& error)
                 {
+                    task.errorMessage = QStringLiteral("%1; cleanup failed: %2")
+                                            .arg(task.errorMessage,
+                                                 QString::fromStdString(error.getMsg()));
                 }
             }
             return task;
@@ -1567,17 +1651,62 @@ namespace scopeone::core
         watcher->setFuture(future);
     }
 
+    // Removes devices after a camera backend startup failure
+    void ScopeOneCore::startConfigurationLoadCleanupTask(const LoadConfigResult& result,
+                                                         const QString& errorMessage)
+    {
+        auto* watcher = new QFutureWatcher<StageTaskResult>(this);
+        connect(watcher, &QFutureWatcher<StageTaskResult>::finished,
+                this, [this, watcher, result, errorMessage]()
+        {
+            const StageTaskResult task = watcher->result();
+            finishConfigurationLoadFailure(
+                result,
+                task.errorMessage.isEmpty()
+                    ? errorMessage
+                    : QStringLiteral("%1; cleanup failed: %2")
+                          .arg(errorMessage, task.errorMessage));
+            watcher->deleteLater();
+        });
+
+        const auto handle = core();
+        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [handle]()
+        {
+            StageTaskResult task;
+            try
+            {
+                handle->unloadAllDevices();
+            }
+            catch (const CMMError& error)
+            {
+                task.errorMessage = QString::fromStdString(error.getMsg());
+            }
+            return task;
+        }));
+    }
+
     // Unloads devices on the serialized hardware worker
     bool ScopeOneCore::unloadConfiguration()
     {
-        if (m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || isRecording()
-            || m_managers->recordingManager->isFinalizing())
+        if (m_configurationOperationRunning)
         {
+            m_configurationError = QStringLiteral("Another configuration operation is running");
+            return false;
+        }
+        if (m_pendingStageCommands > 0)
+        {
+            m_configurationError = QStringLiteral("A stage command is running");
+            return false;
+        }
+        if (isRecording() || m_managers->recordingManager->isFinalizing())
+        {
+            m_configurationError = QStringLiteral("Recording is still active or finalizing");
             return false;
         }
 
+        m_configurationError.clear();
+        m_configurationFailedDevices.clear();
+        m_configurationState = ConfigurationState::Unloading;
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
@@ -1586,6 +1715,8 @@ namespace scopeone::core
             {
                 if (!errorMessage.isEmpty())
                 {
+                    m_configurationState = ConfigurationState::Failed;
+                    m_configurationError = errorMessage;
                     m_configurationOperationRunning = false;
                     emit hardwareConfigurationChanged();
                     emit configurationUnloadFinished(false, errorMessage);
@@ -1604,9 +1735,21 @@ namespace scopeone::core
                 this, [this, watcher]()
         {
             const StageTaskResult task = watcher->result();
+            m_configurationState = task.success
+                                       ? ConfigurationState::Unloaded
+                                       : ConfigurationState::Failed;
+            m_configurationError = task.success
+                                       ? QString()
+                                       : (task.errorMessage.isEmpty()
+                                              ? QStringLiteral("Failed to unload configuration")
+                                              : task.errorMessage);
+            if (task.success)
+            {
+                m_configurationFailedDevices.clear();
+            }
             m_configurationOperationRunning = false;
             emit hardwareConfigurationChanged();
-            emit configurationUnloadFinished(task.success, task.errorMessage);
+            emit configurationUnloadFinished(task.success, m_configurationError);
             watcher->deleteLater();
         });
 

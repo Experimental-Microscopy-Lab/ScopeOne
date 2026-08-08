@@ -348,7 +348,8 @@ namespace scopeone::core::internal
         const QStringList loadedDevices = loadedDeviceLabels(*m_mmcore, &listError);
         if (!listError.isEmpty())
         {
-            qWarning().noquote() << QString("Failed to query loaded devices: %1").arg(listError);
+            errorMessage = QString("Failed to query loaded devices: %1").arg(listError);
+            return false;
         }
         const ConfigPropertyReplay propertyReplay = configPropertyReplay(configPath);
         const QList<CameraLoadInfo> cameraInfos =
@@ -386,6 +387,7 @@ namespace scopeone::core::internal
                     catch (const CMMError& error)
                     {
                         failCount++;
+                        result.failedDevices.append(deviceName);
                         qWarning().noquote()
                             << QString("Failed to initialize device '%1': %2")
                             .arg(deviceName, QString::fromStdString(error.getMsg()));
@@ -399,6 +401,7 @@ namespace scopeone::core::internal
             catch (const CMMError& error)
             {
                 failCount++;
+                result.failedDevices.append(deviceName);
                 qWarning().noquote()
                     << QString("Failed to inspect device '%1': %2")
                     .arg(deviceName, QString::fromStdString(error.getMsg()));
@@ -435,7 +438,7 @@ namespace scopeone::core::internal
     }
 
     // Creates camera backends on the owning Qt thread
-    void MMCoreManager::startCameraBackends(CameraManager& cameraManager,
+    bool MMCoreManager::startCameraBackends(CameraManager& cameraManager,
                                             LoadConfigResult& result)
     {
         result.cameraIds.clear();
@@ -452,11 +455,15 @@ namespace scopeone::core::internal
             if (!started)
             {
                 ++result.failCount;
-                continue;
+                result.failedDevices.append(camera.label);
+                result.failedDevices.removeDuplicates();
+                result.cameraIds.clear();
+                return false;
             }
 
             result.cameraIds.append(camera.label);
         }
+        return true;
     }
 
 } // namespace scopeone::core::internal

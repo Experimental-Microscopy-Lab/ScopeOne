@@ -28,7 +28,7 @@ class ScopeOne:
         return self._client.load_config(config_path)
 
     def unload_config(self):
-        self._client.unload_config()
+        return self._client.unload_config()
 
     def version(self):
         return self._client.version()

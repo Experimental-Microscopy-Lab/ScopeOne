@@ -86,8 +86,7 @@ namespace scopeone::ui
 
 <h3>Links</h3>
 <p>
-Project: <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne">https://github.com/Experimental-Microscopy-Lab/ScopeOne</a><br>
-Issues: <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues">https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues</a>
+Project: <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne">https://github.com/Experimental-Microscopy-Lab/ScopeOne</a>
 </p>
 
 <h3>Copyright and License</h3>

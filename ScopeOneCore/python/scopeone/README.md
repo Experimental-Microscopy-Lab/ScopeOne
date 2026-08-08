@@ -225,12 +225,12 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 - `ping`: health check.
 - `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
-- `status`: response `version`, `coreVersion`, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status. Writer status includes captured, written, and dropped frame counts, written bytes, and queued bytes.
+- `status`: response `version`, `coreVersion`, configuration lifecycle state, configuration path, completeness, configuration error, failed configuration devices, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status. Writer status includes captured, written, and dropped frame counts, written bytes, and queued bytes.
 - `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
 - `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, live acquisition and writer progress, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
-- `load_config`: fields `configPath`; response `cameraIds`.
-- `unload_config`: unload current Micro-Manager config.
+- `load_config`: fields `configPath`; response `state`, `complete`, `cameraIds`, `failedDevices`, `successCount`, `failCount`, and `skippedCameraCount`. A valid configuration can finish as `partially_loaded` when non-camera devices fail; camera backend startup failures are cleaned up and returned as an error.
+- `unload_config`: unload current Micro-Manager config and return `state` and `complete`. A failed unload returns `state: "failed"` and an error while preserving the actual hardware inventory for recovery.
 - `camera_ids`: response `cameraIds`.
 - `loaded_devices`: response `devices`.
 - `start_preview`: fields `camera`, accepts a camera id or `"All"`.

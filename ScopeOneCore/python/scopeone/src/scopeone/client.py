@@ -347,12 +347,11 @@ class ExternalClient:
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
-    def load_config(self, config_path: str) -> bool:
-        self._request({"type": "load_config", "configPath": config_path})
-        return True
+    def load_config(self, config_path: str) -> dict:
+        return self._request({"type": "load_config", "configPath": config_path})
 
-    def unload_config(self) -> None:
-        self._request({"type": "unload_config"})
+    def unload_config(self) -> dict:
+        return self._request({"type": "unload_config"})
 
     def version(self) -> str:
         response = self._request({"type": "version"})
@@ -363,6 +362,18 @@ class ExternalClient:
         return {
             "version": str(response.get("version", "")),
             "coreVersion": str(response.get("coreVersion", "")),
+            "configurationState": str(response.get("configurationState", "unloaded")),
+            "configurationError": str(response.get("configurationError", "")),
+            "configurationOperationRunning": bool(
+                response.get("configurationOperationRunning", False)
+            ),
+            "configurationPath": str(response.get("configurationPath", "")),
+            "configurationComplete": bool(
+                response.get("configurationComplete", False)
+            ),
+            "failedConfigurationDevices": list(
+                response.get("failedConfigurationDevices", [])
+            ),
             "cameraIds": list(response.get("cameraIds", [])),
             "loadedDevices": list(response.get("loadedDevices", [])),
             "runningPreviews": list(response.get("runningPreviews", [])),

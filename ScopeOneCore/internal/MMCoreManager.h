@@ -29,6 +29,7 @@ namespace scopeone::core::internal
         {
             QStringList cameraIds;
             QList<CameraLoadInfo> cameras;
+            QStringList failedDevices;
             int successCount{0};
             int failCount{0};
             int skippedCameraCount{0};
@@ -52,7 +53,7 @@ namespace scopeone::core::internal
         bool loadConfigurationDevices(const QString& configPath,
                                       LoadConfigResult& result,
                                       QString& errorMessage);
-        void startCameraBackends(CameraManager& cameraManager,
+        bool startCameraBackends(CameraManager& cameraManager,
                                  LoadConfigResult& result);
     private:
         std::shared_ptr<CMMCore> m_mmcore;

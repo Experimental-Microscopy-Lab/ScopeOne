@@ -1285,6 +1285,8 @@ namespace scopeone::ui
                      && requestType != QStringLiteral("ping")
                      && requestType != QStringLiteral("version")
                      && requestType != QStringLiteral("capabilities")
+                     && requestType != QStringLiteral("status")
+                     && requestType != QStringLiteral("state_snapshot")
                      && requestType != QStringLiteral("frame_mapping_info"))
             {
                 response = makeResponse(requestType, false);
@@ -1370,7 +1372,8 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"),
                                 configPath.isEmpty()
                                     ? QStringLiteral("Missing configPath")
-                                    : QStringLiteral("Another hardware operation is still running"));
+                                    : m_scopeonecore->configurationError());
+                response.insert(QStringLiteral("state"), m_scopeonecore->configurationState());
                 finish(std::move(response));
                 return true;
             }
@@ -1384,12 +1387,19 @@ namespace scopeone::ui
                         const QString& errorMessage)
                     {
                         QJsonObject response = makeResponse(type, success);
-                        if (success)
-                        {
-                            response.insert(QStringLiteral("cameraIds"),
-                                            QJsonArray::fromStringList(result.cameraIds));
-                        }
-                        else
+                        response.insert(QStringLiteral("state"), m_scopeonecore->configurationState());
+                        response.insert(QStringLiteral("complete"),
+                                        m_scopeonecore->configurationState()
+                                            == QStringLiteral("loaded"));
+                        response.insert(QStringLiteral("cameraIds"),
+                                        QJsonArray::fromStringList(result.cameraIds));
+                        response.insert(QStringLiteral("failedDevices"),
+                                        QJsonArray::fromStringList(result.failedDevices));
+                        response.insert(QStringLiteral("successCount"), result.successCount);
+                        response.insert(QStringLiteral("failCount"), result.failCount);
+                        response.insert(QStringLiteral("skippedCameraCount"),
+                                        result.skippedCameraCount);
+                        if (!success)
                         {
                             response.insert(QStringLiteral("error"),
                                             errorMessage.isEmpty()
@@ -1407,20 +1417,27 @@ namespace scopeone::ui
             if (!m_scopeonecore->unloadConfiguration())
             {
                 QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Another hardware operation is still running"));
+                response.insert(QStringLiteral("error"), m_scopeonecore->configurationError());
+                response.insert(QStringLiteral("state"), m_scopeonecore->configurationState());
                 finish(std::move(response));
                 return true;
             }
 
             auto* context = new QObject(this);
             connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationUnloadFinished,
-                    context, [context, finish, type](bool success, const QString& errorMessage)
+                    context, [this, context, finish, type](bool success, const QString& errorMessage)
                     {
                         QJsonObject response = makeResponse(type, success);
+                        response.insert(QStringLiteral("state"), m_scopeonecore->configurationState());
+                        response.insert(QStringLiteral("complete"),
+                                        m_scopeonecore->configurationState()
+                                            == QStringLiteral("unloaded"));
                         if (!success)
                         {
-                            response.insert(QStringLiteral("error"), errorMessage);
+                            response.insert(QStringLiteral("error"),
+                                            errorMessage.isEmpty()
+                                                ? QStringLiteral("Failed to unload configuration")
+                                                : errorMessage);
                         }
                         finish(std::move(response));
                         context->deleteLater();
@@ -2093,6 +2110,19 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
+            response.insert(QStringLiteral("configurationState"),
+                            m_scopeonecore->configurationState());
+            response.insert(QStringLiteral("configurationError"),
+                            m_scopeonecore->configurationError());
+            response.insert(QStringLiteral("configurationOperationRunning"),
+                            m_scopeonecore->configurationOperationRunning());
+            response.insert(QStringLiteral("configurationPath"),
+                            m_scopeonecore->loadedConfigurationPath());
+            response.insert(QStringLiteral("configurationComplete"),
+                            m_scopeonecore->configurationState() == QStringLiteral("loaded"));
+            response.insert(QStringLiteral("failedConfigurationDevices"),
+                            QJsonArray::fromStringList(
+                                m_scopeonecore->configurationFailedDevices()));
             response.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));
             response.insert(QStringLiteral("loadedDevices"),
                             QJsonArray::fromStringList(m_scopeonecore->loadedDevices()));
@@ -2127,9 +2157,21 @@ namespace scopeone::ui
 
             const QString configPath = m_scopeonecore->loadedConfigurationPath();
             QJsonObject configuration;
-            configuration.insert(QStringLiteral("loaded"), !configPath.isEmpty());
+            const QString configState = m_scopeonecore->configurationState();
+            configuration.insert(QStringLiteral("state"), configState);
+            configuration.insert(QStringLiteral("operationRunning"),
+                                 m_scopeonecore->configurationOperationRunning());
+            configuration.insert(QStringLiteral("loaded"),
+                                 configState == QStringLiteral("loaded")
+                                     || configState == QStringLiteral("partially_loaded"));
+            configuration.insert(QStringLiteral("complete"),
+                                 configState == QStringLiteral("loaded"));
             configuration.insert(QStringLiteral("path"), configPath);
             configuration.insert(QStringLiteral("sha256"), m_scopeonecore->loadedConfigurationSha256());
+            configuration.insert(QStringLiteral("error"), m_scopeonecore->configurationError());
+            configuration.insert(QStringLiteral("failedDevices"),
+                                 QJsonArray::fromStringList(
+                                     m_scopeonecore->configurationFailedDevices()));
 
             QJsonObject hardware;
             hardware.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(m_scopeonecore->cameraIds()));

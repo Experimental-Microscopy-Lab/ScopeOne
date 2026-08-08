@@ -21,6 +21,7 @@
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QDockWidget>
@@ -36,6 +37,7 @@
 #include <QStyleHints>
 #include <QTabWidget>
 #include <QTimer>
+#include <QUrl>
 #include <QVector>
 #include <cmath>
 #include <limits>
@@ -48,6 +50,8 @@ namespace scopeone::ui
 
     namespace
     {
+        constexpr qsizetype kMaxRecentConfigurations = 8;
+
         // Build raw layer keys for all camera ids
         QStringList rawLayerKeys(const QStringList& cameraIds)
         {
@@ -278,6 +282,8 @@ namespace scopeone::ui
                         m_scopeonecore->configurationOperationRunning();
                     m_loadConfigurationAction->setEnabled(!configurationRunning);
                     m_unloadConfigurationAction->setEnabled(!configurationRunning);
+                    m_recentConfigurationsMenu->setEnabled(
+                        !configurationRunning && !m_recentConfigurationsMenu->isEmpty());
                     m_propertyBrowser->setEnabled(!configurationRunning);
                     m_configPresetWidget->setEnabled(!configurationRunning);
                     m_deviceControlWidget->setEnabled(!configurationRunning);
@@ -877,6 +883,10 @@ namespace scopeone::ui
     {
         m_fileMenu = menuBar()->addMenu(tr("&File"));
         m_loadConfigurationAction = m_fileMenu->addAction(tr("&Load Configuration..."));
+        m_recentConfigurationsMenu = m_fileMenu->addMenu(tr("&Recent Configurations"));
+        connect(m_recentConfigurationsMenu, &QMenu::aboutToShow,
+                this, &MainWindow::refreshRecentConfigurationsMenu);
+        refreshRecentConfigurationsMenu();
         m_unloadConfigurationAction = m_fileMenu->addAction(tr("&Unload Configuration"));
         m_fileMenu->addSeparator();
         m_exitAction = m_fileMenu->addAction(tr("E&xit"));
@@ -896,6 +906,12 @@ namespace scopeone::ui
         m_settingsAction = m_toolsMenu->addAction(tr("&Settings..."));
 
         m_helpMenu = menuBar()->addMenu(tr("&Help"));
+        auto* reportProblemAction = m_helpMenu->addAction(tr("Report a &Problem..."));
+        connect(reportProblemAction, &QAction::triggered, this, []() {
+            QDesktopServices::openUrl(QUrl(QStringLiteral(
+                "https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues")));
+        });
+        m_helpMenu->addSeparator();
         m_aboutQtAction = m_helpMenu->addAction(tr("About &Qt"));
         m_aboutAction = m_helpMenu->addAction(tr("&About ScopeOne"));
     }
@@ -1587,6 +1603,9 @@ namespace scopeone::ui
         closeLoadConfigProgress();
         m_loadConfigurationAction->setEnabled(true);
         m_unloadConfigurationAction->setEnabled(true);
+        m_recentConfigurationsMenu->setEnabled(
+            !m_recentConfigurationsMenu->isEmpty()
+            && !m_scopeonecore->configurationOperationRunning());
 
         if (!success)
         {
@@ -1597,14 +1616,31 @@ namespace scopeone::ui
             return;
         }
 
+        const QString canonicalPath = QFileInfo(configPath).canonicalFilePath();
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QStringList recentPaths = settings.value(
+            QStringLiteral("RecentConfigurations")).toStringList();
+        recentPaths.removeAll(canonicalPath);
+        recentPaths.prepend(canonicalPath);
+        recentPaths = recentPaths.mid(0, kMaxRecentConfigurations);
+        settings.setValue(QStringLiteral("RecentConfigurations"), recentPaths);
+        refreshRecentConfigurationsMenu();
+
         if (successCount > 0)
         {
             qInfo().noquote() << QString("%1 device(s) initialized successfully").arg(successCount);
         }
         if (failCount > 0)
         {
-            showStatusMessage(tr("%1 device(s) failed to initialize").arg(failCount), 5000);
-            qWarning().noquote() << QString("%1 device(s) failed to initialize").arg(failCount);
+            const QString failedDevices = m_scopeonecore->configurationFailedDevices().join(
+                QStringLiteral(", "));
+            const QString warning = failedDevices.isEmpty()
+                                         ? tr("%1 device(s) failed to initialize").arg(failCount)
+                                         : tr("%1 device(s) failed to initialize: %2")
+                                               .arg(failCount)
+                                               .arg(failedDevices);
+            showStatusMessage(warning, 5000);
+            qWarning().noquote() << warning;
         }
         if (skippedCameraCount > 0)
         {
@@ -1637,7 +1673,8 @@ namespace scopeone::ui
             qWarning().noquote() << "No camera devices in configuration";
         }
 
-        qInfo().noquote() << QString("Configuration loaded successfully: %1").arg(configPath);
+        qInfo().noquote() << QString("Configuration loaded (%1): %2")
+                                 .arg(m_scopeonecore->configurationState(), configPath);
     }
 
     // Apply UI state after a configuration unload attempt
@@ -1727,6 +1764,12 @@ namespace scopeone::ui
         }
 
         settings.setValue(QStringLiteral("LastConfigDirectory"), QFileInfo(fileName).absolutePath());
+        loadConfigurationPath(fileName);
+    }
+
+    // Load a configuration from a known path
+    void MainWindow::loadConfigurationPath(const QString& configPath)
+    {
         closeLoadConfigProgress();
 
         m_loadConfigProgress = new QProgressDialog(tr("Loading configuration..."),
@@ -1743,20 +1786,53 @@ namespace scopeone::ui
         m_loadConfigProgress->show();
 
         showStatusMessage(tr("Loading configuration..."));
-        qInfo().noquote() << QString("Loading configuration: %1").arg(fileName);
+        qInfo().noquote() << QString("Loading configuration: %1").arg(configPath);
         m_loadConfigurationAction->setEnabled(false);
         m_unloadConfigurationAction->setEnabled(false);
-        if (!m_scopeonecore->loadConfiguration(fileName))
+        m_recentConfigurationsMenu->setEnabled(false);
+        if (!m_scopeonecore->loadConfiguration(configPath))
         {
             handleConfigurationLoadFinished(false,
-                                            fileName,
+                                            configPath,
                                             {},
                                             false,
                                             0,
                                             0,
                                             0,
-                                            tr("Another hardware operation is still running"));
+                                            m_scopeonecore->configurationError());
         }
+    }
+
+    // Rebuild the recent configuration menu from persistent paths
+    void MainWindow::refreshRecentConfigurationsMenu()
+    {
+        m_recentConfigurationsMenu->clear();
+
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QStringList storedPaths = settings.value(
+            QStringLiteral("RecentConfigurations")).toStringList();
+        QStringList validPaths;
+        for (const QString& path : storedPaths)
+        {
+            if (!QFileInfo(path).isFile())
+            {
+                continue;
+            }
+
+            validPaths.append(path);
+            auto* action = m_recentConfigurationsMenu->addAction(
+                QDir::toNativeSeparators(path));
+            connect(action, &QAction::triggered, this, [this, path]() {
+                loadConfigurationPath(path);
+            });
+        }
+
+        if (validPaths != storedPaths)
+        {
+            settings.setValue(QStringLiteral("RecentConfigurations"), validPaths);
+        }
+        m_recentConfigurationsMenu->setEnabled(
+            !validPaths.isEmpty() && !m_scopeonecore->configurationOperationRunning());
     }
 
     // Confirm and unload the active device configuration
@@ -1776,7 +1852,7 @@ namespace scopeone::ui
             if (!m_scopeonecore->unloadConfiguration())
             {
                 handleConfigurationUnloadFinished(
-                    false, tr("Another hardware operation is still running"));
+                    false, m_scopeonecore->configurationError());
             }
         }
     }

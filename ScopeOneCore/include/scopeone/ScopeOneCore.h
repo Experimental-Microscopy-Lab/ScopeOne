@@ -66,6 +66,7 @@ namespace scopeone::core
         struct LoadConfigResult
         {
             QStringList cameraIds;
+            QStringList failedDevices;
             int successCount{0};
             int failCount{0};
             int skippedCameraCount{0};
@@ -517,6 +518,9 @@ namespace scopeone::core
         bool loadConfiguration(const QString& configPath);
         bool unloadConfiguration();
         bool configurationOperationRunning() const { return m_configurationOperationRunning; }
+        QString configurationState() const;
+        QString configurationError() const { return m_configurationError; }
+        QStringList configurationFailedDevices() const { return m_configurationFailedDevices; }
         QString loadedConfigurationPath() const { return m_loadedConfigPath; }
         QString loadedConfigurationSha256() const { return m_loadedConfigSha256; }
         QStringList additionalDeviceAdapterSearchPaths() const;
@@ -777,8 +781,12 @@ namespace scopeone::core
         void applySystemShutdownPreset();
         void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
+        void finishConfigurationLoadFailure(const LoadConfigResult& result,
+                                            const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool shutdownCameraBackend);
         void startConfigurationLoadTask(const QString& configPath);
+        void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
+                                               const QString& errorMessage);
         void startConfigurationUnloadTask();
         quint64 queueStageMove(
             const QString& deviceLabel,
@@ -833,6 +841,8 @@ namespace scopeone::core
         QStringList m_cameraIds;
         QString m_loadedConfigPath;
         QString m_loadedConfigSha256;
+        QString m_configurationError;
+        QStringList m_configurationFailedDevices;
         ActiveLineProfile m_activeLineProfile;
         FrameGraph m_frameGraph;
         QHash<QString, ImageFrame> m_pendingPreviewRawFrames;
@@ -849,6 +859,16 @@ namespace scopeone::core
         QElapsedTimer m_previewPublishTimer;
         QTimer* m_previewFlushTimer{nullptr};
         QSet<const RecordingSessionData*> m_sessionsSaving;
+        enum class ConfigurationState
+        {
+            Unloaded,
+            Loading,
+            Loaded,
+            PartiallyLoaded,
+            Unloading,
+            Failed
+        };
+        ConfigurationState m_configurationState{ConfigurationState::Unloaded};
         bool m_configurationOperationRunning{false};
         int m_pendingStageCommands{0};
         quint64 m_nextStageCommandId{0};

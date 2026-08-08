@@ -120,6 +120,8 @@ namespace scopeone::ui
         void handleCloseSaveFinished(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void loadConfigurationFromDialog();
+        void loadConfigurationPath(const QString& configPath);
+        void refreshRecentConfigurationsMenu();
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
 
@@ -160,6 +162,7 @@ namespace scopeone::ui
         InspectWidget* m_inspectWidget{nullptr};
 
         QMenu* m_fileMenu{nullptr};
+        QMenu* m_recentConfigurationsMenu{nullptr};
         QMenu* m_viewMenu{nullptr};
         QMenu* m_toolsMenu{nullptr};
         QMenu* m_helpMenu{nullptr};
