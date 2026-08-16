@@ -62,6 +62,8 @@ namespace scopeone::ui
         void setupConsole();
         void setupPropertyBrowser();
         void setupRecording();
+        void setupSignalMonitor();
+        void setupDaqControl();
 
         void closeLoadConfigProgress();
         void showLivePreview();
@@ -138,6 +140,8 @@ namespace scopeone::ui
         RecordingWidget* m_recordingWidget{nullptr};
         QDockWidget* m_imageGalleryDockWidget{nullptr};
         ImageGalleryWidget* m_imageGalleryWidget{nullptr};
+        QDockWidget* m_signalMonitorDockWidget{nullptr};
+        QDockWidget* m_daqControlDockWidget{nullptr};
 
         struct GalleryLayerFrameControl
         {

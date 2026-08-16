@@ -12,6 +12,8 @@
 #include "ImageGalleryWidget.h"
 #include "ImageToolsDialog.h"
 #include "ImageProcessingWidget.h"
+#include "SignalMonitorWidget.h"
+#include "DaqControlWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
 #include "ScopeOneLocalApiServer.h"
@@ -691,6 +693,33 @@ namespace scopeone::ui
                     }
                     showStatusMessage(tr("Mosaic added to Gallery"), 5000);
                 });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::scanImageSessionReady,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    if (!session || !session->hasRecordedOutput())
+                    {
+                        return;
+                    }
+                    m_imageGalleryWidget->addSession(session);
+                    for (const QString& cameraId : session->recordedCameraIds())
+                    {
+                        const int frameIndex = uiFrameCount(
+                            session->recordedFrameCount(cameraId)) - 1;
+                        registerGallerySessionFrameControls(session, frameIndex);
+                        updateGalleryLayerFrame(
+                            scopeone::core::ScopeOneCore::staticLayerKey(
+                                gallerySessionLayerId(session, cameraId)),
+                            frameIndex);
+                        m_scopeonecore->removeStaticFrame(
+                            QStringLiteral("scan:%1").arg(cameraId));
+                    }
+                    showStatusMessage(
+                        session->runState() == scopeone::core::ExperimentRunState::Failed
+                            ? tr("Partial scan image stack added to Gallery")
+                            : tr("Scan image stack added to Gallery"),
+                        5000);
+                });
 
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
@@ -833,6 +862,8 @@ namespace scopeone::ui
         setupMenuBar();
         setupPropertyBrowser();
         setupRecording();
+        setupSignalMonitor();
+        setupDaqControl();
         setupImageGallery();
         updateDockWidgetMenu();
     }
@@ -1007,6 +1038,50 @@ namespace scopeone::ui
         splitDockWidget(m_propertyDockWidget, m_recordingDockWidget, Qt::Vertical);
     }
 
+    // Register lazy access to the generic signal monitor
+    void MainWindow::setupSignalMonitor()
+    {
+        auto* signalMonitorAction = new QAction(tr("&Signal Monitor"), this);
+        m_toolsMenu->insertAction(m_settingsAction, signalMonitorAction);
+        connect(signalMonitorAction, &QAction::triggered, this, [this]()
+        {
+            if (!m_signalMonitorDockWidget)
+            {
+                m_signalMonitorDockWidget = new QDockWidget(tr("Signal Monitor"), this);
+                m_signalMonitorDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+                m_signalMonitorDockWidget->setWidget(
+                    new SignalMonitorWidget(m_scopeonecore, m_signalMonitorDockWidget));
+                addDockWidget(Qt::RightDockWidgetArea, m_signalMonitorDockWidget);
+                tabifyDockWidget(m_imageProcessingDockWidget, m_signalMonitorDockWidget);
+                updateDockWidgetMenu();
+            }
+            m_signalMonitorDockWidget->show();
+            m_signalMonitorDockWidget->raise();
+        });
+    }
+
+    // Register lazy access to hardware-timed DAQ controls
+    void MainWindow::setupDaqControl()
+    {
+        auto* daqControlAction = new QAction(tr("&DAQ Control"), this);
+        m_toolsMenu->insertAction(m_settingsAction, daqControlAction);
+        connect(daqControlAction, &QAction::triggered, this, [this]()
+        {
+            if (!m_daqControlDockWidget)
+            {
+                m_daqControlDockWidget = new QDockWidget(tr("DAQ Control"), this);
+                m_daqControlDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+                m_daqControlDockWidget->setWidget(
+                    new DaqControlWidget(m_scopeonecore, m_daqControlDockWidget));
+                addDockWidget(Qt::RightDockWidgetArea, m_daqControlDockWidget);
+                tabifyDockWidget(m_imageProcessingDockWidget, m_daqControlDockWidget);
+                updateDockWidgetMenu();
+            }
+            m_daqControlDockWidget->show();
+            m_daqControlDockWidget->raise();
+        });
+    }
+
     // Create the image gallery dock
     void MainWindow::setupImageGallery()
     {
@@ -1110,6 +1185,10 @@ namespace scopeone::ui
         m_dockWidgetsMenu->clear();
         const auto addDock = [this](QDockWidget* dockWidget, const QString& label)
         {
+            if (!dockWidget)
+            {
+                return;
+            }
             QAction* action = dockWidget->toggleViewAction();
             action->setText(label);
             m_dockWidgetsMenu->addAction(action);
@@ -1122,6 +1201,8 @@ namespace scopeone::ui
         addDock(m_deviceControlDockWidget, QStringLiteral("Control"));
         addDock(m_inspectDockWidget, QStringLiteral("Inspect"));
         addDock(m_imageProcessingDockWidget, QStringLiteral("Image Processing"));
+        addDock(m_signalMonitorDockWidget, QStringLiteral("Signal Monitor"));
+        addDock(m_daqControlDockWidget, QStringLiteral("DAQ Control"));
     }
 
     // Push loaded camera ids into every dependent panel

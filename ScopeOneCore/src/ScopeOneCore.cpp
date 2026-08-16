@@ -1,5 +1,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
+#include "scopeone/ScanImageAssembler.h"
 
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/DifferentialRollingModule.h"
@@ -10,6 +11,8 @@
 #include "internal/CameraManager.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
+#include "internal/SignalSourceManager.h"
+#include "internal/DaqDeviceManager.h"
 #include "internal/SpatiotemporalBinningModule.h"
 #include "internal/StageMosaicManager.h"
 #include "MMCore.h"
@@ -454,6 +457,8 @@ namespace scopeone::core
     using scopeone::core::internal::ProcessingPipelineDefinition;
     using scopeone::core::internal::RecordingManager;
     using scopeone::core::internal::DifferentialRollingModule;
+    using scopeone::core::internal::SignalSourceManager;
+    using scopeone::core::internal::DaqDeviceManager;
     using scopeone::core::internal::SpatiotemporalBinningModule;
     using scopeone::core::internal::StageMosaicManager;
 
@@ -911,13 +916,24 @@ namespace scopeone::core
             quint64 completedCount{0};
         };
 
+        struct ScanImageSessionState
+        {
+            std::shared_ptr<RecordingSessionData> session;
+            QString baseName;
+            quint64 lastTimestampNs{0};
+        };
+
         MMCoreManager* mmcoreManager{nullptr};
         CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
+        SignalSourceManager* signalSourceManager{nullptr};
+        DaqDeviceManager* daqDeviceManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         StageMosaicManager* stageMosaicManager{nullptr};
         QHash<QString, ExperimentDocument> experiments;
         QHash<QString, std::shared_ptr<RecordingSessionData>> sessions;
+        QHash<QString, std::shared_ptr<ScanImageAssembler>> scanImageAssemblers;
+        QHash<QString, ScanImageSessionState> scanImageSessions;
         QString activeExperimentId;
         QStringList experimentStartedPreviewCameraIds;
         bool experimentCancelRequested{false};
@@ -1038,6 +1054,15 @@ namespace scopeone::core
             "scopeone::core::ScopeOneCore::LoadConfigResult");
         qRegisterMetaType<scopeone::core::ScopeOneCore::ParticleDetectionResult>(
             "scopeone::core::ScopeOneCore::ParticleDetectionResult");
+        qRegisterMetaType<scopeone::core::SignalSourceState>(
+            "scopeone::core::SignalSourceState");
+        qRegisterMetaType<scopeone::core::DaqState>("scopeone::core::DaqState");
+        qRegisterMetaType<scopeone::core::DaqInputChunk>(
+            "scopeone::core::DaqInputChunk");
+        qRegisterMetaType<scopeone::core::TimeSeriesChunk>(
+            "scopeone::core::TimeSeriesChunk");
+        qRegisterMetaType<scopeone::core::TimestampedEventChunk>(
+            "scopeone::core::TimestampedEventChunk");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
@@ -1101,6 +1126,8 @@ namespace scopeone::core
         m_managers->mmcoreManager = new MMCoreManager(this);
         m_managers->cameraManager = new CameraManager(this);
         m_managers->recordingManager = new RecordingManager(this);
+        m_managers->signalSourceManager = new SignalSourceManager(this);
+        m_managers->daqDeviceManager = new DaqDeviceManager(this);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingWriterStatus.reset(
@@ -1148,6 +1175,36 @@ namespace scopeone::core
                 this, &ScopeOneCore::previewStateChanged);
         connect(m_managers->cameraManager, &CameraManager::agentControlServerListening,
                 this, &ScopeOneCore::agentControlServerListening);
+
+        connect(m_managers->signalSourceManager, &SignalSourceManager::timeSeriesReady,
+                this, &ScopeOneCore::handleSignalTimeSeries);
+        connect(m_managers->signalSourceManager, &SignalSourceManager::timestampedEventsReady,
+                this, &ScopeOneCore::handleTimestampedSignalEvents);
+        connect(m_managers->signalSourceManager, &SignalSourceManager::sourceStateChanged,
+                this, [this](const QString& sourceId,
+                             SignalSourceState state,
+                             const QString& message)
+                {
+                    if (state == SignalSourceState::Idle
+                        || state == SignalSourceState::Error)
+                    {
+                        finishScanImageSession(
+                            sourceId,
+                            state == SignalSourceState::Error
+                                ? ExperimentRunState::Failed
+                                : ExperimentRunState::Completed,
+                            message);
+                    }
+                    emit signalSourceStateChanged(sourceId, state, message);
+                });
+        connect(m_managers->signalSourceManager, &SignalSourceManager::sourceError,
+                this, &ScopeOneCore::signalSourceError);
+        connect(m_managers->daqDeviceManager, &DaqDeviceManager::stateChanged,
+                this, &ScopeOneCore::daqStateChanged);
+        connect(m_managers->daqDeviceManager, &DaqDeviceManager::deviceError,
+                this, &ScopeOneCore::daqError);
+        connect(m_managers->daqDeviceManager, &DaqDeviceManager::inputDataReady,
+                this, &ScopeOneCore::daqInputDataReady);
 
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
                 this, [this](const ImageFrame& frame)
@@ -1247,6 +1304,8 @@ namespace scopeone::core
     // Release loaded devices before the facade is destroyed
     ScopeOneCore::~ScopeOneCore()
     {
+        delete m_managers->signalSourceManager;
+        m_managers->signalSourceManager = nullptr;
         m_hardwareThreadPool->waitForDone();
         m_analysisThreadPool->waitForDone();
         m_sessionFrameThreadPool->waitForDone();
@@ -1912,6 +1971,228 @@ namespace scopeone::core
             return false;
         }
         return m_managers->cameraManager->getROI(target, x, y, width, height);
+    }
+
+    // List signal sources discovered through the independent plugin registry
+    QList<SignalSourceDescriptor> ScopeOneCore::signalSources() const
+    {
+        return m_managers->signalSourceManager->sources();
+    }
+
+    // Start one generic signal source without involving MMCore configuration
+    bool ScopeOneCore::startSignalTrace(const SignalAcquisitionConfig& config,
+                                         QString* errorMessage)
+    {
+        const QString sourceId = config.sourceId.trimmed();
+        std::shared_ptr<ScanImageAssembler> scanImageAssembler;
+        if (config.scanImage.enabled)
+        {
+            scanImageAssembler = std::make_shared<ScanImageAssembler>(
+                sourceId, config.scanImage);
+            if (!scanImageAssembler->isValid())
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Invalid scan image configuration");
+                }
+                return false;
+            }
+        }
+        if (!m_managers->signalSourceManager->startTrace(config, errorMessage))
+        {
+            return false;
+        }
+        if (scanImageAssembler)
+        {
+            m_managers->scanImageAssemblers.insert(sourceId,
+                                                   std::move(scanImageAssembler));
+            QString baseName = QFileInfo(
+                config.sourceSettings.value(QStringLiteral("filePath")).toString())
+                                   .completeBaseName();
+            if (baseName.isEmpty())
+            {
+                baseName = QStringLiteral("scan_")
+                    + QDateTime::currentDateTime().toString(
+                        QStringLiteral("yyyyMMdd_hhmmss_zzz"));
+            }
+            else
+            {
+                baseName += QStringLiteral("_scan");
+            }
+            Managers::ScanImageSessionState state;
+            state.baseName = baseName;
+            m_managers->scanImageSessions.insert(sourceId, std::move(state));
+        }
+        else
+        {
+            m_managers->scanImageAssemblers.remove(sourceId);
+            m_managers->scanImageSessions.remove(sourceId);
+        }
+        return true;
+    }
+
+    // Request one active signal source to stop
+    void ScopeOneCore::stopSignalTrace(const QString& sourceId)
+    {
+        m_managers->signalSourceManager->stopTrace(sourceId);
+    }
+
+    // Read the current lifecycle state of one signal source
+    SignalSourceState ScopeOneCore::signalSourceState(const QString& sourceId) const
+    {
+        return m_managers->signalSourceManager->state(sourceId);
+    }
+
+    // Read the latest status or error reported by one signal source
+    QString ScopeOneCore::signalSourceStateMessage(const QString& sourceId) const
+    {
+        return m_managers->signalSourceManager->stateMessage(sourceId);
+    }
+
+    // Return DAQ devices discovered by hardware plugins
+    QList<DaqDeviceDescriptor> ScopeOneCore::daqDevices() const
+    {
+        return m_managers->daqDeviceManager->devices();
+    }
+
+    // Configure and start one hardware-timed DAQ session
+    bool ScopeOneCore::startDaqSession(const DaqSessionConfig& config,
+                                       QString* errorMessage)
+    {
+        return m_managers->daqDeviceManager->start(config, errorMessage);
+    }
+
+    // Stop one DAQ session and release its terminal routes
+    void ScopeOneCore::stopDaqSession(const QString& deviceId)
+    {
+        m_managers->daqDeviceManager->stop(deviceId);
+    }
+
+    // Read the lifecycle state of one DAQ device
+    DaqState ScopeOneCore::daqState(const QString& deviceId) const
+    {
+        return m_managers->daqDeviceManager->state(deviceId);
+    }
+
+    // Read the latest DAQ status or driver error
+    QString ScopeOneCore::daqStateMessage(const QString& deviceId) const
+    {
+        return m_managers->daqDeviceManager->stateMessage(deviceId);
+    }
+
+    // Forward binned signal traces to clients
+    void ScopeOneCore::handleSignalTimeSeries(const TimeSeriesChunk& chunk)
+    {
+        emit signalTimeSeriesReady(chunk);
+    }
+
+    // Assemble timestamped events into scan frames before forwarding them
+    void ScopeOneCore::handleTimestampedSignalEvents(const TimestampedEventChunk& chunk)
+    {
+        const auto assembler = m_managers->scanImageAssemblers.value(chunk.sourceId);
+        if (assembler)
+        {
+            publishScanFrames(chunk.sourceId, assembler->append(chunk));
+        }
+        emit timestampedSignalEventsReady(chunk);
+    }
+
+    // Publish live scan frames and append them to one frame backed session
+    void ScopeOneCore::publishScanFrames(const QString& sourceId,
+                                         const QList<ImageFrame>& frames)
+    {
+        if (frames.isEmpty())
+        {
+            return;
+        }
+
+        auto stateIt = m_managers->scanImageSessions.find(sourceId);
+        if (stateIt == m_managers->scanImageSessions.end())
+        {
+            return;
+        }
+
+        const QString scanSourceId = QStringLiteral("scan:%1").arg(sourceId);
+        for (const ImageFrame& frame : frames)
+        {
+            publishStaticFrame(scanSourceId,
+                               frame,
+                               QStringLiteral("Scan %1").arg(sourceId));
+        }
+
+        if (!stateIt->session)
+        {
+            ExperimentPlan plan;
+            plan.streamToDisk = false;
+            plan.baseName = stateIt->baseName;
+            stateIt->session = createFrameSession(frames, plan);
+            if (!stateIt->session)
+            {
+                return;
+            }
+            stateIt->session->setRunState(ExperimentRunState::Running);
+        }
+        else
+        {
+            const QString cameraId = frames.constFirst().cameraId;
+            quint64 sequenceIndex = static_cast<quint64>(
+                stateIt->session->recordedFrameCount(cameraId));
+            for (const ImageFrame& frame : frames)
+            {
+                if (!stateIt->session->appendImageFrame(frame))
+                {
+                    continue;
+                }
+                AcquisitionEventRecord record;
+                record.event.sequenceIndex = sequenceIndex;
+                record.event.timeIndex = static_cast<int>(sequenceIndex);
+                record.event.cameraIds = {frame.cameraId};
+                record.startedTimestampNs = frame.timestampNs;
+                record.completedTimestampNs = frame.timestampNs;
+                record.succeeded = true;
+                record.frames.insert(frame.cameraId, frameRecordFromImageFrame(frame));
+                stateIt->session->appendEventRecord(record);
+                ++sequenceIndex;
+            }
+            ExperimentPlan plan = stateIt->session->capturePlan();
+            plan.framesPerBurst = static_cast<int>(
+                stateIt->session->recordedFrameCount(cameraId));
+            stateIt->session->setCapturePlan(plan);
+        }
+        stateIt->lastTimestampNs = frames.constLast().timestampNs;
+    }
+
+    // Finalize one reconstructed scan stack and expose it through the Gallery
+    void ScopeOneCore::finishScanImageSession(const QString& sourceId,
+                                              ExperimentRunState finalState,
+                                              const QString& message)
+    {
+        const auto assembler = m_managers->scanImageAssemblers.value(sourceId);
+        if (assembler)
+        {
+            publishScanFrames(sourceId, assembler->finish());
+        }
+
+        auto stateIt = m_managers->scanImageSessions.find(sourceId);
+        if (stateIt == m_managers->scanImageSessions.end())
+        {
+            return;
+        }
+        if (!stateIt->session)
+        {
+            m_managers->scanImageSessions.erase(stateIt);
+            m_managers->scanImageAssemblers.remove(sourceId);
+            return;
+        }
+        const auto session = stateIt->session;
+        session->setRunState(
+            finalState,
+            stateIt->lastTimestampNs,
+            finalState == ExperimentRunState::Failed ? message : QString());
+        registerRecordingSession(session);
+        m_managers->scanImageSessions.erase(stateIt);
+        m_managers->scanImageAssemblers.remove(sourceId);
+        emit scanImageSessionReady(session);
     }
 
     // Track the active line profile request for future frames

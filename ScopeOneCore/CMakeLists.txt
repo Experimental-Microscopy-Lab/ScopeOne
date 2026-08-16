@@ -90,6 +90,9 @@ set(CORE_SOURCES
         src/DifferentialRollingModule.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
+        src/ScanImageAssembler.cpp
+        src/SignalSourceManager.cpp
+        src/DaqDeviceManager.cpp
         src/CameraBackend.cpp
         src/CameraManager.cpp
         src/NativeCameraBackend.cpp
@@ -114,9 +117,14 @@ set(CORE_HEADERS
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
+        internal/SignalSourceManager.h
+        internal/DaqDeviceManager.h
         internal/CameraBackend.h
         internal/CameraManager.h
         include/scopeone/ImageFrame.h
+        include/scopeone/ScanImageAssembler.h
+        include/scopeone/SignalSource.h
+        include/scopeone/DaqDevice.h
         include/scopeone/SharedFrame.h
         include/scopeone/scopeone_core_export.h
         include/scopeone/ScopeOneCore.h

@@ -80,6 +80,8 @@ set(SCOPEONE_UI_SOURCES
         src/RecordingWidget.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
+        src/SignalMonitorWidget.cpp
+        src/DaqControlWidget.cpp
         src/ScopeOneLocalApiServer.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
@@ -98,6 +100,8 @@ set(SCOPEONE_UI_HEADERS
         src/RecordingWidget.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
+        src/SignalMonitorWidget.h
+        src/DaqControlWidget.h
         src/ScopeOneLocalApiServer.h
 )
 
@@ -112,6 +116,14 @@ qt_add_executable(ScopeOne
 )
 qt_add_executable(ScopeOneMcpServer
         src/ScopeOneMcpServer.cpp
+)
+add_library(ScopeOnePtuFilePlugin MODULE
+        plugins/PtuFile/PtuFilePlugin.cpp
+        plugins/PtuFile/PtuFilePlugin.h
+)
+add_library(ScopeOneNIDaqmxPlugin MODULE
+        plugins/NIDaqmx/NIDaqmxPlugin.cpp
+        plugins/NIDaqmx/NIDaqmxPlugin.h
 )
 target_link_libraries(ScopeOne PRIVATE
         scopeone::ScopeOneCore
@@ -128,12 +140,34 @@ target_link_libraries(ScopeOneMcpServer PRIVATE
         Qt::Core
         Qt::Network
 )
+target_link_libraries(ScopeOnePtuFilePlugin PRIVATE
+        scopeone::ScopeOneCore
+        Qt::Core
+)
+target_link_libraries(ScopeOneNIDaqmxPlugin PRIVATE
+        scopeone::ScopeOneCore
+        Qt::Core
+)
 target_include_directories(ScopeOne PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_BINARY_DIR}/include
 )
 target_include_directories(ScopeOneMcpServer PRIVATE
         ${CMAKE_BINARY_DIR}/include
+)
+add_custom_command(TARGET ScopeOnePtuFilePlugin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:ScopeOne>/plugins/signal-sources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:ScopeOnePtuFilePlugin>"
+        "$<TARGET_FILE_DIR:ScopeOne>/plugins/signal-sources/"
+)
+add_custom_command(TARGET ScopeOneNIDaqmxPlugin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:ScopeOne>/plugins/daq-devices"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:ScopeOneNIDaqmxPlugin>"
+        "$<TARGET_FILE_DIR:ScopeOne>/plugins/daq-devices/"
 )
 target_precompile_headers(ScopeOne PRIVATE
         <QtGlobal>
@@ -169,6 +203,14 @@ target_precompile_headers(ScopeOne PRIVATE
 
 install(TARGETS ScopeOne ScopeOneMcpServer
         RUNTIME DESTINATION .
+)
+install(TARGETS ScopeOnePtuFilePlugin
+        RUNTIME DESTINATION plugins/signal-sources
+        LIBRARY DESTINATION plugins/signal-sources
+)
+install(TARGETS ScopeOneNIDaqmxPlugin
+        RUNTIME DESTINATION plugins/daq-devices
+        LIBRARY DESTINATION plugins/daq-devices
 )
 install(FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/config/MMConfig_demo.cfg"

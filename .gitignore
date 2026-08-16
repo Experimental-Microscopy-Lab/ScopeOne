@@ -1,6 +1,8 @@
 /*
 !/src/
 !/src/**
+!/plugins/
+!/plugins/**
 !/ScopeOneCore/
 !/ScopeOneCore/**
 /ScopeOneCore/install/
