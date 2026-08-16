@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "scopeone/SharedFrame.h"
+#include "scopeone/HardwareTypes.h"
 
 namespace scopeone::core
 {
@@ -28,6 +29,7 @@ namespace scopeone::core
         ImagePixelFormat pixelFormat{ImagePixelFormat::Invalid};
         quint64 frameIndex{0};
         quint64 timestampNs{0};
+        ClockStamp clockStamp;
         int sourceRoiX{0};
         int sourceRoiY{0};
         int sourceRoiWidth{0};
@@ -169,6 +171,12 @@ namespace scopeone::core
             frame.bitsPerSample = static_cast<int>(header.bitsPerSample);
             frame.frameIndex = header.frameIndex;
             frame.timestampNs = header.timestampNs;
+            if (frame.timestampNs > 0)
+            {
+                frame.clockStamp.ticks = static_cast<std::int64_t>(frame.timestampNs);
+                frame.clockStamp.clockDomain = QStringLiteral("provider.timestampNs");
+                frame.clockStamp.source = QStringLiteral("Driver");
+            }
 
             if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16))
             {

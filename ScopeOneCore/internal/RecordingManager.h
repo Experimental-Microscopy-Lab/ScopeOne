@@ -1,7 +1,9 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
+#include "scopeone/CameraProvider.h"
 #include "internal/MDAManager.h"
+#include "internal/CameraRuntimeControl.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QStringList>
@@ -25,8 +27,6 @@ namespace scopeone::core::internal
     using RecordingWriterPhase = scopeone::core::ScopeOneCore::RecordingWriterPhase;
     using RecordingWriterStatus = scopeone::core::ScopeOneCore::RecordingWriterStatus;
 
-    class CameraManager;
-
     class RecordingManager : public QObject
     {
         Q_OBJECT
@@ -35,7 +35,11 @@ namespace scopeone::core::internal
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
-        void setCameraManager(CameraManager* cameraManager) { m_cameraManager = cameraManager; }
+        void setCameraProvider(CameraProvider* cameraProvider) { m_cameraProvider = cameraProvider; }
+        void setCameraRuntimeControl(CameraRuntimeControl* cameraRuntimeControl)
+        {
+            m_cameraRuntimeControl = cameraRuntimeControl;
+        }
         void setMMCore(const std::shared_ptr<CMMCore>& core) { m_mmcore = core; }
 
         void setLatestFrameFetcher(std::function<bool(const QString&, ImageFrame&)> fetcher)
@@ -203,7 +207,8 @@ namespace scopeone::core::internal
         bool allCamerasReachedTarget() const;
         void advanceBurstStateIfNeeded();
 
-        CameraManager* m_cameraManager{nullptr};
+        CameraProvider* m_cameraProvider{nullptr};
+        CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
         std::shared_ptr<CMMCore> m_mmcore;
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;

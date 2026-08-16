@@ -1,7 +1,8 @@
 #include "internal/MDAManager.h"
 
-#include "internal/CameraManager.h"
+#include "scopeone/CameraProvider.h"
 #include "MMCore.h"
+#include "scopeone/ClockService.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -38,9 +39,9 @@ namespace scopeone::core::internal
     }
 
     // Connects MDA capture to the active camera backend
-    void MDAManager::setCameraManager(CameraManager* cameraManager)
+    void MDAManager::setCameraProvider(CameraProvider* cameraProvider)
     {
-        m_cameraManager = cameraManager;
+        m_cameraProvider = cameraProvider;
     }
 
     // Starts one immutable acquisition event sequence
@@ -186,9 +187,9 @@ namespace scopeone::core::internal
     {
         if (event.cameraIds.size() > 1)
         {
-            if (!m_cameraManager)
+            if (!m_cameraProvider)
             {
-                if (errorMessage) *errorMessage = QStringLiteral("CameraManager not available");
+                if (errorMessage) *errorMessage = QStringLiteral("Camera provider not available");
                 return false;
             }
             return execEventMultiCamera(event, output, errorMessage);
@@ -249,6 +250,7 @@ namespace scopeone::core::internal
                 frame.pixelFormat,
                 static_cast<int>(m_mmcore->getImageBitDepth()));
             frame.timestampNs = currentTimestampNs();
+            frame.clockStamp = scopeone::core::ClockService{}.now();
             frame.sourceRoiWidth = frame.width;
             frame.sourceRoiHeight = frame.height;
             if (!frame.cameraId.isEmpty())
@@ -303,7 +305,7 @@ namespace scopeone::core::internal
             {
                 CaptureResult result;
                 result.cameraId = cameraId;
-                if (!m_cameraManager->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
+                if (!m_cameraProvider->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
                 {
                     result.error = QStringLiteral("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;

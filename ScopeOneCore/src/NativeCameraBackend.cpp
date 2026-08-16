@@ -1,6 +1,7 @@
 #include "internal/CameraBackend.h"
 
 #include "MMCore.h"
+#include "scopeone/ClockService.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -279,6 +280,7 @@ namespace scopeone::core::internal
                         frame.pixelFormat = m_configuration.pixelFormat;
                         frame.frameIndex = frameIndex;
                         frame.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+                        frame.clockStamp = scopeone::core::ClockService{}.now();
                         frame.sourceRoiX = m_configuration.sourceRoiX;
                         frame.sourceRoiY = m_configuration.sourceRoiY;
                         frame.sourceRoiWidth = m_configuration.sourceRoiWidth;

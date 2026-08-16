@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "scopeone/ExperimentDocument.h"
+#include "scopeone/HardwareTypes.h"
+#include "scopeone/HardwareProvider.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/scopeone_core_export.h"
 
@@ -71,6 +73,7 @@ namespace scopeone::core
             int failCount{0};
             int skippedCameraCount{0};
             bool foundCamera{false};
+            QList<HardwareDeviceDescriptor> devices;
         };
 
         struct HistogramStats
@@ -527,6 +530,9 @@ namespace scopeone::core
         bool setAdditionalDeviceAdapterSearchPaths(const QStringList& paths);
 
         QStringList cameraIds() const { return m_cameraIds; }
+        QList<HardwareDeviceDescriptor> hardwareDevices() const;
+        bool registerHardwareProvider(const HardwareProviderPtr& provider);
+        bool unregisterHardwareProvider(const QString& providerId);
         QStringList runningPreviewCameraIds() const;
         double cameraPixelSizeUm(const QString& cameraId) const;
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
@@ -666,6 +672,7 @@ namespace scopeone::core
                                        const QString& errorMessage);
         void configurationUnloadFinished(bool success, const QString& errorMessage);
         void hardwareConfigurationChanged();
+        void hardwareDevicesChanged();
         void deviceStateChanged();
         void stagePositionChanged();
         void stageMoveFinished(quint64 commandId,
@@ -781,6 +788,7 @@ namespace scopeone::core
         void applySystemShutdownPreset();
         void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
+        void synchronizeCameraIdsFromRegistry();
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool shutdownCameraBackend);

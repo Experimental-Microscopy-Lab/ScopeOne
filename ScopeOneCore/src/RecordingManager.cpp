@@ -1,6 +1,6 @@
 #include "internal/RecordingManager.h"
 
-#include "internal/CameraManager.h"
+#include "scopeone/CameraProvider.h"
 #include "MMCore.h"
 #include <scopewriter/ScopeWriter.h>
 
@@ -833,7 +833,7 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraManager && !m_latestFrameFetcher)
+        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraProvider && !m_latestFrameFetcher)
         {
             errorMessage = QStringLiteral("Frame source is not available for recording");
             return false;
@@ -1329,8 +1329,8 @@ namespace scopeone::core::internal
         if (!usesMda)
         {
             primeLastFrameIndices();
-            if (m_cameraManager
-                && !m_cameraManager->setRecordingFrameDeliveryEnabled(true))
+            if (m_cameraRuntimeControl
+                && !m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(true))
             {
                 if (plan.streamToDisk)
                 {
@@ -1346,9 +1346,9 @@ namespace scopeone::core::internal
         {
             if (!startStreamingOutputs(plan))
             {
-                if (m_cameraManager)
+                if (m_cameraRuntimeControl)
                 {
-                    m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+                    m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(false);
                 }
                 const QString writerError = writerErrorSnapshot();
                 qWarning().noquote() << (writerError.isEmpty()
@@ -1414,17 +1414,17 @@ namespace scopeone::core::internal
         emit recordingStateChanged(false);
         emitProgress(true);
 
-        if (m_cameraManager)
+        if (m_cameraRuntimeControl)
         {
-            m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+            m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(false);
         }
         if (m_mdaState.usingMda && m_mdaState.manager && m_mdaState.manager->isRunning())
         {
             m_mdaState.manager->requestCancel();
         }
-        if (m_cameraManager)
+        if (m_cameraRuntimeControl)
         {
-            m_cameraManager->setFrameDeliveryPaused(false);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(false);
         }
 
         qInfo().noquote() << "Recording stopped";
@@ -1975,9 +1975,9 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        if (m_captureState.activeCameraIds.size() > 1 && !m_cameraManager)
+        if (m_captureState.activeCameraIds.size() > 1 && !m_cameraProvider)
         {
-            const QString message = QStringLiteral("Multi-camera MDA requires CameraManager");
+            const QString message = QStringLiteral("Multi-camera MDA requires a camera provider");
             if (errorMessage) *errorMessage = message;
             qWarning().noquote() << message;
             return false;
@@ -1994,11 +1994,11 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        m_mdaState.manager->setCameraManager(m_cameraManager);
+        m_mdaState.manager->setCameraProvider(m_cameraProvider);
 
-        if (m_captureState.activeCameraIds.size() > 1)
+        if (m_captureState.activeCameraIds.size() > 1 && m_cameraRuntimeControl)
         {
-            m_cameraManager->setFrameDeliveryPaused(true);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(true);
         }
 
         m_mdaState.cameraId = m_captureState.activeCameraIds.first();

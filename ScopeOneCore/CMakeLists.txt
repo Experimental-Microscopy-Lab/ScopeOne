@@ -77,6 +77,12 @@ endfunction()
 
 set(CORE_SOURCES
         src/ExperimentDocument.cpp
+        src/AcquisitionEngine.cpp
+        src/ClockService.cpp
+        src/FrameRouter.cpp
+        src/HardwareRuntime.cpp
+        src/MicroManagerProvider.cpp
+        src/SimulatorProvider.cpp
         src/ImageSceneModel.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
@@ -99,7 +105,17 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
+        internal/AcquisitionEngine.h
+        include/scopeone/CameraProvider.h
+        internal/CameraRuntimeControl.h
+        include/scopeone/ClockService.h
+        include/scopeone/HardwareTypes.h
+        include/scopeone/HardwareProvider.h
+        include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
+        internal/HardwareRuntime.h
+        internal/FrameRouter.h
+        internal/MicroManagerProvider.h
         internal/MMCoreManager.h
         internal/FrameBufferUtils.h
         internal/ParticleAnalysis.h
@@ -107,6 +123,7 @@ set(CORE_HEADERS
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
         internal/AgentProtocol.h
+        internal/DriverHostProtocol.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
         internal/FFTModule.h

@@ -1,6 +1,7 @@
 #include "internal/CameraManager.h"
 
 #include <QTimer>
+#include <utility>
 
 namespace scopeone::core::internal
 {
@@ -28,6 +29,11 @@ namespace scopeone::core::internal
         shutdownNow();
     }
 
+    void CameraManager::setFrameSink(FrameSink sink)
+    {
+        m_frameSink = std::move(sink);
+    }
+
     // Selects one camera backend and forwards its runtime signals
     bool CameraManager::activateBackend(CameraBackend::Kind kind)
     {
@@ -46,7 +52,14 @@ namespace scopeone::core::internal
         }
 
         connect(m_backend.get(), &CameraBackend::rawFrameReady,
-                this, &CameraManager::newRawFrameReady);
+                this, [this](const scopeone::core::ImageFrame& frame)
+                {
+                    if (m_frameSink)
+                    {
+                        m_frameSink(frame);
+                    }
+                    emit newRawFrameReady(frame);
+                });
         // Keeps processing input on the producer thread
         connect(m_backend.get(), &CameraBackend::processingFrameReady,
                 this, &CameraManager::processingFrameReady,

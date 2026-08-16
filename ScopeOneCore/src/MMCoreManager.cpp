@@ -16,6 +16,27 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        scopeone::core::HardwareDeviceKind hardwareDeviceKind(MM::DeviceType type)
+        {
+            switch (type)
+            {
+            case MM::CameraDevice:
+                return scopeone::core::HardwareDeviceKind::Camera;
+            case MM::XYStageDevice:
+                return scopeone::core::HardwareDeviceKind::XYStage;
+            case MM::StageDevice:
+                return scopeone::core::HardwareDeviceKind::ZStage;
+            case MM::ShutterDevice:
+                return scopeone::core::HardwareDeviceKind::Shutter;
+            case MM::StateDevice:
+                return scopeone::core::HardwareDeviceKind::State;
+            case MM::HubDevice:
+                return scopeone::core::HardwareDeviceKind::Hub;
+            default:
+                return scopeone::core::HardwareDeviceKind::Unknown;
+            }
+        }
+
         struct DevicePropertyState
         {
             QStringList preInitProperties;
@@ -370,8 +391,28 @@ namespace scopeone::core::internal
                     continue;
                 }
 
+                scopeone::core::HardwareDeviceDescriptor descriptor;
+                descriptor.logicalId = deviceName;
+                descriptor.providerId = QStringLiteral("micro-manager");
+                descriptor.providerDeviceId = deviceName;
+                descriptor.name = deviceName;
+                descriptor.kind = hardwareDeviceKind(deviceType);
+                descriptor.state = scopeone::core::HardwareDeviceState::Discovered;
+                descriptor.endpoint = deviceType == MM::CameraDevice && !useSingleCamera
+                                          ? scopeone::core::HardwareEndpointKind::DriverHost
+                                          : scopeone::core::HardwareEndpointKind::InProcess;
+                try
+                {
+                    descriptor.hardwareId = QString::fromStdString(
+                        m_mmcore->getDeviceName(label.c_str()));
+                }
+                catch (const CMMError&)
+                {
+                }
+
                 if (deviceType == MM::CameraDevice && !useSingleCamera)
                 {
+                    result.devices.append(descriptor);
                     skippedCameraCount++;
                     continue;
                 }
@@ -382,11 +423,13 @@ namespace scopeone::core::internal
                     try
                     {
                         m_mmcore->initializeDevice(label.c_str());
+                        descriptor.state = scopeone::core::HardwareDeviceState::Initialized;
                         successCount++;
                     }
                     catch (const CMMError& error)
                     {
                         failCount++;
+                        descriptor.state = scopeone::core::HardwareDeviceState::Faulted;
                         result.failedDevices.append(deviceName);
                         qWarning().noquote()
                             << QString("Failed to initialize device '%1': %2")
@@ -395,8 +438,10 @@ namespace scopeone::core::internal
                 }
                 else
                 {
+                    descriptor.state = scopeone::core::HardwareDeviceState::Initialized;
                     successCount++;
                 }
+                result.devices.append(descriptor);
             }
             catch (const CMMError& error)
             {

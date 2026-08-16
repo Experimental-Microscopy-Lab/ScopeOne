@@ -44,7 +44,8 @@ Use this placement rule:
 |---|---|---|
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
 | `scopeone::core::internal` | Core-only managers and processing implementations | `CameraManager`, `MMCoreManager`, `RecordingManager`, processing modules |
-| `scopeone::core::internal::agent` | Private camera-agent protocol details | Agent request, response and frame transport types |
+| `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
+| `scopeone::core::internal::agent` | Micro-Manager DriverHost commands | Camera commands and shared-memory endpoint names |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
 
 Code in `src` that implements a public type remains in `scopeone::core`. Code that implements an `internal` header remains in `scopeone::core::internal`. The Python package named `scopeone` is an external client package and is not an embedded form of the C++ namespace.
@@ -99,6 +100,9 @@ Outputs:
 The installed headers are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
+- `HardwareProvider.h` and `CameraProvider.h` define provider discovery, control and frame delivery.
+- `HardwareTypes.h` defines provider-independent device identity, state, endpoint and clock metadata.
+- `SimulatorProvider.h` provides an in-process reference provider.
 - `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
 - `ExperimentDocument.h` defines experiment plans, results, persistence and provenance.
 - `ImageSceneModel.h` defines shared image-layer, display-state and markup state.
@@ -106,6 +110,8 @@ The installed headers are the source of truth for the public API:
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
+
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register them with `ScopeOneCore::registerHardwareProvider(...)`; ScopeOne owns acquisition routing, clocks and downstream frame delivery. Micro-Manager uses the same provider boundary and may run in process or through the existing DriverHost transport.
 
 ## Processing Data Flow
 
