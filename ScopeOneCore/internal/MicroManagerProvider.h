@@ -2,15 +2,28 @@
 
 #include <QList>
 
+#include <memory>
+
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
+#include "internal/CameraRuntimeControl.h"
+
+class CMMCore;
 
 namespace scopeone::core::internal
 {
-    class MicroManagerProvider final : public HardwareProvider, public CameraProvider
+    class MicroManagerProvider final : public HardwareProvider,
+                                       public CameraProvider,
+                                       public StageProvider,
+                                       public ShutterProvider,
+                                       public StateProvider,
+                                       public ConfigurationProvider,
+                                       public CameraRuntimeControl
     {
     public:
-        explicit MicroManagerProvider(CameraProvider* cameraProvider);
+        MicroManagerProvider(std::shared_ptr<CMMCore> core,
+                             CameraProvider* cameraProvider,
+                             CameraRuntimeControl* cameraRuntimeControl);
 
         HardwareProviderDescriptor descriptor() const override;
         QList<HardwareDeviceDescriptor> devices() const override;
@@ -50,9 +63,60 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
                                int timeoutMs) override;
+        void setFrameDeliveryPaused(bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(bool enabled) override;
+        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
+        void finishProcessingFrame(const QString& cameraId, quint64 token) override;
+        QString defaultXYStage() const override;
+        QString defaultZStage() const override;
+        bool getXYPosition(const QString& deviceId,
+                           double& x,
+                           double& y,
+                           QString* errorMessage) const override;
+        bool getZPosition(const QString& deviceId,
+                          double& z,
+                          QString* errorMessage) const override;
+        bool setRelativeXYPosition(const QString& deviceId,
+                                   double dx,
+                                   double dy,
+                                   QString* errorMessage) override;
+        bool setRelativeZPosition(const QString& deviceId,
+                                  double dz,
+                                  QString* errorMessage) override;
+        bool setXYPosition(const QString& deviceId,
+                           double x,
+                           double y,
+                           QString* errorMessage) override;
+        bool setZPosition(const QString& deviceId,
+                          double z,
+                          QString* errorMessage) override;
+        bool isShutterOpen(const QString& deviceId,
+                           bool& open,
+                           QString* errorMessage) const override;
+        bool setShutterOpen(const QString& deviceId,
+                            bool open,
+                            QString* errorMessage) override;
+        bool getState(const QString& deviceId,
+                      long& state,
+                      QString* errorMessage) const override;
+        bool setState(const QString& deviceId,
+                      long state,
+                      QString* errorMessage) override;
+        QString stateLabel(const QString& deviceId, long state) const override;
+        QStringList availableConfigGroups() const override;
+        QStringList availableConfigs(const QString& groupName) const override;
+        QString currentConfig(const QString& groupName) const override;
+        bool setConfig(const QString& groupName,
+                       const QString& configName,
+                       QString* errorMessage) override;
 
     private:
+        bool isCamera(const QString& deviceId) const;
+
+        std::shared_ptr<CMMCore> m_core;
         CameraProvider* m_cameraProvider{nullptr};
+        CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
         QList<HardwareDeviceDescriptor> m_devices;
     };
 }

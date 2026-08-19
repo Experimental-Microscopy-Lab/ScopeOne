@@ -32,6 +32,26 @@ namespace scopeone::core::internal
                 return scopeone::core::HardwareDeviceKind::State;
             case MM::HubDevice:
                 return scopeone::core::HardwareDeviceKind::Hub;
+            case MM::SerialDevice:
+                return scopeone::core::HardwareDeviceKind::Serial;
+            case MM::GenericDevice:
+                return scopeone::core::HardwareDeviceKind::Generic;
+            case MM::AutoFocusDevice:
+                return scopeone::core::HardwareDeviceKind::AutoFocus;
+            case MM::ImageProcessorDevice:
+                return scopeone::core::HardwareDeviceKind::ImageProcessor;
+            case MM::SignalIODevice:
+                return scopeone::core::HardwareDeviceKind::SignalIO;
+            case MM::MagnifierDevice:
+                return scopeone::core::HardwareDeviceKind::Magnifier;
+            case MM::SLMDevice:
+                return scopeone::core::HardwareDeviceKind::SLM;
+            case MM::GalvoDevice:
+                return scopeone::core::HardwareDeviceKind::Galvo;
+            case MM::PressurePumpDevice:
+                return scopeone::core::HardwareDeviceKind::PressurePump;
+            case MM::VolumetricPumpDevice:
+                return scopeone::core::HardwareDeviceKind::VolumetricPump;
             default:
                 return scopeone::core::HardwareDeviceKind::Unknown;
             }
@@ -106,7 +126,7 @@ namespace scopeone::core::internal
             QHash<QString, QList<ConfigProperty>> startupProperties;
         };
 
-        // Reads camera property entries that must be replayed by agent processes
+        // Read camera property entries that must be replayed by DriverHost processes
         ConfigPropertyReplay configPropertyReplay(const QString& configPath)
         {
             ConfigPropertyReplay replay;
@@ -491,7 +511,7 @@ namespace scopeone::core::internal
         {
             const bool started = result.useSingleCamera
                 ? cameraManager.configureNativeCamera(m_mmcore, camera.label, camera.exposureMs)
-                : cameraManager.addAgentCamera(camera.label,
+                : cameraManager.addDriverHostCamera(camera.label,
                                                camera.adapter,
                                                camera.device,
                                                camera.preInitProperties,
@@ -499,6 +519,14 @@ namespace scopeone::core::internal
                                                camera.exposureMs);
             if (!started)
             {
+                for (auto& device : result.devices)
+                {
+                    if (device.logicalId == camera.label)
+                    {
+                        device.state = scopeone::core::HardwareDeviceState::Faulted;
+                        break;
+                    }
+                }
                 ++result.failCount;
                 result.failedDevices.append(camera.label);
                 result.failedDevices.removeDuplicates();
@@ -506,6 +534,14 @@ namespace scopeone::core::internal
                 return false;
             }
 
+            for (auto& device : result.devices)
+            {
+                if (device.logicalId == camera.label)
+                {
+                    device.state = scopeone::core::HardwareDeviceState::Initialized;
+                    break;
+                }
+            }
             result.cameraIds.append(camera.label);
         }
         return true;

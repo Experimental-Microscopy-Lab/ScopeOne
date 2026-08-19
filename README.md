@@ -7,8 +7,8 @@
   <!-- <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a> -->
 </p>
 
-ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a native [MMCore](https://github.com/micro-manager/mmCoreAndDevices) backend for single-camera operation and one isolated camera agent per device for simultaneous multi-camera preview and acquisition.
-It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
+ScopeOne is open-source microscopy control software built with C++ and Qt. Hardware is accessed through provider-independent device contracts; [Micro-Manager](https://micro-manager.org/) is the built-in provider, and isolated devices run through ScopeOne DriverHost processes.
+It retains compatibility with the Micro-Manager device ecosystem while allowing native vendor providers and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 <p align="center">
   <img src="resources/MainWindow.png" width="720"><br>

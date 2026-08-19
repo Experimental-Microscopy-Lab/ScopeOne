@@ -85,7 +85,7 @@ namespace scopeone::core::internal
         return false;
     }
 
-    bool CameraBackend::addAgentCamera(const QString&,
+    bool CameraBackend::addDriverHostCamera(const QString&,
                                        const QString&,
                                        const QString&,
                                        const QStringList&,

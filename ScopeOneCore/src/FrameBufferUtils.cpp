@@ -16,7 +16,6 @@ namespace scopeone::core::internal
         dst.cameraId = src.cameraId;
         dst.frameIndex = src.frameIndex;
         dst.timestampNs = src.timestampNs;
-        dst.clockStamp = src.clockStamp;
         dst.sourceRoiX = src.sourceRoiX;
         dst.sourceRoiY = src.sourceRoiY;
         dst.sourceRoiWidth = src.sourceRoiWidth;

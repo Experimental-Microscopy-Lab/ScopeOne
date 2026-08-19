@@ -25,7 +25,7 @@ ScopeOneCore/
 #include <scopeone/ImageFrame.h>
 ```
 
-`internal` contains implementation contracts between Core managers, processing modules and the camera agent. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
+`internal` contains implementation contracts between Core managers, processing modules and DriverHost. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
 
 `src` contains implementations. A public class such as `ScopeOneCore`, `ImageSceneModel` or `ExperimentDocument` still has its `.cpp` file in `src`; being public is determined by its header location and exported API, not by the location of its implementation.
 
@@ -45,7 +45,6 @@ Use this placement rule:
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
 | `scopeone::core::internal` | Core-only managers and processing implementations | `CameraManager`, `MMCoreManager`, `RecordingManager`, processing modules |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
-| `scopeone::core::internal::agent` | Micro-Manager DriverHost commands | Camera commands and shared-memory endpoint names |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
 
 Code in `src` that implements a public type remains in `scopeone::core`. Code that implements an `internal` header remains in `scopeone::core::internal`. The Python package named `scopeone` is an external client package and is not an embedded form of the C++ namespace.
@@ -88,10 +87,12 @@ Outputs:
 
 - `build/Release/ScopeOneCore.dll`
 - `build/Release/ScopeOneCore.lib`
-- `build/Release/ScopeOne_Agent.exe`
+- `build/Release/ScopeOne_DriverHost.exe`
+- `build/Release/ScopeOne_SimulatorProvider.dll`
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
-- `install/bin/ScopeOne_Agent.exe`
+- `install/bin/ScopeOne_DriverHost.exe`
+- `install/bin/providers/ScopeOne_SimulatorProvider.dll`
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
@@ -100,8 +101,9 @@ Outputs:
 The installed headers are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
-- `HardwareProvider.h` and `CameraProvider.h` define provider discovery, control and frame delivery.
-- `HardwareTypes.h` defines provider-independent device identity, state, endpoint and clock metadata.
+- `HardwareProvider.h`, `HardwareCapabilities.h` and `CameraProvider.h` define provider discovery, device control and frame delivery.
+- `DriverHostProviderPlugin.h` defines the module factory used to load external providers in isolated DriverHost processes.
+- `HardwareTypes.h` defines provider-independent device identity, state and endpoint metadata.
 - `SimulatorProvider.h` provides an in-process reference provider.
 - `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
 - `ExperimentDocument.h` defines experiment plans, results, persistence and provenance.
@@ -111,7 +113,7 @@ The installed headers are the source of truth for the public API:
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
-Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register them with `ScopeOneCore::registerHardwareProvider(...)`; ScopeOne owns acquisition routing, clocks and downstream frame delivery. Micro-Manager uses the same provider boundary and may run in process or through the existing DriverHost transport.
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register in-process providers with `ScopeOneCore::registerHardwareProvider(...)`. Register an isolated module with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
 
 ## Processing Data Flow
 

@@ -78,8 +78,9 @@ endfunction()
 set(CORE_SOURCES
         src/ExperimentDocument.cpp
         src/AcquisitionEngine.cpp
-        src/ClockService.cpp
+        src/DriverHostProviderProxy.cpp
         src/FrameRouter.cpp
+        src/HardwareProvider.cpp
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
         src/SimulatorProvider.cpp
@@ -99,7 +100,7 @@ set(CORE_SOURCES
         src/CameraBackend.cpp
         src/CameraManager.cpp
         src/NativeCameraBackend.cpp
-        src/AgentCameraBackend.cpp
+        src/DriverHostCameraBackend.cpp
         src/ScopeOneCore.cpp
 )
 
@@ -107,8 +108,9 @@ set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
         internal/AcquisitionEngine.h
         include/scopeone/CameraProvider.h
+        include/scopeone/DriverHostProviderPlugin.h
         internal/CameraRuntimeControl.h
-        include/scopeone/ClockService.h
+        include/scopeone/HardwareCapabilities.h
         include/scopeone/HardwareTypes.h
         include/scopeone/HardwareProvider.h
         include/scopeone/SimulatorProvider.h
@@ -122,8 +124,8 @@ set(CORE_HEADERS
         internal/StageMosaicManager.h
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
-        internal/AgentProtocol.h
         internal/DriverHostProtocol.h
+        internal/DriverHostProviderProxy.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
         internal/FFTModule.h
@@ -204,24 +206,31 @@ add_custom_command(TARGET ScopeOneCore POST_BUILD
         $<TARGET_FILE_DIR:ScopeOneCore>
 )
 
-add_executable(ScopeOne_Agent
-        src/AgentMain.cpp
+add_executable(ScopeOne_DriverHost
+        src/DriverHostMain.cpp
 )
-target_link_libraries(ScopeOne_Agent
+target_link_libraries(ScopeOne_DriverHost
+        ScopeOneCore
         MMCore
         Qt::Core
         Qt::Network
 )
-target_compile_definitions(ScopeOne_Agent PRIVATE MMDEVICE_CLIENT_BUILD)
-target_include_directories(ScopeOne_Agent PRIVATE
+target_compile_definitions(ScopeOne_DriverHost PRIVATE MMDEVICE_CLIENT_BUILD)
+target_include_directories(ScopeOne_DriverHost PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${MMCORE_INCLUDE_DIR}
         ${MMDEVICE_INCLUDE_DIR}
 )
-target_link_directories(ScopeOne_Agent PRIVATE ${MMCORE_BIN_DIR})
+target_link_directories(ScopeOne_DriverHost PRIVATE ${MMCORE_BIN_DIR})
 
-scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Agent>)
+scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOne_DriverHost>)
+
+add_library(ScopeOne_SimulatorProvider MODULE
+        src/SimulatorProviderPlugin.cpp
+)
+target_link_libraries(ScopeOne_SimulatorProvider PRIVATE ScopeOneCore Qt::Core)
+set_target_properties(ScopeOne_SimulatorProvider PROPERTIES PREFIX "")
 
 # Fast Release build
 # if (MSVC)
@@ -239,10 +248,10 @@ if (MSVC)
             $<$<CONFIG:Release>:/LTCG>
     )
 
-    target_compile_options(ScopeOne_Agent PRIVATE
+    target_compile_options(ScopeOne_DriverHost PRIVATE
             $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
     )
-    target_link_options(ScopeOne_Agent PRIVATE
+    target_link_options(ScopeOne_DriverHost PRIVATE
             $<$<CONFIG:Release>:/LTCG>
     )
 endif ()
@@ -265,8 +274,12 @@ install(TARGETS ScopeOneCore
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
-install(TARGETS ScopeOne_Agent
+install(TARGETS ScopeOne_DriverHost
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+install(TARGETS ScopeOne_SimulatorProvider
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/providers"
+        LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}/providers"
 )
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

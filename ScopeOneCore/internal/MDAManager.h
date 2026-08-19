@@ -7,12 +7,9 @@
 #include <QThreadPool>
 #include <QtGlobal>
 #include <atomic>
-#include <memory>
-
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/CameraProvider.h"
-
-class CMMCore;
+#include "scopeone/HardwareCapabilities.h"
 
 namespace scopeone::core::internal
 {
@@ -31,12 +28,13 @@ namespace scopeone::core::internal
         Q_OBJECT
 
     public:
-        explicit MDAManager(std::shared_ptr<CMMCore> core, QObject* parent = nullptr);
+        explicit MDAManager(QObject* parent = nullptr);
         ~MDAManager() override;
 
         bool isRunning() const { return m_running.load(); }
 
         void setCameraProvider(CameraProvider* cameraProvider);
+        void setStageProvider(StageProvider* stageProvider);
         bool start(const QList<AcquisitionEvent>& events, bool block = false);
         void requestCancel();
         void cancelAndWait();
@@ -50,15 +48,18 @@ namespace scopeone::core::internal
     private:
         bool setupEvent(const AcquisitionEvent& event, QString* errorMessage);
         bool execEvent(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage);
-        bool execEventSingleCamera(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage);
-        bool execEventMultiCamera(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage);
-        bool setExposure(double exposureMs, QString* errorMessage);
+        bool captureCameras(const AcquisitionEvent& event,
+                            MDAOutput& output,
+                            QString* errorMessage);
+        bool setExposure(const QStringList& cameraIds,
+                         double exposureMs,
+                         QString* errorMessage);
         bool moveXY(double x, double y, QString* errorMessage);
         bool moveZ(double z, QString* errorMessage);
         void runSequence(QList<AcquisitionEvent> events);
 
-        std::shared_ptr<CMMCore> m_mmcore;
         CameraProvider* m_cameraProvider{nullptr};
+        StageProvider* m_stageProvider{nullptr};
         QThreadPool m_threadPool;
         std::atomic<bool> m_running{false};
         std::atomic<bool> m_cancelRequested{false};

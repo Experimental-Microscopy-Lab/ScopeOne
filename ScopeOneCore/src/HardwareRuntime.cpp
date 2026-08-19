@@ -15,39 +15,39 @@ namespace scopeone::core::internal
 
     void DeviceRegistry::clear()
     {
-        if (m_providers.isEmpty())
         {
-            return;
+            QWriteLocker locker(&m_lock);
+            if (m_providers.isEmpty())
+            {
+                return;
+            }
+            m_providers.clear();
         }
-        m_providers.clear();
         emit changed();
     }
 
-    bool DeviceRegistry::registerProvider(const HardwareProviderPtr& provider)
+    bool DeviceRegistry::registerProvider(
+        const HardwareProviderPtr& provider,
+        const HardwareProviderDescriptor& descriptor,
+        const QList<HardwareDeviceDescriptor>& devices)
     {
         if (!provider)
         {
             return false;
         }
-        const HardwareProviderDescriptor descriptor = provider->descriptor();
         const QString providerId = descriptor.id.trimmed();
-        if (providerId.isEmpty())
+        if (providerId.isEmpty() || descriptor.id != providerId)
         {
             return false;
         }
-        const QList<HardwareDeviceDescriptor> devices = provider->devices();
         QSet<QString> logicalIds;
         for (const HardwareDeviceDescriptor& device : devices)
         {
             const QString logicalId = device.logicalId.trimmed();
             if (logicalId.isEmpty()
-                || device.providerId.trimmed() != providerId
+                || device.logicalId != logicalId
+                || device.providerId != providerId
                 || logicalIds.contains(logicalId))
-            {
-                return false;
-            }
-            const HardwareDeviceDescriptor existing = this->device(logicalId);
-            if (!existing.logicalId.isEmpty() && existing.providerId != providerId)
             {
                 return false;
             }
@@ -55,39 +55,53 @@ namespace scopeone::core::internal
         }
         ProviderEntry entry;
         entry.provider = provider;
+        entry.descriptor = descriptor;
         entry.devices = devices;
-        m_providers.insert(providerId, std::move(entry));
+        {
+            QWriteLocker locker(&m_lock);
+            for (auto providerIt = m_providers.cbegin();
+                 providerIt != m_providers.cend();
+                 ++providerIt)
+            {
+                if (providerIt.key() == providerId)
+                {
+                    continue;
+                }
+                for (const HardwareDeviceDescriptor& existing : providerIt->devices)
+                {
+                    if (logicalIds.contains(existing.logicalId))
+                    {
+                        return false;
+                    }
+                }
+            }
+            m_providers.insert(providerId, std::move(entry));
+        }
         emit changed();
         return true;
     }
 
     void DeviceRegistry::unregisterProvider(const QString& providerId)
     {
-        if (m_providers.remove(providerId.trimmed()) > 0)
+        bool removed = false;
+        {
+            QWriteLocker locker(&m_lock);
+            removed = m_providers.remove(providerId.trimmed()) > 0;
+        }
+        if (removed)
         {
             emit changed();
         }
     }
 
-    void DeviceRegistry::refreshProvider(const QString& providerId)
-    {
-        const QString normalizedId = providerId.trimmed();
-        const auto it = m_providers.constFind(normalizedId);
-        if (it == m_providers.constEnd() || !it->provider)
-        {
-            return;
-        }
-        const HardwareProviderPtr provider = it->provider;
-        registerProvider(provider);
-    }
-
     QList<HardwareProviderDescriptor> DeviceRegistry::providers() const
     {
+        QReadLocker locker(&m_lock);
         QList<HardwareProviderDescriptor> result;
         result.reserve(m_providers.size());
         for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it)
         {
-            result.append(it->provider->descriptor());
+            result.append(it->descriptor);
         }
         std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs)
         {
@@ -98,6 +112,7 @@ namespace scopeone::core::internal
 
     QList<HardwareDeviceDescriptor> DeviceRegistry::devices() const
     {
+        QReadLocker locker(&m_lock);
         QList<HardwareDeviceDescriptor> result;
         for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it)
         {
@@ -113,6 +128,7 @@ namespace scopeone::core::internal
     HardwareDeviceDescriptor DeviceRegistry::device(const QString& logicalId) const
     {
         const QString normalizedId = logicalId.trimmed();
+        QReadLocker locker(&m_lock);
         for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it)
         {
             for (const HardwareDeviceDescriptor& candidate : it->devices)
@@ -128,20 +144,34 @@ namespace scopeone::core::internal
 
     HardwareProviderPtr DeviceRegistry::provider(const QString& providerId) const
     {
+        QReadLocker locker(&m_lock);
         const auto it = m_providers.constFind(providerId.trimmed());
         return it == m_providers.constEnd() ? HardwareProviderPtr{} : it->provider;
     }
 
     HardwareProviderPtr DeviceRegistry::providerForDevice(const QString& logicalId) const
     {
-        const HardwareDeviceDescriptor descriptor = device(logicalId);
-        return descriptor.logicalId.isEmpty() ? HardwareProviderPtr{} : provider(descriptor.providerId);
+        const QString normalizedId = logicalId.trimmed();
+        QReadLocker locker(&m_lock);
+        for (auto providerIt = m_providers.constBegin();
+             providerIt != m_providers.constEnd();
+             ++providerIt)
+        {
+            for (const HardwareDeviceDescriptor& device : providerIt->devices)
+            {
+                if (device.logicalId == normalizedId)
+                {
+                    return providerIt->provider;
+                }
+            }
+        }
+        return {};
     }
 
     HardwareRuntime::HardwareRuntime(QObject* parent)
         : QObject(parent)
           , m_registry(this)
-          , m_frameRouter(&m_clockService, this)
+          , m_frameRouter(this)
           , m_acquisitionEngine(&m_registry, this)
     {
         connect(&m_registry, &DeviceRegistry::changed,
@@ -165,6 +195,58 @@ namespace scopeone::core::internal
     {
         const HardwareProviderPtr provider = m_registry.providerForDevice(logicalId);
         return dynamic_cast<CameraProvider*>(provider.get());
+    }
+
+    DevicePropertyProvider* HardwareRuntime::propertyProviderForDevice(
+        const QString& logicalId) const
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(logicalId);
+        return dynamic_cast<DevicePropertyProvider*>(provider.get());
+    }
+
+    StageProvider* HardwareRuntime::stageProviderForDevice(const QString& logicalId) const
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(logicalId);
+        return dynamic_cast<StageProvider*>(provider.get());
+    }
+
+    ShutterProvider* HardwareRuntime::shutterProviderForDevice(const QString& logicalId) const
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(logicalId);
+        return dynamic_cast<ShutterProvider*>(provider.get());
+    }
+
+    StateProvider* HardwareRuntime::stateProviderForDevice(const QString& logicalId) const
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(logicalId);
+        return dynamic_cast<StateProvider*>(provider.get());
+    }
+
+    ConfigurationProvider* HardwareRuntime::configurationProviderForGroup(
+        const QString& groupName) const
+    {
+        const QString normalizedGroup = groupName.trimmed();
+        if (normalizedGroup.isEmpty())
+        {
+            return nullptr;
+        }
+        ConfigurationProvider* match = nullptr;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            auto* configurationProvider = dynamic_cast<ConfigurationProvider*>(provider.get());
+            if (!configurationProvider
+                || !configurationProvider->availableConfigGroups().contains(normalizedGroup))
+            {
+                continue;
+            }
+            if (match)
+            {
+                return nullptr;
+            }
+            match = configurationProvider;
+        }
+        return match;
     }
 
     QList<CameraProvider*> HardwareRuntime::cameraProviders() const
@@ -222,8 +304,32 @@ namespace scopeone::core::internal
             CameraProvider* provider = cameraProviderForDevice(target);
             return provider && provider->getExposure(target, exposureMs);
         }
-        const QList<CameraProvider*> providers = cameraProviders();
-        return !providers.isEmpty() && providers.first()->getExposure(QStringLiteral("All"), exposureMs);
+        bool found = false;
+        double commonExposureMs = 0.0;
+        for (const HardwareDeviceDescriptor& device : m_registry.devices())
+        {
+            if (device.kind != HardwareDeviceKind::Camera)
+            {
+                continue;
+            }
+            CameraProvider* provider = cameraProviderForDevice(device.logicalId);
+            double deviceExposureMs = 0.0;
+            if (!provider || !provider->getExposure(device.logicalId, deviceExposureMs))
+            {
+                return false;
+            }
+            if (found && !qFuzzyCompare(commonExposureMs + 1.0, deviceExposureMs + 1.0))
+            {
+                return false;
+            }
+            commonExposureMs = deviceExposureMs;
+            found = true;
+        }
+        if (found)
+        {
+            exposureMs = commonExposureMs;
+        }
+        return found;
     }
 
     bool HardwareRuntime::setExposure(const QString& cameraIdOrAll, double exposureMs)
@@ -245,7 +351,7 @@ namespace scopeone::core::internal
 
     QStringList HardwareRuntime::listProperties(const QString& cameraId)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->listProperties(cameraId) : QStringList{};
     }
 
@@ -253,7 +359,7 @@ namespace scopeone::core::internal
                                          const QString& name,
                                          bool fromCache)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->getProperty(cameraId, name, fromCache) : QString{};
     }
 
@@ -262,50 +368,50 @@ namespace scopeone::core::internal
                                       const QString& value,
                                       QString* errorMessage)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider && provider->setProperty(cameraId, name, value, errorMessage);
     }
 
     QString HardwareRuntime::getPropertyType(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->getPropertyType(cameraId, name) : QStringLiteral("Unknown");
     }
 
     bool HardwareRuntime::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return !provider || provider->isPropertyReadOnly(cameraId, name);
     }
 
     bool HardwareRuntime::isPropertyPreInit(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider && provider->isPropertyPreInit(cameraId, name);
     }
 
     QStringList HardwareRuntime::getAllowedPropertyValues(const QString& cameraId,
                                                           const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->getAllowedPropertyValues(cameraId, name) : QStringList{};
     }
 
     bool HardwareRuntime::hasPropertyLimits(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider && provider->hasPropertyLimits(cameraId, name);
     }
 
     double HardwareRuntime::getPropertyLowerLimit(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->getPropertyLowerLimit(cameraId, name) : 0.0;
     }
 
     double HardwareRuntime::getPropertyUpperLimit(const QString& cameraId, const QString& name)
     {
-        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        DevicePropertyProvider* provider = propertyProviderForDevice(cameraId);
         return provider ? provider->getPropertyUpperLimit(cameraId, name) : 0.0;
     }
 
@@ -343,9 +449,360 @@ namespace scopeone::core::internal
         return provider && provider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
+    void HardwareRuntime::setFrameDeliveryPaused(bool paused)
+    {
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            {
+                control->setFrameDeliveryPaused(paused);
+            }
+        }
+    }
+
+    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(bool enabled)
+    {
+        QList<CameraRuntimeControl*> changed;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            {
+                if (!control->setRecordingFrameDeliveryEnabled(enabled))
+                {
+                    for (CameraRuntimeControl* previous : changed)
+                    {
+                        previous->setRecordingFrameDeliveryEnabled(!enabled);
+                    }
+                    return false;
+                }
+                changed.append(control);
+            }
+        }
+        return true;
+    }
+
+    bool HardwareRuntime::setHighRateFrameDeliveryEnabled(bool enabled)
+    {
+        QList<CameraRuntimeControl*> changed;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            {
+                if (!control->setHighRateFrameDeliveryEnabled(enabled))
+                {
+                    for (CameraRuntimeControl* previous : changed)
+                    {
+                        previous->setHighRateFrameDeliveryEnabled(!enabled);
+                    }
+                    return false;
+                }
+                changed.append(control);
+            }
+        }
+        return true;
+    }
+
+    bool HardwareRuntime::isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token)
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(cameraId);
+        auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get());
+        return control && control->isProcessingFrameTokenCurrent(cameraId, token);
+    }
+
+    void HardwareRuntime::finishProcessingFrame(const QString& cameraId, quint64 token)
+    {
+        const HardwareProviderPtr provider = m_registry.providerForDevice(cameraId);
+        if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+        {
+            control->finishProcessingFrame(cameraId, token);
+        }
+    }
+
+    QString HardwareRuntime::defaultXYStage() const
+    {
+        QString match;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* stageProvider = dynamic_cast<StageProvider*>(provider.get()))
+            {
+                const QString deviceId = stageProvider->defaultXYStage().trimmed();
+                const HardwareDeviceDescriptor device = m_registry.device(deviceId);
+                if (device.providerId == descriptor.id
+                    && device.kind == HardwareDeviceKind::XYStage)
+                {
+                    if (!match.isEmpty() && match != deviceId)
+                    {
+                        return {};
+                    }
+                    match = deviceId;
+                }
+            }
+        }
+        return match;
+    }
+
+    QString HardwareRuntime::defaultZStage() const
+    {
+        QString match;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* stageProvider = dynamic_cast<StageProvider*>(provider.get()))
+            {
+                const QString deviceId = stageProvider->defaultZStage().trimmed();
+                const HardwareDeviceDescriptor device = m_registry.device(deviceId);
+                if (device.providerId == descriptor.id
+                    && device.kind == HardwareDeviceKind::ZStage)
+                {
+                    if (!match.isEmpty() && match != deviceId)
+                    {
+                        return {};
+                    }
+                    match = deviceId;
+                }
+            }
+        }
+        return match;
+    }
+
+    bool HardwareRuntime::getXYPosition(const QString& deviceId,
+                                        double& x,
+                                        double& y,
+                                        QString* errorMessage) const
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->getXYPosition(deviceId, x, y, errorMessage);
+    }
+
+    bool HardwareRuntime::getZPosition(const QString& deviceId,
+                                       double& z,
+                                       QString* errorMessage) const
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->getZPosition(deviceId, z, errorMessage);
+    }
+
+    bool HardwareRuntime::setRelativeXYPosition(const QString& deviceId,
+                                                double dx,
+                                                double dy,
+                                                QString* errorMessage)
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->setRelativeXYPosition(deviceId, dx, dy, errorMessage);
+    }
+
+    bool HardwareRuntime::setRelativeZPosition(const QString& deviceId,
+                                               double dz,
+                                               QString* errorMessage)
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->setRelativeZPosition(deviceId, dz, errorMessage);
+    }
+
+    bool HardwareRuntime::setXYPosition(const QString& deviceId,
+                                        double x,
+                                        double y,
+                                        QString* errorMessage)
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->setXYPosition(deviceId, x, y, errorMessage);
+    }
+
+    bool HardwareRuntime::setZPosition(const QString& deviceId,
+                                       double z,
+                                       QString* errorMessage)
+    {
+        StageProvider* provider = stageProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Stage provider not available");
+            }
+            return false;
+        }
+        return provider->setZPosition(deviceId, z, errorMessage);
+    }
+
+    bool HardwareRuntime::isShutterOpen(const QString& deviceId,
+                                        bool& open,
+                                        QString* errorMessage) const
+    {
+        ShutterProvider* provider = shutterProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Shutter provider not available");
+            }
+            return false;
+        }
+        return provider->isShutterOpen(deviceId, open, errorMessage);
+    }
+
+    bool HardwareRuntime::setShutterOpen(const QString& deviceId,
+                                         bool open,
+                                         QString* errorMessage)
+    {
+        ShutterProvider* provider = shutterProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Shutter provider not available");
+            }
+            return false;
+        }
+        return provider->setShutterOpen(deviceId, open, errorMessage);
+    }
+
+    bool HardwareRuntime::getState(const QString& deviceId,
+                                   long& state,
+                                   QString* errorMessage) const
+    {
+        StateProvider* provider = stateProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("State provider not available");
+            }
+            return false;
+        }
+        return provider->getState(deviceId, state, errorMessage);
+    }
+
+    bool HardwareRuntime::setState(const QString& deviceId,
+                                   long state,
+                                   QString* errorMessage)
+    {
+        StateProvider* provider = stateProviderForDevice(deviceId);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("State provider not available");
+            }
+            return false;
+        }
+        return provider->setState(deviceId, state, errorMessage);
+    }
+
+    QString HardwareRuntime::stateLabel(const QString& deviceId, long state) const
+    {
+        StateProvider* provider = stateProviderForDevice(deviceId);
+        return provider ? provider->stateLabel(deviceId, state) : QString{};
+    }
+
+    QStringList HardwareRuntime::availableConfigGroups() const
+    {
+        QHash<QString, int> groupCounts;
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* configurationProvider = dynamic_cast<ConfigurationProvider*>(provider.get()))
+            {
+                QSet<QString> providerGroups;
+                for (const QString& group : configurationProvider->availableConfigGroups())
+                {
+                    const QString normalizedGroup = group.trimmed();
+                    if (!normalizedGroup.isEmpty())
+                    {
+                        providerGroups.insert(normalizedGroup);
+                    }
+                }
+                for (const QString& group : providerGroups)
+                {
+                    ++groupCounts[group];
+                }
+            }
+        }
+        QStringList groups;
+        for (auto it = groupCounts.cbegin(); it != groupCounts.cend(); ++it)
+        {
+            if (it.value() == 1)
+            {
+                groups.append(it.key());
+            }
+        }
+        std::sort(groups.begin(), groups.end());
+        return groups;
+    }
+
+    QStringList HardwareRuntime::availableConfigs(const QString& groupName) const
+    {
+        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
+        return provider ? provider->availableConfigs(groupName) : QStringList{};
+    }
+
+    QString HardwareRuntime::currentConfig(const QString& groupName) const
+    {
+        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
+        return provider ? provider->currentConfig(groupName) : QString{};
+    }
+
+    bool HardwareRuntime::setConfig(const QString& groupName,
+                                    const QString& configName,
+                                    QString* errorMessage)
+    {
+        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
+        if (!provider)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Configuration provider not available");
+            }
+            return false;
+        }
+        return provider->setConfig(groupName, configName, errorMessage);
+    }
+
     void HardwareRuntime::clear()
     {
-        m_acquisitionEngine.reset();
         for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
         {
             const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
@@ -360,73 +817,49 @@ namespace scopeone::core::internal
 
     bool HardwareRuntime::registerProvider(const HardwareProviderPtr& provider)
     {
-        if (!provider || provider->descriptor().id.trimmed().isEmpty())
+        if (!provider)
         {
             return false;
         }
-        const HardwareProviderPtr previous = m_registry.provider(provider->descriptor().id);
+        const HardwareProviderDescriptor descriptor = provider->descriptor();
+        if (descriptor.id.trimmed().isEmpty())
+        {
+            return false;
+        }
+        const HardwareProviderPtr previous = m_registry.provider(descriptor.id);
+        if (previous && previous != provider)
+        {
+            return false;
+        }
         auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        auto* stageProvider = dynamic_cast<StageProvider*>(provider.get());
+        auto* shutterProvider = dynamic_cast<ShutterProvider*>(provider.get());
+        auto* stateProvider = dynamic_cast<StateProvider*>(provider.get());
+        const QList<HardwareDeviceDescriptor> providerDevices = provider->devices();
+        for (const HardwareDeviceDescriptor& device : providerDevices)
+        {
+            const bool supported =
+                (device.kind != HardwareDeviceKind::Camera || cameraProvider)
+                && ((device.kind != HardwareDeviceKind::XYStage
+                     && device.kind != HardwareDeviceKind::ZStage)
+                    || stageProvider)
+                && (device.kind != HardwareDeviceKind::Shutter || shutterProvider)
+                && (device.kind != HardwareDeviceKind::State || stateProvider);
+            if (!supported)
+            {
+                return false;
+            }
+        }
+        if (!m_registry.registerProvider(provider, descriptor, providerDevices))
+        {
+            return false;
+        }
         if (cameraProvider)
         {
             cameraProvider->setFrameSink([this](const ImageFrame& frame)
             {
                 m_frameRouter.publish(frame);
             });
-        }
-        const QList<HardwareDeviceDescriptor> providerDevices = provider->devices();
-        const bool providerHasCamera = std::any_of(
-            providerDevices.cbegin(),
-            providerDevices.cend(),
-            [](const HardwareDeviceDescriptor& device)
-            {
-                return device.kind == HardwareDeviceKind::Camera;
-            });
-        if (providerHasCamera)
-        {
-            m_acquisitionEngine.prepare();
-        }
-        if (!m_registry.registerProvider(provider))
-        {
-            if (cameraProvider && previous != provider)
-            {
-                cameraProvider->setFrameSink({});
-            }
-            const QList<HardwareDeviceDescriptor> registeredDevices = m_registry.devices();
-            const bool hasRegisteredCamera = std::any_of(
-                registeredDevices.cbegin(),
-                registeredDevices.cend(),
-                [](const HardwareDeviceDescriptor& device)
-                {
-                    return device.kind == HardwareDeviceKind::Camera;
-                });
-            if (!hasRegisteredCamera)
-            {
-                m_acquisitionEngine.reset();
-            }
-            return false;
-        }
-        if (previous && previous != provider)
-        {
-            if (auto* previousCameraProvider = dynamic_cast<CameraProvider*>(previous.get()))
-            {
-                previousCameraProvider->stopPreview();
-                previousCameraProvider->setFrameSink({});
-            }
-        }
-        if (!providerHasCamera)
-        {
-            const QList<HardwareDeviceDescriptor> registeredDevices = m_registry.devices();
-            const bool hasRegisteredCamera = std::any_of(
-                registeredDevices.cbegin(),
-                registeredDevices.cend(),
-                [](const HardwareDeviceDescriptor& device)
-                {
-                    return device.kind == HardwareDeviceKind::Camera;
-                });
-            if (!hasRegisteredCamera)
-            {
-                m_acquisitionEngine.reset();
-            }
         }
         return true;
     }
@@ -440,38 +873,11 @@ namespace scopeone::core::internal
             cameraProvider->setFrameSink({});
         }
         m_registry.unregisterProvider(providerId);
-        const QList<HardwareDeviceDescriptor> devices = m_registry.devices();
-        const bool hasCamera = std::any_of(
-            devices.cbegin(),
-            devices.cend(),
-            [](const HardwareDeviceDescriptor& device)
-            {
-                return device.kind == HardwareDeviceKind::Camera;
-            });
-        if (!hasCamera)
-        {
-            m_acquisitionEngine.reset();
-        }
     }
 
-    void HardwareRuntime::refreshProvider(const QString& providerId)
+    bool HardwareRuntime::refreshProvider(const QString& providerId)
     {
-        m_registry.refreshProvider(providerId);
-        const QList<HardwareDeviceDescriptor> devices = m_registry.devices();
-        const bool hasCamera = std::any_of(
-            devices.cbegin(),
-            devices.cend(),
-            [](const HardwareDeviceDescriptor& device)
-            {
-                return device.kind == HardwareDeviceKind::Camera;
-            });
-        if (hasCamera)
-        {
-            m_acquisitionEngine.prepare();
-        }
-        else
-        {
-            m_acquisitionEngine.reset();
-        }
+        const HardwareProviderPtr provider = m_registry.provider(providerId);
+        return provider && registerProvider(provider);
     }
 }

@@ -8,6 +8,7 @@
 #include "internal/GaussianBlurModule.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/FrameRouter.h"
+#include "internal/DriverHostProviderProxy.h"
 #include "internal/HardwareRuntime.h"
 #include "internal/MMCoreManager.h"
 #include "internal/MicroManagerProvider.h"
@@ -137,18 +138,6 @@ namespace
                 stats.autoMaxLevel = mid + 1;
             }
         }
-    }
-
-    // Convert MMCore string vectors into Qt string lists
-    QStringList toQStringList(const std::vector<std::string>& values)
-    {
-        QStringList out;
-        out.reserve(static_cast<int>(values.size()));
-        for (const auto& value : values)
-        {
-            out.append(QString::fromStdString(value));
-        }
-        return out;
     }
 
     // Build the cache key for raw and processed histogram layers
@@ -955,19 +944,61 @@ namespace scopeone::core
 
     bool ScopeOneCore::registerHardwareProvider(const HardwareProviderPtr& provider)
     {
+        const QString providerId = provider ? provider->descriptor().id.trimmed() : QString{};
         if (!provider
-            || provider->descriptor().id.trimmed().isEmpty()
+            || providerId.isEmpty()
+            || providerId == QStringLiteral("micro-manager")
+            || m_managers->hardwareRuntime->deviceRegistry()->provider(providerId)
             || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
             || isRecording())
         {
             return false;
         }
-        const bool registered = m_managers->hardwareRuntime->registerProvider(provider);
-        if (registered)
+        return m_managers->hardwareRuntime->registerProvider(provider);
+    }
+
+    bool ScopeOneCore::registerDriverHostProvider(const QString& providerId,
+                                                  const QString& modulePath,
+                                                  const QVariantMap& options,
+                                                  QString* errorMessage)
+    {
+        if (errorMessage) errorMessage->clear();
+        const QString normalizedId = providerId.trimmed();
+        if (normalizedId.isEmpty()
+            || normalizedId == QStringLiteral("micro-manager")
+            || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
+            || isRecording()
+            || m_managers->hardwareRuntime->deviceRegistry()->provider(normalizedId))
         {
-            synchronizeCameraIdsFromRegistry();
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Provider cannot be registered in the current state");
+            }
+            return false;
         }
-        return registered;
+
+        HardwareProviderPtr provider = internal::createDriverHostProviderProxy(
+            normalizedId,
+            modulePath,
+            QJsonObject::fromVariantMap(options),
+            errorMessage);
+        if (!provider)
+        {
+            return false;
+        }
+        if (!m_managers->hardwareRuntime->registerProvider(provider))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Provider device catalog conflicts with registered hardware");
+            }
+            return false;
+        }
+        return true;
     }
 
     bool ScopeOneCore::unregisterHardwareProvider(const QString& providerId)
@@ -976,6 +1007,8 @@ namespace scopeone::core
         if (normalizedId.isEmpty()
             || normalizedId == QStringLiteral("micro-manager")
             || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
             || isRecording())
         {
             return false;
@@ -985,7 +1018,6 @@ namespace scopeone::core
             return false;
         }
         m_managers->hardwareRuntime->unregisterProvider(normalizedId);
-        synchronizeCameraIdsFromRegistry();
         return true;
     }
 
@@ -1151,11 +1183,13 @@ namespace scopeone::core
                 this, &ScopeOneCore::syncLineProfileFromScene);
         m_managers->mmcoreManager = new MMCoreManager(this);
         m_managers->cameraManager = new CameraManager(this);
-        m_managers->cameraRuntimeControl = m_managers->cameraManager;
         m_managers->microManagerProvider =
-            std::make_shared<MicroManagerProvider>(m_managers->cameraManager);
+            std::make_shared<MicroManagerProvider>(m_managers->mmcoreManager->getCore(),
+                                                   m_managers->cameraManager,
+                                                   m_managers->cameraManager);
         m_managers->hardwareRuntime = new HardwareRuntime(this);
         m_managers->cameraProvider = m_managers->hardwareRuntime;
+        m_managers->cameraRuntimeControl = m_managers->hardwareRuntime;
         connect(m_managers->hardwareRuntime, &HardwareRuntime::devicesChanged,
                 this, [this]()
                 {
@@ -1169,8 +1203,8 @@ namespace scopeone::core
         m_managers->recordingWriterStatus.reset(
             m_managers->recordingManager->recordedMaxBytes());
         m_managers->recordingManager->setCameraProvider(m_managers->cameraProvider);
+        m_managers->recordingManager->setStageProvider(m_managers->hardwareRuntime);
         m_managers->recordingManager->setCameraRuntimeControl(m_managers->cameraRuntimeControl);
-        m_managers->recordingManager->setMMCore(m_managers->mmcoreManager->getCore());
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)
             {
@@ -1197,6 +1231,7 @@ namespace scopeone::core
                     {
                         return;
                     }
+                    emit rawFramesAcquired(frame.cameraId, 1);
                     submitProcessingFrame(frame);
                     m_managers->recordingManager->onRawFramesReady(QList<ImageFrame>{frame});
                 });
@@ -1222,19 +1257,14 @@ namespace scopeone::core
                 m_managers->recordingManager, &RecordingManager::onFrameDeliveryFailed);
         connect(m_managers->cameraManager, &CameraManager::previewStateChanged,
                 this, &ScopeOneCore::previewStateChanged);
-        connect(m_managers->cameraManager, &CameraManager::agentControlServerListening,
-                this, &ScopeOneCore::agentControlServerListening);
+        connect(m_managers->cameraManager, &CameraManager::driverHostControlServerListening,
+                this, &ScopeOneCore::driverHostControlServerListening);
 
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
                 this, [this](const ImageFrame& frame)
                 {
-                    m_managers->hardwareRuntime->frameRouter()->publish(frame);
-                    const HardwareDeviceDescriptor device =
-                        m_managers->hardwareRuntime->deviceRegistry()->device(frame.cameraId);
-                    if (device.providerId == QStringLiteral("micro-manager"))
-                    {
-                        submitProcessingFrame(frame);
-                    }
+                    handleIncomingRawFrame(frame);
+                    submitProcessingFrame(frame);
                 },
                 Qt::QueuedConnection);
 
@@ -1319,7 +1349,7 @@ namespace scopeone::core
                 this, &ScopeOneCore::handleProcessedFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingFrameFinished,
-                m_managers->cameraManager, &CameraManager::finishProcessingFrame,
+                m_managers->hardwareRuntime, &HardwareRuntime::finishProcessingFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
@@ -1365,32 +1395,6 @@ namespace scopeone::core
         return m_managers->mmcoreManager->getCore();
     }
 
-    // Check whether a device is owned by the active camera backend
-    bool ScopeOneCore::isConfiguredCamera(const QString& deviceLabel) const
-    {
-        return m_cameraIds.contains(deviceLabel);
-    }
-
-    // Check whether a device is a native MMCore camera
-    bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
-    {
-        const QString device = deviceLabel.trimmed();
-        if (m_configurationOperationRunning || device.isEmpty() || isConfiguredCamera(device))
-        {
-            return false;
-        }
-
-        auto handle = core();
-        try
-        {
-            return handle->getDeviceType(device.toStdString().c_str()) == MM::CameraDevice;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
-    }
-
     // Collect camera ids that currently have active previews
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
@@ -1414,7 +1418,10 @@ namespace scopeone::core
         {
             return overrideIt.value();
         }
-        if (!m_managers->cameraManager->usesAgentBackend()
+        const HardwareDeviceDescriptor device =
+            m_managers->hardwareRuntime->deviceRegistry()->device(camera);
+        if (device.providerId == QStringLiteral("micro-manager")
+            && !m_managers->cameraManager->usesDriverHostBackend()
             && m_cameraIds.size() == 1
             && m_cameraIds.first() == camera)
         {
@@ -1475,17 +1482,21 @@ namespace scopeone::core
     }
 
     // Applies a completed device load to the frame graph and public state
-    void ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
+    bool ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
                                                 const LoadConfigResult& result)
     {
+        m_managers->microManagerProvider->setDevices(result.devices);
+        if (!m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager")))
+        {
+            m_managers->microManagerProvider->setDevices({});
+            m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
+            return false;
+        }
         m_configurationFailedDevices = result.failedDevices;
         m_configurationError.clear();
         m_configurationState = result.failedDevices.isEmpty()
                                   ? ConfigurationState::Loaded
                                   : ConfigurationState::PartiallyLoaded;
-        m_managers->microManagerProvider->setDevices(result.devices);
-        m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
-        synchronizeCameraIdsFromRegistry();
         const QFileInfo configFile(configPath);
         m_loadedConfigPath = configPath.trimmed().isEmpty()
                                  ? QString()
@@ -1498,6 +1509,7 @@ namespace scopeone::core
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
         emit hardwareConfigurationChanged();
+        return true;
     }
 
     void ScopeOneCore::synchronizeCameraIdsFromRegistry()
@@ -1572,6 +1584,7 @@ namespace scopeone::core
     // Apply the configured hardware shutdown state before releasing devices
     void ScopeOneCore::applySystemShutdownPreset()
     {
+        m_managers->hardwareRuntime->stopPreview();
         auto handle = core();
         try
         {
@@ -1580,7 +1593,6 @@ namespace scopeone::core
             {
                 return;
             }
-            m_managers->cameraManager->stopPreview();
             setConfig(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown);
         }
         catch (const CMMError& error)
@@ -1599,10 +1611,9 @@ namespace scopeone::core
         const bool processingWasEnabled = isRealTimeProcessingEnabled();
         m_managers->imageProcessingManager->enableRealTimeProcessing(false);
         const QStringList cameraIds = m_cameraIds;
-        m_managers->hardwareRuntime->acquisitionEngine()->reset();
+        m_managers->hardwareRuntime->stopPreview();
         if (shutdownCameraBackend)
         {
-            m_managers->cameraManager->stopPreview();
             m_managers->cameraManager->shutdownNow();
         }
 
@@ -1624,7 +1635,6 @@ namespace scopeone::core
         m_imageSceneModel->reset();
         m_managers->microManagerProvider->setDevices(QList<HardwareDeviceDescriptor>{});
         m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
-        synchronizeCameraIdsFromRegistry();
         if (notify && processingWasEnabled)
         {
             emit processingSettingsChanged();
@@ -1720,8 +1730,27 @@ namespace scopeone::core
                     watcher->deleteLater();
                     return;
                 }
+                if (!applyLoadedConfiguration(path, result))
+                {
+                    const QString errorMessage =
+                        QStringLiteral("Micro-Manager device catalog conflicts with registered hardware");
+                    m_managers->cameraManager->shutdown(
+                        [this, result, errorMessage](const QString& shutdownError)
+                        {
+                            if (!shutdownError.isEmpty())
+                            {
+                                finishConfigurationLoadFailure(
+                                    result,
+                                    QStringLiteral("%1; camera cleanup failed: %2")
+                                        .arg(errorMessage, shutdownError));
+                                return;
+                            }
+                            startConfigurationLoadCleanupTask(result, errorMessage);
+                        });
+                    watcher->deleteLater();
+                    return;
+                }
                 m_configurationOperationRunning = false;
-                applyLoadedConfiguration(path, result);
                 emit configurationLoadFinished(true, result, {});
             }
             else
@@ -1895,7 +1924,15 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->hardwareRuntime->acquisitionEngine()->start(target);
+        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
+        const bool started = all
+                                 ? m_managers->hardwareRuntime->startPreview()
+                                 : m_managers->hardwareRuntime->startPreviewFor(target);
+        if (started)
+        {
+            emit previewStateChanged(true);
+        }
+        return started;
     }
 
     // Stop preview for one camera or the full camera set
@@ -1906,7 +1943,15 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->hardwareRuntime->acquisitionEngine()->stop(target);
+        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
+        const bool stopped = all
+                                 ? m_managers->hardwareRuntime->stopPreview()
+                                 : m_managers->hardwareRuntime->stopPreviewFor(target);
+        if (stopped)
+        {
+            emit previewStateChanged(!runningPreviewCameraIds().isEmpty());
+        }
+        return stopped;
     }
 
     // Submit exposure changes through the active camera manager
@@ -3008,15 +3053,15 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
+        QStringList devices;
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            return toQStringList(handle->getLoadedDevicesOfType(MM::XYStageDevice));
+            if (device.kind == HardwareDeviceKind::XYStage)
+            {
+                devices.append(device.logicalId);
+            }
         }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return devices;
     }
 
     QStringList ScopeOneCore::zStageDevices() const
@@ -3025,15 +3070,15 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
+        QStringList devices;
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            return toQStringList(handle->getLoadedDevicesOfType(MM::StageDevice));
+            if (device.kind == HardwareDeviceKind::ZStage)
+            {
+                devices.append(device.logicalId);
+            }
         }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return devices;
     }
 
     QString ScopeOneCore::currentXYStageDevice() const
@@ -3042,15 +3087,7 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            return QString::fromStdString(handle->getXYStageDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->defaultXYStage();
     }
 
     QString ScopeOneCore::currentFocusDevice() const
@@ -3059,64 +3096,38 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            return QString::fromStdString(handle->getFocusDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->defaultZStage();
     }
 
-    // Read the current XY stage position from MMCore
+    // Read the current XY stage position through its provider
     bool ScopeOneCore::readXYPosition(const QString& xyStageLabel, double& x, double& y) const
     {
         x = 0.0;
         y = 0.0;
         const QString label = xyStageLabel.trimmed();
-        auto handle = core();
         if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
-        try
-        {
-            handle->getXYPosition(label.toStdString().c_str(), x, y);
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->getXYPosition(label, x, y, nullptr);
     }
 
-    // Read the current Z stage position from MMCore
+    // Read the current Z stage position through its provider
     bool ScopeOneCore::readZPosition(const QString& zStageLabel, double& z) const
     {
         z = 0.0;
         const QString label = zStageLabel.trimmed();
-        auto handle = core();
         if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
-        try
-        {
-            z = handle->getPosition(label.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->getZPosition(label, z, nullptr);
     }
 
     // Queues one stage command on the serialized hardware worker
     quint64 ScopeOneCore::queueStageMove(
         const QString& deviceLabel,
-        std::function<void(CMMCore&, const char*)> command)
+        std::function<bool(QString*)> command)
     {
         const QString label = deviceLabel.trimmed();
         if (label.isEmpty()
@@ -3144,23 +3155,12 @@ namespace scopeone::core
             watcher->deleteLater();
         });
 
-        const auto handle = core();
         watcher->setFuture(QtConcurrent::run(
             m_hardwareThreadPool.get(),
-            [handle, label, command = std::move(command)]()
+            [command = std::move(command)]()
             {
                 StageTaskResult task;
-                try
-                {
-                    const std::string device = label.toStdString();
-                    command(*handle, device.c_str());
-                    handle->waitForDevice(device.c_str());
-                    task.success = true;
-                }
-                catch (const CMMError& error)
-                {
-                    task.errorMessage = QString::fromStdString(error.getMsg());
-                }
+                task.success = command(&task.errorMessage);
                 return task;
             }));
         return commandId;
@@ -3168,164 +3168,149 @@ namespace scopeone::core
 
     quint64 ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
-        return queueStageMove(xyStageLabel, [dx, dy](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = xyStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, dx, dy](QString* errorMessage)
         {
-            handle.setRelativeXYPosition(label, dx, dy);
+            return runtime->setRelativeXYPosition(device, dx, dy, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
-        return queueStageMove(zStageLabel, [dz](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = zStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, dz](QString* errorMessage)
         {
-            handle.setRelativePosition(label, dz);
+            return runtime->setRelativeZPosition(device, dz, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
-        return queueStageMove(xyStageLabel, [x, y](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = xyStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, x, y](QString* errorMessage)
         {
-            handle.setXYPosition(label, x, y);
+            return runtime->setXYPosition(device, x, y, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
     {
-        return queueStageMove(zStageLabel, [z](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = zStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, z](QString* errorMessage)
         {
-            handle.setPosition(label, z);
+            return runtime->setZPosition(device, z, errorMessage);
         });
     }
 
-    // List available Micro Manager configuration groups
+    bool ScopeOneCore::readShutterOpen(const QString& shutterLabel, bool& open) const
+    {
+        open = false;
+        const QString device = shutterLabel.trimmed();
+        return !m_configurationOperationRunning
+            && !device.isEmpty()
+            && m_managers->hardwareRuntime->isShutterOpen(device, open, nullptr);
+    }
+
+    bool ScopeOneCore::setShutterOpen(const QString& shutterLabel,
+                                      bool open,
+                                      QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        const QString device = shutterLabel.trimmed();
+        if (m_configurationOperationRunning || device.isEmpty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Invalid shutter target");
+            }
+            return false;
+        }
+        const bool ok = m_managers->hardwareRuntime->setShutterOpen(
+            device, open, errorMessage);
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
+    }
+
+    bool ScopeOneCore::readDeviceState(const QString& deviceLabel, long& state) const
+    {
+        state = 0;
+        const QString device = deviceLabel.trimmed();
+        return !m_configurationOperationRunning
+            && !device.isEmpty()
+            && m_managers->hardwareRuntime->getState(device, state, nullptr);
+    }
+
+    bool ScopeOneCore::setDeviceState(const QString& deviceLabel,
+                                      long state,
+                                      QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        const QString device = deviceLabel.trimmed();
+        if (m_configurationOperationRunning || device.isEmpty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Invalid state device target");
+            }
+            return false;
+        }
+        const bool ok = m_managers->hardwareRuntime->setState(device, state, errorMessage);
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
+    }
+
+    QString ScopeOneCore::deviceStateLabel(const QString& deviceLabel, long state) const
+    {
+        const QString device = deviceLabel.trimmed();
+        return !m_configurationOperationRunning && !device.isEmpty()
+                   ? m_managers->hardwareRuntime->stateLabel(device, state)
+                   : QString{};
+    }
+
+    // List configuration groups exposed by registered providers
     QStringList ScopeOneCore::availableConfigGroups() const
     {
         if (m_configurationOperationRunning)
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            const auto groups = handle->getAvailableConfigGroups();
-            QStringList result;
-            for (const auto& g : groups)
-            {
-                result.append(QString::fromStdString(g));
-            }
-            return result;
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->availableConfigGroups();
     }
 
-    // List presets in a Micro Manager configuration group
+    // List presets in a provider configuration group
     QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
     {
-        auto handle = core();
         if (m_configurationOperationRunning || configGroup.isEmpty())
         {
             return {};
         }
-        try
-        {
-            const auto configs = handle->getAvailableConfigs(configGroup.toStdString().c_str());
-            QStringList result;
-            for (const auto& c : configs)
-            {
-                result.append(QString::fromStdString(c));
-            }
-            return result;
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->availableConfigs(configGroup);
     }
 
     // Read the current preset for a configuration group
     QString ScopeOneCore::currentConfig(const QString& groupName) const
     {
-        auto handle = core();
         if (m_configurationOperationRunning || groupName.isEmpty())
         {
             return {};
         }
-        try
-        {
-            if (m_managers->cameraManager->usesAgentBackend())
-            {
-                const std::string group = groupName.toStdString();
-                const std::vector<std::string> configs = handle->getAvailableConfigs(group.c_str());
-                QHash<QString, QString> currentValues;
-                QSet<QString> failedProperties;
-                for (const std::string& config : configs)
-                {
-                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
-                    bool matches = true;
-                    for (size_t index = 0; index < preset.size(); ++index)
-                    {
-                        const PropertySetting setting = preset.getSetting(index);
-                        const QString device = QString::fromStdString(setting.getDeviceLabel());
-                        const QString property = QString::fromStdString(setting.getPropertyName());
-                        const QString key = device + QChar(0x1f) + property;
-                        if (!currentValues.contains(key) && !failedProperties.contains(key))
-                        {
-                            if (isConfiguredCamera(device))
-                            {
-                                const QString value = m_managers->cameraProvider->getProperty(
-                                    device, property, false);
-                                if (value.isNull())
-                                {
-                                    failedProperties.insert(key);
-                                }
-                                else
-                                {
-                                    currentValues.insert(key, value);
-                                }
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    currentValues.insert(
-                                        key,
-                                        QString::fromStdString(
-                                            handle->getProperty(
-                                                setting.getDeviceLabel().c_str(),
-                                                setting.getPropertyName().c_str())));
-                                }
-                                catch (const CMMError&)
-                                {
-                                    failedProperties.insert(key);
-                                }
-                            }
-                        }
-                        if (failedProperties.contains(key)
-                            || currentValues.value(key)
-                                   != QString::fromStdString(setting.getPropertyValue()))
-                        {
-                            matches = false;
-                            break;
-                        }
-                    }
-                    if (matches)
-                    {
-                        return QString::fromStdString(config);
-                    }
-                }
-                return {};
-            }
-            return QString::fromStdString(
-                handle->getCurrentConfig(groupName.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->currentConfig(groupName);
     }
 
     // Apply a configuration preset while camera previews are paused
@@ -3337,7 +3322,6 @@ namespace scopeone::core
         {
             errorMessage->clear();
         }
-        auto handle = core();
         if (m_configurationOperationRunning
             || m_pendingStageCommands > 0
             || groupName.isEmpty()
@@ -3363,106 +3347,9 @@ namespace scopeone::core
         const QStringList runningPreviewIds = runningPreviewCameraIds();
         const bool ok = withSuspendedPreviews(this, runningPreviewIds, [&]()
         {
-            try
-            {
-                const std::string group = groupName.toStdString();
-                const std::string config = configName.toStdString();
-                const bool agentMode = m_managers->cameraManager->usesAgentBackend();
-                if (!agentMode)
-                {
-                    handle->setConfig(group.c_str(), config.c_str());
-                }
-                else
-                {
-                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
-                    std::vector<PropertySetting> pending;
-                    pending.reserve(preset.size());
-                    for (size_t index = 0; index < preset.size(); ++index)
-                    {
-                        pending.push_back(preset.getSetting(index));
-                    }
-                    while (!pending.empty())
-                    {
-                        std::vector<PropertySetting> failed;
-                        QString failureDescription;
-                        for (const PropertySetting& setting : pending)
-                        {
-                            const QString device = QString::fromStdString(setting.getDeviceLabel());
-                            const QString property = QString::fromStdString(setting.getPropertyName());
-                            const QString value = QString::fromStdString(setting.getPropertyValue());
-                            if (isConfiguredCamera(device))
-                            {
-                                QString error;
-                                if (!m_managers->cameraProvider->setProperty(
-                                        device, property, value, &error))
-                                {
-                                    failed.push_back(setting);
-                                    failureDescription = QString("%1.%2 = %3: %4")
-                                        .arg(device, property, value, error);
-                                }
-                                continue;
-                            }
-                            try
-                            {
-                                handle->setProperty(setting.getDeviceLabel().c_str(),
-                                                    setting.getPropertyName().c_str(),
-                                                    setting.getPropertyValue().c_str());
-                            }
-                            catch (const CMMError& error)
-                            {
-                                failed.push_back(setting);
-                                failureDescription = QString("%1.%2 = %3: %4")
-                                    .arg(device,
-                                         property,
-                                         value,
-                                         QString::fromStdString(error.getMsg()));
-                            }
-                        }
-                        if (failed.empty())
-                        {
-                            break;
-                        }
-                        if (failed.size() == pending.size())
-                        {
-                            const QString message =
-                                QString("Failed to apply config preset %1 = %2 at %3")
-                                    .arg(groupName, configName, failureDescription);
-                            if (errorMessage)
-                            {
-                                *errorMessage = message;
-                            }
-                            qWarning().noquote()
-                                << message;
-                            return false;
-                        }
-                        pending = std::move(failed);
-                    }
-                }
-                if (agentMode)
-                {
-                    handle->waitForSystem();
-                }
-                else
-                {
-                    handle->waitForConfig(group.c_str(), config.c_str());
-                }
-                handle->updateSystemStateCache();
-                return true;
-            }
-            catch (const CMMError& error)
-            {
-                const QString message = QString("Failed to apply config preset %1 = %2: %3")
-                                            .arg(groupName,
-                                                 configName,
-                                                 QString::fromStdString(error.getMsg()));
-                if (errorMessage)
-                {
-                    *errorMessage = message;
-                }
-                qWarning().noquote()
-                    << message;
-                return false;
-            }
+            return m_managers->hardwareRuntime->setConfig(groupName,
+                                                          configName,
+                                                          errorMessage);
         });
         if (ok)
         {
@@ -3481,65 +3368,20 @@ namespace scopeone::core
             return false;
         }
 
-        QString resolvedTarget = target;
-        if (resolvedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-        {
-            if (m_cameraIds.isEmpty())
-            {
-                return false;
-            }
-            resolvedTarget = m_cameraIds.first();
-        }
-        if (m_cameraIds.contains(resolvedTarget)
-            && m_managers->cameraProvider->getExposure(resolvedTarget, exposureMs))
-        {
-            return true;
-        }
-
-        auto handle = core();
-        try
-        {
-            if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-            {
-                exposureMs = handle->getExposure();
-            }
-            else
-            {
-                exposureMs = handle->getExposure(target.toStdString().c_str());
-            }
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->cameraProvider->getExposure(target, exposureMs);
     }
 
-    // Merge native MMCore devices with agent camera labels
+    // List devices from the unified registry
     QStringList ScopeOneCore::loadedDevices() const
     {
         if (m_configurationOperationRunning)
         {
             return {};
         }
-        auto handle = core();
         QStringList devices;
-        try
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            devices = toQStringList(handle->getLoadedDevices());
-        }
-        catch (const CMMError&)
-        {
-            devices.clear();
-        }
-
-        // Agent cameras are not always loaded in the UI side MMCore instance
-        for (const QString& cameraId : m_cameraIds)
-        {
-            if (!devices.contains(cameraId))
-            {
-                devices.append(cameraId);
-            }
+            devices.append(device.logicalId);
         }
         return devices;
     }
@@ -3579,19 +3421,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->listProperties(device);
-        }
-        auto handle = core();
-        try
-        {
-            return toQStringList(handle->getDevicePropertyNames(device.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->listProperties(device);
     }
 
     // Read a property value from hardware or cache
@@ -3603,26 +3433,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->getProperty(device, property, fromCache);
-        }
-        auto handle = core();
-        try
-        {
-            if (fromCache)
-            {
-                return QString::fromStdString(
-                    handle->getPropertyFromCache(device.toStdString().c_str(),
-                                                 property.toStdString().c_str()));
-            }
-            return QString::fromStdString(
-                handle->getProperty(device.toStdString().c_str(), property.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->getProperty(device, property, fromCache);
     }
 
     // Convert backend property types into UI strings
@@ -3634,27 +3445,7 @@ namespace scopeone::core
         {
             return QStringLiteral("Unknown");
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->getPropertyType(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            const MM::PropertyType type = handle->getPropertyType(device.toStdString().c_str(),
-                                                                  property.toStdString().c_str());
-            switch (type)
-            {
-            case MM::String: return QStringLiteral("String");
-            case MM::Float: return QStringLiteral("Float");
-            case MM::Integer: return QStringLiteral("Integer");
-            default: return QStringLiteral("Unknown");
-            }
-        }
-        catch (const CMMError&)
-        {
-            return QStringLiteral("Unknown");
-        }
+        return m_managers->hardwareRuntime->getPropertyType(device, property);
     }
 
     // Check whether a property can be edited
@@ -3666,19 +3457,7 @@ namespace scopeone::core
         {
             return true;
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->isPropertyReadOnly(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return handle->isPropertyReadOnly(device.toStdString().c_str(), property.toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return true;
-        }
+        return m_managers->hardwareRuntime->isPropertyReadOnly(device, property);
     }
 
     // Check whether a property must be set before initialization
@@ -3690,19 +3469,7 @@ namespace scopeone::core
         {
             return false;
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->isPropertyPreInit(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return handle->isPropertyPreInit(device.toStdString().c_str(), property.toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->isPropertyPreInit(device, property);
     }
 
     // Return allowed values for enumerated properties
@@ -3714,20 +3481,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraProvider->getAllowedPropertyValues(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return toQStringList(
-                handle->getAllowedPropertyValues(device.toStdString().c_str(), property.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->getAllowedPropertyValues(device, property);
     }
 
     // Return numeric limits for range constrained properties
@@ -3745,32 +3499,13 @@ namespace scopeone::core
         {
             return false;
         }
-        if (isConfiguredCamera(device))
-        {
-            if (!m_managers->cameraProvider->hasPropertyLimits(device, property))
-            {
-                return false;
-            }
-            lower = m_managers->cameraProvider->getPropertyLowerLimit(device, property);
-            upper = m_managers->cameraProvider->getPropertyUpperLimit(device, property);
-            return true;
-        }
-
-        auto handle = core();
-        try
-        {
-            if (!handle->hasPropertyLimits(device.toStdString().c_str(), property.toStdString().c_str()))
-            {
-                return false;
-            }
-            lower = handle->getPropertyLowerLimit(device.toStdString().c_str(), property.toStdString().c_str());
-            upper = handle->getPropertyUpperLimit(device.toStdString().c_str(), property.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError&)
+        if (!m_managers->hardwareRuntime->hasPropertyLimits(device, property))
         {
             return false;
         }
+        lower = m_managers->hardwareRuntime->getPropertyLowerLimit(device, property);
+        upper = m_managers->hardwareRuntime->getPropertyUpperLimit(device, property);
+        return true;
     }
 
     // Set a property and refresh backend state after the device accepts it
@@ -3804,49 +3539,8 @@ namespace scopeone::core
             return false;
         }
 
-        if (isConfiguredCamera(device))
-        {
-            QString cameraError;
-            if (!m_managers->cameraProvider->setProperty(device, property, value, &cameraError))
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = cameraError.isEmpty()
-                                        ? QStringLiteral("Camera setProperty failed")
-                                        : cameraError;
-                }
-                return false;
-            }
-            emit deviceStateChanged();
-            return true;
-        }
-
-        auto handle = core();
-        const bool isCamera = isNativeCamera(device);
-        const QStringList runningPreviewIds = isCamera ? runningPreviewCameraIds() : QStringList{};
-        const auto applyProperty = [&]() -> bool
-        {
-            try
-            {
-                handle->setProperty(device.toStdString().c_str(),
-                                    property.toStdString().c_str(),
-                                    value.toStdString().c_str());
-                handle->waitForDevice(device.toStdString().c_str());
-                handle->updateSystemStateCache();
-                return true;
-            }
-            catch (const CMMError& e)
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QString::fromStdString(e.getMsg());
-                }
-                return false;
-            }
-        };
-        const bool ok = isCamera
-                            ? withSuspendedPreviews(this, runningPreviewIds, applyProperty)
-                            : applyProperty();
+        const bool ok = m_managers->hardwareRuntime->setProperty(
+            device, property, value, errorMessage);
         if (ok)
         {
             emit deviceStateChanged();

@@ -1,15 +1,13 @@
 #include "internal/MDAManager.h"
 
 #include "scopeone/CameraProvider.h"
-#include "MMCore.h"
-#include "scopeone/ClockService.h"
+#include "scopeone/HardwareCapabilities.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QThread>
 #include <algorithm>
 #include <future>
-#include <limits>
 #include <utility>
 #include <vector>
 
@@ -24,9 +22,8 @@ namespace scopeone::core::internal
     }
 
     // Creates the MDA manager and registers queued signal types
-    MDAManager::MDAManager(std::shared_ptr<CMMCore> core, QObject* parent)
+    MDAManager::MDAManager(QObject* parent)
         : QObject(parent)
-        , m_mmcore(std::move(core))
     {
         qRegisterMetaType<scopeone::core::internal::MDAOutput>("scopeone::core::internal::MDAOutput");
         m_threadPool.setMaxThreadCount(1);
@@ -42,6 +39,11 @@ namespace scopeone::core::internal
     void MDAManager::setCameraProvider(CameraProvider* cameraProvider)
     {
         m_cameraProvider = cameraProvider;
+    }
+
+    void MDAManager::setStageProvider(StageProvider* stageProvider)
+    {
+        m_stageProvider = stageProvider;
     }
 
     // Starts one immutable acquisition event sequence
@@ -89,10 +91,10 @@ namespace scopeone::core::internal
     // Executes a precomputed event sequence in order
     void MDAManager::runSequence(QList<AcquisitionEvent> events)
     {
-        if (!m_mmcore)
+        if (!m_cameraProvider)
         {
             m_running.store(false);
-            emit sequenceError(QStringLiteral("MMCore not available"));
+            emit sequenceError(QStringLiteral("Camera provider not available"));
             return;
         }
 
@@ -151,13 +153,8 @@ namespace scopeone::core::internal
     // Moves hardware into place before capture
     bool MDAManager::setupEvent(const AcquisitionEvent& event, QString* errorMessage)
     {
-        if (!m_mmcore)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
-        }
-
-        if (event.exposureMs > 0.0 && !setExposure(event.exposureMs, errorMessage))
+        if (event.exposureMs > 0.0
+            && !setExposure(event.cameraIds, event.exposureMs, errorMessage))
         {
             return false;
         }
@@ -170,122 +167,29 @@ namespace scopeone::core::internal
             return false;
         }
 
-        try
-        {
-            m_mmcore->waitForSystem();
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
-            return false;
-        }
         return true;
     }
 
     // Routes one event to the active capture implementation
     bool MDAManager::execEvent(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage)
     {
-        if (event.cameraIds.size() > 1)
+        if (!m_cameraProvider)
         {
-            if (!m_cameraProvider)
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("Camera provider not available");
-                return false;
-            }
-            return execEventMultiCamera(event, output, errorMessage);
-        }
-        return execEventSingleCamera(event, output, errorMessage);
-    }
-
-    // Captures one event through the native MMCore camera path
-    bool MDAManager::execEventSingleCamera(const AcquisitionEvent& event,
-                                           MDAOutput& output,
-                                           QString* errorMessage)
-    {
-        if (!m_mmcore)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            if (errorMessage) *errorMessage = QStringLiteral("Camera provider not available");
             return false;
         }
-
-        try
+        if (event.cameraIds.isEmpty())
         {
-            m_mmcore->snapImage();
-
-            const unsigned width = m_mmcore->getImageWidth();
-            const unsigned height = m_mmcore->getImageHeight();
-            const unsigned bytesPerPixel = m_mmcore->getBytesPerPixel();
-            if (bytesPerPixel != 1 && bytesPerPixel != 2)
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("Unsupported pixel format");
-                return false;
-            }
-
-            const qint64 stride = static_cast<qint64>(width) * bytesPerPixel;
-            const qint64 byteCount = stride * height;
-            if (width > static_cast<unsigned>((std::numeric_limits<int>::max)())
-                || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
-                || stride > (std::numeric_limits<int>::max)()
-                || byteCount <= 0
-                || byteCount > (std::numeric_limits<qsizetype>::max)())
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("Image frame is too large");
-                return false;
-            }
-
-            const unsigned char* ptr = static_cast<unsigned char*>(m_mmcore->getImage());
-            if (!ptr)
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("Empty image buffer");
-                return false;
-            }
-
-            ImageFrame frame;
-            frame.cameraId = event.cameraIds.isEmpty() ? QString() : event.cameraIds.first();
-            frame.width = static_cast<int>(width);
-            frame.height = static_cast<int>(height);
-            frame.stride = static_cast<int>(stride);
-            frame.pixelFormat = bytesPerPixel == 2 ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
-            frame.bitsPerSample = ImageFrame::normalizedBitsPerSample(
-                frame.pixelFormat,
-                static_cast<int>(m_mmcore->getImageBitDepth()));
-            frame.timestampNs = currentTimestampNs();
-            frame.clockStamp = scopeone::core::ClockService{}.now();
-            frame.sourceRoiWidth = frame.width;
-            frame.sourceRoiHeight = frame.height;
-            if (!frame.cameraId.isEmpty())
-            {
-                try
-                {
-                    m_mmcore->getROI(frame.cameraId.toStdString().c_str(),
-                                     frame.sourceRoiX,
-                                     frame.sourceRoiY,
-                                     frame.sourceRoiWidth,
-                                     frame.sourceRoiHeight);
-                }
-                catch (const CMMError&)
-                {
-                    frame.sourceRoiX = 0;
-                    frame.sourceRoiY = 0;
-                    frame.sourceRoiWidth = frame.width;
-                    frame.sourceRoiHeight = frame.height;
-                }
-            }
-            frame.bytes = QByteArray(reinterpret_cast<const char*>(ptr), static_cast<qsizetype>(byteCount));
-            output.frames.insert(frame.cameraId, frame);
-            return true;
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
+            if (errorMessage) *errorMessage = QStringLiteral("No camera selected for acquisition event");
             return false;
         }
+        return captureCameras(event, output, errorMessage);
     }
 
-    // Captures one event across active camera processes
-    bool MDAManager::execEventMultiCamera(const AcquisitionEvent& event,
-                                          MDAOutput& output,
-                                          QString* errorMessage)
+    // Captures one event across all selected camera providers
+    bool MDAManager::captureCameras(const AcquisitionEvent& event,
+                                    MDAOutput& output,
+                                    QString* errorMessage)
     {
         const int captureTimeoutMs = static_cast<int>((std::max)(1500.0, event.exposureMs * 4.0 + 500.0));
 
@@ -335,59 +239,61 @@ namespace scopeone::core::internal
     }
 
     // Applies exposure for the next event
-    bool MDAManager::setExposure(double exposureMs, QString* errorMessage)
+    bool MDAManager::setExposure(const QStringList& cameraIds,
+                                 double exposureMs,
+                                 QString* errorMessage)
     {
-        try
+        if (!m_cameraProvider || cameraIds.isEmpty())
         {
-            m_mmcore->setExposure(exposureMs);
-            return true;
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
+            if (errorMessage) *errorMessage = QStringLiteral("Camera provider not available");
             return false;
         }
+        for (const QString& cameraId : cameraIds)
+        {
+            if (!m_cameraProvider->setExposure(cameraId, exposureMs))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Failed to set exposure for camera: %1")
+                                        .arg(cameraId);
+                }
+                return false;
+            }
+        }
+        return true;
     }
 
     // Moves the active XY stage to an event position
     bool MDAManager::moveXY(double x, double y, QString* errorMessage)
     {
-        try
+        if (!m_stageProvider)
         {
-            const std::string stage = m_mmcore->getXYStageDevice();
-            if (stage.empty())
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("No XY stage device configured");
-                return false;
-            }
-            m_mmcore->setXYPosition(stage.c_str(), x, y);
-            return true;
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
+            if (errorMessage) *errorMessage = QStringLiteral("Stage provider not available");
             return false;
         }
+        const QString stage = m_stageProvider->defaultXYStage();
+        if (stage.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("No XY stage device configured");
+            return false;
+        }
+        return m_stageProvider->setXYPosition(stage, x, y, errorMessage);
     }
 
     // Moves the active focus device to an event position
     bool MDAManager::moveZ(double z, QString* errorMessage)
     {
-        try
+        if (!m_stageProvider)
         {
-            const std::string focus = m_mmcore->getFocusDevice();
-            if (focus.empty())
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("No focus device configured");
-                return false;
-            }
-            m_mmcore->setPosition(focus.c_str(), z);
-            return true;
-        }
-        catch (const CMMError& e)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(e.getMsg());
+            if (errorMessage) *errorMessage = QStringLiteral("Stage provider not available");
             return false;
         }
+        const QString focus = m_stageProvider->defaultZStage();
+        if (focus.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("No focus device configured");
+            return false;
+        }
+        return m_stageProvider->setZPosition(focus, z, errorMessage);
     }
 } // namespace scopeone::core::internal

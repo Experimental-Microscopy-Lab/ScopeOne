@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QMutex>
 #include <QRect>
 #include <QTimer>
 
@@ -17,7 +18,8 @@ namespace scopeone::core
     public:
         explicit SimulatorProvider(const QString& logicalCameraId = QStringLiteral("camera.simulator"),
                                    int width = 512,
-                                   int height = 512);
+                                   int height = 512,
+                                   const QString& providerId = {});
 
         HardwareProviderDescriptor descriptor() const override;
         QList<HardwareDeviceDescriptor> devices() const override;
@@ -70,5 +72,6 @@ namespace scopeone::core
         quint64 m_frameIndex{0};
         FrameSink m_frameSink;
         QTimer m_timer;
+        mutable QMutex m_mutex;
     };
 }

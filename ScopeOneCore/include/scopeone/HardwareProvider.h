@@ -9,10 +9,10 @@
 
 namespace scopeone::core
 {
-    class HardwareProvider
+    class SCOPEONE_CORE_EXPORT HardwareProvider
     {
     public:
-        virtual ~HardwareProvider() = default;
+        virtual ~HardwareProvider();
 
         virtual HardwareProviderDescriptor descriptor() const = 0;
         virtual QList<HardwareDeviceDescriptor> devices() const = 0;

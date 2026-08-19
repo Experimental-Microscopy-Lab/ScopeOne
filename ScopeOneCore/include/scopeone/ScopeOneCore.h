@@ -532,6 +532,10 @@ namespace scopeone::core
         QStringList cameraIds() const { return m_cameraIds; }
         QList<HardwareDeviceDescriptor> hardwareDevices() const;
         bool registerHardwareProvider(const HardwareProviderPtr& provider);
+        bool registerDriverHostProvider(const QString& providerId,
+                                        const QString& modulePath,
+                                        const QVariantMap& options = {},
+                                        QString* errorMessage = nullptr);
         bool unregisterHardwareProvider(const QString& providerId);
         QStringList runningPreviewCameraIds() const;
         double cameraPixelSizeUm(const QString& cameraId) const;
@@ -592,6 +596,15 @@ namespace scopeone::core
         quint64 moveZRelative(const QString& zStageLabel, double dz);
         quint64 moveXYTo(const QString& xyStageLabel, double x, double y);
         quint64 moveZTo(const QString& zStageLabel, double z);
+        bool readShutterOpen(const QString& shutterLabel, bool& open) const;
+        bool setShutterOpen(const QString& shutterLabel,
+                            bool open,
+                            QString* errorMessage = nullptr);
+        bool readDeviceState(const QString& deviceLabel, long& state) const;
+        bool setDeviceState(const QString& deviceLabel,
+                            long state,
+                            QString* errorMessage = nullptr);
+        QString deviceStateLabel(const QString& deviceLabel, long state) const;
         bool readExposure(const QString& cameraIdOrAll, double& exposureMs) const;
 
         QStringList availableConfigGroups() const;
@@ -683,7 +696,7 @@ namespace scopeone::core
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
-        void agentControlServerListening(const QString& cameraId, const QString& serverName);
+        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
         void processedFrameReady(const ImageFrame& frame);
         void processedFramesCompleted(const QString& cameraId, quint64 frameCount);
         void previewProcessedFrameReady(const ImageFrame& frame);
@@ -786,7 +799,7 @@ namespace scopeone::core
 
         void unloadConfigurationForShutdown();
         void applySystemShutdownPreset();
-        void applyLoadedConfiguration(const QString& configPath,
+        bool applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
         void synchronizeCameraIdsFromRegistry();
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
@@ -798,10 +811,8 @@ namespace scopeone::core
         void startConfigurationUnloadTask();
         quint64 queueStageMove(
             const QString& deviceLabel,
-            std::function<void(CMMCore&, const char*)> command);
+            std::function<bool(QString*)> command);
         std::shared_ptr<CMMCore> core() const;
-        bool isConfiguredCamera(const QString& deviceLabel) const;
-        bool isNativeCamera(const QString& deviceLabel) const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void ensureSceneLayer(const QString& layerKey,
                               const QString& sourceId,

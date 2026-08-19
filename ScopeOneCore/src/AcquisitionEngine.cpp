@@ -3,8 +3,6 @@
 #include "scopeone/CameraProvider.h"
 #include "internal/HardwareRuntime.h"
 
-#include <QSet>
-
 namespace scopeone::core::internal
 {
     AcquisitionEngine::AcquisitionEngine(DeviceRegistry* deviceRegistry, QObject* parent)
@@ -13,19 +11,9 @@ namespace scopeone::core::internal
     {
     }
 
-    void AcquisitionEngine::prepare()
-    {
-        m_state = State::Prepared;
-    }
-
-    void AcquisitionEngine::reset()
-    {
-        m_state = State::Idle;
-    }
-
     bool AcquisitionEngine::start(const QString& cameraIdOrAll)
     {
-        if (!m_deviceRegistry || m_state == State::Idle)
+        if (!m_deviceRegistry)
         {
             return false;
         }
@@ -34,67 +22,14 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        bool started = false;
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
-            QList<CameraProvider*> startedProviders;
-            QSet<CameraProvider*> visited;
-            started = true;
-            for (const HardwareDeviceDescriptor& device : m_deviceRegistry->devices())
+            struct StartedCamera
             {
-                if (device.kind != HardwareDeviceKind::Camera)
-                {
-                    continue;
-                }
-                const HardwareProviderPtr provider = m_deviceRegistry->provider(device.providerId);
-                auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-                if (!cameraProvider || visited.contains(cameraProvider))
-                {
-                    continue;
-                }
-                visited.insert(cameraProvider);
-                if (!cameraProvider->startPreview())
-                {
-                    started = false;
-                    for (CameraProvider* activeProvider : startedProviders)
-                    {
-                        activeProvider->stopPreview();
-                    }
-                    break;
-                }
-                startedProviders.append(cameraProvider);
-            }
-            started = started && !startedProviders.isEmpty();
-        }
-        else
-        {
-            const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
-            auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-            started = cameraProvider && cameraProvider->startPreviewFor(target);
-        }
-        if (started)
-        {
-            m_state = State::Running;
-        }
-        return started;
-    }
-
-    bool AcquisitionEngine::stop(const QString& cameraIdOrAll)
-    {
-        if (!m_deviceRegistry || m_state == State::Idle)
-        {
-            return false;
-        }
-        const QString target = cameraIdOrAll.trimmed();
-        if (target.isEmpty())
-        {
-            return false;
-        }
-        bool stopped = false;
-        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-        {
-            QSet<CameraProvider*> visited;
-            stopped = true;
+                CameraProvider* provider;
+                QString cameraId;
+            };
+            QList<StartedCamera> startedCameras;
             bool found = false;
             for (const HardwareDeviceDescriptor& device : m_deviceRegistry->devices())
             {
@@ -102,28 +37,76 @@ namespace scopeone::core::internal
                 {
                     continue;
                 }
+                found = true;
                 const HardwareProviderPtr provider = m_deviceRegistry->provider(device.providerId);
                 auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-                if (!cameraProvider || visited.contains(cameraProvider))
+                if (!cameraProvider)
+                {
+                    for (auto it = startedCameras.crbegin(); it != startedCameras.crend(); ++it)
+                    {
+                        it->provider->stopPreviewFor(it->cameraId);
+                    }
+                    return false;
+                }
+                if (cameraProvider->isPreviewRunning(device.logicalId))
+                {
+                    continue;
+                }
+                if (!cameraProvider->startPreviewFor(device.logicalId))
+                {
+                    for (auto it = startedCameras.crbegin(); it != startedCameras.crend(); ++it)
+                    {
+                        it->provider->stopPreviewFor(it->cameraId);
+                    }
+                    return false;
+                }
+                startedCameras.append({cameraProvider, device.logicalId});
+            }
+            return found;
+        }
+        const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
+        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        return cameraProvider && cameraProvider->startPreviewFor(target);
+    }
+
+    bool AcquisitionEngine::stop(const QString& cameraIdOrAll)
+    {
+        if (!m_deviceRegistry)
+        {
+            return false;
+        }
+        const QString target = cameraIdOrAll.trimmed();
+        if (target.isEmpty())
+        {
+            return false;
+        }
+        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        {
+            bool found = false;
+            bool stopped = true;
+            for (const HardwareDeviceDescriptor& device : m_deviceRegistry->devices())
+            {
+                if (device.kind != HardwareDeviceKind::Camera)
                 {
                     continue;
                 }
                 found = true;
-                visited.insert(cameraProvider);
-                stopped = cameraProvider->stopPreview() && stopped;
+                const HardwareProviderPtr provider = m_deviceRegistry->provider(device.providerId);
+                auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+                if (!cameraProvider)
+                {
+                    stopped = false;
+                    continue;
+                }
+                if (cameraProvider->isPreviewRunning(device.logicalId))
+                {
+                    stopped = cameraProvider->stopPreviewFor(device.logicalId) && stopped;
+                }
             }
-            stopped = found && stopped;
+            return found && stopped;
         }
-        else
-        {
-            const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
-            auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-            stopped = cameraProvider && cameraProvider->stopPreviewFor(target);
-        }
-        if (stopped && target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-        {
-            m_state = State::Prepared;
-        }
-        return stopped;
+        const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
+        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        return cameraProvider && cameraProvider->stopPreviewFor(target);
     }
 }

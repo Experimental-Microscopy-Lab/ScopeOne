@@ -1,8 +1,8 @@
 #include "scopeone/SimulatorProvider.h"
 
-#include "scopeone/ClockService.h"
-
 #include <QDateTime>
+#include <QMutexLocker>
+#include <QThread>
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
@@ -10,9 +10,14 @@
 
 namespace scopeone::core
 {
-    SimulatorProvider::SimulatorProvider(const QString& logicalCameraId, int width, int height)
-        : m_providerId(QStringLiteral("simulator.%1").arg(
-              QUuid::createUuid().toString(QUuid::WithoutBraces)))
+    SimulatorProvider::SimulatorProvider(const QString& logicalCameraId,
+                                         int width,
+                                         int height,
+                                         const QString& providerId)
+        : m_providerId(providerId.trimmed().isEmpty()
+                           ? QStringLiteral("simulator.%1").arg(
+                                 QUuid::createUuid().toString(QUuid::WithoutBraces))
+                           : providerId.trimmed())
           , m_cameraId(logicalCameraId.trimmed().isEmpty()
                            ? QStringLiteral("camera.simulator")
                            : logicalCameraId.trimmed())
@@ -24,10 +29,12 @@ namespace scopeone::core
         updateTimerInterval();
         connect(&m_timer, &QTimer::timeout, this, [this]()
         {
-            if (m_frameSink)
+            FrameSink sink;
             {
-                m_frameSink(makeFrame());
+                QMutexLocker locker(&m_mutex);
+                sink = m_frameSink;
             }
+            if (sink) sink(makeFrame());
         });
     }
 
@@ -52,14 +59,15 @@ namespace scopeone::core
 
     void SimulatorProvider::setFrameSink(FrameSink sink)
     {
+        QMutexLocker locker(&m_mutex);
         m_frameSink = std::move(sink);
     }
 
     bool SimulatorProvider::startPreview()
     {
-        if (!m_frameSink)
         {
-            return false;
+            QMutexLocker locker(&m_mutex);
+            if (!m_frameSink) return false;
         }
         m_timer.start();
         return true;
@@ -92,6 +100,7 @@ namespace scopeone::core
         {
             return false;
         }
+        QMutexLocker locker(&m_mutex);
         exposureMs = m_exposureMs;
         return true;
     }
@@ -102,8 +111,20 @@ namespace scopeone::core
         {
             return false;
         }
-        m_exposureMs = exposureMs;
-        updateTimerInterval();
+        {
+            QMutexLocker locker(&m_mutex);
+            m_exposureMs = exposureMs;
+        }
+        if (QThread::currentThread() == thread())
+        {
+            updateTimerInterval();
+        }
+        else
+        {
+            QMetaObject::invokeMethod(this,
+                                      [this]() { updateTimerInterval(); },
+                                      Qt::QueuedConnection);
+        }
         return true;
     }
 
@@ -126,6 +147,7 @@ namespace scopeone::core
         }
         if (name == QStringLiteral("Exposure"))
         {
+            QMutexLocker locker(&m_mutex);
             return QString::number(m_exposureMs, 'g', 12);
         }
         if (name == QStringLiteral("SensorWidth"))
@@ -220,6 +242,7 @@ namespace scopeone::core
         {
             return false;
         }
+        QMutexLocker locker(&m_mutex);
         m_roi = roi;
         return true;
     }
@@ -230,6 +253,7 @@ namespace scopeone::core
         {
             return false;
         }
+        QMutexLocker locker(&m_mutex);
         m_roi = QRect(0, 0, m_sensorWidth, m_sensorHeight);
         return true;
     }
@@ -244,6 +268,7 @@ namespace scopeone::core
         {
             return false;
         }
+        QMutexLocker locker(&m_mutex);
         x = m_roi.x();
         y = m_roi.y();
         width = m_roi.width();
@@ -272,6 +297,7 @@ namespace scopeone::core
 
     ImageFrame SimulatorProvider::makeFrame()
     {
+        QMutexLocker locker(&m_mutex);
         ImageFrame frame;
         frame.cameraId = m_cameraId;
         frame.width = m_roi.width();
@@ -281,7 +307,6 @@ namespace scopeone::core
         frame.pixelFormat = ImagePixelFormat::Mono8;
         frame.frameIndex = ++m_frameIndex;
         frame.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-        frame.clockStamp = ClockService{}.now();
         frame.sourceRoiX = m_roi.x();
         frame.sourceRoiY = m_roi.y();
         frame.sourceRoiWidth = m_roi.width();
@@ -301,6 +326,11 @@ namespace scopeone::core
 
     void SimulatorProvider::updateTimerInterval()
     {
-        m_timer.setInterval((std::max)(1, static_cast<int>(std::ceil(m_exposureMs))));
+        double exposureMs = 0.0;
+        {
+            QMutexLocker locker(&m_mutex);
+            exposureMs = m_exposureMs;
+        }
+        m_timer.setInterval((std::max)(1, static_cast<int>(std::ceil(exposureMs))));
     }
 }

@@ -3,14 +3,15 @@
 #include <QObject>
 #include <QHash>
 #include <QList>
+#include <QReadWriteLock>
 #include <QString>
 
 #include <memory>
 
 #include "scopeone/HardwareProvider.h"
-#include "scopeone/ClockService.h"
 #include "scopeone/CameraProvider.h"
 #include "internal/AcquisitionEngine.h"
+#include "internal/CameraRuntimeControl.h"
 #include "internal/FrameRouter.h"
 
 namespace scopeone::core::internal
@@ -23,9 +24,10 @@ namespace scopeone::core::internal
         explicit DeviceRegistry(QObject* parent = nullptr);
 
         void clear();
-        bool registerProvider(const HardwareProviderPtr& provider);
+        bool registerProvider(const HardwareProviderPtr& provider,
+                              const HardwareProviderDescriptor& descriptor,
+                              const QList<HardwareDeviceDescriptor>& devices);
         void unregisterProvider(const QString& providerId);
-        void refreshProvider(const QString& providerId);
         QList<HardwareProviderDescriptor> providers() const;
         QList<HardwareDeviceDescriptor> devices() const;
         HardwareDeviceDescriptor device(const QString& logicalId) const;
@@ -39,13 +41,21 @@ namespace scopeone::core::internal
         struct ProviderEntry
         {
             HardwareProviderPtr provider;
+            HardwareProviderDescriptor descriptor;
             QList<HardwareDeviceDescriptor> devices;
         };
 
+        mutable QReadWriteLock m_lock;
         QHash<QString, ProviderEntry> m_providers;
     };
 
-    class HardwareRuntime : public QObject, public CameraProvider
+    class HardwareRuntime : public QObject,
+                            public CameraProvider,
+                            public StageProvider,
+                            public ShutterProvider,
+                            public StateProvider,
+                            public ConfigurationProvider,
+                            public CameraRuntimeControl
     {
         Q_OBJECT
 
@@ -86,26 +96,75 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                ImageFrame& frame,
                                int timeoutMs) override;
+        void setFrameDeliveryPaused(bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(bool enabled) override;
+        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
+        void finishProcessingFrame(const QString& cameraId, quint64 token) override;
+        QString defaultXYStage() const override;
+        QString defaultZStage() const override;
+        bool getXYPosition(const QString& deviceId,
+                           double& x,
+                           double& y,
+                           QString* errorMessage) const override;
+        bool getZPosition(const QString& deviceId,
+                          double& z,
+                          QString* errorMessage) const override;
+        bool setRelativeXYPosition(const QString& deviceId,
+                                   double dx,
+                                   double dy,
+                                   QString* errorMessage) override;
+        bool setRelativeZPosition(const QString& deviceId,
+                                  double dz,
+                                  QString* errorMessage) override;
+        bool setXYPosition(const QString& deviceId,
+                           double x,
+                           double y,
+                           QString* errorMessage) override;
+        bool setZPosition(const QString& deviceId,
+                          double z,
+                          QString* errorMessage) override;
+        bool isShutterOpen(const QString& deviceId,
+                           bool& open,
+                           QString* errorMessage) const override;
+        bool setShutterOpen(const QString& deviceId,
+                            bool open,
+                            QString* errorMessage) override;
+        bool getState(const QString& deviceId,
+                      long& state,
+                      QString* errorMessage) const override;
+        bool setState(const QString& deviceId,
+                      long state,
+                      QString* errorMessage) override;
+        QString stateLabel(const QString& deviceId, long state) const override;
+        QStringList availableConfigGroups() const override;
+        QStringList availableConfigs(const QString& groupName) const override;
+        QString currentConfig(const QString& groupName) const override;
+        bool setConfig(const QString& groupName,
+                       const QString& configName,
+                       QString* errorMessage) override;
 
         DeviceRegistry* deviceRegistry() { return &m_registry; }
         const DeviceRegistry* deviceRegistry() const { return &m_registry; }
-        AcquisitionEngine* acquisitionEngine() { return &m_acquisitionEngine; }
-        ClockService* clockService() { return &m_clockService; }
         FrameRouter* frameRouter() { return &m_frameRouter; }
         void clear();
         bool registerProvider(const HardwareProviderPtr& provider);
         void unregisterProvider(const QString& providerId);
-        void refreshProvider(const QString& providerId);
+        bool refreshProvider(const QString& providerId);
 
     signals:
         void devicesChanged();
 
     private:
         CameraProvider* cameraProviderForDevice(const QString& logicalId) const;
+        DevicePropertyProvider* propertyProviderForDevice(const QString& logicalId) const;
+        StageProvider* stageProviderForDevice(const QString& logicalId) const;
+        ShutterProvider* shutterProviderForDevice(const QString& logicalId) const;
+        StateProvider* stateProviderForDevice(const QString& logicalId) const;
+        ConfigurationProvider* configurationProviderForGroup(const QString& groupName) const;
         QList<CameraProvider*> cameraProviders() const;
 
         DeviceRegistry m_registry;
-        ClockService m_clockService;
         FrameRouter m_frameRouter;
         AcquisitionEngine m_acquisitionEngine;
         FrameSink m_frameSink;

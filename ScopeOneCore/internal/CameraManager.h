@@ -29,7 +29,7 @@ namespace scopeone::core::internal
         bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                    const QString& cameraId,
                                    double exposureMs = 0.0);
-        bool addAgentCamera(const QString& cameraId,
+        bool addDriverHostCamera(const QString& cameraId,
                             const QString& adapter,
                             const QString& device,
                             const QStringList& preInitProperties = QStringList(),
@@ -40,7 +40,7 @@ namespace scopeone::core::internal
 
         bool startPreview() override;
         bool stopPreview() override;
-        bool usesAgentBackend() const;
+        bool usesDriverHostBackend() const;
         bool startPreviewFor(const QString& cameraId) override;
         bool stopPreviewFor(const QString& cameraId) override;
         bool isPreviewRunning(const QString& cameraId) const override;
@@ -76,13 +76,12 @@ namespace scopeone::core::internal
                                int timeoutMs = 1500) override;
 
     signals:
-        void newRawFrameReady(const scopeone::core::ImageFrame& frame);
         void processingFrameReady(const scopeone::core::ImageFrame& frame, quint64 token);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
         void previewStateChanged(bool running);
-        void agentControlServerListening(const QString& cameraId, const QString& serverName);
+        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
 
     private:
         bool activateBackend(CameraBackend::Kind kind);
