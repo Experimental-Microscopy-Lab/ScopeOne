@@ -189,71 +189,9 @@ namespace scopeone::ui
             return object;
         }
 
-        QString processingModuleApiKindName(scopeone::core::ScopeOneCore::ProcessingModuleKind kind)
+        QString processingModuleIdFromJson(const QJsonValue& value)
         {
-            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
-            switch (kind)
-            {
-            case ProcessingModuleKind::FFT:
-                return QStringLiteral("fft");
-            case ProcessingModuleKind::BackgroundCalibration:
-                return QStringLiteral("background_calibration");
-            case ProcessingModuleKind::SpatiotemporalBinning:
-                return QStringLiteral("spatiotemporal_binning");
-            case ProcessingModuleKind::GaussianBlur:
-                return QStringLiteral("gaussian_blur");
-            case ProcessingModuleKind::DifferentialRolling:
-                return QStringLiteral("differential_rolling");
-            case ProcessingModuleKind::Unknown:
-                return QStringLiteral("unknown");
-            }
-            return QStringLiteral("unknown");
-        }
-
-        scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKindFromJson(const QJsonValue& value)
-        {
-            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
-            if (value.isDouble())
-            {
-                const int kind = value.toInt(static_cast<int>(ProcessingModuleKind::Unknown));
-                switch (static_cast<ProcessingModuleKind>(kind))
-                {
-                case ProcessingModuleKind::FFT:
-                case ProcessingModuleKind::BackgroundCalibration:
-                case ProcessingModuleKind::SpatiotemporalBinning:
-                case ProcessingModuleKind::GaussianBlur:
-                case ProcessingModuleKind::DifferentialRolling:
-                    return static_cast<ProcessingModuleKind>(kind);
-                case ProcessingModuleKind::Unknown:
-                    return ProcessingModuleKind::Unknown;
-                }
-            }
-
-            QString name = value.toString().trimmed().toLower();
-            name.remove(QLatin1Char('_'));
-            name.remove(QLatin1Char('-'));
-            name.remove(QLatin1Char(' '));
-            if (name == QStringLiteral("fft"))
-            {
-                return ProcessingModuleKind::FFT;
-            }
-            if (name == QStringLiteral("backgroundcalibration") || name == QStringLiteral("background"))
-            {
-                return ProcessingModuleKind::BackgroundCalibration;
-            }
-            if (name == QStringLiteral("spatiotemporalbinning") || name == QStringLiteral("binning"))
-            {
-                return ProcessingModuleKind::SpatiotemporalBinning;
-            }
-            if (name == QStringLiteral("gaussianblur") || name == QStringLiteral("blur"))
-            {
-                return ProcessingModuleKind::GaussianBlur;
-            }
-            if (name == QStringLiteral("differentialrolling") || name == QStringLiteral("rolling"))
-            {
-                return ProcessingModuleKind::DifferentialRolling;
-            }
-            return ProcessingModuleKind::Unknown;
+            return value.isString() ? value.toString().trimmed() : QString{};
         }
 
         QJsonObject processingModuleToJson(
@@ -262,10 +200,32 @@ namespace scopeone::ui
         {
             QJsonObject object;
             object.insert(QStringLiteral("index"), index);
-            object.insert(QStringLiteral("kind"), processingModuleApiKindName(info.kind()));
-            object.insert(QStringLiteral("kindValue"), static_cast<int>(info.kind()));
+            object.insert(QStringLiteral("kind"), info.id());
             object.insert(QStringLiteral("name"), info.name());
             object.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(info.parameters()));
+            return object;
+        }
+
+        QJsonObject processingModuleDescriptorToJson(
+            const scopeone::core::ProcessingModuleDescriptor& descriptor)
+        {
+            QJsonObject object;
+            object.insert(QStringLiteral("id"), descriptor.id);
+            object.insert(QStringLiteral("name"), descriptor.name);
+            object.insert(QStringLiteral("schemaVersion"), descriptor.schemaVersion);
+            QJsonArray parameters;
+            for (const auto& parameter : descriptor.parameters)
+            {
+                QJsonObject item;
+                item.insert(QStringLiteral("key"), parameter.key);
+                item.insert(QStringLiteral("name"), parameter.name);
+                item.insert(QStringLiteral("type"), static_cast<int>(parameter.type));
+                item.insert(QStringLiteral("default"), QJsonValue::fromVariant(parameter.defaultValue));
+                item.insert(QStringLiteral("minimum"), QJsonValue::fromVariant(parameter.minimum));
+                item.insert(QStringLiteral("maximum"), QJsonValue::fromVariant(parameter.maximum));
+                parameters.append(item);
+            }
+            object.insert(QStringLiteral("parameters"), parameters);
             return object;
         }
 
@@ -3458,7 +3418,15 @@ namespace scopeone::ui
                             static_cast<int>(m_scopeonecore->processingBitDepth()));
             response.insert(QStringLiteral("realTime"),
                             m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("realTimeSource"),
+                            m_scopeonecore->realTimeProcessingSource());
             response.insert(QStringLiteral("modules"), processingModulesToJson(modules));
+            QJsonArray availableModules;
+            for (const auto& descriptor : m_scopeonecore->availableProcessingModules())
+            {
+                availableModules.append(processingModuleDescriptorToJson(descriptor));
+            }
+            response.insert(QStringLiteral("availableModules"), availableModules);
             return response;
         }
 
@@ -3491,6 +3459,15 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_realtime_processing"))
         {
             const bool enabled = request.value(QStringLiteral("enabled")).toBool(false);
+            if (enabled && request.contains(QStringLiteral("cameraId"))
+                && !m_scopeonecore->setRealTimeProcessingSource(
+                    request.value(QStringLiteral("cameraId")).toString()))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Unknown processing source or processing is already running"));
+                return response;
+            }
             if (!m_scopeonecore->setRealTimeProcessingEnabled(enabled))
             {
                 QJsonObject response = makeResponse(type, false);
@@ -3502,19 +3479,21 @@ namespace scopeone::ui
             }
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("realTime"), m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("realTimeSource"),
+                            m_scopeonecore->realTimeProcessingSource());
             return response;
         }
 
         if (type == QStringLiteral("add_processing_module"))
         {
-            const auto kind = processingModuleKindFromJson(request.value(QStringLiteral("kind")));
+            const QString moduleId = processingModuleIdFromJson(request.value(QStringLiteral("kind")));
             QJsonObject response = makeResponse(type, false);
-            if (kind == scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown)
+            if (moduleId.isEmpty())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown processing module kind"));
                 return response;
             }
-            if (!m_scopeonecore->addProcessingModule(kind))
+            if (!m_scopeonecore->addProcessingModule(moduleId))
             {
                 response.insert(QStringLiteral("error"),
                                 m_scopeonecore->isRealTimeProcessingEnabled()

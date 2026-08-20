@@ -1325,7 +1325,8 @@ namespace scopeone::core::internal
         {
             primeLastFrameIndices();
             if (m_cameraRuntimeControl
-                && !m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(true))
+                && !m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+                    m_captureState.activeCameraIds, true))
             {
                 if (plan.streamToDisk)
                 {
@@ -1343,7 +1344,8 @@ namespace scopeone::core::internal
             {
                 if (m_cameraRuntimeControl)
                 {
-                    m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(false);
+                    m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+                        m_captureState.activeCameraIds, false);
                 }
                 const QString writerError = writerErrorSnapshot();
                 qWarning().noquote() << (writerError.isEmpty()
@@ -1398,6 +1400,7 @@ namespace scopeone::core::internal
         if (!m_captureState.isRecording) return;
 
         const bool streamToDisk = m_captureState.streamToDisk;
+        const QStringList activeCameraIds = m_captureState.activeCameraIds;
         auto session = m_activeSession;
         m_completionPending = true;
         if (streamToDisk)
@@ -1411,7 +1414,7 @@ namespace scopeone::core::internal
 
         if (m_cameraRuntimeControl)
         {
-            m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(false);
+            m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(activeCameraIds, false);
         }
         if (m_mdaState.usingMda && m_mdaState.manager && m_mdaState.manager->isRunning())
         {
@@ -1419,7 +1422,7 @@ namespace scopeone::core::internal
         }
         if (m_cameraRuntimeControl)
         {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(false);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(activeCameraIds, false);
         }
 
         qInfo().noquote() << "Recording stopped";
@@ -2009,7 +2012,8 @@ namespace scopeone::core::internal
 
         if (m_cameraRuntimeControl)
         {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(true);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(
+                m_captureState.activeCameraIds, true);
         }
 
         m_mdaState.cameraId = m_captureState.activeCameraIds.first();

@@ -14,10 +14,12 @@ namespace scopeone::core
     {
     public:
         using FrameSink = std::function<void(const ImageFrame&)>;
+        using PreviewStateSink = std::function<void(bool)>;
 
         ~CameraProvider() override;
 
         virtual void setFrameSink(FrameSink sink) = 0;
+        virtual void setPreviewStateSink(PreviewStateSink sink) = 0;
         virtual bool startPreview() = 0;
         virtual bool stopPreview() = 0;
         virtual bool startPreviewFor(const QString& cameraId) = 0;

@@ -3,7 +3,9 @@
 #include "scopeone/CameraProvider.h"
 
 #include <algorithm>
+#include <QMetaObject>
 #include <QSet>
+#include <QThread>
 #include <utility>
 
 namespace scopeone::core::internal
@@ -86,7 +88,7 @@ namespace scopeone::core::internal
         bool removed = false;
         {
             QWriteLocker locker(&m_lock);
-            removed = m_providers.remove(providerId.trimmed()) > 0;
+            removed = m_providers.remove(providerId.trimmed());
         }
         if (removed)
         {
@@ -189,6 +191,11 @@ namespace scopeone::core::internal
     void HardwareRuntime::setFrameSink(FrameSink sink)
     {
         m_frameSink = std::move(sink);
+    }
+
+    void HardwareRuntime::setPreviewStateSink(PreviewStateSink sink)
+    {
+        m_previewStateSink = std::move(sink);
     }
 
     CameraProvider* HardwareRuntime::cameraProviderForDevice(const QString& logicalId) const
@@ -449,58 +456,74 @@ namespace scopeone::core::internal
         return provider && provider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
-    void HardwareRuntime::setFrameDeliveryPaused(bool paused)
+    QList<QPair<CameraRuntimeControl*, QStringList>> HardwareRuntime::runtimeControlsFor(
+        const QStringList& cameraIds) const
     {
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        QHash<CameraRuntimeControl*, QStringList> grouped;
+        for (const QString& cameraId : cameraIds)
         {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            const QString normalizedId = cameraId.trimmed();
+            const HardwareProviderPtr provider = m_registry.providerForDevice(normalizedId);
             if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
             {
-                control->setFrameDeliveryPaused(paused);
+                QStringList& providerCameraIds = grouped[control];
+                if (!providerCameraIds.contains(normalizedId))
+                {
+                    providerCameraIds.append(normalizedId);
+                }
             }
+        }
+        QList<QPair<CameraRuntimeControl*, QStringList>> result;
+        result.reserve(grouped.size());
+        for (auto it = grouped.cbegin(); it != grouped.cend(); ++it)
+        {
+            result.append({it.key(), it.value()});
+        }
+        return result;
+    }
+
+    void HardwareRuntime::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
+    {
+        for (const auto& [control, providerCameraIds] : runtimeControlsFor(cameraIds))
+        {
+            control->setFrameDeliveryPaused(providerCameraIds, paused);
         }
     }
 
-    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(bool enabled)
+    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                                            bool enabled)
     {
-        QList<CameraRuntimeControl*> changed;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        QList<QPair<CameraRuntimeControl*, QStringList>> changed;
+        for (const auto& entry : runtimeControlsFor(cameraIds))
         {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            if (!entry.first->setRecordingFrameDeliveryEnabled(entry.second, enabled))
             {
-                if (!control->setRecordingFrameDeliveryEnabled(enabled))
+                for (const auto& previous : changed)
                 {
-                    for (CameraRuntimeControl* previous : changed)
-                    {
-                        previous->setRecordingFrameDeliveryEnabled(!enabled);
-                    }
-                    return false;
+                    previous.first->setRecordingFrameDeliveryEnabled(previous.second, !enabled);
                 }
-                changed.append(control);
+                return false;
             }
+            changed.append(entry);
         }
         return true;
     }
 
-    bool HardwareRuntime::setHighRateFrameDeliveryEnabled(bool enabled)
+    bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                                           bool enabled)
     {
-        QList<CameraRuntimeControl*> changed;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        QList<QPair<CameraRuntimeControl*, QStringList>> changed;
+        for (const auto& entry : runtimeControlsFor(cameraIds))
         {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            if (!entry.first->setHighRateFrameDeliveryEnabled(entry.second, enabled))
             {
-                if (!control->setHighRateFrameDeliveryEnabled(enabled))
+                for (const auto& previous : changed)
                 {
-                    for (CameraRuntimeControl* previous : changed)
-                    {
-                        previous->setHighRateFrameDeliveryEnabled(!enabled);
-                    }
-                    return false;
+                    previous.first->setHighRateFrameDeliveryEnabled(previous.second, !enabled);
                 }
-                changed.append(control);
+                return false;
             }
+            changed.append(entry);
         }
         return true;
     }
@@ -810,6 +833,7 @@ namespace scopeone::core::internal
             {
                 cameraProvider->stopPreview();
                 cameraProvider->setFrameSink({});
+                cameraProvider->setPreviewStateSink({});
             }
         }
         m_registry.clear();
@@ -860,6 +884,26 @@ namespace scopeone::core::internal
             {
                 m_frameRouter.publish(frame);
             });
+            cameraProvider->setPreviewStateSink([this](bool)
+            {
+                const auto publishState = [this]()
+                {
+                    bool running = false;
+                    for (const HardwareDeviceDescriptor& device : m_registry.devices())
+                    {
+                        if (device.kind == HardwareDeviceKind::Camera
+                            && isPreviewRunning(device.logicalId))
+                        {
+                            running = true;
+                            break;
+                        }
+                    }
+                    if (m_previewStateSink) m_previewStateSink(running);
+                    emit previewStateChanged(running);
+                };
+                if (QThread::currentThread() == thread()) publishState();
+                else QMetaObject::invokeMethod(this, publishState, Qt::QueuedConnection);
+            });
         }
         return true;
     }
@@ -871,6 +915,7 @@ namespace scopeone::core::internal
         {
             cameraProvider->stopPreview();
             cameraProvider->setFrameSink({});
+            cameraProvider->setPreviewStateSink({});
         }
         m_registry.unregisterProvider(providerId);
     }
@@ -879,5 +924,12 @@ namespace scopeone::core::internal
     {
         const HardwareProviderPtr provider = m_registry.provider(providerId);
         return provider && registerProvider(provider);
+    }
+
+    bool HardwareRuntime::stopPreviewForProvider(const QString& providerId)
+    {
+        const HardwareProviderPtr provider = m_registry.provider(providerId);
+        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        return cameraProvider && cameraProvider->stopPreview();
     }
 }

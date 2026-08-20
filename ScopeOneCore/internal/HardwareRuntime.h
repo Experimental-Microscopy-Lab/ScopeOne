@@ -63,6 +63,7 @@ namespace scopeone::core::internal
         explicit HardwareRuntime(QObject* parent = nullptr);
 
         void setFrameSink(FrameSink sink) override;
+        void setPreviewStateSink(PreviewStateSink sink) override;
         bool startPreview() override;
         bool stopPreview() override;
         bool startPreviewFor(const QString& cameraId) override;
@@ -96,9 +97,11 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                ImageFrame& frame,
                                int timeoutMs) override;
-        void setFrameDeliveryPaused(bool paused) override;
-        bool setRecordingFrameDeliveryEnabled(bool enabled) override;
-        bool setHighRateFrameDeliveryEnabled(bool enabled) override;
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                              bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                             bool enabled) override;
         bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
         void finishProcessingFrame(const QString& cameraId, quint64 token) override;
         QString defaultXYStage() const override;
@@ -151,9 +154,11 @@ namespace scopeone::core::internal
         bool registerProvider(const HardwareProviderPtr& provider);
         void unregisterProvider(const QString& providerId);
         bool refreshProvider(const QString& providerId);
+        bool stopPreviewForProvider(const QString& providerId);
 
     signals:
         void devicesChanged();
+        void previewStateChanged(bool running);
 
     private:
         CameraProvider* cameraProviderForDevice(const QString& logicalId) const;
@@ -163,10 +168,13 @@ namespace scopeone::core::internal
         StateProvider* stateProviderForDevice(const QString& logicalId) const;
         ConfigurationProvider* configurationProviderForGroup(const QString& groupName) const;
         QList<CameraProvider*> cameraProviders() const;
+        QList<QPair<CameraRuntimeControl*, QStringList>> runtimeControlsFor(
+            const QStringList& cameraIds) const;
 
         DeviceRegistry m_registry;
         FrameRouter m_frameRouter;
         AcquisitionEngine m_acquisitionEngine;
         FrameSink m_frameSink;
+        PreviewStateSink m_previewStateSink;
     };
 }

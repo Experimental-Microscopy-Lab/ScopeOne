@@ -81,6 +81,7 @@ set(SCOPEONE_UI_SOURCES
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
+        src/ScopeOneToolPlugin.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
@@ -99,6 +100,7 @@ set(SCOPEONE_UI_HEADERS
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
+        src/ScopeOneToolPlugin.h
 )
 
 if (WIN32)
@@ -200,14 +202,14 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
     )
 endif ()
 
-set(SCOPEONE_PROVIDER_DIR "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/providers")
+set(SCOPEONE_PROVIDER_DIR "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/hardware")
 if (EXISTS "${SCOPEONE_PROVIDER_DIR}")
     add_custom_command(TARGET ScopeOne POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${SCOPEONE_PROVIDER_DIR}"
-            "$<TARGET_FILE_DIR:ScopeOne>/providers"
+            "$<TARGET_FILE_DIR:ScopeOne>/plugins/hardware"
     )
-    install(DIRECTORY "${SCOPEONE_PROVIDER_DIR}/" DESTINATION providers)
+    install(DIRECTORY "${SCOPEONE_PROVIDER_DIR}/" DESTINATION plugins/hardware)
 endif ()
 
 if (WIN32)

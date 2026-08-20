@@ -35,16 +35,6 @@ namespace scopeone::core
         XY = 2
     };
 
-    enum class ProcessingModuleKind
-    {
-        FFT = 0,
-        BackgroundCalibration = 2,
-        SpatiotemporalBinning = 3,
-        GaussianBlur = 4,
-        DifferentialRolling = 5,
-        Unknown = 255
-    };
-
     enum class ProcessingBitDepth
     {
         Bit8 = 8,
@@ -84,7 +74,7 @@ namespace scopeone::core
 
     struct ProcessingModuleRecipe
     {
-        ProcessingModuleKind kind{ProcessingModuleKind::Unknown};
+        QString moduleId;
         int schemaVersion{kProcessingModuleSchemaVersion};
         QVariantMap parameters;
     };
@@ -265,7 +255,6 @@ namespace scopeone::core
     };
 
     SCOPEONE_CORE_EXPORT QString recordingAxisName(RecordingAxis axis);
-    SCOPEONE_CORE_EXPORT QString processingModuleKindName(ProcessingModuleKind kind);
     SCOPEONE_CORE_EXPORT QString experimentRunStateName(ExperimentRunState state);
     SCOPEONE_CORE_EXPORT QString documentLayerKindName(DocumentLayerKind kind);
     SCOPEONE_CORE_EXPORT QString documentMarkupTypeName(DocumentMarkupType type);

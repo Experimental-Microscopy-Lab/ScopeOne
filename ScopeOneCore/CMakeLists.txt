@@ -90,6 +90,7 @@ set(CORE_SOURCES
         src/ParticleAnalysis.cpp
         src/StageMosaicManager.cpp
         src/ImageProcessingFramework.cpp
+        src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
@@ -124,7 +125,10 @@ set(CORE_HEADERS
         internal/StageMosaicManager.h
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
+        internal/ProcessingModuleRegistry.h
+        include/scopeone/ProcessingPlugin.h
         internal/DriverHostProtocol.h
+        internal/SharedFrameRing.h
         internal/DriverHostProviderProxy.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
@@ -228,6 +232,7 @@ scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOn
 
 add_library(ScopeOne_SimulatorProvider MODULE
         src/SimulatorProviderPlugin.cpp
+        src/SimulatorProvider.json
 )
 target_link_libraries(ScopeOne_SimulatorProvider PRIVATE ScopeOneCore Qt::Core)
 set_target_properties(ScopeOne_SimulatorProvider PROPERTIES PREFIX "")
@@ -278,8 +283,8 @@ install(TARGETS ScopeOne_DriverHost
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
 install(TARGETS ScopeOne_SimulatorProvider
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/providers"
-        LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}/providers"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/hardware"
+        LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/hardware"
 )
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

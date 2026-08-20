@@ -563,7 +563,7 @@ namespace scopeone::core
             return result;
         }
 
-        QVariantMap processingParametersFromJson(ProcessingModuleKind kind,
+        QVariantMap processingParametersFromJson(const QString& moduleId,
                                                  const QJsonObject& object)
         {
             QVariantMap result = variantMapFromJson(object);
@@ -589,36 +589,36 @@ namespace scopeone::core
                 }
             };
 
-            switch (kind)
+            if (moduleId == QStringLiteral("fft"))
             {
-            case ProcessingModuleKind::FFT:
                 normalizeDouble(QStringLiteral("min_feature_size"));
                 normalizeDouble(QStringLiteral("max_feature_size"));
                 normalizeInt(QStringLiteral("filter_kind"));
                 normalizeInt(QStringLiteral("output_mode"));
-                break;
-            case ProcessingModuleKind::BackgroundCalibration:
+            }
+            else if (moduleId == QStringLiteral("background_calibration"))
+            {
                 normalizeInt(QStringLiteral("calibration_frames"));
                 normalizeInt(QStringLiteral("operation"));
                 normalizeInt(QStringLiteral("method"));
                 normalizeInt(QStringLiteral("mode"));
-                break;
-            case ProcessingModuleKind::SpatiotemporalBinning:
+            }
+            else if (moduleId == QStringLiteral("spatiotemporal_binning"))
+            {
                 normalizeInt(QStringLiteral("spatial_bin_x"));
                 normalizeInt(QStringLiteral("spatial_bin_y"));
                 normalizeInt(QStringLiteral("temporal_bin"));
                 normalizeInt(QStringLiteral("spatial_mode"));
                 normalizeInt(QStringLiteral("temporal_mode"));
-                break;
-            case ProcessingModuleKind::GaussianBlur:
+            }
+            else if (moduleId == QStringLiteral("gaussian_blur"))
+            {
                 normalizeInt(QStringLiteral("kernel_size"));
                 normalizeDouble(QStringLiteral("sigma"));
-                break;
-            case ProcessingModuleKind::DifferentialRolling:
+            }
+            else if (moduleId == QStringLiteral("differential_rolling"))
+            {
                 normalizeInt(QStringLiteral("batch_size"));
-                break;
-            case ProcessingModuleKind::Unknown:
-                break;
             }
             return result;
         }
@@ -698,39 +698,29 @@ namespace scopeone::core
             return false;
         }
 
-        bool parseProcessingModuleKind(const QString& name, ProcessingModuleKind& kind)
+        QString processingModuleIdFromDocument(const QString& name)
         {
             if (name == QStringLiteral("FFT"))
             {
-                kind = ProcessingModuleKind::FFT;
-                return true;
+                return QStringLiteral("fft");
             }
             if (name == QStringLiteral("BackgroundCalibration"))
             {
-                kind = ProcessingModuleKind::BackgroundCalibration;
-                return true;
+                return QStringLiteral("background_calibration");
             }
             if (name == QStringLiteral("SpatiotemporalBinning"))
             {
-                kind = ProcessingModuleKind::SpatiotemporalBinning;
-                return true;
+                return QStringLiteral("spatiotemporal_binning");
             }
             if (name == QStringLiteral("GaussianBlur"))
             {
-                kind = ProcessingModuleKind::GaussianBlur;
-                return true;
+                return QStringLiteral("gaussian_blur");
             }
             if (name == QStringLiteral("DifferentialRolling"))
             {
-                kind = ProcessingModuleKind::DifferentialRolling;
-                return true;
+                return QStringLiteral("differential_rolling");
             }
-            if (name == QStringLiteral("Unknown"))
-            {
-                kind = ProcessingModuleKind::Unknown;
-                return true;
-            }
-            return false;
+            return name == QStringLiteral("Unknown") ? QString{} : name.trimmed();
         }
 
         bool parseExperimentRunState(const QString& name, ExperimentRunState& state)
@@ -1100,24 +1090,15 @@ namespace scopeone::core
                 const QString modulePath = elementPath(memberPath(memberPath(path, QStringLiteral("processing")),
                                                                   QStringLiteral("modules")),
                                                        index);
-                if (module.schemaVersion != kProcessingModuleSchemaVersion)
+                if (module.schemaVersion <= 0)
                 {
                     return fail(errorMessage,
-                                QStringLiteral("%1.schemaVersion %2 is unsupported; expected %3")
+                                QStringLiteral("%1.schemaVersion must be positive; got %2")
                                     .arg(modulePath)
-                                    .arg(module.schemaVersion)
-                                    .arg(kProcessingModuleSchemaVersion));
+                                    .arg(module.schemaVersion));
                 }
-                switch (module.kind)
+                if (module.moduleId.trimmed().isEmpty())
                 {
-                case ProcessingModuleKind::FFT:
-                case ProcessingModuleKind::BackgroundCalibration:
-                case ProcessingModuleKind::SpatiotemporalBinning:
-                case ProcessingModuleKind::GaussianBlur:
-                case ProcessingModuleKind::DifferentialRolling:
-                    break;
-                case ProcessingModuleKind::Unknown:
-                default:
                     return fail(errorMessage,
                                 QStringLiteral("%1.kind must name a supported processing module").arg(modulePath));
                 }
@@ -1621,7 +1602,7 @@ namespace scopeone::core
             for (const ProcessingModuleRecipe& module : plan.processing.modules)
             {
                 QJsonObject moduleObject;
-                moduleObject.insert(QStringLiteral("kind"), processingModuleKindName(module.kind));
+                moduleObject.insert(QStringLiteral("kind"), module.moduleId);
                 moduleObject.insert(QStringLiteral("schemaVersion"), module.schemaVersion);
                 moduleObject.insert(QStringLiteral("parameters"), variantMapToJson(module.parameters));
                 modules.append(canonicalJsonObject(moduleObject));
@@ -2098,21 +2079,21 @@ namespace scopeone::core
                 {
                     return false;
                 }
-                if (!parseProcessingModuleKind(kindName, module.kind))
+                module.moduleId = processingModuleIdFromDocument(kindName);
+                if (module.moduleId.isEmpty())
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1.kind has unknown processing module name '%2'")
                                     .arg(modulePath, kindName));
                 }
-                if (module.schemaVersion != kProcessingModuleSchemaVersion)
+                if (module.schemaVersion <= 0)
                 {
                     return fail(errorMessage,
-                                QStringLiteral("%1.schemaVersion %2 is unsupported; expected %3")
+                                QStringLiteral("%1.schemaVersion must be positive; got %2")
                                     .arg(modulePath)
-                                    .arg(module.schemaVersion)
-                                    .arg(kProcessingModuleSchemaVersion));
+                                    .arg(module.schemaVersion));
                 }
-                module.parameters = processingParametersFromJson(module.kind, parameters);
+                module.parameters = processingParametersFromJson(module.moduleId, parameters);
                 parsed.processing.modules.append(module);
             }
 
@@ -3168,26 +3149,6 @@ namespace scopeone::core
             return QStringLiteral("Z");
         case RecordingAxis::XY:
             return QStringLiteral("XY");
-        }
-        return QStringLiteral("Unknown");
-    }
-
-    QString processingModuleKindName(ProcessingModuleKind kind)
-    {
-        switch (kind)
-        {
-        case ProcessingModuleKind::FFT:
-            return QStringLiteral("FFT");
-        case ProcessingModuleKind::BackgroundCalibration:
-            return QStringLiteral("BackgroundCalibration");
-        case ProcessingModuleKind::SpatiotemporalBinning:
-            return QStringLiteral("SpatiotemporalBinning");
-        case ProcessingModuleKind::GaussianBlur:
-            return QStringLiteral("GaussianBlur");
-        case ProcessingModuleKind::DifferentialRolling:
-            return QStringLiteral("DifferentialRolling");
-        case ProcessingModuleKind::Unknown:
-            return QStringLiteral("Unknown");
         }
         return QStringLiteral("Unknown");
     }

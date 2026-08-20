@@ -318,16 +318,16 @@ class ScopeOne:
     def set_processing_bit_depth(self, bit_depth: int):
         self._client.set_processing_bit_depth(bit_depth)
 
-    def set_realtime_processing(self, enabled: bool):
-        return self._client.set_realtime_processing(enabled)
+    def set_realtime_processing(self, enabled: bool, camera_id: str | None = None):
+        return self._client.set_realtime_processing(enabled, camera_id)
 
-    def start_processing(self):
-        self.set_realtime_processing(True)
+    def start_processing(self, camera_id: str | None = None):
+        self.set_realtime_processing(True, camera_id)
 
     def stop_processing(self):
         self.set_realtime_processing(False)
 
-    def add_processing_module(self, kind: str | int, parameters: dict | None = None):
+    def add_processing_module(self, kind: str, parameters: dict | None = None):
         return self._client.add_processing_module(kind, parameters)
 
     def remove_processing_module(self, index: int):

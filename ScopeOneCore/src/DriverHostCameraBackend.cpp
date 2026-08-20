@@ -1,5 +1,6 @@
 #include "internal/CameraBackend.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/SharedFrameRing.h"
 #include "scopeone/SharedFrame.h"
 
 #include <QDir>
@@ -30,9 +31,6 @@
 
 namespace scopeone::core::internal
 {
-    static_assert(std::atomic_ref<quint32>::is_always_lock_free,
-                  "Shared frame state requires lock-free 32-bit atomics");
-
     using scopeone::core::ImageFrame;
     using scopeone::core::SharedFrameHeader;
     using scopeone::core::SharedMemoryControl;
@@ -891,82 +889,6 @@ namespace scopeone::core::internal
         DriverHostFrameWorker* m_frameWorker{nullptr};
     };
 
-    // Returns payload byte count from a shared frame header
-    static quint64 sharedFramePayloadSize(const SharedFrameHeader& header)
-    {
-        return static_cast<quint64>(header.stride) * header.height;
-    }
-
-    // Validates one shared frame header before reading pixels
-    static bool headerLooksSane(const SharedFrameHeader& header)
-    {
-        if (header.channels != 1) return false;
-        if (header.width == 0 || header.height == 0) return false;
-        if (header.stride == 0) return false;
-        if (header.pixelFormat != static_cast<quint32>(SharedPixelFormat::Mono8) &&
-            header.pixelFormat != static_cast<quint32>(SharedPixelFormat::Mono16))
-        {
-            return false;
-        }
-
-        const quint32 bytesPerPixel =
-            (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8)
-            && header.bitsPerSample != 8)
-        {
-            return false;
-        }
-        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)
-            && (header.bitsPerSample == 0 || header.bitsPerSample > 16))
-        {
-            return false;
-        }
-        const quint64 minimumStride = static_cast<quint64>(header.width) * bytesPerPixel;
-        if (minimumStride > static_cast<quint64>((std::numeric_limits<quint32>::max)())) return false;
-        if (header.width > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.height > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.stride > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.stride < minimumStride) return false;
-        if ((header.stride % bytesPerPixel) != 0) return false;
-
-        const quint64 rawSize = sharedFramePayloadSize(header);
-        if (rawSize == 0 || rawSize > static_cast<quint64>(kSharedFrameMaxBytes)) return false;
-
-        return true;
-    }
-
-    // Claims one ready ring slot so the producer cannot overwrite it while copying
-    static bool claimFrameSlot(uchar* slotPtr, SharedFrameHeader& header)
-    {
-        auto& stateValue = *reinterpret_cast<quint32*>(slotPtr);
-        std::atomic_ref<quint32> state(stateValue);
-        quint32 expected = 2;
-        if (!state.compare_exchange_strong(expected,
-                                           3,
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_acquire))
-        {
-            return false;
-        }
-
-        memcpy(&header, slotPtr, sizeof(header));
-        header.state = 2;
-        if (headerLooksSane(header))
-        {
-            return true;
-        }
-
-        state.store(2, std::memory_order_release);
-        return false;
-    }
-
-    // Releases one claimed ring slot back to the producer
-    static void releaseFrameSlot(uchar* slotPtr)
-    {
-        auto& stateValue = *reinterpret_cast<quint32*>(slotPtr);
-        std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
-    }
-
     DriverHostCameraBackend::DriverHostCameraBackend(ProcessingFrameGate& processingFrameGate)
         : CameraBackend(processingFrameGate)
     {
@@ -1492,7 +1414,7 @@ namespace scopeone::core::internal
                                      const uchar* pixelData,
                                      QList<ImageFrame>& frames)
     {
-        const quint64 rawSize = sharedFramePayloadSize(header);
+        const quint64 rawSize = sharedframe::payloadSize(header);
         QByteArray payload;
         payload.resize(static_cast<qsizetype>(rawSize));
         memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
@@ -1531,10 +1453,10 @@ namespace scopeone::core::internal
             if (idx >= kSharedFrameNumSlots) return false;
             uchar* ptr = base + baseOffset + idx * slotStride;
             SharedFrameHeader header{};
-            if (!claimFrameSlot(ptr, header)) return false;
+            if (!sharedframe::claimSlot(ptr, header)) return false;
             if (header.frameIndex <= slot.lastFrameIndex)
             {
-                releaseFrameSlot(ptr);
+                sharedframe::releaseSlot(ptr);
                 return false;
             }
             capturedHeader = header;
@@ -1553,12 +1475,12 @@ namespace scopeone::core::internal
             {
                 uchar* ptr = base + baseOffset + i * slotStride;
                 SharedFrameHeader header{};
-                if (!claimFrameSlot(ptr, header)) continue;
+                if (!sharedframe::claimSlot(ptr, header)) continue;
                 if (header.frameIndex > bestIndex)
                 {
                     if (capturedSlot)
                     {
-                        releaseFrameSlot(capturedSlot);
+                        sharedframe::releaseSlot(capturedSlot);
                     }
                     bestIndex = header.frameIndex;
                     capturedHeader = header;
@@ -1566,7 +1488,7 @@ namespace scopeone::core::internal
                 }
                 else
                 {
-                    releaseFrameSlot(ptr);
+                    sharedframe::releaseSlot(ptr);
                 }
             }
         }
@@ -1578,7 +1500,7 @@ namespace scopeone::core::internal
                          frames);
         if (capturedSlot)
         {
-            releaseFrameSlot(capturedSlot);
+            sharedframe::releaseSlot(capturedSlot);
         }
         if (ok)
         {
@@ -1617,14 +1539,14 @@ namespace scopeone::core::internal
         {
             uchar* ptr = base + baseOffset + i * slotStride;
             SharedFrameHeader header{};
-            if (!claimFrameSlot(ptr, header)) continue;
+            if (!sharedframe::claimSlot(ptr, header)) continue;
             if (header.frameIndex > lastIndex)
             {
                 claimedSlots.push_back({ptr, header});
             }
             else
             {
-                releaseFrameSlot(ptr);
+                sharedframe::releaseSlot(ptr);
             }
         }
 
@@ -1649,7 +1571,7 @@ namespace scopeone::core::internal
             {
                 maxIndex = claimed.header.frameIndex;
             }
-            releaseFrameSlot(claimed.ptr);
+            sharedframe::releaseSlot(claimed.ptr);
         }
         if (frames.isEmpty())
         {

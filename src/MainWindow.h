@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
+#include "ScopeOneToolPlugin.h"
 
 #include <QHash>
 #include <QMainWindow>
@@ -35,16 +36,21 @@ namespace scopeone::ui
     class ConsoleWidget;
     class DeviceControlWidget;
     class RecordingWidget;
-    class StageMosaicDialog;
-    class ParticleDetectionDialog;
-
-    class MainWindow : public QMainWindow
+    class MainWindow : public QMainWindow, public ScopeOneToolContext
     {
         Q_OBJECT
 
     public:
         explicit MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~MainWindow() override = default;
+
+        scopeone::core::ScopeOneCore& core() const override;
+        QString currentLayerKey() const override;
+        void showLayers(const QStringList& layerKeys, bool sideBySide = false) override;
+        void showToolStatus(const QString& message, int timeoutMs = 5000) override;
+        void presentSession(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            const QString& title) override;
 
     protected:
         void closeEvent(QCloseEvent* event) override;
@@ -53,6 +59,7 @@ namespace scopeone::ui
         void setupUI();
         void setupSignalWiring();
         void setupStatusBar();
+        void setupTools();
 
         void setupMenuBar();
         void setupDeviceControl();
@@ -73,9 +80,6 @@ namespace scopeone::ui
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
-        void openScaleDialog();
-        void openStageMosaicTool();
-        void openParticleDetectionTool();
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
         void setCursorStatus(const QString& text);
@@ -173,16 +177,12 @@ namespace scopeone::ui
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_settingsAction{nullptr};
-        QAction* m_scaleAction{nullptr};
-        QAction* m_stageMosaicAction{nullptr};
-        QAction* m_particleDetectionAction{nullptr};
         QAction* m_aboutAction{nullptr};
         QAction* m_aboutQtAction{nullptr};
 
         QPointer<QProgressDialog> m_loadConfigProgress;
         QPointer<QProgressDialog> m_closeSaveProgress;
-        QPointer<StageMosaicDialog> m_stageMosaicDialog;
-        QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
+        std::unique_ptr<ToolRegistry> m_toolRegistry;
         QLabel* m_statusMessageLabel{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};

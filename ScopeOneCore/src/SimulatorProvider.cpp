@@ -63,6 +63,12 @@ namespace scopeone::core
         m_frameSink = std::move(sink);
     }
 
+    void SimulatorProvider::setPreviewStateSink(PreviewStateSink sink)
+    {
+        QMutexLocker locker(&m_mutex);
+        m_previewStateSink = std::move(sink);
+    }
+
     bool SimulatorProvider::startPreview()
     {
         {
@@ -70,12 +76,25 @@ namespace scopeone::core
             if (!m_frameSink) return false;
         }
         m_timer.start();
+        PreviewStateSink sink;
+        {
+            QMutexLocker locker(&m_mutex);
+            sink = m_previewStateSink;
+        }
+        if (sink) sink(true);
         return true;
     }
 
     bool SimulatorProvider::stopPreview()
     {
+        const bool wasRunning = m_timer.isActive();
         m_timer.stop();
+        PreviewStateSink sink;
+        {
+            QMutexLocker locker(&m_mutex);
+            sink = m_previewStateSink;
+        }
+        if (wasRunning && sink) sink(false);
         return true;
     }
 

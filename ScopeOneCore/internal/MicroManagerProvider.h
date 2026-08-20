@@ -30,6 +30,7 @@ namespace scopeone::core::internal
         void setDevices(const QList<HardwareDeviceDescriptor>& devices);
 
         void setFrameSink(FrameSink sink) override;
+        void setPreviewStateSink(PreviewStateSink sink) override;
         bool startPreview() override;
         bool stopPreview() override;
         bool startPreviewFor(const QString& cameraId) override;
@@ -63,9 +64,11 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
                                int timeoutMs) override;
-        void setFrameDeliveryPaused(bool paused) override;
-        bool setRecordingFrameDeliveryEnabled(bool enabled) override;
-        bool setHighRateFrameDeliveryEnabled(bool enabled) override;
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                              bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                             bool enabled) override;
         bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
         void finishProcessingFrame(const QString& cameraId, quint64 token) override;
         QString defaultXYStage() const override;

@@ -2,6 +2,7 @@
 
 #include "internal/CameraRuntimeControl.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/SharedFrameRing.h"
 #include "scopeone/CameraProvider.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
@@ -36,9 +37,6 @@
 
 namespace scopeone::core::internal
 {
-    static_assert(std::atomic_ref<quint32>::is_always_lock_free,
-                  "Shared frame state requires lock-free 32-bit atomics");
-
     namespace
     {
         constexpr int kControlReadyTimeoutMs = 15000;
@@ -80,67 +78,6 @@ namespace scopeone::core::internal
             return false;
         }
 
-        quint64 sharedFramePayloadSize(const SharedFrameHeader& header)
-        {
-            return static_cast<quint64>(header.stride) * header.height;
-        }
-
-        bool headerLooksSane(const SharedFrameHeader& header)
-        {
-            if (header.channels != 1 || header.width == 0 || header.height == 0
-                || header.stride == 0)
-            {
-                return false;
-            }
-            const bool mono8 =
-                header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8);
-            const bool mono16 =
-                header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16);
-            if ((!mono8 && !mono16)
-                || (mono8 && header.bitsPerSample != 8)
-                || (mono16 && (header.bitsPerSample == 0 || header.bitsPerSample > 16)))
-            {
-                return false;
-            }
-            const quint32 bytesPerPixel = mono16 ? 2u : 1u;
-            const quint64 minimumStride = static_cast<quint64>(header.width) * bytesPerPixel;
-            const quint64 payloadSize = sharedFramePayloadSize(header);
-            return header.width <= static_cast<quint32>((std::numeric_limits<int>::max)())
-                && header.height <= static_cast<quint32>((std::numeric_limits<int>::max)())
-                && header.stride <= static_cast<quint32>((std::numeric_limits<int>::max)())
-                && header.stride >= minimumStride
-                && header.stride % bytesPerPixel == 0
-                && payloadSize > 0
-                && payloadSize <= static_cast<quint64>(kSharedFrameMaxBytes);
-        }
-
-        bool claimFrameSlot(uchar* slot, SharedFrameHeader& header)
-        {
-            auto& stateValue = *reinterpret_cast<quint32*>(slot);
-            std::atomic_ref<quint32> state(stateValue);
-            quint32 expected = 2;
-            if (!state.compare_exchange_strong(expected,
-                                               3,
-                                               std::memory_order_acq_rel,
-                                               std::memory_order_acquire))
-            {
-                return false;
-            }
-            memcpy(&header, slot, sizeof(header));
-            header.state = 2;
-            if (headerLooksSane(header))
-            {
-                return true;
-            }
-            state.store(2, std::memory_order_release);
-            return false;
-        }
-
-        void releaseFrameSlot(uchar* slot)
-        {
-            auto& stateValue = *reinterpret_cast<quint32*>(slot);
-            std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
-        }
     }
 
     class DriverHostProviderTransport final : public QObject
@@ -655,7 +592,7 @@ namespace scopeone::core::internal
                        QList<ImageFrame>& frames)
         {
             QByteArray payload;
-            payload.resize(static_cast<qsizetype>(sharedFramePayloadSize(header)));
+            payload.resize(static_cast<qsizetype>(sharedframe::payloadSize(header)));
             memcpy(payload.data(), pixels, static_cast<size_t>(payload.size()));
             ImageFrame frame = ImageFrame::fromSharedFrame(reader.cameraId, header, payload);
             if (!frame.isValid()) return false;
@@ -679,10 +616,10 @@ namespace scopeone::core::internal
                 uchar* slot = base + kSharedMemoryControlSize
                               + static_cast<int>(index) * kSharedFrameSlotStride;
                 SharedFrameHeader header{};
-                if (!claimFrameSlot(slot, header)) return false;
+                if (!sharedframe::claimSlot(slot, header)) return false;
                 if (header.frameIndex <= reader.lastFrameIndex)
                 {
-                    releaseFrameSlot(slot);
+                    sharedframe::releaseSlot(slot);
                     return false;
                 }
                 capturedHeader = header;
@@ -701,17 +638,17 @@ namespace scopeone::core::internal
                     uchar* slot = base + kSharedMemoryControlSize
                                   + index * kSharedFrameSlotStride;
                     SharedFrameHeader header{};
-                    if (!claimFrameSlot(slot, header)) continue;
+                    if (!sharedframe::claimSlot(slot, header)) continue;
                     if (header.frameIndex > bestIndex)
                     {
-                        if (capturedSlot) releaseFrameSlot(capturedSlot);
+                        if (capturedSlot) sharedframe::releaseSlot(capturedSlot);
                         bestIndex = header.frameIndex;
                         capturedHeader = header;
                         capturedSlot = slot;
                     }
                     else
                     {
-                        releaseFrameSlot(slot);
+                        sharedframe::releaseSlot(slot);
                     }
                 }
             }
@@ -721,7 +658,7 @@ namespace scopeone::core::internal
                              capturedHeader,
                              capturedSlot + kSharedFrameHeaderSize,
                              frames);
-            if (capturedSlot) releaseFrameSlot(capturedSlot);
+            if (capturedSlot) sharedframe::releaseSlot(capturedSlot);
             if (copied) reader.lastFrameIndex = capturedHeader.frameIndex;
             return copied;
         }
@@ -744,14 +681,14 @@ namespace scopeone::core::internal
                 uchar* slot = base + kSharedMemoryControlSize
                               + index * kSharedFrameSlotStride;
                 SharedFrameHeader header{};
-                if (!claimFrameSlot(slot, header)) continue;
+                if (!sharedframe::claimSlot(slot, header)) continue;
                 if (header.frameIndex > reader.lastFrameIndex)
                 {
                     claimed.push_back({slot, header});
                 }
                 else
                 {
-                    releaseFrameSlot(slot);
+                    sharedframe::releaseSlot(slot);
                 }
             }
             std::sort(claimed.begin(), claimed.end(), [](const Claimed& lhs, const Claimed& rhs)
@@ -768,7 +705,7 @@ namespace scopeone::core::internal
                 {
                     lastIndex = item.header.frameIndex;
                 }
-                releaseFrameSlot(item.slot);
+                sharedframe::releaseSlot(item.slot);
             }
             reader.lastFrameIndex = lastIndex;
             return !frames.isEmpty();
@@ -853,12 +790,22 @@ namespace scopeone::core::internal
                 hostKey,
                 m_options,
                 [this](const ImageFrame& frame) { deliverFrame(frame); },
-                [this](const QString& cameraId, bool running)
-                {
-                    QMutexLocker locker(&m_stateMutex);
-                    if (running) m_runningCameras.insert(cameraId);
-                    else m_runningCameras.remove(cameraId);
-                });
+                 [this](const QString& cameraId, bool running)
+                 {
+                     bool anyRunning = false;
+                     {
+                         QMutexLocker locker(&m_stateMutex);
+                         if (running) m_runningCameras.insert(cameraId);
+                         else m_runningCameras.remove(cameraId);
+                         anyRunning = !m_runningCameras.isEmpty();
+                     }
+                     PreviewStateSink sink;
+                     {
+                         QMutexLocker locker(&m_sinkMutex);
+                         sink = m_previewStateSink;
+                     }
+                     if (sink) sink(anyRunning);
+                 });
             m_worker->moveToThread(&m_workerThread);
             connect(&m_workerThread, &QThread::finished,
                     m_worker, &QObject::deleteLater);
@@ -902,6 +849,12 @@ namespace scopeone::core::internal
         {
             QMutexLocker locker(&m_sinkMutex);
             m_frameSink = std::move(sink);
+        }
+
+        void setPreviewStateSink(PreviewStateSink sink) override
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_previewStateSink = std::move(sink);
         }
 
         bool startPreview() override
@@ -1171,7 +1124,7 @@ namespace scopeone::core::internal
             return ok;
         }
 
-        void setFrameDeliveryPaused(bool paused) override
+        void setFrameDeliveryPaused(const QStringList&, bool paused) override
         {
             if (!m_worker || !m_workerThread.isRunning()) return;
             DriverHostProviderTransport* const worker = m_worker;
@@ -1183,7 +1136,7 @@ namespace scopeone::core::internal
             else QMetaObject::invokeMethod(worker, update, Qt::BlockingQueuedConnection);
         }
 
-        bool setRecordingFrameDeliveryEnabled(bool enabled) override
+        bool setRecordingFrameDeliveryEnabled(const QStringList&, bool enabled) override
         {
             if (m_recordingDelivery == enabled) return true;
             const QString mode = enabled
@@ -1196,7 +1149,7 @@ namespace scopeone::core::internal
             return true;
         }
 
-        bool setHighRateFrameDeliveryEnabled(bool enabled) override
+        bool setHighRateFrameDeliveryEnabled(const QStringList&, bool enabled) override
         {
             if (m_highRateDelivery == enabled) return true;
             if (!m_recordingDelivery)
@@ -1579,6 +1532,7 @@ namespace scopeone::core::internal
         mutable QMutex m_requestMutex;
         mutable QMutex m_sinkMutex;
         FrameSink m_frameSink;
+        PreviewStateSink m_previewStateSink;
         mutable QMutex m_stateMutex;
         QSet<QString> m_runningCameras;
         bool m_recordingDelivery{false};

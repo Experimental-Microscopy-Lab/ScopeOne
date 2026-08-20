@@ -34,6 +34,11 @@ namespace scopeone::core::internal
         m_frameSink = std::move(sink);
     }
 
+    void CameraManager::setPreviewStateSink(PreviewStateSink sink)
+    {
+        m_previewStateSink = std::move(sink);
+    }
+
     // Selects one camera backend and forwards its runtime signals
     bool CameraManager::activateBackend(CameraBackend::Kind kind)
     {
@@ -70,7 +75,11 @@ namespace scopeone::core::internal
         connect(m_backend.get(), &CameraBackend::frameDeliveryFailed,
                 this, &CameraManager::frameDeliveryFailed);
         connect(m_backend.get(), &CameraBackend::previewStateChanged,
-                this, &CameraManager::previewStateChanged);
+                this, [this](bool running)
+                {
+                    if (m_previewStateSink) m_previewStateSink(running);
+                    emit previewStateChanged(running);
+                });
         connect(m_backend.get(), &CameraBackend::driverHostControlServerListening,
                 this, &CameraManager::driverHostControlServerListening);
         if (!m_backend->setHighRateFrameDeliveryEnabled(m_highRateFrameDeliveryEnabled)
@@ -215,7 +224,7 @@ namespace scopeone::core::internal
         return !normalizedId.isEmpty() && m_backend && m_backend->isPreviewRunning(normalizedId);
     }
 
-    void CameraManager::setFrameDeliveryPaused(bool paused)
+    void CameraManager::setFrameDeliveryPaused(const QStringList&, bool paused)
     {
         if (m_backend)
         {
@@ -224,7 +233,7 @@ namespace scopeone::core::internal
     }
 
     // Switches the active backend between preview and lossless recording delivery
-    bool CameraManager::setRecordingFrameDeliveryEnabled(bool enabled)
+    bool CameraManager::setRecordingFrameDeliveryEnabled(const QStringList&, bool enabled)
     {
         const bool ok = !m_backend || m_backend->setRecordingFrameDeliveryEnabled(enabled);
         if (ok || !enabled)
@@ -235,7 +244,7 @@ namespace scopeone::core::internal
     }
 
     // Switches processing delivery independently of preview display rate
-    bool CameraManager::setHighRateFrameDeliveryEnabled(bool enabled)
+    bool CameraManager::setHighRateFrameDeliveryEnabled(const QStringList&, bool enabled)
     {
         const bool ok = !m_backend || m_backend->setHighRateFrameDeliveryEnabled(enabled);
         if (ok)

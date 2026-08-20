@@ -845,7 +845,10 @@ namespace
                 QStringLiteral("Enable or disable real-time image processing"),
                 inputProperties({
                     {QStringLiteral("enabled"),
-                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Real-time processing state"))}
+                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Real-time processing state"))},
+                    {QStringLiteral("cameraId"),
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("Optional camera source, empty selects all cameras"))}
                 }),
                 {QStringLiteral("enabled")},
                 ToolAccess::StateChanging),
@@ -854,11 +857,8 @@ namespace
                 QStringLiteral("Append a module to the image-processing pipeline"),
                 inputProperties({
                     {QStringLiteral("kind"),
-                     withEnum(
-                         inputProperty(QStringLiteral("string"), QStringLiteral("Processing module kind")),
-                         {QStringLiteral("fft"), QStringLiteral("background_calibration"),
-                          QStringLiteral("spatiotemporal_binning"), QStringLiteral("gaussian_blur"),
-                          QStringLiteral("differential_rolling")})},
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("Processing module ID from processing_modules"))},
                     {QStringLiteral("parameters"),
                      inputProperty(QStringLiteral("object"), QStringLiteral("Initial module parameters"))}
                 }),

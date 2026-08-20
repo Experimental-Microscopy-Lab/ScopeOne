@@ -1,6 +1,6 @@
 #include "ImageToolsDialog.h"
 
-#include "PreviewWidget.h"
+#include "ScopeOneToolPlugin.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 
@@ -114,18 +114,12 @@ namespace scopeone::ui
     }
 
     // Create a stage driven mosaic tool
-    StageMosaicDialog::StageMosaicDialog(scopeone::core::ScopeOneCore* core,
-                                         PreviewWidget* previewWidget,
+    StageMosaicDialog::StageMosaicDialog(ScopeOneToolContext& context,
                                          QWidget* parent)
         : QDialog(parent)
-          , m_core(core)
-          , m_previewWidget(previewWidget)
+          , m_core(&context.core())
+          , m_context(context)
     {
-        if (!core || !previewWidget)
-        {
-            qFatal("StageMosaicDialog requires ScopeOneCore and PreviewWidget");
-        }
-
         setWindowTitle(tr("Stage Mosaic"));
         setupUI();
         refreshDevices();
@@ -135,11 +129,28 @@ namespace scopeone::ui
                     m_statusLabel->setText(message);
                 });
         connect(m_core, &ScopeOneCore::stageMosaicFinished,
-                this, [this](const std::shared_ptr<ScopeOneCore::RecordingSessionData>&,
-                             const QString&,
+                this, [this](const std::shared_ptr<ScopeOneCore::RecordingSessionData>& session,
+                             const QString& message,
                              bool)
                 {
                     setMosaicRunning(false);
+                    if (!session)
+                    {
+                        m_context.showToolStatus(message, 8000);
+                        return;
+                    }
+                    m_context.presentSession(
+                        session, tr("Stage Mosaic %1").arg(session->cameraIds().value(0)));
+                    m_core->removeStaticFrame(QStringLiteral("stage_mosaic"));
+                });
+        connect(m_core, &ScopeOneCore::stageMosaicFrameUpdated,
+                this, [this](const scopeone::core::ImageFrame&)
+                {
+                    const QString layerKey = ScopeOneCore::staticLayerKey(
+                        QStringLiteral("stage_mosaic"));
+                    m_core->imageSceneModel()->setLayerColormap(layerKey, QStringLiteral("Gray"));
+                    m_core->imageSceneModel()->setLayerBlending(layerKey, QStringLiteral("Opaque"));
+                    m_context.showLayers({layerKey});
                 });
         const ScopeOneCore::StageMosaicStatus status = m_core->stageMosaicStatus();
         if (status.state == ScopeOneCore::StageMosaicState::Running)
@@ -293,9 +304,7 @@ namespace scopeone::ui
         }
         setMosaicRunning(true);
         m_statusLabel->setText(tr("Starting mosaic capture"));
-        m_core->imageSceneModel()->setVisibleLayers(
-            {scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
-        m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
+        m_context.showLayers({scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
     }
 
     // Request cancellation after the current stage move
@@ -319,18 +328,12 @@ namespace scopeone::ui
     }
 
     // Create a particle detection tool
-    ParticleDetectionDialog::ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
-                                                     PreviewWidget* previewWidget,
+    ParticleDetectionDialog::ParticleDetectionDialog(ScopeOneToolContext& context,
                                                      QWidget* parent)
         : QDialog(parent)
-          , m_core(core)
-          , m_previewWidget(previewWidget)
+          , m_core(&context.core())
+          , m_context(context)
     {
-        if (!core || !previewWidget)
-        {
-            qFatal("ParticleDetectionDialog requires ScopeOneCore and PreviewWidget");
-        }
-
         setWindowTitle(tr("Particle Detection"));
         setupUI();
         connect(m_core, &ScopeOneCore::particleDetectionFinished,
@@ -534,9 +537,8 @@ namespace scopeone::ui
         m_core->imageSceneModel()->setLayerBlending(maskLayer, QStringLiteral("Additive"));
         m_core->imageSceneModel()->setLayerVisible(
             scopeone::core::ScopeOneCore::rawLayerKey(cameraId), true);
-        m_core->imageSceneModel()->setVisibleLayers(
+        m_context.showLayers(
             {scopeone::core::ScopeOneCore::rawLayerKey(cameraId), maskLayer});
-        m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
         m_statusLabel->setText(
             result.truncated
                 ? tr("Detected at least %1 particle(s)").arg(result.particles.size())

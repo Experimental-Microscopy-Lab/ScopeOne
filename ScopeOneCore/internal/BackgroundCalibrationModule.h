@@ -31,7 +31,7 @@ namespace scopeone::core::internal
     class BackgroundCalibrationModule : public ProcessingModule
     {
     public:
-        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::BackgroundCalibration; }
+        QString id() const override { return QStringLiteral("background_calibration"); }
         QString name() const override { return "Background Calibration"; }
         QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;

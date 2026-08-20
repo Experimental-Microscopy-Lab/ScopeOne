@@ -24,6 +24,7 @@ namespace scopeone::core
         HardwareProviderDescriptor descriptor() const override;
         QList<HardwareDeviceDescriptor> devices() const override;
         void setFrameSink(FrameSink sink) override;
+        void setPreviewStateSink(PreviewStateSink sink) override;
         bool startPreview() override;
         bool stopPreview() override;
         bool startPreviewFor(const QString& cameraId) override;
@@ -71,6 +72,7 @@ namespace scopeone::core
         double m_exposureMs{10.0};
         quint64 m_frameIndex{0};
         FrameSink m_frameSink;
+        PreviewStateSink m_previewStateSink;
         QTimer m_timer;
         mutable QMutex m_mutex;
     };

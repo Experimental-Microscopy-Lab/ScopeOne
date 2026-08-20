@@ -80,6 +80,14 @@ namespace scopeone::core::internal
         }
     }
 
+    void MicroManagerProvider::setPreviewStateSink(PreviewStateSink sink)
+    {
+        if (m_cameraProvider)
+        {
+            m_cameraProvider->setPreviewStateSink(std::move(sink));
+        }
+    }
+
     bool MicroManagerProvider::startPreview()
     {
         return m_cameraProvider && m_cameraProvider->startPreview();
@@ -391,24 +399,26 @@ namespace scopeone::core::internal
         return m_cameraProvider && m_cameraProvider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
-    void MicroManagerProvider::setFrameDeliveryPaused(bool paused)
+    void MicroManagerProvider::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
     {
         if (m_cameraRuntimeControl)
         {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(paused);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(cameraIds, paused);
         }
     }
 
-    bool MicroManagerProvider::setRecordingFrameDeliveryEnabled(bool enabled)
+    bool MicroManagerProvider::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                                                 bool enabled)
     {
         return !m_cameraRuntimeControl
-            || m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(enabled);
+            || m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(cameraIds, enabled);
     }
 
-    bool MicroManagerProvider::setHighRateFrameDeliveryEnabled(bool enabled)
+    bool MicroManagerProvider::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                                                bool enabled)
     {
         return !m_cameraRuntimeControl
-            || m_cameraRuntimeControl->setHighRateFrameDeliveryEnabled(enabled);
+            || m_cameraRuntimeControl->setHighRateFrameDeliveryEnabled(cameraIds, enabled);
     }
 
     bool MicroManagerProvider::isProcessingFrameTokenCurrent(const QString& cameraId,

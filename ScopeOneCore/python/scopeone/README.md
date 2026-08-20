@@ -163,8 +163,8 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.processing_state()`
 - `ScopeOne.processing_modules()`
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
-- `ScopeOne.set_realtime_processing(enabled)`
-- `ScopeOne.start_processing()`
+- `ScopeOne.set_realtime_processing(enabled, camera_id=None)`
+- `ScopeOne.start_processing(camera_id=None)`
 - `ScopeOne.stop_processing()`
 - `ScopeOne.add_processing_module(kind, parameters=None)`
 - `ScopeOne.remove_processing_module(index)`
@@ -286,9 +286,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
-- `processing_modules`: response `bitDepth`, `realTime`, and `modules`.
+- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`.
 - `set_processing_bit_depth`: fields `bitDepth`, accepts `8` or `16`.
-- `set_realtime_processing`: fields `enabled`.
+- `set_realtime_processing`: fields `enabled` and optional `cameraId`; an empty camera ID selects all cameras.
 - `add_processing_module`: fields `kind`, optional `parameters`; response `index`.
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
@@ -332,7 +332,7 @@ For timed MDA with more than one time point, `order` must begin with `time` so e
 
 The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
 
-Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. `add_processing_module` accepts `fft`, `background_calibration`, `spatiotemporal_binning`, `gaussian_blur`, and `differential_rolling`.
+Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes modules supplied by installed processing plugins.
 
 ### Frame transfer
 

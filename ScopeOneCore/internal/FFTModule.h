@@ -22,7 +22,7 @@ namespace scopeone::core::internal
             BandpassImage = 2
         };
 
-        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::FFT; }
+        QString id() const override { return QStringLiteral("fft"); }
         QString name() const override { return "FFT"; }
         QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;

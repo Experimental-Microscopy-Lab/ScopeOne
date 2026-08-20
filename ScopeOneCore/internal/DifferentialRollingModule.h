@@ -10,7 +10,7 @@ namespace scopeone::core::internal
     class DifferentialRollingModule : public ProcessingModule
     {
     public:
-        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::DifferentialRolling; }
+        QString id() const override { return QStringLiteral("differential_rolling"); }
         QString name() const override { return "Differential Rolling"; }
         QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;

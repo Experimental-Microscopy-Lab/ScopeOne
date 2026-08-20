@@ -992,7 +992,9 @@ class ExternalClient:
         return {
             "bitDepth": int(response.get("bitDepth", 0)),
             "realTime": bool(response.get("realTime", False)),
+            "realTimeSource": str(response.get("realTimeSource", "")),
             "modules": list(response.get("modules", [])),
+            "availableModules": list(response.get("availableModules", [])),
         }
 
     def processing_modules(self) -> list[dict]:
@@ -1006,18 +1008,19 @@ class ExternalClient:
             }
         )
 
-    def set_realtime_processing(self, enabled: bool) -> bool:
-        self._request(
-            {
-                "type": "set_realtime_processing",
-                "enabled": bool(enabled),
-            }
-        )
+    def set_realtime_processing(self, enabled: bool, camera_id: str | None = None) -> bool:
+        request = {
+            "type": "set_realtime_processing",
+            "enabled": bool(enabled),
+        }
+        if camera_id is not None:
+            request["cameraId"] = str(camera_id)
+        self._request(request)
         return True
 
     def add_processing_module(
         self,
-        kind: str | int,
+        kind: str,
         parameters: dict | None = None,
     ) -> int:
         request = {

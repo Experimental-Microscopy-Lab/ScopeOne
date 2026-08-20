@@ -25,6 +25,7 @@ namespace scopeone::core::internal
         ~CameraManager() override;
 
         void setFrameSink(FrameSink sink) override;
+        void setPreviewStateSink(PreviewStateSink sink) override;
 
         bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                    const QString& cameraId,
@@ -44,9 +45,11 @@ namespace scopeone::core::internal
         bool startPreviewFor(const QString& cameraId) override;
         bool stopPreviewFor(const QString& cameraId) override;
         bool isPreviewRunning(const QString& cameraId) const override;
-        void setFrameDeliveryPaused(bool paused) override;
-        bool setRecordingFrameDeliveryEnabled(bool enabled) override;
-        bool setHighRateFrameDeliveryEnabled(bool enabled) override;
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                              bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                             bool enabled) override;
         bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
         void finishProcessingFrame(const QString& cameraId, quint64 token) override;
 
@@ -89,6 +92,7 @@ namespace scopeone::core::internal
         ProcessingFrameGate m_processingFrameGate;
         std::unique_ptr<CameraBackend> m_backend;
         FrameSink m_frameSink;
+        PreviewStateSink m_previewStateSink;
         bool m_recordingFrameDeliveryEnabled{false};
         bool m_highRateFrameDeliveryEnabled{false};
         QMap<QString, QStringList> m_propertyNamesCache;

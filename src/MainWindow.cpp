@@ -287,17 +287,7 @@ namespace scopeone::ui
                     m_propertyBrowser->setEnabled(!configurationRunning);
                     m_configPresetWidget->setEnabled(!configurationRunning);
                     m_deviceControlWidget->setEnabled(!configurationRunning);
-                    m_scaleAction->setEnabled(!configurationRunning && !m_scopeonecore->cameraIds().isEmpty());
-                    m_stageMosaicAction->setEnabled(!configurationRunning);
-                    m_particleDetectionAction->setEnabled(!configurationRunning);
-                    if (m_stageMosaicDialog)
-                    {
-                        m_stageMosaicDialog->setEnabled(!configurationRunning);
-                    }
-                    if (m_particleDetectionDialog)
-                    {
-                        m_particleDetectionDialog->setEnabled(!configurationRunning);
-                    }
+                    m_toolRegistry->setEnabled(!configurationRunning);
 
                     const QStringList cameraIds = m_scopeonecore->cameraIds();
                     if (cameraIds.isEmpty())
@@ -324,6 +314,15 @@ namespace scopeone::ui
                             showStatusMessage(tr("%1 camera(s) ready").arg(cameraIds.size()), 5000);
                         }
                     }
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::hardwareDevicesChanged,
+                this, [this]()
+                {
+                    if (m_scopeonecore->configurationOperationRunning()) return;
+                    const QStringList cameraIds = m_scopeonecore->cameraIds();
+                    if (cameraIds.isEmpty()) applyNoCameraState();
+                    else applyLoadedCameraState(cameraIds);
+                    refreshDevicePanels(false);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationLoadFinished,
                 this,
@@ -634,6 +633,17 @@ namespace scopeone::ui
                     }
                     m_imageSceneModel->setVisibleLayers(visibleLayerKeys);
                 });
+        connect(m_imageProcessingWidget, &ImageProcessingWidget::processedLayerReady,
+                this, [this](const QString& layerKey)
+                {
+                    showLayers({layerKey});
+                    showStatusMessage(tr("Processed image added to preview"), 5000);
+                });
+        connect(m_imageProcessingWidget, &ImageProcessingWidget::processedStackReady,
+                this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    presentSession(session, tr("Processed Stack"));
+                });
 
         connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
         connect(m_fullScreenAction, &QAction::toggled,
@@ -645,52 +655,8 @@ namespace scopeone::ui
                 this, &MainWindow::loadConfigurationFromDialog);
         connect(m_unloadConfigurationAction, &QAction::triggered,
                 this, &MainWindow::unloadConfigurationWithConfirmation);
-        connect(m_stageMosaicAction, &QAction::triggered,
-                this, &MainWindow::openStageMosaicTool);
-        connect(m_particleDetectionAction, &QAction::triggered,
-                this, &MainWindow::openParticleDetectionTool);
-        connect(m_scaleAction, &QAction::triggered,
-                this, &MainWindow::openScaleDialog);
         connect(m_settingsAction, &QAction::triggered,
                 this, &MainWindow::openSettingsDialog);
-
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMosaicFrameUpdated,
-                this, [this](const scopeone::core::ImageFrame&)
-                {
-                    const QString layerKey =
-                        scopeone::core::ScopeOneCore::staticLayerKey(QStringLiteral("stage_mosaic"));
-                    m_imageSceneModel->setLayerColormap(layerKey, QStringLiteral("Gray"));
-                    m_imageSceneModel->setLayerBlending(layerKey, QStringLiteral("Opaque"));
-                    m_imageSceneModel->setVisibleLayers({layerKey});
-                    m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
-                });
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stageMosaicFinished,
-                this,
-                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-                       const QString& message,
-                       bool)
-                {
-                    if (!session)
-                    {
-                        showStatusMessage(message, 8000);
-                        return;
-                    }
-                    const QString title = tr("Stage Mosaic %1").arg(session->cameraIds().value(0));
-                    m_imageGalleryWidget->addSession(session, title);
-                    m_scopeonecore->removeStaticFrame(QStringLiteral("stage_mosaic"));
-                    registerGallerySessionFrameControls(session, 0);
-                    for (const QString& cameraId : session->recordedCameraIds())
-                    {
-                        if (session->recordedFrameCount(cameraId) > 0)
-                        {
-                            updateGalleryLayerFrame(
-                                scopeone::core::ScopeOneCore::staticLayerKey(
-                                    gallerySessionLayerId(session, cameraId)),
-                                0);
-                        }
-                    }
-                    showStatusMessage(tr("Mosaic added to Gallery"), 5000);
-                });
 
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
@@ -824,6 +790,7 @@ namespace scopeone::ui
     {
         m_previewWidget = new PreviewWidget(m_imageSceneModel, this);
         setCentralWidget(m_previewWidget);
+        setupTools();
 
         setupStatusBar();
         setupDeviceControl();
@@ -835,6 +802,85 @@ namespace scopeone::ui
         setupRecording();
         setupImageGallery();
         updateDockWidgetMenu();
+    }
+
+    // Register built in tools and discover external tool plugins
+    void MainWindow::setupTools()
+    {
+        m_toolRegistry = std::make_unique<ToolRegistry>(*this);
+        m_toolRegistry->registerTool(
+            {QStringLiteral("scopeone.scale"), tr("&Scale..."), {}, ToolWindowMode::Modal, true},
+            [](ScopeOneToolContext& context, QWidget* parent)
+            {
+                return new CameraScaleDialog(&context.core(), parent);
+            });
+        m_toolRegistry->registerTool(
+            {QStringLiteral("scopeone.stage_mosaic"), tr("Stage &Mosaic..."), {},
+             ToolWindowMode::ModelessSingleton},
+            [](ScopeOneToolContext& context, QWidget* parent)
+            {
+                return new StageMosaicDialog(context, parent);
+            });
+        m_toolRegistry->registerTool(
+            {QStringLiteral("scopeone.particle_detection"), tr("&Particle Detection..."), {},
+             ToolWindowMode::ModelessSingleton},
+            [](ScopeOneToolContext& context, QWidget* parent)
+            {
+                return new ParticleDetectionDialog(context, parent);
+            });
+
+        const QString pluginDirectory = QDir(QCoreApplication::applicationDirPath())
+                                            .filePath(QStringLiteral("plugins/tools"));
+        for (const QString& error : m_toolRegistry->loadPlugins(pluginDirectory))
+        {
+            qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
+        }
+    }
+
+    scopeone::core::ScopeOneCore& MainWindow::core() const
+    {
+        return *m_scopeonecore;
+    }
+
+    QString MainWindow::currentLayerKey() const
+    {
+        return m_deviceControlWidget->currentLayerKey();
+    }
+
+    void MainWindow::showLayers(const QStringList& layerKeys, bool sideBySide)
+    {
+        m_imageSceneModel->setVisibleLayers(layerKeys);
+        m_previewWidget->setLayerLayoutMode(
+            sideBySide ? PreviewWidget::LayerLayoutMode::SideBySide
+                       : PreviewWidget::LayerLayoutMode::Overlay);
+    }
+
+    void MainWindow::showToolStatus(const QString& message, int timeoutMs)
+    {
+        showStatusMessage(message, timeoutMs);
+    }
+
+    void MainWindow::presentSession(
+        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+        const QString& title)
+    {
+        if (!session)
+        {
+            return;
+        }
+        m_imageGalleryWidget->addSession(session, title);
+        registerGallerySessionFrameControls(session, 0);
+        for (const QString& cameraId : session->recordedCameraIds())
+        {
+            if (session->recordedFrameCount(cameraId) > 0)
+            {
+                updateGalleryLayerFrame(
+                    scopeone::core::ScopeOneCore::staticLayerKey(
+                        gallerySessionLayerId(session, cameraId)),
+                    0);
+            }
+        }
+        showStatusMessage(tr("Images added to Gallery"), 5000);
     }
 
     // Create the shared status strip for transient and persistent state
@@ -898,10 +944,7 @@ namespace scopeone::ui
         m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
 
         m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
-        m_scaleAction = m_toolsMenu->addAction(tr("&Scale..."));
-        m_scaleAction->setEnabled(!m_scopeonecore->cameraIds().isEmpty());
-        m_stageMosaicAction = m_toolsMenu->addAction(tr("Stage &Mosaic..."));
-        m_particleDetectionAction = m_toolsMenu->addAction(tr("&Particle Detection..."));
+        m_toolRegistry->populateMenu(m_toolsMenu, this);
         m_toolsMenu->addSeparator();
         m_settingsAction = m_toolsMenu->addAction(tr("&Settings..."));
 
@@ -1144,6 +1187,7 @@ namespace scopeone::ui
         }
 
         m_recordingWidget->setAvailableCameras(cameraIds);
+        m_toolRegistry->updateActions();
     }
 
     // Clear preview and panel state when no camera is available
@@ -1162,6 +1206,7 @@ namespace scopeone::ui
         m_inspectWidget->clearCrossSectionProfile();
 
         m_recordingWidget->setAvailableCameras({});
+        m_toolRegistry->updateActions();
     }
 
     // Refresh panels that mirror device state
@@ -1509,42 +1554,6 @@ namespace scopeone::ui
         showStatusMessage(
             tr("Settings updated"),
             5000);
-    }
-
-    // Edit the global per camera image scale
-    void MainWindow::openScaleDialog()
-    {
-        CameraScaleDialog dialog(m_scopeonecore, this);
-        dialog.exec();
-    }
-
-    // Open the stage driven image mosaic tool
-    void MainWindow::openStageMosaicTool()
-    {
-        if (!m_stageMosaicDialog)
-        {
-            auto* dialog = new StageMosaicDialog(m_scopeonecore, m_previewWidget, this);
-            dialog->setAttribute(Qt::WA_DeleteOnClose);
-            dialog->setModal(false);
-            m_stageMosaicDialog = dialog;
-        }
-        m_stageMosaicDialog->show();
-        m_stageMosaicDialog->raise();
-        m_stageMosaicDialog->activateWindow();
-    }
-
-    // Open the OpenCV particle detection tool
-    void MainWindow::openParticleDetectionTool()
-    {
-        if (!m_particleDetectionDialog)
-        {
-            m_particleDetectionDialog = new ParticleDetectionDialog(m_scopeonecore, m_previewWidget, this);
-            m_particleDetectionDialog->setAttribute(Qt::WA_DeleteOnClose);
-            m_particleDetectionDialog->setModal(false);
-        }
-        m_particleDetectionDialog->show();
-        m_particleDetectionDialog->raise();
-        m_particleDetectionDialog->activateWindow();
     }
 
     // Display image coordinates and pixel value under the cursor

@@ -14,6 +14,7 @@
 #include <QVariantMap>
 #include <QVector>
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "scopeone/HardwareTypes.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/ImageFrame.h"
+#include "scopeone/ProcessingPlugin.h"
 #include "scopeone/scopeone_core_export.h"
 
 class CMMCore;
@@ -51,7 +53,6 @@ namespace scopeone::core
 
     public:
         using RecordingAxis = scopeone::core::RecordingAxis;
-        using ProcessingModuleKind = scopeone::core::ProcessingModuleKind;
         using ProcessingBitDepth = scopeone::core::ProcessingBitDepth;
         using RecordingFileManifest = scopeone::core::RecordingFileManifest;
         using RecordingOutputManifest = scopeone::core::RecordingOutputManifest;
@@ -450,17 +451,20 @@ namespace scopeone::core
         class ProcessingModuleInfo
         {
         public:
-            ProcessingModuleKind kind() const { return m_kind; }
+            const QString& id() const { return m_id; }
             const QString& name() const { return m_name; }
             const QVariantMap& parameters() const { return m_parameters; }
-            void setKind(ProcessingModuleKind kind) { m_kind = kind; }
+            const ProcessingModuleDescriptor& descriptor() const { return m_descriptor; }
+            void setId(const QString& id) { m_id = id; }
             void setName(const QString& name) { m_name = name; }
             void setParameters(const QVariantMap& parameters) { m_parameters = parameters; }
+            void setDescriptor(const ProcessingModuleDescriptor& descriptor) { m_descriptor = descriptor; }
 
         private:
-            ProcessingModuleKind m_kind{ProcessingModuleKind::Unknown};
+            QString m_id;
             QString m_name;
             QVariantMap m_parameters;
+            ProcessingModuleDescriptor m_descriptor;
         };
 
         class DevicePropertyInfo
@@ -636,16 +640,23 @@ namespace scopeone::core
         bool setRealTimeProcessingEnabled(bool enabled);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
+        QString realTimeProcessingSource() const;
+        bool setRealTimeProcessingSource(const QString& cameraId);
         ProcessingRecipe processingRecipe() const;
         bool applyProcessingRecipe(const ProcessingRecipe& recipe, QString* errorMessage = nullptr);
         ImageFrame processFrame(const ImageFrame& frame) const;
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
+        QList<ProcessingModuleDescriptor> availableProcessingModules() const;
         QList<ProcessingModuleInfo> processingModules() const;
-        bool addProcessingModule(ProcessingModuleKind kind);
+        bool addProcessingModule(const QString& moduleId);
         bool removeProcessingModule(int index);
         bool setProcessingModuleParameters(int index, const QVariantMap& parameters);
         bool resetProcessingModuleState(int index);
+        quint64 requestLayerProcessing(const QString& layerKey);
+        quint64 requestRecordingSessionStackProcessing(const QString& sessionId,
+                                                       const QString& cameraId);
+        bool cancelProcessingRequest(quint64 requestId);
 
 
         void setRecordingMaxPendingWriteBytes(qint64 bytes);
@@ -686,6 +697,9 @@ namespace scopeone::core
         void configurationUnloadFinished(bool success, const QString& errorMessage);
         void hardwareConfigurationChanged();
         void hardwareDevicesChanged();
+        void hardwareProviderRegistrationFinished(const QString& providerId,
+                                                  bool success,
+                                                  const QString& errorMessage);
         void deviceStateChanged();
         void stagePositionChanged();
         void stageMoveFinished(quint64 commandId,
@@ -727,6 +741,15 @@ namespace scopeone::core
         void processingModulesChanged();
         void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
+        void layerProcessingFinished(quint64 requestId,
+                                     const QString& sourceLayerKey,
+                                     const ImageFrame& frame,
+                                     const QString& errorMessage);
+        void stackProcessingProgress(quint64 requestId, qint64 completed, qint64 total);
+        void stackProcessingFinished(
+            quint64 requestId,
+            const std::shared_ptr<RecordingSessionData>& session,
+            const QString& errorMessage);
 
         void recordingProgressChanged(int phase,
                                       qint64 frameCurrent,
@@ -750,6 +773,7 @@ namespace scopeone::core
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
         void recordingSessionSaveFinished(const std::shared_ptr<RecordingSessionData>& session);
         void recordingSessionClosed(const QString& sessionId);
+        void recordingSessionsChanged();
         void recordingSessionFrameReady(
             quint64 requestId,
             const std::shared_ptr<RecordingSessionData>& session,
@@ -872,12 +896,14 @@ namespace scopeone::core
         std::unique_ptr<QThreadPool> m_hardwareThreadPool;
         std::unique_ptr<QThreadPool> m_analysisThreadPool;
         std::unique_ptr<QThreadPool> m_sessionFrameThreadPool;
+        std::unique_ptr<QThreadPool> m_offlineProcessingThreadPool;
         QString m_activeHistogramLayerKey;
         quint64 m_nextHistogramSequence{0};
         QElapsedTimer m_lineProfileUpdateTimer;
         QElapsedTimer m_previewPublishTimer;
         QTimer* m_previewFlushTimer{nullptr};
         QSet<const RecordingSessionData*> m_sessionsSaving;
+        QSet<QString> m_pendingProviderRegistrations;
         enum class ConfigurationState
         {
             Unloaded,
@@ -894,6 +920,9 @@ namespace scopeone::core
         quint64 m_nextAnalysisRequestId{0};
         quint64 m_analysisGeneration{0};
         quint64 m_nextSessionFrameRequestId{0};
+        QString m_realTimeProcessingSource;
+        QHash<quint64, std::shared_ptr<std::atomic_bool>> m_processingRequestCancelTokens;
+        quint64 m_nextProcessingRequestId{0};
     };
 }
 

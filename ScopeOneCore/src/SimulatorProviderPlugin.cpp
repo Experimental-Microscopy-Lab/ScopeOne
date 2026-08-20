@@ -9,7 +9,7 @@ namespace scopeone::core
                                           public DriverHostProviderPlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid)
+        Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "SimulatorProvider.json")
         Q_INTERFACES(scopeone::core::DriverHostProviderPlugin)
 
     public:

@@ -92,7 +92,7 @@ Outputs:
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_DriverHost.exe`
-- `install/bin/providers/ScopeOne_SimulatorProvider.dll`
+- `install/bin/plugins/hardware/ScopeOne_SimulatorProvider.dll`
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
@@ -103,6 +103,7 @@ The installed headers are the source of truth for the public API:
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
 - `HardwareProvider.h`, `HardwareCapabilities.h` and `CameraProvider.h` define provider discovery, device control and frame delivery.
 - `DriverHostProviderPlugin.h` defines the module factory used to load external providers in isolated DriverHost processes.
+- `ProcessingPlugin.h` defines processing module descriptors, runtime modules and the external processing plugin contract.
 - `HardwareTypes.h` defines provider-independent device identity, state and endpoint metadata.
 - `SimulatorProvider.h` provides an in-process reference provider.
 - `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
@@ -113,11 +114,21 @@ The installed headers are the source of truth for the public API:
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
-Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register in-process providers with `ScopeOneCore::registerHardwareProvider(...)`. Register an isolated module with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register in-process providers with `ScopeOneCore::registerHardwareProvider(...)`. Submit isolated module loading with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)` and observe `hardwareProviderRegistrationFinished` for the result. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
+
+## Plugin Boundaries
+
+- `plugins/hardware` contains native `HardwareProvider` modules. Each provider runs in an isolated DriverHost process. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne plugins.
+- `plugins/processing` contains `ProcessingPlugin` modules loaded by ScopeOneCore. A plugin publishes stable module IDs, parameter descriptors and factories. Built-in processing methods use the same registry.
+- `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. These receive a restricted UI context rather than direct access to `MainWindow` or `PreviewWidget`. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
+
+Hardware and processing contracts are installed public Core APIs. Desktop tool plugins target the ScopeOne application UI contract.
 
 ## Processing Data Flow
 
-`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved OME-TIFF, OME-Zarr, TIFF and binary recording outputs are read back asynchronously through `ScopeOneCore::requestRecordingSessionFrame(...)`. Live preview processing and synchronous API processing use separate runtime pipeline state so offline frame edits do not change live module buffers.
+`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Processing recipes persist stable module IDs rather than registry positions. Available modules and their parameter descriptors come from the processing registry. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved OME-TIFF, OME-Zarr, TIFF and binary recording outputs are read back asynchronously through `ScopeOneCore::requestRecordingSessionFrame(...)`.
+
+Real-time processing can consume all camera streams or one camera selected with `setRealTimeProcessingSource(...)`. `requestLayerProcessing(...)` applies an isolated pipeline to one current image layer. `requestRecordingSessionStackProcessing(...)` applies one stateful isolated runtime to a complete session camera stack, reports progress, supports cancellation and creates a new in-memory Gallery session. These offline paths do not change live module buffers.
 
 Raw live frames, processed live frames, static tool/gallery frames, external API frames and session frame sources are routed through the core frame graph. UI preview widgets keep only a render cache, and callers should use `ScopeOneCore` frame facade methods instead of reading camera managers, recording sessions or preview cache state directly.
 

@@ -71,6 +71,21 @@ ScopeOne/
 
 ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zstd and crc32c under its own `third_party` directory. It builds these dependencies from source without downloading packages during CMake configuration.
 
+### Plugin layout
+
+ScopeOne discovers optional extensions beside the application executable:
+
+```text
+plugins/
+  hardware/     Native hardware providers loaded in isolated DriverHost processes
+  processing/   Image-processing modules loaded by ScopeOneCore
+  tools/        Optional desktop tools loaded by the Qt application
+```
+
+Micro-Manager remains the built-in hardware provider and continues to load its Device Adapters from `.cfg` files. Native devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. Built-in and external processing modules share stable string IDs and parameter descriptors, so the Image Processing panel creates the same controls for both. Built-in desktop tools and external tool plugins likewise share the tool registry.
+
+The Image Processing panel can process all live cameras or one selected camera. It can also run the current pipeline once on an image layer or across every frame of a recorded Gallery session stack. Stack processing runs in the background, preserves temporal module state across the stack, supports cancellation, and creates a new Gallery session without changing live pipeline state.
+
 **Windows Build Steps:**
 
 1. Build and install `ScopeOneCore`:
