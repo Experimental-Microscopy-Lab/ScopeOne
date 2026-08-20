@@ -51,6 +51,7 @@ namespace scopeone::ui
         QCheckBox* m_scanImageCheck{nullptr};
         QSpinBox* m_scanWidthSpin{nullptr};
         QSpinBox* m_scanHeightSpin{nullptr};
+        QSpinBox* m_scanGainSpin{nullptr};
         QComboBox* m_frameStartMarkerCombo{nullptr};
         QComboBox* m_lineStartMarkerCombo{nullptr};
         QComboBox* m_lineEndMarkerCombo{nullptr};

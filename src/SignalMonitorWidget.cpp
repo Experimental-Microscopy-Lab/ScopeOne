@@ -278,6 +278,11 @@ namespace scopeone::ui
         m_scanHeightSpin->setRange(1, 8192);
         m_scanHeightSpin->setValue(256);
         traceForm->addRow(tr("Height"), m_scanHeightSpin);
+        m_scanGainSpin = new QSpinBox(this);
+        m_scanGainSpin->setRange(1, 65535);
+        m_scanGainSpin->setValue(1000);
+        m_scanGainSpin->setSuffix(tr(" x"));
+        traceForm->addRow(tr("Gain"), m_scanGainSpin);
         const auto markerCombo = [this](quint32 value)
         {
             auto* combo = new QComboBox(this);
@@ -334,6 +339,7 @@ namespace scopeone::ui
             const bool editable = enabled && m_scanImageCheck->isEnabled();
             m_scanWidthSpin->setEnabled(editable);
             m_scanHeightSpin->setEnabled(editable);
+            m_scanGainSpin->setEnabled(editable);
             m_frameStartMarkerCombo->setEnabled(editable);
             m_lineStartMarkerCombo->setEnabled(editable);
             m_lineEndMarkerCombo->setEnabled(editable);
@@ -353,6 +359,7 @@ namespace scopeone::ui
         m_scanImageCheck->setChecked(false);
         m_scanWidthSpin->setEnabled(false);
         m_scanHeightSpin->setEnabled(false);
+        m_scanGainSpin->setEnabled(false);
         m_frameStartMarkerCombo->setEnabled(false);
         m_lineStartMarkerCombo->setEnabled(false);
         m_lineEndMarkerCombo->setEnabled(false);
@@ -511,6 +518,7 @@ namespace scopeone::ui
         config.scanImage.enabled = m_scanImageCheck->isChecked();
         config.scanImage.width = m_scanWidthSpin->value();
         config.scanImage.height = m_scanHeightSpin->value();
+        config.scanImage.gain = static_cast<quint32>(m_scanGainSpin->value());
         config.scanImage.frameStartMarker =
             m_frameStartMarkerCombo->currentData().toUInt();
         config.scanImage.lineStartMarker =
@@ -603,6 +611,7 @@ namespace scopeone::ui
         const bool scanEditable = enabled && m_scanImageCheck->isChecked();
         m_scanWidthSpin->setEnabled(scanEditable);
         m_scanHeightSpin->setEnabled(scanEditable);
+        m_scanGainSpin->setEnabled(scanEditable);
         m_frameStartMarkerCombo->setEnabled(scanEditable);
         m_lineStartMarkerCombo->setEnabled(scanEditable);
         m_lineEndMarkerCombo->setEnabled(scanEditable);

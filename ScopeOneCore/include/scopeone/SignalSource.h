@@ -71,6 +71,7 @@ namespace scopeone::core
         bool enabled{false};
         int width{256};
         int height{256};
+        quint32 gain{1};
         quint32 frameStartMarker{1};
         quint32 lineStartMarker{2};
         quint32 lineEndMarker{0};

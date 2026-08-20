@@ -33,6 +33,8 @@ namespace scopeone::core
             && m_config.enabled
             && m_config.width > 0
             && m_config.height > 0
+            && m_config.gain > 0
+            && m_config.gain <= (std::numeric_limits<quint16>::max)()
             && pixelCount <= 64LL * 1024LL * 1024LL;
     }
 
@@ -185,10 +187,10 @@ namespace scopeone::core
                                      / duration * m_config.width));
                 const int outputX = reverse ? m_config.width - 1 - x : x;
                 quint16& pixel = m_framePixels[m_nextRow * m_config.width + outputX];
-                if (pixel < (std::numeric_limits<quint16>::max)())
-                {
-                    ++pixel;
-                }
+                const quint32 amplified = static_cast<quint32>(pixel) + m_config.gain;
+                pixel = static_cast<quint16>((std::min)(
+                    amplified,
+                    static_cast<quint32>((std::numeric_limits<quint16>::max)())));
             }
             ++m_nextRow;
         }
