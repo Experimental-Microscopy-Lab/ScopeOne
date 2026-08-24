@@ -15,6 +15,7 @@
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
+#include "PluginManagerDialog.h"
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
@@ -36,6 +37,7 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyleHints>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTimer>
 #include <QUrl>
@@ -630,6 +632,19 @@ namespace scopeone::ui
                 {
                     updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
+                    m_imageWorkspace->openSession(session);
+                });
+        connect(m_deviceControlWidget, &DeviceControlWidget::snapRequested,
+                this, [this](const QString& target)
+                {
+                    if (!m_recordingWidget->snapToGallery(target))
+                    {
+                        showStatusMessage(tr("No current frame is available to capture"), 5000);
+                    }
+                    else
+                    {
+                        showStatusMessage(tr("Snapshot captured"), 3000);
+                    }
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped,
                 this,
@@ -788,6 +803,13 @@ namespace scopeone::ui
         {
             qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
         }
+        const QString userPluginDirectory =
+            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("plugins/tools"));
+        for (const QString& error : m_toolRegistry->loadPlugins(userPluginDirectory))
+        {
+            qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
+        }
     }
 
     scopeone::core::ScopeOneCore& MainWindow::core() const
@@ -891,6 +913,11 @@ namespace scopeone::ui
         m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
         m_toolRegistry->populateMenu(m_toolsMenu, this);
         m_toolsMenu->addSeparator();
+        auto* pluginManagerAction = m_toolsMenu->addAction(tr("Plugin &Manager..."));
+        connect(pluginManagerAction, &QAction::triggered, this, [this]()
+        {
+            PluginManagerDialog(this).exec();
+        });
         m_settingsAction = m_toolsMenu->addAction(tr("&Settings..."));
 
         m_helpMenu = menuBar()->addMenu(tr("&Help"));

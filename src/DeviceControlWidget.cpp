@@ -862,11 +862,17 @@ namespace scopeone::ui
         row++;
 
         m_previewToggleButton = new QPushButton("Start Preview");
-        m_previewToggleButton->setMinimumWidth(140);
         m_previewToggleButton->setMinimumHeight(30);
         connect(m_previewToggleButton, &QPushButton::clicked, this, &DeviceControlWidget::onPreviewToggleClicked);
-
-        layout->addWidget(m_previewToggleButton, row, 0, 1, 2);
+        m_snapButton = new QPushButton("Snap", group);
+        m_snapButton->setMinimumHeight(30);
+        m_snapButton->setToolTip(tr("Capture the latest frame from the selected target"));
+        connect(m_snapButton, &QPushButton::clicked, this, [this]()
+        {
+            emit snapRequested(m_currentTarget);
+        });
+        layout->addWidget(m_previewToggleButton, row, 0);
+        layout->addWidget(m_snapButton, row, 1);
 
         QHBoxLayout* roiLayout = new QHBoxLayout();
         m_drawROIButton = new QPushButton("Draw ROI", group);
@@ -1323,6 +1329,7 @@ namespace scopeone::ui
         m_cameraSelectCombo->setEnabled(canControlHardware && m_controlTargetEnabled);
         m_exposureLineEdit->setEnabled(canControlHardware);
         m_previewToggleButton->setEnabled(canControlHardware);
+        m_snapButton->setEnabled(canControlHardware);
         m_previewToggleButton->setText(m_previewRunning
                                            ? QStringLiteral("Stop Preview")
                                            : QStringLiteral("Start Preview"));

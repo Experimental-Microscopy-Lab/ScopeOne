@@ -32,6 +32,7 @@
 #include "internal/DriverHostProtocol.h"
 #include "scopeone/CameraProvider.h"
 #include "scopeone/DriverHostProviderPlugin.h"
+#include "scopeone/PluginManifest.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
 
@@ -1706,6 +1707,22 @@ namespace scopeone::core::internal
     {
         m_lastError.clear();
         m_pluginLoader = std::make_unique<QPluginLoader>(m_pluginPath);
+        PluginManifest manifest;
+        if (!parsePluginManifest(
+                m_pluginLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
+                PluginKind::Hardware,
+                manifest,
+                &m_lastError))
+        {
+            return false;
+        }
+        if (manifest.id != m_providerId
+            || manifest.metadata.value(QStringLiteral("providerId")).toString().trimmed()
+                   != m_providerId)
+        {
+            m_lastError = QStringLiteral("Provider manifest identity mismatch");
+            return false;
+        }
         QObject* const instance = m_pluginLoader->instance();
         if (!instance)
         {

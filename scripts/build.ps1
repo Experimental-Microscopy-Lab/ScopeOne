@@ -76,10 +76,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($target -notin @("all", "core", "gui", "scopewriter")) {
-    throw "Invalid target '$target'. Expected one of: all, core, gui, scopewriter."
+if ($target -notin @("all", "core", "gui", "plugins", "scopewriter")) {
+    throw "Invalid target '$target'. Expected one of: all, core, gui, plugins, scopewriter."
 }
-if ($package -and $target -in @("core", "scopewriter")) {
+if ($package -and $target -in @("core", "plugins", "scopewriter")) {
     throw "--package requires --target gui or --target all."
 }
 if ($run -and $target -eq "scopewriter") {
@@ -236,9 +236,14 @@ $writerBuildDir = Join-Path $writerBuildRoot "standalone"
 $writerInstallDir = Join-Path $writerSourceDir "install"
 $writerConsumerSourceDir = Join-Path $writerSourceDir "tests\consumer"
 $writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
+$pluginSourceDir = Join-Path $repoRoot "plugins\examples"
+$pluginBuildDir = Join-Path $repoRoot "build\plugins"
+$pluginInstallDir = Join-Path $coreInstallDir "bin"
 $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
+$pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
+$qtPrefixPath = "C:/Qt/6.11.0/msvc2022_64"
 
 if ($clean) {
     if ($target -eq "scopewriter") {
@@ -255,6 +260,10 @@ if ($clean) {
         Write-Step "Removing GUI build directory"
         Remove-Item -LiteralPath $guiBuildDir -Recurse -Force
     }
+    if ($target -in @("all", "plugins") -and (Test-Path $pluginBuildDir)) {
+        Write-Step "Removing plugin build directory"
+        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
+    }
     if ($target -in @("all", "core") -and (Test-Path $coreBuildDir)) {
         Write-Step "Removing ScopeOneCore build directory"
         Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
@@ -268,6 +277,17 @@ $guiConfigureOptionOverride = $guiConfigureOption.Count -gt 0
 
 $needCoreConfigure = $configure -or $coreConfigureOptionOverride -or -not (Test-Path $coreCachePath)
 $needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Path $guiCachePath)
+$pluginBuildFilesExist = (Test-Path (Join-Path $pluginBuildDir "ALL_BUILD.vcxproj")) -or
+    (Test-Path (Join-Path $pluginBuildDir "build.ninja")) -or
+    (Test-Path (Join-Path $pluginBuildDir "Makefile"))
+$needPluginConfigure = $configure -or -not (Test-Path $pluginCachePath) -or
+    -not $pluginBuildFilesExist
+$pluginCachedInstallPrefix = Normalize-CMakePath (
+    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_INSTALL_PREFIX")
+if ($pluginCachedInstallPrefix -and
+    $pluginCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
+    $needPluginConfigure = $true
+}
 
 $installPrefixOverride = Find-ConfigureOverride -Options $coreConfigureOption -Prefix "-DCMAKE_INSTALL_PREFIX="
 
@@ -401,6 +421,50 @@ if ($target -in @("all", "core")) {
     }
 }
 
+if ($target -in @("all", "plugins")) {
+    $coreConfigFile = Join-Path $coreInstallDir "lib\cmake\ScopeOneCore\ScopeOneCoreConfig.cmake"
+    if (-not (Test-Path $coreConfigFile)) {
+        throw "ScopeOneCore is not installed at $coreInstallDir. Build the core first."
+    }
+
+    if ($needPluginConfigure) {
+        Invoke-Step `
+            -Label "Configuring ScopeOne plugin examples" `
+            -FilePath $cmake `
+            -Arguments @(
+                "-S", $pluginSourceDir,
+                "-B", $pluginBuildDir,
+                "-DScopeOneCore_ROOT=$coreInstallDir",
+                "-DCMAKE_PREFIX_PATH=$qtPrefixPath;$coreInstallDir",
+                "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
+            ) `
+            -WorkingDirectory $repoRoot
+    }
+
+    Invoke-Step `
+        -Label "Building ScopeOne plugin examples ($config)" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--build", $pluginBuildDir,
+            "--config", $config,
+            "--parallel"
+        ) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Installing ScopeOne plugin examples" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--install", $pluginBuildDir,
+            "--config", $config
+        ) `
+        -WorkingDirectory $repoRoot
+
+    if ($target -eq "all") {
+        $needGuiConfigure = $true
+    }
+}
+
 if ($target -in @("all", "gui")) {
     if ($env:OS -eq "Windows_NT") {
         $guiBuildPrefix = [System.IO.Path]::GetFullPath($guiBuildDir).TrimEnd(
@@ -472,6 +536,9 @@ if ($target -eq "scopewriter") {
 }
 else {
     Write-Host "ScopeOneCore install: $coreInstallDir"
+    if ($target -in @("all", "plugins")) {
+        Write-Host "Plugin examples: $pluginBuildDir"
+    }
 }
 if ($target -ne "scopewriter") {
     if (Test-Path $guiExe) {

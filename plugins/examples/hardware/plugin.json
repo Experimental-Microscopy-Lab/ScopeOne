@@ -1,0 +1,9 @@
+{
+  "id": "example.hardware",
+  "name": "Example Hardware",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "hardware",
+  "providerId": "example.hardware",
+  "autoLoad": false
+}

@@ -3,6 +3,8 @@
 !/src/**
 !/ScopeOneCore/
 !/ScopeOneCore/**
+!/plugins/
+!/plugins/**
 /ScopeOneCore/install/
 /ScopeOneCore/build/
 /ScopeOneCore/external/*

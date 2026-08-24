@@ -1,0 +1,7 @@
+{
+  "id": "example.processing",
+  "name": "Example Processing",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "processing"
+}

@@ -25,9 +25,9 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMutex>
-#include <QPluginLoader>
 #include <QStringList>
 #include <QSysInfo>
+#include <QStandardPaths>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
@@ -1132,7 +1132,11 @@ namespace scopeone::core
             std::make_unique<internal::ProcessingModuleRegistry>();
         const QStringList processingPluginErrors = m_managers->processingModuleRegistry->loadPlugins(
             QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins/processing")));
-        for (const QString& error : processingPluginErrors)
+        QStringList allProcessingPluginErrors = processingPluginErrors;
+        allProcessingPluginErrors.append(m_managers->processingModuleRegistry->loadPlugins(
+            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("plugins/processing"))));
+        for (const QString& error : allProcessingPluginErrors)
         {
             qWarning().noquote() << QStringLiteral("Failed to load processing plugin %1").arg(error);
         }
@@ -1370,26 +1374,6 @@ namespace scopeone::core
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
 
-        const QDir hardwarePlugins(
-            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins/hardware")));
-        for (const QFileInfo& file : hardwarePlugins.entryInfoList(QDir::Files, QDir::Name))
-        {
-            QPluginLoader loader(file.absoluteFilePath());
-            const QJsonObject metadata = loader.metaData().value(QStringLiteral("MetaData")).toObject();
-            if (!metadata.value(QStringLiteral("autoLoad")).toBool())
-            {
-                continue;
-            }
-            const QString providerId = metadata.value(QStringLiteral("providerId")).toString().trimmed();
-            QString errorMessage;
-            if (providerId.isEmpty()
-                || !registerDriverHostProvider(providerId, file.absoluteFilePath(), {}, &errorMessage))
-            {
-                qWarning().noquote()
-                    << QStringLiteral("Failed to discover hardware plugin %1: %2")
-                           .arg(file.fileName(), errorMessage);
-            }
-        }
     }
 
     // Release loaded devices before the facade is destroyed

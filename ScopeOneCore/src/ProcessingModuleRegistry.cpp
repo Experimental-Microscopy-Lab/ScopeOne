@@ -5,6 +5,7 @@
 #include "internal/FFTModule.h"
 #include "internal/GaussianBlurModule.h"
 #include "internal/SpatiotemporalBinningModule.h"
+#include "scopeone/PluginManifest.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -230,6 +231,17 @@ namespace scopeone::core::internal
             }
 
             auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
+            PluginManifest manifest;
+            QString manifestError;
+            if (!parsePluginManifest(
+                    loader->metaData().value(QStringLiteral("MetaData")).toObject(),
+                    PluginKind::Processing,
+                    manifest,
+                    &manifestError))
+            {
+                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), manifestError));
+                continue;
+            }
             QObject* instance = loader->instance();
             auto* plugin = qobject_cast<ProcessingPlugin*>(instance);
             if (!plugin)

@@ -77,6 +77,7 @@ set(SCOPEONE_UI_SOURCES
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
         src/SettingsDialog.cpp
+        src/PluginManagerDialog.cpp
         src/DeviceControlWidget.cpp
         src/RecordingWidget.cpp
         src/DevicePropertyWidget.cpp
@@ -97,6 +98,7 @@ set(SCOPEONE_UI_HEADERS
         src/ConsoleWidget.h
         src/AboutDialog.h
         src/SettingsDialog.h
+        src/PluginManagerDialog.h
         src/DeviceControlWidget.h
         src/RecordingWidget.h
         src/DevicePropertyWidget.h
@@ -204,15 +206,17 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
     )
 endif ()
 
-set(SCOPEONE_PROVIDER_DIR "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/hardware")
-if (EXISTS "${SCOPEONE_PROVIDER_DIR}")
-    add_custom_command(TARGET ScopeOne POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${SCOPEONE_PROVIDER_DIR}"
-            "$<TARGET_FILE_DIR:ScopeOne>/plugins/hardware"
-    )
-    install(DIRECTORY "${SCOPEONE_PROVIDER_DIR}/" DESTINATION plugins/hardware)
-endif ()
+foreach (_plugin_kind IN ITEMS processing tools hardware)
+    set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/${_plugin_kind}")
+    if (EXISTS "${_plugin_dir}")
+        add_custom_command(TARGET ScopeOne POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_plugin_dir}"
+                "$<TARGET_FILE_DIR:ScopeOne>/plugins/${_plugin_kind}"
+        )
+        install(DIRECTORY "${_plugin_dir}/" DESTINATION "plugins/${_plugin_kind}")
+    endif ()
+endforeach ()
 
 if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)

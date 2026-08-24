@@ -225,8 +225,6 @@ namespace scopeone::ui
         connect(m_startStopButton, &QPushButton::clicked, this, &RecordingWidget::onStartStopClicked);
         connect(m_burstModeCheck, &QCheckBox::toggled, this, [this]() { updateUiState(); });
         connect(m_detectorCombo, &QComboBox::currentTextChanged, this, [this]() { updateUiState(); });
-        connect(m_snapToGalleryButton, &QPushButton::clicked, this,
-                [this]() { appendSelectedFramesToGallery(); });
         connect(m_saveDirLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_fileNameLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -437,13 +435,6 @@ namespace scopeone::ui
         captureLayout->addWidget(new QLabel("File Name:", this), 2, 0);
         captureLayout->addWidget(m_fileNameLineEdit, 2, 1);
         captureLayout->addWidget(m_autoNameButton, 2, 2);
-
-        auto* galleryRow = new QHBoxLayout();
-        galleryRow->setSpacing(6);
-        m_snapToGalleryButton = new QPushButton("Snap to Gallery", this);
-        galleryRow->addWidget(m_snapToGalleryButton);
-        captureLayout->addWidget(new QLabel("Gallery:", this), 3, 0);
-        captureLayout->addLayout(galleryRow, 3, 1, 1, 2);
 
         contentLayout->addWidget(captureGroup);
 
@@ -720,7 +711,6 @@ namespace scopeone::ui
         m_browseButton->setEnabled(editingEnabled);
         m_fileNameLineEdit->setEnabled(editingEnabled);
         m_autoNameButton->setEnabled(editingEnabled);
-        m_snapToGalleryButton->setEnabled(hasSelectedCameras);
         m_formatCombo->setEnabled(editingEnabled);
         const bool binaryFormat =
             m_formatCombo->currentData().toInt() == static_cast<int>(scopeone::core::RecordingFormat::Binary);
@@ -976,10 +966,19 @@ namespace scopeone::ui
         return true;
     }
 
-    // Captures latest selected frames into the gallery
-    bool RecordingWidget::appendSelectedFramesToGallery()
+    // Captures the Acquire target into the gallery
+    bool RecordingWidget::snapToGallery(const QString& target)
     {
-        const QStringList cameraIds = selectedCameraIds();
+        const QString normalizedTarget = target.trimmed();
+        QStringList cameraIds;
+        if (normalizedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        {
+            cameraIds = m_availableCameraIds;
+        }
+        else if (m_availableCameraIds.contains(normalizedTarget))
+        {
+            cameraIds = {normalizedTarget};
+        }
         if (cameraIds.isEmpty())
         {
             qWarning().noquote() << "No camera available for gallery capture";

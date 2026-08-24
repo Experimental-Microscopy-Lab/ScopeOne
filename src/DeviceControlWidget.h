@@ -61,6 +61,7 @@ namespace scopeone::ui
 
         void exposureValueChanged(double exposureMs);
         void controlTargetChanged(const QString& target);
+        void snapRequested(const QString& target);
         void stageMoveFailed(const QString& message);
 
         void requestDrawROI(const QString& cameraId);
@@ -155,6 +156,7 @@ namespace scopeone::ui
         QLabel* m_exposureLabel{nullptr};
 
         QPushButton* m_previewToggleButton{nullptr};
+        QPushButton* m_snapButton{nullptr};
         QComboBox* m_cameraSelectCombo{nullptr};
         QPushButton* m_drawROIButton{nullptr};
         QPushButton* m_halfROIButton{nullptr};

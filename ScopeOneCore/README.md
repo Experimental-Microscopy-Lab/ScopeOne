@@ -88,11 +88,11 @@ Outputs:
 - `build/Release/ScopeOneCore.dll`
 - `build/Release/ScopeOneCore.lib`
 - `build/Release/ScopeOne_DriverHost.exe`
-- `build/Release/ScopeOne_SimulatorProvider.dll`
+- The external hardware example is built under `plugins/examples/hardware`.
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_DriverHost.exe`
-- `install/bin/plugins/hardware/ScopeOne_SimulatorProvider.dll`
+- External hardware plugins are installed under `plugins/hardware`.
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
@@ -104,6 +104,8 @@ The installed headers are the source of truth for the public API:
 - `HardwareProvider.h`, `HardwareCapabilities.h` and `CameraProvider.h` define provider discovery, device control and frame delivery.
 - `DriverHostProviderPlugin.h` defines the module factory used to load external providers in isolated DriverHost processes.
 - `ProcessingPlugin.h` defines processing module descriptors, runtime modules and the external processing plugin contract.
+- `ToolPlugin.h` defines the restricted desktop tool context and external tool contract.
+- `PluginManifest.h` validates the common plugin identity and API version metadata.
 - `HardwareTypes.h` defines provider-independent device identity, state and endpoint metadata.
 - `SimulatorProvider.h` provides an in-process reference provider.
 - `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
@@ -121,6 +123,8 @@ Providers use ScopeOne logical device IDs and publish `ImageFrame` objects throu
 - `plugins/hardware` contains native `HardwareProvider` modules. Each provider runs in an isolated DriverHost process. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne plugins.
 - `plugins/processing` contains `ProcessingPlugin` modules loaded by ScopeOneCore. A plugin publishes stable module IDs, parameter descriptors and factories. Built-in processing methods use the same registry.
 - `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. These receive a restricted UI context rather than direct access to `MainWindow` or `PreviewWidget`. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
+
+External projects consume the exported `scopeone::PluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; incompatible manifests are rejected before the plugin instance is created.
 
 Hardware and processing contracts are installed public Core APIs. Desktop tool plugins target the ScopeOne application UI contract.
 

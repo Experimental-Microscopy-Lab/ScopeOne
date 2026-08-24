@@ -73,16 +73,15 @@ ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zs
 
 ### Plugin layout
 
-ScopeOne discovers optional extensions beside the application executable:
+ScopeOne loads external plugins from three directories beside the application:
 
-```text
-plugins/
-  hardware/     Native hardware providers loaded in isolated DriverHost processes
-  processing/   Image-processing modules loaded by ScopeOneCore
-  tools/        Optional desktop tools loaded by the Qt application
-```
+- `plugins/processing` adds processing modules to the shared pipeline
+- `plugins/tools` adds optional workflow windows to the Tools menu
+- `plugins/hardware` adds isolated hardware providers hosted by `ScopeOne_DriverHost`
 
-Micro-Manager remains the built-in hardware provider and continues to load its Device Adapters from `.cfg` files. Native devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. Built-in and external processing modules share stable string IDs and parameter descriptors, so the Image Processing panel creates the same controls for both. Built-in desktop tools and external tool plugins likewise share the tool registry.
+All plugins use the installed `scopeone::PluginSDK` CMake target and a common manifest with `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Minimal standalone projects are in `plugins/examples`.
+
+Micro-Manager remains the built-in hardware provider and continues to load its Device Adapters from `.cfg` files. Native devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract.
 
 The Image Processing panel can process all live cameras or one selected camera. Recorded images and stacks open in independent windows, and the active image viewer becomes the target for Layers, Inspect, Image Processing, and Save As. Processing the current image or complete stack runs in the background and opens the result in a new window; stack results also remain available in Gallery. Temporal module state is preserved across each stack without changing live pipeline state.
 

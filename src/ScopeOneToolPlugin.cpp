@@ -1,4 +1,5 @@
 #include "ScopeOneToolPlugin.h"
+#include "scopeone/PluginManifest.h"
 
 #include <QAction>
 #include <QDialog>
@@ -67,6 +68,17 @@ namespace scopeone::ui
                 continue;
             }
             auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
+            scopeone::core::PluginManifest manifest;
+            QString manifestError;
+            if (!scopeone::core::parsePluginManifest(
+                    loader->metaData().value(QStringLiteral("MetaData")).toObject(),
+                    scopeone::core::PluginKind::Tool,
+                    manifest,
+                    &manifestError))
+            {
+                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), manifestError));
+                continue;
+            }
             auto* plugin = qobject_cast<ScopeOneToolPlugin*>(loader->instance());
             if (!plugin)
             {

@@ -81,6 +81,7 @@ set(CORE_SOURCES
         src/DriverHostProviderProxy.cpp
         src/FrameRouter.cpp
         src/HardwareProvider.cpp
+        src/PluginManifest.cpp
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
         src/SimulatorProvider.cpp
@@ -114,6 +115,7 @@ set(CORE_HEADERS
         include/scopeone/HardwareCapabilities.h
         include/scopeone/HardwareTypes.h
         include/scopeone/HardwareProvider.h
+        include/scopeone/PluginManifest.h
         include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
         internal/HardwareRuntime.h
@@ -127,6 +129,7 @@ set(CORE_HEADERS
         internal/ProcessingModule.h
         internal/ProcessingModuleRegistry.h
         include/scopeone/ProcessingPlugin.h
+        include/scopeone/ToolPlugin.h
         internal/DriverHostProtocol.h
         internal/SharedFrameRing.h
         internal/DriverHostProviderProxy.h
@@ -147,6 +150,10 @@ set(CORE_HEADERS
 
 add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
+add_library(ScopeOnePluginSDK INTERFACE)
+add_library(scopeone::PluginSDK ALIAS ScopeOnePluginSDK)
+set_target_properties(ScopeOnePluginSDK PROPERTIES EXPORT_NAME PluginSDK)
+target_link_libraries(ScopeOnePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
 target_link_libraries(ScopeOneCore
         PUBLIC
         Qt::Core
@@ -230,13 +237,6 @@ target_link_directories(ScopeOne_DriverHost PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOne_DriverHost>)
 
-add_library(ScopeOne_SimulatorProvider MODULE
-        src/SimulatorProviderPlugin.cpp
-        src/SimulatorProvider.json
-)
-target_link_libraries(ScopeOne_SimulatorProvider PRIVATE ScopeOneCore Qt::Core)
-set_target_properties(ScopeOne_SimulatorProvider PROPERTIES PREFIX "")
-
 # Fast Release build
 # if (MSVC)
 #     target_compile_options(ScopeOneCore PRIVATE
@@ -273,7 +273,7 @@ write_basic_package_version_file(
         COMPATIBILITY SameMajorVersion
 )
 
-install(TARGETS ScopeOneCore
+install(TARGETS ScopeOneCore ScopeOnePluginSDK
         EXPORT ScopeOneCoreTargets
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -281,10 +281,6 @@ install(TARGETS ScopeOneCore
 )
 install(TARGETS ScopeOne_DriverHost
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
-install(TARGETS ScopeOne_SimulatorProvider
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/hardware"
-        LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/hardware"
 )
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

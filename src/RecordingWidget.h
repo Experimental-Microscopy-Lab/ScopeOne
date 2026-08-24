@@ -28,6 +28,7 @@ namespace scopeone::ui
         ~RecordingWidget() override;
 
         void setAvailableCameras(const QStringList& cameraIds);
+        bool snapToGallery(const QString& target);
 
     signals:
         void gallerySessionCaptured(
@@ -44,8 +45,6 @@ namespace scopeone::ui
         void updateStorageStatusText(qint64 availableBytes);
         void moveOrderItem(int delta);
         void syncOrderList();
-        bool appendSelectedFramesToGallery();
-
         QString getLastSaveDirectory() const;
         void setLastSaveDirectory(const QString& path);
         QString buildTimestampBaseName() const;
@@ -60,8 +59,6 @@ namespace scopeone::ui
         QPushButton* m_browseButton{nullptr};
         QLineEdit* m_fileNameLineEdit{nullptr};
         QPushButton* m_autoNameButton{nullptr};
-        QPushButton* m_snapToGalleryButton{nullptr};
-
         QCheckBox* m_compressionCheck{nullptr};
         QSpinBox* m_compressionLevelSpin{nullptr};
         QComboBox* m_formatCombo{nullptr};
