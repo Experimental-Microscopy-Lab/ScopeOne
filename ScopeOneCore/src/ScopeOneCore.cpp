@@ -2846,7 +2846,18 @@ namespace scopeone::core
                                           int maxParticles)
     {
         const QString key = layerKey.trimmed();
-        const ImageFrame frame = graphFrame(key);
+        return detectParticles(graphFrame(key), key,
+                               threshold, minArea, maxArea, maxParticles);
+    }
+
+    quint64 ScopeOneCore::detectParticles(const ImageFrame& frame,
+                                          const QString& resultLayerKey,
+                                          int threshold,
+                                          int minArea,
+                                          int maxArea,
+                                          int maxParticles)
+    {
+        const QString key = resultLayerKey.trimmed();
         if (key.isEmpty() || !frame.isValid())
         {
             return 0;
@@ -3965,11 +3976,10 @@ namespace scopeone::core
         return true;
     }
 
-    // Process one current graph layer without blocking the UI thread
-    quint64 ScopeOneCore::requestLayerProcessing(const QString& layerKey)
+    // Process one image without coupling the task to a UI layer
+    quint64 ScopeOneCore::requestImageProcessing(const ImageFrame& frame,
+                                                 const QString& sourceId)
     {
-        const QString sourceLayerKey = layerKey.trimmed();
-        const ImageFrame frame = graphFrame(sourceLayerKey);
         if (!frame.isValid() || processingModules().isEmpty())
         {
             return 0;
@@ -3982,13 +3992,13 @@ namespace scopeone::core
         const int bitDepth = static_cast<int>(processingBitDepth());
         auto* watcher = new QFutureWatcher<ProcessingResult>(this);
         connect(watcher, &QFutureWatcher<ProcessingResult>::finished,
-                this, [this, watcher, requestId, sourceLayerKey, cancelToken]()
+                this, [this, watcher, requestId, sourceId, cancelToken]()
                 {
                     ProcessingResult result = watcher->result();
                     m_processingRequestCancelTokens.remove(requestId);
-                    emit layerProcessingFinished(
+                    emit imageProcessingFinished(
                         requestId,
-                        sourceLayerKey,
+                        sourceId,
                         cancelToken->load() ? ImageFrame{} : result.frame,
                         cancelToken->load() ? QStringLiteral("Processing canceled") : result.error);
                     watcher->deleteLater();
@@ -4603,6 +4613,48 @@ namespace scopeone::core
         return true;
     }
 
+    // Queue one session copy for background writing
+    bool ScopeOneCore::queueRecordingSessionSave(
+        const std::shared_ptr<RecordingSessionData>& sourceSession,
+        const std::shared_ptr<RecordingSessionData>& saveSession,
+        const QString& cameraId)
+    {
+        if (!sourceSession || !saveSession || m_sessionsSaving.contains(sourceSession.get()))
+        {
+            return false;
+        }
+        saveSession->m_frames.clear();
+        saveSession->clearOutputFiles();
+        saveSession->m_manifest.output.streamedToDisk = false;
+        m_sessionsSaving.insert(sourceSession.get());
+        auto* watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished,
+                this, [this, watcher, sourceSession, saveSession, cameraId]()
+                {
+                    m_sessionsSaving.remove(sourceSession.get());
+                    if (cameraId.isEmpty())
+                    {
+                        sourceSession->applySaveStateFrom(*saveSession);
+                        registerRecordingSession(sourceSession);
+                        emit recordingSessionSaveFinished(sourceSession);
+                    }
+                    else
+                    {
+                        emit recordingSessionCameraSaveFinished(
+                            sourceSession,
+                            cameraId,
+                            saveSession->isSaved(),
+                            saveSession->saveMessage());
+                    }
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run([saveSession, sourceSession]()
+        {
+            return RecordingManager::saveSessionToDisk(saveSession, sourceSession);
+        }));
+        return true;
+    }
+
     // Save a completed session on a worker thread
     bool ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session)
     {
@@ -4610,50 +4662,27 @@ namespace scopeone::core
         {
             return false;
         }
-        if (m_sessionsSaving.contains(session.get()))
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
+        if (plan.metadataFileName.trimmed().isEmpty())
         {
-            return false;
+            plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+            saveSession->setCapturePlan(plan);
         }
-
-        ExperimentPlan capturePlan = session->capturePlan();
-        if (capturePlan.metadataFileName.trimmed().isEmpty())
-        {
-            capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
-            session->setCapturePlan(capturePlan);
-        }
-        const std::shared_ptr<RecordingSessionData> saveSession = session->cloneForSave();
-        m_sessionsSaving.insert(session.get());
-        auto* watcher = new QFutureWatcher<QString>(this);
-        connect(watcher, &QFutureWatcher<QString>::finished,
-                this,
-                [this, watcher, session, saveSession]()
-        {
-            session->applySaveStateFrom(*saveSession);
-            registerRecordingSession(session);
-            m_sessionsSaving.remove(session.get());
-            emit recordingSessionSaveFinished(session);
-            watcher->deleteLater();
-        });
-
-        const auto future = QtConcurrent::run([saveSession]()
-        {
-            return RecordingManager::saveSessionToDisk(saveSession);
-        });
-        watcher->setFuture(future);
-        return true;
+        return queueRecordingSessionSave(session, saveSession);
     }
 
-    // Updates save options before dispatching the asynchronous writer
+    // Apply output options to a detached session copy before writing
     bool ScopeOneCore::saveRecordingSession(
         const std::shared_ptr<RecordingSessionData>& session,
         const RecordingSaveOptions& saveOptions)
     {
-        if (!session || m_sessionsSaving.contains(session.get()))
+        if (!session)
         {
             return false;
         }
-
-        ExperimentPlan plan = session->capturePlan();
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
         plan.format = saveOptions.format;
         plan.enableCompression = saveOptions.enableCompression;
         plan.compressionLevel = saveOptions.compressionLevel;
@@ -4665,8 +4694,65 @@ namespace scopeone::core
         {
             plan.baseName = saveOptions.baseName;
         }
-        session->setCapturePlan(plan);
-        return saveRecordingSession(session);
+        plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+        saveSession->setCapturePlan(plan);
+        return queueRecordingSessionSave(session, saveSession);
+    }
+
+    // Save only the camera stack represented by one image document
+    bool ScopeOneCore::saveRecordingSessionCamera(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const QString& cameraId,
+        const RecordingSaveOptions& saveOptions,
+        const ExperimentDocument* presentation)
+    {
+        const QString sourceCameraId = cameraId.trimmed();
+        if (!session || sourceCameraId.isEmpty()
+            || session->recordedFrameCount(sourceCameraId) <= 0)
+        {
+            return false;
+        }
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
+        plan.cameraIds = {sourceCameraId};
+        plan.format = saveOptions.format;
+        plan.enableCompression = saveOptions.enableCompression;
+        plan.compressionLevel = saveOptions.compressionLevel;
+        if (!saveOptions.saveDir.trimmed().isEmpty())
+        {
+            plan.saveDir = saveOptions.saveDir;
+        }
+        if (!saveOptions.baseName.trimmed().isEmpty())
+        {
+            plan.baseName = saveOptions.baseName;
+        }
+        plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+        saveSession->setCapturePlan(plan);
+        QList<AcquisitionEventRecord> cameraEvents;
+        for (const AcquisitionEventRecord& record : saveSession->m_manifest.events)
+        {
+            const auto frame = record.frames.constFind(sourceCameraId);
+            if (frame == record.frames.constEnd())
+            {
+                continue;
+            }
+            AcquisitionEventRecord cameraRecord = record;
+            cameraRecord.event.cameraIds = {sourceCameraId};
+            cameraRecord.frames = {{sourceCameraId, frame.value()}};
+            cameraEvents.append(std::move(cameraRecord));
+        }
+        saveSession->m_manifest.events = std::move(cameraEvents);
+        if (presentation)
+        {
+            filterRecordingPresentation(
+                *presentation, saveSession->m_manifest.layers, saveSession->m_manifest.markups);
+        }
+        else
+        {
+            saveSession->m_manifest.layers.clear();
+            saveSession->m_manifest.markups.clear();
+        }
+        return queueRecordingSessionSave(session, saveSession, sourceCameraId);
     }
 
     // Reads one recording frame on the serialized session IO worker

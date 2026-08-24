@@ -71,6 +71,7 @@ set(SCOPEONE_UI_SOURCES
         src/MainWindow.cpp
         src/ImageProcessingWidget.cpp
         src/ImageGalleryWidget.cpp
+        src/ImageWorkspace.cpp
         src/ImageToolsDialog.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
@@ -90,6 +91,7 @@ set(SCOPEONE_UI_HEADERS
         src/MainWindow.h
         src/ImageProcessingWidget.h
         src/ImageGalleryWidget.h
+        src/ImageWorkspace.h
         src/ImageToolsDialog.h
         src/PreviewWidget.h
         src/ConsoleWidget.h

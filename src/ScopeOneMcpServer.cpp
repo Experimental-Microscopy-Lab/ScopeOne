@@ -228,6 +228,77 @@ namespace
                 {},
                 ToolAccess::Confirmed),
             makeTool(
+                QStringLiteral("image_windows"),
+                QStringLiteral("List independent image windows and the active window")),
+            makeTool(
+                QStringLiteral("open_image_window"),
+                QStringLiteral("Open retained session images in independent image windows"),
+                inputProperties({
+                    {QStringLiteral("sessionId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Recording session ID"))},
+                    {QStringLiteral("title"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Optional window title"))},
+                    {QStringLiteral("cameraId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Optional camera ID filter"))}
+                }),
+                {QStringLiteral("sessionId")},
+                ToolAccess::StateChanging),
+            makeTool(
+                QStringLiteral("activate_image_window"),
+                QStringLiteral("Activate an independent image window"),
+                inputProperties({
+                    {QStringLiteral("documentId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Image window document ID"))}
+                }),
+                {QStringLiteral("documentId")},
+                ToolAccess::StateChanging),
+            makeTool(
+                QStringLiteral("close_image_window"),
+                QStringLiteral("Close an image window, or the active window when omitted"),
+                inputProperties({
+                    {QStringLiteral("documentId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Image window document ID"))}
+                }),
+                {},
+                ToolAccess::Destructive),
+            makeTool(
+                QStringLiteral("process_image_window"),
+                QStringLiteral("Process one frame or stack from an image window, using the active window when omitted"),
+                inputProperties({
+                    {QStringLiteral("documentId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Image window document ID"))},
+                    {QStringLiteral("completeStack"),
+                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Process the complete stack"), false)}
+                }),
+                {},
+                ToolAccess::StateChanging),
+            makeTool(
+                QStringLiteral("save_image_window"),
+                QStringLiteral("Save an image window to disk, using the active window when omitted"),
+                inputProperties({
+                    {QStringLiteral("documentId"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Image window document ID"))},
+                    {QStringLiteral("saveDir"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Destination directory"))},
+                    {QStringLiteral("baseName"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))},
+                    {QStringLiteral("format"),
+                     withEnum(
+                         inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
+                                       QStringLiteral("ome-tiff")),
+                         {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
+                    {QStringLiteral("compression"),
+                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
+                    {QStringLiteral("compressionLevel"),
+                     withMaximum(
+                         withMinimum(
+                             inputProperty(QStringLiteral("integer"), QStringLiteral("Compression level"), 6),
+                             0.0),
+                         9.0)}
+                }),
+                {QStringLiteral("saveDir"), QStringLiteral("baseName")},
+                ToolAccess::Confirmed),
+            makeTool(
                 QStringLiteral("list_layers"),
                 QStringLiteral("List image layers and their current display state")),
             makeTool(
@@ -452,7 +523,7 @@ namespace
                                    QStringLiteral("Export the particle mask to shared memory"), false)},
                     {QStringLiteral("publishMask"),
                      inputProperty(QStringLiteral("boolean"),
-                                   QStringLiteral("Publish the particle mask as a preview layer"), false)}
+                                   QStringLiteral("Display the particle mask in ScopeOne"), false)}
                 }),
                 {QStringLiteral("layerKey"), QStringLiteral("threshold"),
                  QStringLiteral("minArea"), QStringLiteral("maxArea")},

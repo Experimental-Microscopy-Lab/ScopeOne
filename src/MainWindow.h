@@ -3,7 +3,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "ScopeOneToolPlugin.h"
 
-#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 #include <QPoint>
@@ -17,6 +16,7 @@ class QDockWidget;
 class QLabel;
 class QMenu;
 class QProgressDialog;
+class QTabWidget;
 class QTimer;
 
 namespace scopeone::core
@@ -30,6 +30,7 @@ namespace scopeone::ui
     class DevicePropertyWidget;
     class ConfigPresetWidget;
     class ImageGalleryWidget;
+    class ImageWorkspace;
     class ImageProcessingWidget;
     class InspectWidget;
     class PreviewWidget;
@@ -89,20 +90,6 @@ namespace scopeone::ui
         void showMeasurementLine(const QString& layerKey,
                                  const QPoint& start,
                                  const QPoint& end);
-        void registerGallerySessionFrameControls(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            int frameIndex);
-        void removeGallerySessionFrameControls(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
-        void updateGalleryLayerFrame(const QString& layerKey, int frameIndex);
-        void requestLatestGalleryFrame(const QString& layerKey);
-        void handleGalleryFrameReady(
-            quint64 requestId,
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            const QString& cameraId,
-            int frameIndex,
-            const scopeone::core::ImageFrame& frame);
-
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
                             int x,
@@ -142,27 +129,14 @@ namespace scopeone::ui
         RecordingWidget* m_recordingWidget{nullptr};
         QDockWidget* m_imageGalleryDockWidget{nullptr};
         ImageGalleryWidget* m_imageGalleryWidget{nullptr};
+        ImageWorkspace* m_imageWorkspace{nullptr};
 
-        struct GalleryLayerFrameControl
-        {
-            std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> session;
-            QString cameraId;
-        };
-        QHash<QString, GalleryLayerFrameControl> m_galleryLayerFrameControls;
-        struct GalleryFrameRequestState
-        {
-            quint64 requestId{0};
-            int latestFrameIndex{0};
-        };
-        QHash<QString, GalleryFrameRequestState> m_galleryFrameRequests;
-
-        QDockWidget* m_deviceControlDockWidget{nullptr};
         DeviceControlWidget* m_deviceControlWidget{nullptr};
 
-        QDockWidget* m_imageProcessingDockWidget{nullptr};
         ImageProcessingWidget* m_imageProcessingWidget{nullptr};
 
-        QDockWidget* m_inspectDockWidget{nullptr};
+        QDockWidget* m_inspectorDockWidget{nullptr};
+        QTabWidget* m_inspectorTabs{nullptr};
         InspectWidget* m_inspectWidget{nullptr};
 
         QMenu* m_fileMenu{nullptr};
@@ -176,6 +150,7 @@ namespace scopeone::ui
         QAction* m_fullScreenAction{nullptr};
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
+        QAction* m_saveImageAsAction{nullptr};
         QAction* m_settingsAction{nullptr};
         QAction* m_aboutAction{nullptr};
         QAction* m_aboutQtAction{nullptr};
@@ -196,5 +171,6 @@ namespace scopeone::ui
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;
         int m_closeSaveTotal{0};
         bool m_closeSaveInProgress{false};
+        bool m_closeAfterSave{false};
     };
 }

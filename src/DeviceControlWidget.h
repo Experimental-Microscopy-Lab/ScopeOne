@@ -8,6 +8,7 @@
 
 namespace scopeone::core
 {
+    class ImageSceneModel;
     class ScopeOneCore;
 }
 
@@ -18,12 +19,13 @@ class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
-class QSlider;
+class QScrollArea;
 class QSpinBox;
 class QTableWidget;
 
 namespace scopeone::ui
 {
+    class ImageWorkspace;
     class PreviewWidget;
 
     class DeviceControlWidget : public QWidget
@@ -36,9 +38,14 @@ namespace scopeone::ui
 
         void setControlTargets(const QStringList& cameraIds);
 
+        void setImageWorkspace(ImageWorkspace* workspace);
         void setPreviewWidget(PreviewWidget* previewWidget);
+        void setViewerContext(bool liveViewer);
+        QWidget* imageControlsWidget() const;
+        QWidget* hardwareControlsWidget() const;
 
         void setControlTargetEnabled(bool enabled);
+        void setControlsEnabled(bool enabled);
 
         void refreshStageDevices();
         void refreshCameraParameters();
@@ -46,9 +53,6 @@ namespace scopeone::ui
         void onCameraInitialized(bool initialized);
 
         void setPreviewRunning(bool running);
-        QString currentLayerKey() const;
-        void setLayerFrameControl(const QString& layerKey, int frameCount, int frameIndex);
-        void removeLayerFrameControl(const QString& layerKey);
 
     signals :
         void startPreviewRequested();
@@ -57,8 +61,6 @@ namespace scopeone::ui
 
         void exposureValueChanged(double exposureMs);
         void controlTargetChanged(const QString& target);
-        void currentLayerChanged(const QString& layerKey);
-        void previewLayerFrameRequested(const QString& layerKey, int frameIndex);
         void stageMoveFailed(const QString& message);
 
         void requestDrawROI(const QString& cameraId);
@@ -78,33 +80,33 @@ namespace scopeone::ui
         void onClearROIClicked();
 
         QWidget* createPreviewControlsGroup();
-        void updatePreviewZoomControls();
         void rebuildPreviewLayerTable(const QStringList& layerKeys);
         void applyPreviewVisibility(const QStringList& layerKeys, bool notifyPreview);
         void refreshPreviewLayerSettings();
-        void refreshLayerFrameControl();
         QString selectedLayerSourceId() const;
         void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
         void onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys);
-        void syncPreviewLayerLayoutCombo(int index);
         void onPreviewLayerInfoTextChanged(const QString& text);
         void refreshPreviewLayerInfoText();
-
-        void onPreviewZoomSpinBoxChanged(int value);
-        void onPreviewFitToWindowToggled(bool enabled);
-        void onPreviewLayerLayoutComboChanged(int index);
         void onPreviewLayerVisibleToggled(bool checked);
         void onPreviewLayerOpacityChanged(int value);
         void onPreviewLayerGammaChanged(double value);
         void onPreviewLayerColormapChanged(int index);
         void onPreviewLayerBlendingChanged(int index);
-        void onPreviewLayerFrameSliderChanged(int value);
-        void onPreviewLayerSelectionChanged(int currentRow, int currentColumn, int previousRow, int previousColumn);
+        void onPreviewLayerAutoClicked();
+        void onPreviewLayerFullRangeClicked();
+        void onPreviewLayerAutoStretchToggled(bool enabled);
+        void onPreviewLayerSelectionChanged(int currentRow,
+                                            int currentColumn,
+                                            int previousRow,
+                                            int previousColumn);
         void onPreviewLayerMoveUpClicked();
         void onPreviewLayerMoveDownClicked();
         void onPreviewLayerRemoveClicked();
         void syncControlTargetToSelectedRawLayer();
         void resetSelectedLayerTransform();
+        void syncLayerSelection();
+        QString currentLayerKey() const;
 
         void setupUI();
 
@@ -116,11 +118,14 @@ namespace scopeone::ui
         bool isAllTarget(const QString& target) const;
         QString roiCameraTarget() const;
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        ImageWorkspace* m_workspace{nullptr};
+        scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
+        QScrollArea* m_imageControlsWidget{nullptr};
+        QScrollArea* m_hardwareControlsWidget{nullptr};
+        QLabel* m_hardwareContextLabel{nullptr};
         QGroupBox* m_previewControlsGroup{nullptr};
-        QLabel* m_zoomLabel{nullptr};
-        QSpinBox* m_zoomSpinBox{nullptr};
-        QCheckBox* m_fitToWindowCheckBox{nullptr};
-        QComboBox* m_layerLayoutCombo{nullptr};
+        QGroupBox* m_cameraControlsGroup{nullptr};
+        QGroupBox* m_stageControlsGroup{nullptr};
         QTableWidget* m_layerTable{nullptr};
         QMap<QString, QCheckBox*> m_layerRows;
         QGroupBox* m_layerSettingsGroup{nullptr};
@@ -132,12 +137,9 @@ namespace scopeone::ui
         QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
         QComboBox* m_layerColormapComboBox{nullptr};
         QComboBox* m_layerBlendingComboBox{nullptr};
-        QLabel* m_layerFrameLabel{nullptr};
-        QSlider* m_layerFrameSlider{nullptr};
-        QLabel* m_layerFrameValueLabel{nullptr};
-        QMap<QString, int> m_layerFrameCounts;
-        QMap<QString, int> m_layerFrameIndices;
-        QString m_selectedLayerKey;
+        QPushButton* m_layerAutoButton{nullptr};
+        QPushButton* m_layerFullRangeButton{nullptr};
+        QCheckBox* m_layerAutoStretchCheckBox{nullptr};
         QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
         QLabel* m_alignYLabel{nullptr};
@@ -150,6 +152,7 @@ namespace scopeone::ui
         PreviewWidget* m_previewWidget{nullptr};
 
         QLineEdit* m_exposureLineEdit{nullptr};
+        QLabel* m_exposureLabel{nullptr};
 
         QPushButton* m_previewToggleButton{nullptr};
         QComboBox* m_cameraSelectCombo{nullptr};
@@ -191,6 +194,8 @@ namespace scopeone::ui
 
         bool m_cameraInitialized;
         bool m_previewRunning;
+        bool m_liveViewerContext{true};
+        bool m_controlTargetEnabled{true};
         QString m_currentTarget;
         double m_minExposureMs{0.1};
         double m_maxExposureMs{10000.0};

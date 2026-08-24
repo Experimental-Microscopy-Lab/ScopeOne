@@ -787,24 +787,6 @@ namespace scopeone::ui
         return Blending::Translucent;
     }
 
-    QString PreviewWidget::blendingName(Blending blending) const
-    {
-        switch (blending)
-        {
-        case Blending::Additive:
-            return QStringLiteral("Additive");
-        case Blending::Minimum:
-            return QStringLiteral("Minimum");
-        case Blending::Opaque:
-            return QStringLiteral("Opaque");
-        case Blending::Multiplicative:
-            return QStringLiteral("Multiplicative");
-        case Blending::Translucent:
-            return QStringLiteral("Translucent");
-        }
-        return QStringLiteral("Translucent");
-    }
-
     // Removes stored state for one static image source
     void PreviewWidget::removeStaticLayerData(const QString& sourceId)
     {
@@ -2502,6 +2484,7 @@ namespace scopeone::ui
     // Starts active drawing interactions from a mouse press
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
+        emit activated();
         emit mousePositionChanged(event->pos());
         if (m_measurementLineDrawingMode && event->button() == Qt::LeftButton)
         {

@@ -109,6 +109,12 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.loaded_devices()`
 - `ScopeOne.start_preview(camera="All")`
 - `ScopeOne.stop_preview(camera="All")`
+- `ScopeOne.image_windows()`
+- `ScopeOne.open_image_window(session_id, title=None, camera_id=None)`
+- `ScopeOne.activate_image_window(document_id)`
+- `ScopeOne.close_image_window(document_id=None)`
+- `ScopeOne.process_image_window(document_id=None, complete_stack=False)`
+- `ScopeOne.save_image_window(save_dir, base_name, document_id=None, format="ome-tiff", compression=False, compression_level=6)`
 - `ScopeOne.list_layers()`
 - `ScopeOne.get_layer_histogram(layer_key)`
 - `ScopeOne.get_pixel_value(layer_key, x, y)`
@@ -235,11 +241,17 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `loaded_devices`: response `devices`.
 - `start_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
-- `list_layers`: response `layers`.
+- `image_windows`: response `activeDocumentId` and `documents`; each document contains its ID, title, session, camera, current frame, frame count, readiness, and active state.
+- `open_image_window`: fields `sessionId`, optional `title` and `cameraId`; opens matching retained session data, waits for the first frame, and returns `documentIds` and `activeDocumentId`.
+- `activate_image_window`: field `documentId`; activates the window and returns `document`.
+- `close_image_window`: optional field `documentId`; closes the selected or active window.
+- `process_image_window`: optional fields `documentId` and `completeStack`; asynchronously processes the selected or active window and returns the new `document`.
+- `save_image_window`: fields `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, and `compressionLevel`, plus optional `documentId`; asynchronously saves the selected or active window and returns `documentId` and `message`.
+- `list_layers`: response `layers`; layer display, histogram, pixel, profile, and markup operations target the active image viewer.
 - `get_layer_histogram`: fields `layerKey`; response `histogram` with summary statistics and 256 `bins`.
 - `get_pixel_value`: fields `layerKey`, `x`, `y`; response `value`.
 - `get_line_profile`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`; response `values`.
-- `detect_particles`: fields `layerKey`, `threshold`, `minArea`, `maxArea`, optional `maxParticles`, `exportMask`, and `publishMask`; response `particleCount`, effective thresholds, truncation state, particle measurements, optional shared-memory `mask` metadata, and optional `maskLayerKey`.
+- `detect_particles`: fields `layerKey`, `threshold`, `minArea`, `maxArea`, optional `maxParticles`, `exportMask`, and `publishMask`; response `particleCount`, effective thresholds, truncation state, particle measurements, optional shared-memory `mask` metadata, and either `maskLayerKey` for Live or `maskDocumentId` for a static image window.
 - `layer_options`: response `layouts`, `colormaps`, `blendingModes`.
 - `set_layer_layout`: fields `layout`, accepts `side_by_side` or `overlay`.
 - `set_visible_layers`: fields `layerKeys`; response `visibleLayers`.

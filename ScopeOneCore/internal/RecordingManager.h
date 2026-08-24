@@ -65,7 +65,9 @@ namespace scopeone::core::internal
         void onRawFramesReady(const QList<ImageFrame>& frames);
         void onFrameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
 
-        static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
+        static QString saveSessionToDisk(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const std::shared_ptr<RecordingSessionData>& sourceSession = {});
 
     signals:
         void mdaRawFrameReady(const scopeone::core::ImageFrame& frame);

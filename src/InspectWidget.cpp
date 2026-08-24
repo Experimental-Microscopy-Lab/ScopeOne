@@ -1,9 +1,11 @@
 #include "InspectWidget.h"
+#include "ImageWorkspace.h"
 #include "scopeone/ImageSceneModel.h"
 
 #include <QCheckBox>
 #include <QColor>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QFont>
 #include <QFontMetrics>
 #include <QGroupBox>
@@ -18,6 +20,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 #include <QtMath>
 #include <QtGlobal>
 #include <cmath>
@@ -36,6 +39,15 @@ namespace scopeone::ui
             return scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey)
                        ? QStringLiteral("proc")
                        : QStringLiteral("raw");
+        }
+
+        QString inspectLayerTitle(const QString& layerKey, bool active)
+        {
+            const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+            return QStringLiteral("%1 - %2 [%3]")
+                .arg(active ? QStringLiteral("Active Layer") : QStringLiteral("Layer"),
+                     cameraId,
+                     inspectLayerSourceLabel(layerKey));
         }
 
         // Check whether a preview layer can use live core inspection
@@ -69,6 +81,11 @@ namespace scopeone::ui
             m_title = layerKey;
             m_values = values;
             update();
+        }
+
+        QVector<int> values() const
+        {
+            return m_values;
         }
 
     protected:
@@ -214,9 +231,9 @@ namespace scopeone::ui
 
             const QRect rect = this->rect().adjusted(
                 yLabelWidth + 6,
-                labelHeight / 2 + 2,
+                labelHeight + 2,
                 -(xLabelWidth / 2 + 4),
-                -(labelHeight + 8));
+                -(2 * labelHeight + 8));
 
             painter.fillRect(rect, colors.brush(QPalette::Base));
             painter.setPen(QPen(colors.color(QPalette::Mid), 1));
@@ -416,6 +433,20 @@ namespace scopeone::ui
                 painter.drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, label);
                 painter.setPen(QPen(axisColor, 1));
             }
+
+            painter.setPen(textColor);
+            painter.drawText(QRect(rect.left(),
+                                   rect.bottom() + labelHeight + 5,
+                                   rect.width(),
+                                   labelHeight),
+                             Qt::AlignCenter,
+                             QStringLiteral("Intensity"));
+            painter.drawText(QRect(0,
+                                   rect.top() - labelHeight,
+                                   rect.left() - 8,
+                                   labelHeight),
+                             Qt::AlignRight | Qt::AlignVCenter,
+                             QStringLiteral("Count"));
         }
 
         QHash<QString, LayerHistogramData> m_layerData;
@@ -423,13 +454,16 @@ namespace scopeone::ui
     };
 
     // Create the inspection panel and subscribe to core analysis signals
-    InspectWidget::InspectWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
+    InspectWidget::InspectWidget(scopeone::core::ScopeOneCore* core,
+                                 ImageWorkspace* workspace,
+                                 QWidget* parent)
         : QWidget(parent)
           , m_scopeonecore(core)
+          , m_workspace(workspace)
     {
-        if (!core)
+        if (!core || !workspace)
         {
-            qFatal("InspectWidget requires ScopeOneCore");
+            qFatal("InspectWidget requires ScopeOneCore and ImageWorkspace");
         }
 
         setWindowTitle(QStringLiteral("Inspect"));
@@ -444,6 +478,78 @@ namespace scopeone::ui
                 this, &InspectWidget::setLayerCrossSectionProfile);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
                 this, &InspectWidget::clearCrossSectionProfile);
+        connect(m_workspace, &ImageWorkspace::activeViewerChanged,
+                this, &InspectWidget::refreshActiveViewer);
+        connect(m_workspace, &ImageWorkspace::activeFrameChanged,
+                this, [this]()
+                {
+                    if (m_workspace->isLiveViewerActive() || currentLayerKey().isEmpty())
+                    {
+                        return;
+                    }
+                    m_workspace->requestHistogram(currentLayerKey());
+                    requestVisibleHistograms();
+                });
+        connect(m_workspace, &ImageWorkspace::activeLayerChanged,
+                this, [this](const QString&)
+                {
+                    const QString layerKey = currentLayerKey();
+                    if (m_workspace->isLiveViewerActive())
+                    {
+                        m_scopeonecore->setActiveHistogramLayer(layerKey);
+                    }
+                    else if (!layerKey.isEmpty())
+                    {
+                        m_workspace->requestHistogram(layerKey);
+                    }
+                    requestVisibleHistograms();
+                    updateLayerVisibility();
+                    updateControlsState();
+                });
+        connect(m_workspace, &ImageWorkspace::histogramReady,
+                this, [this](const QString& layerKey,
+                             const scopeone::core::ScopeOneCore::HistogramStats& stats)
+                {
+                    if (layerKey == currentLayerKey() && !m_workspace->isLiveViewerActive())
+                    {
+                        setLayerInspect(layerKey, stats);
+                        if (m_workspace->layerAutoStretchEnabled(layerKey))
+                        {
+                            m_sceneModel->setLayerDisplayLevels(
+                                layerKey,
+                                stats.autoMinLevel,
+                                stats.autoMaxLevel,
+                                stats.maxValue);
+                        }
+                    }
+                });
+        connect(m_workspace, &ImageWorkspace::lineProfileUpdated,
+                this, &InspectWidget::setLayerCrossSectionProfile);
+        refreshActiveViewer();
+    }
+
+    void InspectWidget::refreshActiveViewer()
+    {
+        saveViewerState();
+        const bool inspectLive = m_workspace->isLiveViewerActive();
+        const QString viewerStateId = m_workspace->activeDocumentId();
+        if (m_inspectingLive && !inspectLive)
+        {
+            m_scopeonecore->setActiveHistogramLayer({});
+        }
+        m_inspectingLive = inspectLive;
+        m_activeViewerStateId = viewerStateId;
+        restoreViewerState();
+        if (m_sceneModel)
+        {
+            disconnect(m_sceneModel, nullptr, this, nullptr);
+        }
+        m_sceneModel = m_workspace->activeSceneModel();
+        setAvailableLayers(m_sceneModel ? m_sceneModel->layerIds() : QStringList{});
+        if (!m_sceneModel)
+        {
+            return;
+        }
         const auto refreshLayerDisplay = [this](const QString& layerKey)
         {
             const auto state = m_layerStates.constFind(layerKey);
@@ -452,20 +558,91 @@ namespace scopeone::ui
                 updateLayerInspect(layerKey, state->stats);
             }
         };
-        connect(m_scopeonecore->imageSceneModel(),
-                &scopeone::core::ImageSceneModel::layerDisplayChanged,
-                this, refreshLayerDisplay);
-        connect(m_scopeonecore->imageSceneModel(),
-                &scopeone::core::ImageSceneModel::layerAutoStretchChanged,
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::layerDisplayChanged,
+                this, [this, refreshLayerDisplay](const QString& layerKey)
+                {
+                    refreshLayerDisplay(layerKey);
+                    updateLayerVisibility();
+                    updateControlsState();
+                });
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::layerAutoStretchChanged,
                 this, [refreshLayerDisplay](const QString& layerKey, bool)
                 {
                     refreshLayerDisplay(layerKey);
                 });
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::layersChanged,
+                this, [this]()
+                {
+                    setAvailableLayers(m_sceneModel->layerIds());
+                });
+        const QString layerKey = currentLayerKey();
+        if (m_workspace->isLiveViewerActive())
+        {
+            m_scopeonecore->setActiveHistogramLayer(layerKey);
+        }
+        else if (!layerKey.isEmpty())
+        {
+            m_workspace->requestHistogram(layerKey);
+        }
+        updateLayerVisibility();
+        for (auto it = m_layerStates.cbegin(); it != m_layerStates.cend(); ++it)
+        {
+            if (it->hasStats)
+            {
+                updateLayerInspect(it.key(), it->stats);
+            }
+        }
+        requestVisibleHistograms();
+        updateControlsState();
+    }
+
+    void InspectWidget::saveViewerState()
+    {
+        ViewerInspectState& state = m_viewerStates[m_activeViewerStateId];
+        state.layerStates = m_layerStates;
+        state.crossSectionLayerKey = m_crossSectionLayerKey;
+        state.crossSectionValues = m_crossSectionWidget->values();
+        state.measurementLayerKey = m_measurementLayerKey;
+        state.measurementInfo = m_measurementInfoLabel->text();
+    }
+
+    void InspectWidget::restoreViewerState()
+    {
+        const auto it = m_viewerStates.constFind(m_activeViewerStateId);
+        if (it == m_viewerStates.constEnd())
+        {
+            m_layerStates.clear();
+            m_crossSectionLayerKey.clear();
+            m_crossSectionWidget->clear();
+            m_measurementLayerKey.clear();
+            m_measurementInfoLabel->clear();
+            m_measurementInfoLabel->hide();
+            return;
+        }
+
+        const ViewerInspectState& state = it.value();
+        m_layerStates = state.layerStates;
+        m_crossSectionLayerKey = state.crossSectionLayerKey;
+        if (state.crossSectionLayerKey.isEmpty() || state.crossSectionValues.isEmpty())
+        {
+            m_crossSectionWidget->clear();
+        }
+        else
+        {
+            m_crossSectionWidget->setProfile(
+                state.crossSectionLayerKey, state.crossSectionValues);
+        }
+        m_measurementLayerKey = state.measurementLayerKey;
+        m_measurementInfoLabel->setText(state.measurementInfo);
+        m_measurementInfoLabel->setVisible(!state.measurementInfo.isEmpty());
     }
 
     InspectWidget::~InspectWidget()
     {
-        m_scopeonecore->setActiveHistogramLayer({});
+        if (m_workspace->isLiveViewerActive())
+        {
+            m_scopeonecore->setActiveHistogramLayer({});
+        }
     }
 
     // Enable inspect controls when camera state changes
@@ -478,24 +655,6 @@ namespace scopeone::ui
         {
             clearCrossSectionProfile();
         }
-    }
-
-    // Track the currently selected preview layer
-    void InspectWidget::setCurrentLayer(const QString& layerKey)
-    {
-        m_currentLayerKey = layerKey.trimmed();
-        m_scopeonecore->setActiveHistogramLayer(m_currentLayerKey);
-        if (!m_crossSectionLayerKey.isEmpty() && m_crossSectionLayerKey != m_currentLayerKey)
-        {
-            clearCrossSectionProfile();
-            emit requestClearCrossSection();
-        }
-        if (!m_measurementLayerKey.isEmpty() && m_measurementLayerKey != m_currentLayerKey)
-        {
-            clearMeasurementLine();
-        }
-        updateLayerVisibility();
-        updateControlsState();
     }
 
     // Remove inspect state for layers that are no longer available
@@ -528,6 +687,11 @@ namespace scopeone::ui
             removeLayerInfo(key);
         }
 
+        for (const QString& key : m_availableLayerKeys)
+        {
+            addLayerInfo(key);
+        }
+
         if (!m_crossSectionLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_crossSectionLayerKey))
         {
             clearCrossSectionProfile();
@@ -538,14 +702,21 @@ namespace scopeone::ui
             clearMeasurementLine();
         }
 
-        if (!m_currentLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_currentLayerKey))
+        if (!currentLayerKey().isEmpty() && !m_availableLayerKeys.contains(currentLayerKey()))
         {
-            m_currentLayerKey.clear();
-            m_scopeonecore->setActiveHistogramLayer({});
+            if (m_workspace->isLiveViewerActive())
+            {
+                m_scopeonecore->setActiveHistogramLayer({});
+            }
             clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
+
+        if (m_workspace->isLiveViewerActive())
+        {
+            m_scopeonecore->setActiveHistogramLayer(currentLayerKey());
+        }
     }
 
     // Store live camera availability for core backed tools
@@ -562,21 +733,18 @@ namespace scopeone::ui
             emit requestClearCrossSection();
         }
 
-        if (!m_currentLayerKey.isEmpty()
-            && isLiveLayerKey(m_currentLayerKey)
+        if (!currentLayerKey().isEmpty()
+            && isLiveLayerKey(currentLayerKey())
             && !m_availableCameraIds.contains(currentLayerCameraId()))
         {
-            m_currentLayerKey.clear();
-            m_scopeonecore->setActiveHistogramLayer({});
+            if (m_workspace->isLiveViewerActive())
+            {
+                m_scopeonecore->setActiveHistogramLayer({});
+            }
             clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
-    }
-
-    void InspectWidget::setCrossSectionVisible(bool visible)
-    {
-        m_crossSectionGroup->setVisible(visible);
     }
 
     // Show inspect data for an explicit preview layer
@@ -597,14 +765,6 @@ namespace scopeone::ui
         updateLayerInspect(trimmedLayerKey, stats);
     }
 
-    // Clear all layer inspect groups
-    void InspectWidget::clearInspect()
-    {
-        clearMeasurementLine();
-        setAvailableLayers({});
-        setAvailableCameras({});
-    }
-
     // Remove cached inspect data for one graph layer
     void InspectWidget::clearLayerInspect(const QString& layerKey)
     {
@@ -616,7 +776,7 @@ namespace scopeone::ui
 
         m_layerStates.remove(trimmedLayerKey);
         removeLayerInfo(trimmedLayerKey);
-        if (m_currentLayerKey == trimmedLayerKey)
+        if (currentLayerKey() == trimmedLayerKey)
         {
             clearCrossSectionProfile();
         }
@@ -652,6 +812,7 @@ namespace scopeone::ui
         }
 
         QStringList lines{
+            QStringLiteral("Layer: %1").arg(m_measurementLayerKey),
             QStringLiteral("Start: (%1, %2)").arg(start.x()).arg(start.y()),
             QStringLiteral("Angle: %1°").arg(angleDegrees, 0, 'f', 1),
             QStringLiteral("Length: %1 px").arg(lengthPixels, 0, 'f', 2)
@@ -660,6 +821,10 @@ namespace scopeone::ui
         {
             lines.append(QStringLiteral("Actual: %1 µm")
                              .arg(actualLengthUm, 0, 'f', 3));
+        }
+        else
+        {
+            lines.append(QStringLiteral("Scale: not calibrated"));
         }
         m_measurementInfoLabel->setText(lines.join('\n'));
         m_measurementInfoLabel->show();
@@ -677,7 +842,7 @@ namespace scopeone::ui
     void InspectWidget::setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values)
     {
         const QString trimmedLayerKey = layerKey.trimmed();
-        if (trimmedLayerKey.isEmpty() || trimmedLayerKey != m_currentLayerKey)
+        if (trimmedLayerKey.isEmpty() || trimmedLayerKey != currentLayerKey())
         {
             return;
         }
@@ -707,7 +872,7 @@ namespace scopeone::ui
         auto* annotationGroup = new QGroupBox(QStringLiteral("Annotation"), contentContainer);
         auto* annotationLayout = new QVBoxLayout(annotationGroup);
         auto* annotationButtons = new QHBoxLayout();
-        m_drawMeasurementLineButton = new QPushButton(QStringLiteral("Line"), annotationGroup);
+        m_drawMeasurementLineButton = new QPushButton(QStringLiteral("Measure Line"), annotationGroup);
         m_clearMeasurementLinesButton = new QPushButton(QStringLiteral("Clear"), annotationGroup);
         annotationButtons->addWidget(m_drawMeasurementLineButton);
         annotationButtons->addWidget(m_clearMeasurementLinesButton);
@@ -720,8 +885,8 @@ namespace scopeone::ui
         m_crossSectionGroup = new QGroupBox(QStringLiteral("Cross Section"), contentContainer);
         auto* crossSectionLayout = new QVBoxLayout(m_crossSectionGroup);
         auto* crossSectionButtons = new QHBoxLayout();
-        m_drawCrossSectionButton = new QPushButton(QStringLiteral("Draw Cross Section"), m_crossSectionGroup);
-        m_clearCrossSectionButton = new QPushButton(QStringLiteral("Clear Cross Section"), m_crossSectionGroup);
+        m_drawCrossSectionButton = new QPushButton(QStringLiteral("Intensity Profile"), m_crossSectionGroup);
+        m_clearCrossSectionButton = new QPushButton(QStringLiteral("Clear Profile"), m_crossSectionGroup);
         crossSectionButtons->addWidget(m_drawCrossSectionButton);
         crossSectionButtons->addWidget(m_clearCrossSectionButton);
         crossSectionButtons->addStretch();
@@ -732,17 +897,28 @@ namespace scopeone::ui
 
         m_histogramContainerLayout = new QVBoxLayout();
         m_histogramContainerLayout->setSpacing(10);
+        m_compareLayersCheckBox = new QCheckBox(QStringLiteral("Show all visible layers"), contentContainer);
+        connect(m_compareLayersCheckBox, &QCheckBox::toggled,
+                this, [this](bool enabled)
+                {
+                    updateLayerVisibility();
+                    if (enabled)
+                    {
+                        requestVisibleHistograms();
+                    }
+                });
+        contentLayout->addWidget(m_compareLayersCheckBox);
         contentLayout->addLayout(m_histogramContainerLayout);
         contentLayout->addStretch();
 
         connect(m_drawCrossSectionButton, &QPushButton::clicked, this, [this]()
         {
-            if (m_currentLayerKey.isEmpty())
+            if (currentLayerKey().isEmpty())
             {
                 return;
             }
-            m_crossSectionLayerKey = m_currentLayerKey;
-            emit requestDrawCrossSectionLayer(m_currentLayerKey);
+            m_crossSectionLayerKey = currentLayerKey();
+            emit requestDrawCrossSectionLayer(currentLayerKey());
         });
         connect(m_clearCrossSectionButton, &QPushButton::clicked, this, [this]()
         {
@@ -751,11 +927,12 @@ namespace scopeone::ui
         });
         connect(m_drawMeasurementLineButton, &QPushButton::clicked, this, [this]()
         {
-            emit requestDrawMeasurementLine(m_currentLayerKey);
+            emit requestDrawMeasurementLine(currentLayerKey());
         });
         connect(m_clearMeasurementLinesButton, &QPushButton::clicked, this, [this]()
         {
-            emit requestClearMeasurementLines(m_currentLayerKey);
+            emit requestClearMeasurementLines(
+                m_measurementLayerKey.isEmpty() ? currentLayerKey() : m_measurementLayerKey);
         });
 
         scrollArea->setWidget(contentContainer);
@@ -766,10 +943,7 @@ namespace scopeone::ui
     QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
-        const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey);
-        auto* group = new QGroupBox(
-            QStringLiteral("Layer - %1 [%2]").arg(cameraId, inspectLayerSourceLabel(normalizedLayerKey)),
-            this);
+        auto* group = new QGroupBox(inspectLayerTitle(normalizedLayerKey, false), this);
         auto* layout = new QVBoxLayout(group);
         LayerInfoGroup infoGroup;
         infoGroup.layerKey = normalizedLayerKey;
@@ -814,20 +988,11 @@ namespace scopeone::ui
         layout->addLayout(slidersLayout);
 
         auto* histControlLayout = new QHBoxLayout();
-        auto* autoButton = new QPushButton(QStringLiteral("Auto"), group);
-        auto* fullButton = new QPushButton(QStringLiteral("Full"), group);
-        auto* autoStretchCheckBox = new QCheckBox(QStringLiteral("Auto-stretch"), group);
         auto* logScaleCheckBox = new QCheckBox(QStringLiteral("Log hist"), group);
-        histControlLayout->addWidget(autoButton);
-        histControlLayout->addWidget(fullButton);
-        histControlLayout->addWidget(autoStretchCheckBox);
         histControlLayout->addWidget(logScaleCheckBox);
         histControlLayout->addStretch();
         layout->addLayout(histControlLayout);
 
-        infoGroup.autoButton = autoButton;
-        infoGroup.fullButton = fullButton;
-        infoGroup.autoStretchCheckBox = autoStretchCheckBox;
         infoGroup.logScaleCheckBox = logScaleCheckBox;
         infoGroup.minSlider = minSlider;
         infoGroup.maxSlider = maxSlider;
@@ -836,18 +1001,6 @@ namespace scopeone::ui
         layout->addWidget(createStatisticsGroup(infoGroup));
         m_layerInfoGroups.insert(normalizedLayerKey, infoGroup);
 
-        connect(autoButton, &QPushButton::clicked, this, [this, normalizedLayerKey]()
-        {
-            onAutoButtonClicked(normalizedLayerKey);
-        });
-        connect(fullButton, &QPushButton::clicked, this, [this, normalizedLayerKey]()
-        {
-            onFullButtonClicked(normalizedLayerKey);
-        });
-        connect(autoStretchCheckBox, &QCheckBox::toggled, this, [this, normalizedLayerKey](bool checked)
-        {
-            onAutoStretchChanged(normalizedLayerKey, checked);
-        });
         connect(logScaleCheckBox, &QCheckBox::toggled, this, [this, normalizedLayerKey](bool checked)
         {
             onLogScaleChanged(normalizedLayerKey, checked);
@@ -967,7 +1120,7 @@ namespace scopeone::ui
         }
 
         scopeone::core::DocumentLayer layer;
-        if (!m_scopeonecore->imageSceneModel()->findLayer(normalizedLayerKey, layer))
+        if (!m_sceneModel || !m_sceneModel->findLayer(normalizedLayerKey, layer))
         {
             return;
         }
@@ -988,32 +1141,8 @@ namespace scopeone::ui
         }
         infoGroup.minSliderValueLabel->setText(QString::number(displayMin));
         infoGroup.maxSliderValueLabel->setText(QString::number(displayMax));
-        {
-            QSignalBlocker blocker(infoGroup.autoStretchCheckBox);
-            infoGroup.autoStretchCheckBox->setChecked(
-                m_scopeonecore->layerAutoStretchEnabled(normalizedLayerKey));
-        }
-
         updateStatisticsDisplay(normalizedLayerKey, stats);
         updateControlsState();
-    }
-
-    // Apply the computed auto display range once
-    void InspectWidget::onAutoButtonClicked(const QString& layerKey)
-    {
-        m_scopeonecore->autoLayerLevels(layerKey);
-    }
-
-    // Expand the display range to the full pixel range
-    void InspectWidget::onFullButtonClicked(const QString& layerKey)
-    {
-        m_scopeonecore->fullLayerLevels(layerKey);
-    }
-
-    // Toggle continuous auto stretch for one layer
-    void InspectWidget::onAutoStretchChanged(const QString& layerKey, bool checked)
-    {
-        m_scopeonecore->setLayerAutoStretchEnabled(layerKey, checked);
     }
 
     // Toggle logarithmic histogram scaling for one layer
@@ -1060,19 +1189,20 @@ namespace scopeone::ui
     // Enable controls according to live camera and selected layer state
     void InspectWidget::updateControlsState()
     {
-        const auto currentState = m_layerStates.constFind(m_currentLayerKey);
+        const QString layerKey = currentLayerKey();
+        const auto currentState = m_layerStates.constFind(layerKey);
         const bool currentLayerHasStats = currentState != m_layerStates.constEnd() && currentState.value().hasStats;
         const bool liveCrossSectionEnabled = m_cameraInitialized
-                                             && isLiveLayerKey(m_currentLayerKey)
+                                             && isLiveLayerKey(layerKey)
                                              && m_availableCameraIds.contains(currentLayerCameraId());
-        const bool staticCrossSectionEnabled = scopeone::core::ScopeOneCore::isStaticLayerKey(m_currentLayerKey)
+        const bool staticCrossSectionEnabled = scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
                                                && currentLayerHasStats;
-        const bool crossSectionEnabled = !m_currentLayerKey.isEmpty()
+        const bool crossSectionEnabled = !layerKey.isEmpty()
                                          && (liveCrossSectionEnabled || staticCrossSectionEnabled);
         m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
-        m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !m_currentLayerKey.isEmpty());
-        const bool annotationEnabled = !m_currentLayerKey.isEmpty()
-                                       && m_availableLayerKeys.contains(m_currentLayerKey);
+        m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !layerKey.isEmpty());
+        const bool annotationEnabled = !layerKey.isEmpty()
+                                       && m_availableLayerKeys.contains(layerKey);
         m_drawMeasurementLineButton->setEnabled(annotationEnabled);
         m_clearMeasurementLinesButton->setEnabled(annotationEnabled);
 
@@ -1081,9 +1211,9 @@ namespace scopeone::ui
             LayerInfoGroup& infoGroup = it.value();
             const auto stateIt = m_layerStates.constFind(infoGroup.layerKey);
             const bool hasStats = stateIt != m_layerStates.constEnd() && stateIt.value().hasStats;
-            infoGroup.autoButton->setEnabled(hasStats);
-            infoGroup.fullButton->setEnabled(hasStats);
-            infoGroup.autoStretchCheckBox->setEnabled(hasStats);
+            const bool isActiveLayer = infoGroup.layerKey == layerKey;
+            infoGroup.minSlider->setEnabled(hasStats && isActiveLayer);
+            infoGroup.maxSlider->setEnabled(hasStats && isActiveLayer);
             infoGroup.logScaleCheckBox->setEnabled(hasStats);
         }
     }
@@ -1091,12 +1221,93 @@ namespace scopeone::ui
     // Shows inspect controls for the selected preview layer
     void InspectWidget::updateLayerVisibility()
     {
+        const QString layerKey = currentLayerKey();
+        const QStringList visibleLayerKeys = m_sceneModel
+                                                 ? m_sceneModel->visibleLayerIds()
+                                                 : QStringList{};
+        const bool visibleLayersChanged = visibleLayerKeys != m_visibleLayerKeys;
+        m_visibleLayerKeys = visibleLayerKeys;
         for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
         {
             LayerInfoGroup& infoGroup = it.value();
-            infoGroup.groupBox->setVisible(!m_currentLayerKey.isEmpty()
-                                           && infoGroup.layerKey == m_currentLayerKey);
+            const bool showLayer = visibleLayerKeys.contains(infoGroup.layerKey)
+                                   && (m_compareLayersCheckBox->isChecked()
+                                       || infoGroup.layerKey == layerKey);
+            infoGroup.groupBox->setVisible(showLayer);
+            infoGroup.groupBox->setTitle(
+                inspectLayerTitle(infoGroup.layerKey, infoGroup.layerKey == layerKey));
         }
+        if (visibleLayersChanged)
+        {
+            requestVisibleHistograms();
+        }
+    }
+
+    void InspectWidget::requestVisibleHistograms()
+    {
+        const quint64 generation = ++m_histogramRequestGeneration;
+        if (!m_compareLayersCheckBox->isChecked()
+            || !m_sceneModel
+            || m_visibleLayerKeys.isEmpty())
+        {
+            return;
+        }
+
+        const QString viewerId = m_activeViewerStateId;
+        const QString activeLayerKey = currentLayerKey();
+        QHash<QString, scopeone::core::ImageFrame> frames;
+        for (const QString& layerKey : m_visibleLayerKeys)
+        {
+            if (layerKey == activeLayerKey)
+            {
+                continue;
+            }
+            const scopeone::core::ImageFrame frame = m_workspace->isLiveViewerActive()
+                                                         ? m_scopeonecore->graphFrame(layerKey)
+                                                         : m_workspace->frameForLayer(layerKey);
+            if (!frame.isValid())
+            {
+                continue;
+            }
+            frames.insert(layerKey, frame);
+        }
+        if (frames.isEmpty())
+        {
+            return;
+        }
+
+        auto* watcher = new QFutureWatcher<QHash<QString,
+                                                scopeone::core::ScopeOneCore::HistogramStats>>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this,
+                [this, watcher, generation, viewerId]()
+                {
+                    if (generation == m_histogramRequestGeneration
+                        && viewerId == m_activeViewerStateId)
+                    {
+                        const auto results = watcher->result();
+                        for (auto it = results.cbegin(); it != results.cend(); ++it)
+                        {
+                            if (m_visibleLayerKeys.contains(it.key()))
+                            {
+                                setLayerInspect(it.key(), it.value());
+                            }
+                        }
+                    }
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run([frames]()
+        {
+            QHash<QString, scopeone::core::ScopeOneCore::HistogramStats> results;
+            for (auto it = frames.cbegin(); it != frames.cend(); ++it)
+            {
+                scopeone::core::ScopeOneCore::HistogramStats stats;
+                if (scopeone::core::ScopeOneCore::computeHistogramStats(it.value(), stats))
+                {
+                    results.insert(it.key(), stats);
+                }
+            }
+            return results;
+        }));
     }
 
     // Return persistent inspect state for one preview layer
@@ -1139,13 +1350,18 @@ namespace scopeone::ui
         {
             return;
         }
-        m_scopeonecore->setLayerAutoStretchEnabled(layerKey, false);
-        m_scopeonecore->imageSceneModel()->setLayerDisplayLevels(
+        m_workspace->setLayerAutoStretchEnabled(layerKey, false);
+        m_sceneModel->setLayerDisplayLevels(
             layerKey, minValue, maxValue, qMax(1, state.stats.maxValue));
     }
 
     QString InspectWidget::currentLayerCameraId() const
     {
-        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_currentLayerKey);
+        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey());
+    }
+
+    QString InspectWidget::currentLayerKey() const
+    {
+        return m_workspace ? m_workspace->activeLayerKey() : QString{};
     }
 } // namespace scopeone::ui

@@ -50,6 +50,7 @@ namespace scopeone::ui
 
         PreviewWidget(ImageSceneModel* sceneModel, QWidget* parent);
         ~PreviewWidget() override;
+        ImageSceneModel* sceneModel() const { return m_sceneModel; }
 
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
@@ -94,6 +95,7 @@ signals:
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
+        void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
                       int x,
@@ -265,7 +267,6 @@ signals:
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
         LayerDisplaySettings layerDisplaySettings(const QString& layerKey) const;
         Blending blendingFromName(const QString& name) const;
-        QString blendingName(Blending blending) const;
         void removeStaticLayerData(const QString& sourceId);
         QSet<QString> validLayerKeys() const;
         bool hasRawFrame(const FrameSourceState& frameState) const;

@@ -84,7 +84,7 @@ plugins/
 
 Micro-Manager remains the built-in hardware provider and continues to load its Device Adapters from `.cfg` files. Native devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. Built-in and external processing modules share stable string IDs and parameter descriptors, so the Image Processing panel creates the same controls for both. Built-in desktop tools and external tool plugins likewise share the tool registry.
 
-The Image Processing panel can process all live cameras or one selected camera. It can also run the current pipeline once on an image layer or across every frame of a recorded Gallery session stack. Stack processing runs in the background, preserves temporal module state across the stack, supports cancellation, and creates a new Gallery session without changing live pipeline state.
+The Image Processing panel can process all live cameras or one selected camera. Recorded images and stacks open in independent windows, and the active image viewer becomes the target for Layers, Inspect, Image Processing, and Save As. Processing the current image or complete stack runs in the background and opens the result in a new window; stack results also remain available in Gallery. Temporal module state is preserved across each stack without changing live pipeline state.
 
 **Windows Build Steps:**
 
@@ -245,7 +245,7 @@ To use it:
 
 Use `scopeone` as the server name, `stdio` as the transport, the absolute path to `ScopeOneMcpServer.exe` as the command, and no command-line arguments. The exact configuration syntax depends on the agent host.
 
-The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
+The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, independent image windows, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can list, open, activate, process, save, and close independent image windows, read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
 
 Configuration loading and unloading report an explicit lifecycle state through the Local API and MCP. A configuration with non-camera initialization warnings is reported as `partially_loaded` with failed device labels; camera backend startup failures are cleaned up and reported as errors. During `loading` or `unloading`, hardware mutations are rejected until the operation finishes.
 

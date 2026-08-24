@@ -582,6 +582,12 @@ namespace scopeone::core
                                 int minArea,
                                 int maxArea,
                                 int maxParticles = 10000);
+        quint64 detectParticles(const ImageFrame& frame,
+                                const QString& resultLayerKey,
+                                int threshold,
+                                int minArea,
+                                int maxArea,
+                                int maxParticles = 10000);
         static bool computeHistogramStats(const ImageFrame& frame, HistogramStats& stats);
 
         bool startStageMosaic(const StageMosaicPlan& plan,
@@ -653,7 +659,8 @@ namespace scopeone::core
         bool removeProcessingModule(int index);
         bool setProcessingModuleParameters(int index, const QVariantMap& parameters);
         bool resetProcessingModuleState(int index);
-        quint64 requestLayerProcessing(const QString& layerKey);
+        quint64 requestImageProcessing(const ImageFrame& frame,
+                                       const QString& sourceId = QString());
         quint64 requestRecordingSessionStackProcessing(const QString& sessionId,
                                                        const QString& cameraId);
         bool cancelProcessingRequest(quint64 requestId);
@@ -685,6 +692,10 @@ namespace scopeone::core
         bool saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session);
         bool saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session,
                                   const RecordingSaveOptions& saveOptions);
+        bool saveRecordingSessionCamera(const std::shared_ptr<RecordingSessionData>& session,
+                                        const QString& cameraId,
+                                        const RecordingSaveOptions& saveOptions,
+                                        const ExperimentDocument* presentation = nullptr);
         quint64 requestRecordingSessionFrame(
             const std::shared_ptr<RecordingSessionData>& session,
             const QString& cameraId,
@@ -741,8 +752,8 @@ namespace scopeone::core
         void processingModulesChanged();
         void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
-        void layerProcessingFinished(quint64 requestId,
-                                     const QString& sourceLayerKey,
+        void imageProcessingFinished(quint64 requestId,
+                                     const QString& sourceId,
                                      const ImageFrame& frame,
                                      const QString& errorMessage);
         void stackProcessingProgress(quint64 requestId, qint64 completed, qint64 total);
@@ -772,6 +783,11 @@ namespace scopeone::core
         void recordingStateChanged(bool isRecording);
         void recordingStopped(const std::shared_ptr<RecordingSessionData>& session);
         void recordingSessionSaveFinished(const std::shared_ptr<RecordingSessionData>& session);
+        void recordingSessionCameraSaveFinished(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const QString& cameraId,
+            bool success,
+            const QString& message);
         void recordingSessionClosed(const QString& sessionId);
         void recordingSessionsChanged();
         void recordingSessionFrameReady(
@@ -868,6 +884,10 @@ namespace scopeone::core
         void syncLineProfileFromScene();
         void registerRecordingSession(const std::shared_ptr<RecordingSessionData>& session);
         void finalizeActiveExperiment(const std::shared_ptr<RecordingSessionData>& session);
+        bool queueRecordingSessionSave(
+            const std::shared_ptr<RecordingSessionData>& sourceSession,
+            const std::shared_ptr<RecordingSessionData>& saveSession,
+            const QString& cameraId = QString());
 
         struct ActiveLineProfile
         {

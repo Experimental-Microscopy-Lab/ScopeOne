@@ -412,6 +412,87 @@ class ExternalClient:
         self._request({"type": "stop_preview", "camera": camera})
         return True
 
+    def image_windows(self) -> dict:
+        response = self._request({"type": "image_windows"})
+        return {
+            "activeDocumentId": str(response.get("activeDocumentId", "")),
+            "documents": list(response.get("documents", [])),
+        }
+
+    def open_image_window(
+        self,
+        session_id: str,
+        title: str | None = None,
+        camera_id: str | None = None,
+    ) -> dict:
+        request = {
+            "type": "open_image_window",
+            "sessionId": session_id,
+        }
+        if title is not None:
+            request["title"] = title
+        if camera_id is not None:
+            request["cameraId"] = camera_id
+        response = self._request(request)
+        return {
+            "documentIds": list(response.get("documentIds", [])),
+            "activeDocumentId": str(response.get("activeDocumentId", "")),
+        }
+
+    def activate_image_window(self, document_id: str) -> dict:
+        response = self._request(
+            {
+                "type": "activate_image_window",
+                "documentId": document_id,
+            }
+        )
+        return dict(response["document"])
+
+    def close_image_window(self, document_id: str | None = None) -> None:
+        request = {"type": "close_image_window"}
+        if document_id is not None:
+            request["documentId"] = document_id
+        self._request(request)
+
+    def process_image_window(
+        self,
+        document_id: str | None = None,
+        complete_stack: bool = False,
+    ) -> dict:
+        request = {
+            "type": "process_image_window",
+            "completeStack": bool(complete_stack),
+        }
+        if document_id is not None:
+            request["documentId"] = document_id
+        response = self._request(request)
+        return dict(response["document"])
+
+    def save_image_window(
+        self,
+        save_dir: str,
+        base_name: str,
+        document_id: str | None = None,
+        format: str = "ome-tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+    ) -> dict:
+        request = {
+            "type": "save_image_window",
+            "saveDir": save_dir,
+            "baseName": base_name,
+            "format": format,
+            "compression": bool(compression),
+            "compressionLevel": int(compression_level),
+        }
+        if document_id is not None:
+            request["documentId"] = document_id
+        response = self._request(request)
+        return {
+            "documentId": str(response["documentId"]),
+            "message": str(response.get("message", "")),
+        }
+
     def list_layers(self) -> list[dict]:
         response = self._request({"type": "list_layers"})
         return list(response.get("layers", []))
@@ -489,6 +570,8 @@ class ExternalClient:
         }
         if "maskLayerKey" in response:
             result["maskLayerKey"] = str(response["maskLayerKey"])
+        if "maskDocumentId" in response:
+            result["maskDocumentId"] = str(response["maskDocumentId"])
         if "mask" in response:
             result["mask"] = self._frame_result_from_mapping_response(dict(response["mask"]))
         return result

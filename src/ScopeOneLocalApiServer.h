@@ -17,6 +17,7 @@ class QLocalSocket;
 namespace scopeone::ui
 {
     class PreviewWidget;
+    class ImageWorkspace;
 
     class ScopeOneLocalApiServer : public QObject
     {
@@ -25,6 +26,7 @@ namespace scopeone::ui
     public:
         explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
                                         PreviewWidget* previewWidget,
+                                        ImageWorkspace* imageWorkspace,
                                         QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
 
@@ -52,6 +54,7 @@ namespace scopeone::ui
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
+        ImageWorkspace* m_imageWorkspace{nullptr};
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;

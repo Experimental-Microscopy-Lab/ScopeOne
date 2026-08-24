@@ -1,5 +1,7 @@
 #include "ImageProcessingWidget.h"
 
+#include "ImageWorkspace.h"
+
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
 
@@ -8,6 +10,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -188,12 +191,14 @@ namespace scopeone::ui
         };
     }
 
-    ImageProcessingWidget::ImageProcessingWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
-        : QWidget(parent), m_scopeonecore(core)
+    ImageProcessingWidget::ImageProcessingWidget(scopeone::core::ScopeOneCore* core,
+                                                 ImageWorkspace* workspace,
+                                                 QWidget* parent)
+        : QWidget(parent), m_scopeonecore(core), m_workspace(workspace)
     {
-        if (!core)
+        if (!core || !workspace)
         {
-            qFatal("ImageProcessingWidget requires ScopeOneCore");
+            qFatal("ImageProcessingWidget requires ScopeOneCore and ImageWorkspace");
         }
         m_processingRunning = core->isRealTimeProcessingEnabled();
         setupUI();
@@ -236,13 +241,14 @@ namespace scopeone::ui
                 this, &ImageProcessingWidget::refreshSources);
         connect(core->imageSceneModel(), &scopeone::core::ImageSceneModel::layersChanged,
                 this, &ImageProcessingWidget::refreshSources);
-        connect(core, &scopeone::core::ScopeOneCore::layerProcessingFinished,
+        connect(core, &scopeone::core::ScopeOneCore::imageProcessingFinished,
                 this, [this](quint64 requestId,
-                             const QString& sourceLayerKey,
+                             const QString& inputSourceId,
                              const scopeone::core::ImageFrame& frame,
                              const QString& error)
                 {
-                    if (requestId != m_offlineProcessingRequestId)
+                    if (requestId != m_offlineProcessingRequestId
+                        || !m_directProcessingRequest)
                     {
                         return;
                     }
@@ -252,14 +258,15 @@ namespace scopeone::ui
                         QMessageBox::warning(this, tr("Processing Failed"), error);
                         return;
                     }
-                    const QString sourceId = QStringLiteral("processed:%1")
-                                                 .arg(scopeone::core::ScopeOneCore::sourceIdFromLayerKey(
-                                                     sourceLayerKey));
+                    const QString outputSourceId = QStringLiteral("processed:%1")
+                                                       .arg(scopeone::core::ScopeOneCore::sourceIdFromLayerKey(
+                                                           inputSourceId));
                     const auto output = m_scopeonecore->publishStaticFrame(
-                        sourceId, frame, tr("Processed Image"));
+                        outputSourceId, frame, tr("Processed Image"));
                     if (output.isValid())
                     {
-                        emit processedLayerReady(scopeone::core::ScopeOneCore::staticLayerKey(sourceId));
+                        emit processedLayerReady(
+                            scopeone::core::ScopeOneCore::staticLayerKey(outputSourceId));
                     }
                 });
         connect(core, &scopeone::core::ScopeOneCore::stackProcessingProgress,
@@ -276,7 +283,8 @@ namespace scopeone::ui
                              const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
                              const QString& error)
                 {
-                    if (requestId != m_offlineProcessingRequestId)
+                    if (requestId != m_offlineProcessingRequestId
+                        || !m_directProcessingRequest)
                     {
                         return;
                     }
@@ -288,6 +296,43 @@ namespace scopeone::ui
                     }
                     emit processedStackReady(session);
                     refreshSources();
+                });
+        connect(workspace, &ImageWorkspace::activeDocumentChanged,
+                this, [this]()
+                {
+                    refreshSources();
+                    const int index = m_sourceCombo->findData(
+                        m_workspace->activeDocumentId(), Qt::UserRole + 1);
+                    if (index >= 0)
+                    {
+                        m_sourceCombo->setCurrentIndex(index);
+                    }
+                });
+        connect(workspace, &ImageWorkspace::documentsChanged,
+                this, &ImageProcessingWidget::refreshSources);
+        connect(workspace, &ImageWorkspace::documentProcessingProgress,
+                this, [this](quint64 requestId, qint64 completed, qint64 total)
+                {
+                    if (!m_directProcessingRequest
+                        && requestId == m_offlineProcessingRequestId)
+                    {
+                        m_processingProgress->setMaximum(static_cast<int>(total));
+                        m_processingProgress->setValue(static_cast<int>(completed));
+                    }
+                });
+        connect(workspace, &ImageWorkspace::documentProcessingFinished,
+                this, [this](quint64 requestId, const QString&, const QString& error)
+                {
+                    if (m_directProcessingRequest
+                        || requestId != m_offlineProcessingRequestId)
+                    {
+                        return;
+                    }
+                    finishOfflineProcessing();
+                    if (!error.isEmpty())
+                    {
+                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                    }
                 });
 
         updateProcessingSettings();
@@ -301,66 +346,57 @@ namespace scopeone::ui
     {
         auto* mainLayout = new QVBoxLayout(this);
         auto* splitter = new QSplitter(Qt::Vertical, this);
+        QWidget* pipelineGroup = setupModuleList();
+        QWidget* parametersGroup = setupModuleConfig();
         setupRunControls();
         setupSourceControls();
-        setupModuleList();
-        setupModuleConfig();
-        auto* topWidget = new QWidget(this);
-        auto* topLayout = new QVBoxLayout(topWidget);
-        topLayout->addWidget(m_runControlsWidget);
-        topLayout->addWidget(m_sourceControlsWidget);
-        topLayout->addWidget(m_moduleList->parentWidget());
-        splitter->addWidget(topWidget);
-        splitter->addWidget(m_configStack->parentWidget());
+        splitter->addWidget(pipelineGroup);
+        splitter->addWidget(parametersGroup);
         splitter->setStretchFactor(0, 2);
         splitter->setStretchFactor(1, 3);
-        mainLayout->addWidget(splitter);
+        mainLayout->addWidget(splitter, 1);
+        mainLayout->addWidget(m_runControlsWidget);
+        mainLayout->addWidget(m_sourceControlsWidget);
     }
 
     void ImageProcessingWidget::setupSourceControls()
     {
-        m_sourceControlsWidget = new QGroupBox(tr("Processing Source"), this);
-        auto* layout = new QVBoxLayout(m_sourceControlsWidget);
+        m_sourceControlsWidget = new QGroupBox(tr("Single Run"), this);
+        auto* layout = new QGridLayout(m_sourceControlsWidget);
+        layout->addWidget(new QLabel(tr("Source"), m_sourceControlsWidget), 0, 0);
         m_sourceCombo = new QComboBox(m_sourceControlsWidget);
-        layout->addWidget(m_sourceCombo);
-        auto* buttons = new QHBoxLayout;
-        m_processImageButton = new QPushButton(tr("Process Image"), m_sourceControlsWidget);
-        m_processStackButton = new QPushButton(tr("Process Stack"), m_sourceControlsWidget);
+        layout->addWidget(m_sourceCombo, 0, 1, 1, 2);
+        layout->addWidget(new QLabel(tr("Range"), m_sourceControlsWidget), 1, 0);
+        m_offlineScopeCombo = new QComboBox(m_sourceControlsWidget);
+        m_offlineScopeCombo->addItem(tr("Current frame"), false);
+        m_offlineScopeCombo->addItem(tr("Entire stack"), true);
+        layout->addWidget(m_offlineScopeCombo, 1, 1, 1, 2);
+        m_runOfflineButton = new QPushButton(tr("Run"), m_sourceControlsWidget);
         m_cancelProcessingButton = new QPushButton(tr("Cancel"), m_sourceControlsWidget);
         m_cancelProcessingButton->setEnabled(false);
-        connect(m_processImageButton, &QPushButton::clicked,
-                this, &ImageProcessingWidget::onProcessImage);
-        connect(m_processStackButton, &QPushButton::clicked,
-                this, &ImageProcessingWidget::onProcessStack);
+        connect(m_runOfflineButton, &QPushButton::clicked,
+                this, &ImageProcessingWidget::onRunOfflineProcessing);
         connect(m_cancelProcessingButton, &QPushButton::clicked,
                 this, &ImageProcessingWidget::onCancelProcessing);
         connect(m_sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this]() { updateRunButtons(); });
-        buttons->addWidget(m_processImageButton);
-        buttons->addWidget(m_processStackButton);
-        buttons->addWidget(m_cancelProcessingButton);
-        layout->addLayout(buttons);
+        connect(m_offlineScopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this]() { updateRunButtons(); });
+        layout->addWidget(m_runOfflineButton, 2, 1);
+        layout->addWidget(m_cancelProcessingButton, 2, 2);
         m_processingProgress = new QProgressBar(m_sourceControlsWidget);
         m_processingProgress->setVisible(false);
-        layout->addWidget(m_processingProgress);
+        layout->addWidget(m_processingProgress, 3, 0, 1, 3);
     }
 
     void ImageProcessingWidget::setupRunControls()
     {
-        m_runControlsWidget = new QWidget(this);
-        auto* layout = new QHBoxLayout(m_runControlsWidget);
-        m_startButton = new QPushButton(tr("Start Processing"), m_runControlsWidget);
-        m_stopButton = new QPushButton(tr("Stop Processing"), m_runControlsWidget);
-        m_processingBitDepthCombo = new QComboBox(m_runControlsWidget);
+        m_runControlsWidget = new QGroupBox(tr("Real-time Processing"), this);
+        auto* layout = new QGridLayout(m_runControlsWidget);
+        m_liveProcessingCheckBox = new QCheckBox(tr("Enabled"), m_runControlsWidget);
         m_liveSourceCombo = new QComboBox(m_runControlsWidget);
-        m_processingBitDepthCombo->addItem(
-            tr("8-bit"), static_cast<int>(scopeone::core::ProcessingBitDepth::Bit8));
-        m_processingBitDepthCombo->addItem(
-            tr("16-bit"), static_cast<int>(scopeone::core::ProcessingBitDepth::Bit16));
-        connect(m_startButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStartProcessing);
-        connect(m_stopButton, &QPushButton::clicked, this, &ImageProcessingWidget::onStopProcessing);
-        connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                this, &ImageProcessingWidget::onProcessingBitDepthChanged);
+        connect(m_liveProcessingCheckBox, &QCheckBox::toggled,
+                this, &ImageProcessingWidget::onLiveProcessingToggled);
         connect(m_liveSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this]()
                 {
@@ -370,16 +406,15 @@ namespace scopeone::ui
                         updateProcessingSettings();
                     }
                 });
-        layout->addWidget(m_startButton);
-        layout->addWidget(m_stopButton);
-        layout->addWidget(m_processingBitDepthCombo);
-        layout->addWidget(m_liveSourceCombo);
-        layout->addStretch();
+        layout->addWidget(m_liveProcessingCheckBox, 0, 0);
+        layout->addWidget(new QLabel(tr("Source"), m_runControlsWidget), 0, 1);
+        layout->addWidget(m_liveSourceCombo, 0, 2);
+        layout->setColumnStretch(2, 1);
     }
 
-    void ImageProcessingWidget::setupModuleList()
+    QWidget* ImageProcessingWidget::setupModuleList()
     {
-        auto* group = new QGroupBox(tr("Processing Modules"), this);
+        auto* group = new QGroupBox(tr("Pipeline"), this);
         auto* layout = new QVBoxLayout(group);
         m_moduleList = new QListWidget(group);
         connect(m_moduleList, &QListWidget::currentRowChanged,
@@ -399,11 +434,23 @@ namespace scopeone::ui
         controls->addWidget(m_addModuleButton);
         controls->addWidget(m_removeModuleButton);
         layout->addLayout(controls);
+        auto* outputLayout = new QHBoxLayout;
+        outputLayout->addWidget(new QLabel(tr("Bit depth"), group));
+        m_processingBitDepthCombo = new QComboBox(group);
+        m_processingBitDepthCombo->addItem(
+            tr("8-bit"), static_cast<int>(scopeone::core::ProcessingBitDepth::Bit8));
+        m_processingBitDepthCombo->addItem(
+            tr("16-bit"), static_cast<int>(scopeone::core::ProcessingBitDepth::Bit16));
+        connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &ImageProcessingWidget::onProcessingBitDepthChanged);
+        outputLayout->addWidget(m_processingBitDepthCombo, 1);
+        layout->addLayout(outputLayout);
+        return group;
     }
 
-    void ImageProcessingWidget::setupModuleConfig()
+    QWidget* ImageProcessingWidget::setupModuleConfig()
     {
-        auto* group = new QGroupBox(tr("Module Configuration"), this);
+        auto* group = new QGroupBox(tr("Step Parameters"), this);
         auto* layout = new QVBoxLayout(group);
         m_configStack = new QStackedWidget(group);
         m_emptyConfigWidget = new QWidget(m_configStack);
@@ -412,6 +459,7 @@ namespace scopeone::ui
         emptyLayout->addStretch();
         m_configStack->addWidget(m_emptyConfigWidget);
         layout->addWidget(m_configStack);
+        return group;
     }
 
     void ImageProcessingWidget::updateModuleList()
@@ -455,19 +503,69 @@ namespace scopeone::ui
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
         const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
         const bool idle = m_offlineProcessingRequestId == 0;
-        m_startButton->setEnabled(!running && idle && hasModules);
-        m_stopButton->setEnabled(running);
+        {
+            const QSignalBlocker blocker(m_liveProcessingCheckBox);
+            m_liveProcessingCheckBox->setChecked(running);
+        }
+        m_liveProcessingCheckBox->setEnabled(idle && (running || hasModules));
+        m_liveProcessingCheckBox->setToolTip(
+            !idle ? tr("A single run is in progress")
+                  : !running && !hasModules ? tr("Add at least one pipeline step first")
+                                            : QString{});
         m_processingBitDepthCombo->setEnabled(!running && idle);
         m_liveSourceCombo->setEnabled(!running && idle);
         m_moduleList->parentWidget()->setEnabled(!running && idle);
         m_configStack->parentWidget()->setEnabled(!running && idle);
         const QString sourceType = m_sourceCombo->currentData(Qt::UserRole).toString();
         const bool hasPipeline = !m_scopeonecore->processingModules().isEmpty();
+        const QString sourceId = m_sourceCombo->currentData(Qt::UserRole + 1).toString();
+        const bool hasSource = !sourceType.isEmpty();
+        const bool sourceAvailable = hasSource
+                                     && (sourceType == QStringLiteral("layer")
+                                         || sourceType == QStringLiteral("stack")
+                                         || m_workspace->document(sourceId).ready);
         m_sourceCombo->setEnabled(!running && idle);
-        m_processImageButton->setEnabled(!running && idle && hasPipeline
-                                         && sourceType == QStringLiteral("layer"));
-        m_processStackButton->setEnabled(!running && idle && hasPipeline
-                                         && sourceType == QStringLiteral("stack"));
+        const bool canProcessImage = sourceType == QStringLiteral("layer")
+                                      || sourceType == QStringLiteral("document")
+                                      || sourceType == QStringLiteral("document_stack");
+        const bool canProcessStack = sourceType == QStringLiteral("stack")
+                                      || sourceType == QStringLiteral("document_stack");
+        if (!canProcessStack && m_offlineScopeCombo->currentData().toBool())
+        {
+            const QSignalBlocker blocker(m_offlineScopeCombo);
+            m_offlineScopeCombo->setCurrentIndex(0);
+        }
+        const bool entireStack = m_offlineScopeCombo->currentData().toBool();
+        m_offlineScopeCombo->setEnabled(!running && idle && canProcessStack);
+        const bool validScope = entireStack ? canProcessStack : canProcessImage;
+        const bool canRun = !running && idle && hasPipeline && sourceAvailable && validScope;
+        m_runOfflineButton->setEnabled(canRun);
+        QString runDisabledReason;
+        if (running)
+        {
+            runDisabledReason = tr("Disable real-time processing before starting a single run");
+        }
+        else if (!idle)
+        {
+            runDisabledReason = tr("A single run is already in progress");
+        }
+        else if (!hasPipeline)
+        {
+            runDisabledReason = tr("Add at least one pipeline step first");
+        }
+        else if (!hasSource)
+        {
+            runDisabledReason = tr("Select a source to process");
+        }
+        else if (!sourceAvailable)
+        {
+            runDisabledReason = tr("The selected source is not available");
+        }
+        else if (!validScope)
+        {
+            runDisabledReason = tr("The selected source does not support this range");
+        }
+        m_runOfflineButton->setToolTip(runDisabledReason);
         m_cancelProcessingButton->setEnabled(!idle);
     }
 
@@ -510,15 +608,33 @@ namespace scopeone::ui
         {
             const QSignalBlocker liveBlocker(m_liveSourceCombo);
             m_liveSourceCombo->clear();
-            m_liveSourceCombo->addItem(tr("Live: All Cameras"), QString{});
+            m_liveSourceCombo->addItem(tr("All preview cameras"), QString{});
             for (const QString& cameraId : m_scopeonecore->cameraIds())
             {
-                m_liveSourceCombo->addItem(tr("Live: %1").arg(cameraId), cameraId);
+                m_liveSourceCombo->addItem(tr("Preview camera: %1").arg(cameraId), cameraId);
             }
             const int liveIndex = m_liveSourceCombo->findData(liveSource);
             m_liveSourceCombo->setCurrentIndex(qMax(0, liveIndex));
         }
         m_sourceCombo->clear();
+
+        const QString activeDocumentId = m_workspace->activeDocumentId();
+        for (const ImageDocumentInfo& document : m_workspace->documents())
+        {
+            const QString sourceType = document.frameCount > 1
+                                           ? QStringLiteral("document_stack")
+                                           : QStringLiteral("document");
+            m_sourceCombo->addItem(
+                document.active ? tr("Active document: %1").arg(document.title)
+                                : tr("Document: %1").arg(document.title),
+                sourceType);
+            const int index = m_sourceCombo->count() - 1;
+            m_sourceCombo->setItemData(index, document.id, Qt::UserRole + 1);
+            if (document.id == activeDocumentId)
+            {
+                m_sourceCombo->setCurrentIndex(index);
+            }
+        }
 
         for (const QString& layerKey : m_scopeonecore->imageSceneModel()->layerIds())
         {
@@ -567,28 +683,30 @@ namespace scopeone::ui
         updateRunButtons();
     }
 
-    void ImageProcessingWidget::onProcessImage()
+    void ImageProcessingWidget::onRunOfflineProcessing()
     {
-        m_offlineProcessingRequestId = m_scopeonecore->requestLayerProcessing(
-            m_sourceCombo->currentData(Qt::UserRole + 1).toString());
+        const QString sourceType = m_sourceCombo->currentData(Qt::UserRole).toString();
+        const QString sourceId = m_sourceCombo->currentData(Qt::UserRole + 1).toString();
+        const bool entireStack = m_offlineScopeCombo->currentData().toBool();
+        m_directProcessingRequest = sourceType == QStringLiteral("layer")
+                                    || sourceType == QStringLiteral("stack");
+        m_offlineProcessingRequestId = entireStack
+                                           ? (m_directProcessingRequest
+                                                  ? m_scopeonecore->requestRecordingSessionStackProcessing(
+                                                        m_sourceCombo->currentData(Qt::UserRole + 1).toString(),
+                                                        m_sourceCombo->currentData(Qt::UserRole + 2).toString())
+                                                  : m_workspace->processDocument(sourceId, true))
+                                           : (m_directProcessingRequest
+                                                  ? m_scopeonecore->requestImageProcessing(
+                                                        m_scopeonecore->graphFrame(sourceId), sourceId)
+                                                  : m_workspace->processDocument(sourceId, false));
         if (m_offlineProcessingRequestId == 0)
         {
-            QMessageBox::warning(this, tr("Processing Failed"), tr("No image is available"));
-            return;
-        }
-        m_processingProgress->setRange(0, 0);
-        m_processingProgress->setVisible(true);
-        updateRunButtons();
-    }
-
-    void ImageProcessingWidget::onProcessStack()
-    {
-        m_offlineProcessingRequestId = m_scopeonecore->requestRecordingSessionStackProcessing(
-            m_sourceCombo->currentData(Qt::UserRole + 1).toString(),
-            m_sourceCombo->currentData(Qt::UserRole + 2).toString());
-        if (m_offlineProcessingRequestId == 0)
-        {
-            QMessageBox::warning(this, tr("Processing Failed"), tr("No stack is available"));
+            finishOfflineProcessing();
+            QMessageBox::warning(this,
+                                 tr("Processing Failed"),
+                                 entireStack ? tr("No stack is available")
+                                             : tr("No image is available"));
             return;
         }
         m_processingProgress->setRange(0, 0);
@@ -604,6 +722,7 @@ namespace scopeone::ui
     void ImageProcessingWidget::finishOfflineProcessing()
     {
         m_offlineProcessingRequestId = 0;
+        m_directProcessingRequest = false;
         m_processingProgress->setVisible(false);
         updateRunButtons();
     }
@@ -646,23 +765,16 @@ namespace scopeone::ui
         }
     }
 
-    void ImageProcessingWidget::onStartProcessing()
+    void ImageProcessingWidget::onLiveProcessingToggled(bool enabled)
     {
-        if (!m_scopeonecore->setRealTimeProcessingEnabled(true))
+        if (!m_scopeonecore->setRealTimeProcessingEnabled(enabled))
         {
-            QMessageBox::information(this, tr("Information"), tr("Please add a processing module first"));
-            return;
+            QMessageBox::information(
+                this, tr("Information"), tr("Please add a processing module first"));
         }
         updateRunButtons();
-        qInfo().noquote() << "Processing started";
-    }
-
-    void ImageProcessingWidget::onStopProcessing()
-    {
-        if (m_scopeonecore->setRealTimeProcessingEnabled(false))
-        {
-            updateRunButtons();
-            qInfo().noquote() << "Processing stopped";
-        }
+        qInfo().noquote() << (m_scopeonecore->isRealTimeProcessingEnabled()
+                                  ? "Processing started"
+                                  : "Processing stopped");
     }
 }

@@ -2217,12 +2217,15 @@ namespace scopeone::core::internal
     }
 
     // Saves buffered sessions and preserves direct writer outputs
-    QString RecordingManager::saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session)
+    QString RecordingManager::saveSessionToDisk(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const std::shared_ptr<RecordingSessionData>& sourceSession)
     {
         if (!session)
         {
             return QStringLiteral("Error: Missing recording session");
         }
+        const auto inputSession = sourceSession ? sourceSession : session->cloneForSave();
         ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.cameraIds.isEmpty())
         {
@@ -2242,21 +2245,8 @@ namespace scopeone::core::internal
             return updateSessionResult(*session, QStringLiteral("Error: %1").arg(planError), false);
         }
 
-        if (!session->hasAnyFrames())
+        if (!inputSession->hasAnyFrames() && !inputSession->hasRecordedOutput())
         {
-            if (!session->saveMessage().isEmpty())
-            {
-                return session->saveMessage();
-            }
-            if (session->streamedToDisk() && session->hasRecordedOutput())
-            {
-                return updateSessionResult(
-                    *session,
-                    saveSuccessMessage(
-                        QStringLiteral("Success: Recording was already saved during acquisition"),
-                        savedSessionOutputDir(*session)),
-                    true);
-            }
             return updateSessionResult(*session, QStringLiteral("Error: No frames captured"), false);
         }
 
@@ -2288,8 +2278,8 @@ namespace scopeone::core::internal
         QHash<QString, RecordingFileManifest> completedOutputs;
         for (const QString& cameraId : session->cameraIds())
         {
-            const int frameCount = session->frameCount(cameraId);
-            if (frameCount <= 0)
+            const qint64 frameCount = inputSession->recordedFrameCount(cameraId);
+            if (frameCount <= 0 || frameCount > (std::numeric_limits<int>::max)())
             {
                 continue;
             }
@@ -2299,7 +2289,7 @@ namespace scopeone::core::internal
             tiffOpts.useDeflate = capturePlan.enableCompression;
             tiffOpts.zipQuality = capturePlan.compressionLevel;
 
-            const ImageFrame firstImageFrame = session->imageFrameAt(cameraId, 0);
+            const ImageFrame firstImageFrame = inputSession->imageFrameAt(cameraId, 0);
             if (!firstImageFrame.isValid())
             {
                 continue;
@@ -2308,7 +2298,7 @@ namespace scopeone::core::internal
             if (capturePlan.format == RecordingFormat::OmeTiff
                 || capturePlan.format == RecordingFormat::OmeZarr)
             {
-                for (const AcquisitionEventRecord& record : session->experimentDocument().events)
+                for (const AcquisitionEventRecord& record : inputSession->experimentDocument().events)
                 {
                     if (record.succeeded && record.frames.contains(cameraId))
                     {
@@ -2331,13 +2321,13 @@ namespace scopeone::core::internal
                                         capturePlan,
                                         physicalPixelSizeUm(firstImageFrame.width,
                                                             firstImageFrame.sourceRoiWidth,
-                                                            session->cameraPixelSizeUm(cameraId)),
+                                                            inputSession->cameraPixelSizeUm(cameraId)),
                                         physicalPixelSizeUm(firstImageFrame.height,
                                                             firstImageFrame.sourceRoiHeight,
-                                                            session->cameraPixelSizeUm(cameraId)),
-                                        session->experimentDocument().startedTimestampNs,
+                                                            inputSession->cameraPixelSizeUm(cameraId)),
+                                        inputSession->experimentDocument().startedTimestampNs,
                                         cameraId,
-                                        session->experimentDocument().deviceProperties
+                                        inputSession->experimentDocument().deviceProperties
                                             .value(cameraId).toObject(),
                                         tiffOpts))
             {
@@ -2345,9 +2335,9 @@ namespace scopeone::core::internal
                 return failSave(errorMessage);
             }
             int saved = 0;
-            for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+            for (int frameIndex = 0; frameIndex < static_cast<int>(frameCount); ++frameIndex)
             {
-                const ImageFrame imageFrame = session->imageFrameAt(cameraId, frameIndex);
+                const ImageFrame imageFrame = inputSession->imageFrameAt(cameraId, frameIndex);
                 if (!imageFrame.isValid())
                 {
                     continue;
