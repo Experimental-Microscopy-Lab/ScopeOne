@@ -10,14 +10,17 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPalette>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -200,6 +203,8 @@ namespace scopeone::ui
         {
             qFatal("ImageProcessingWidget requires ScopeOneCore and ImageWorkspace");
         }
+        setAutoFillBackground(true);
+        setBackgroundRole(QPalette::Window);
         m_processingRunning = core->isRealTimeProcessingEnabled();
         setupUI();
 
@@ -345,7 +350,21 @@ namespace scopeone::ui
     void ImageProcessingWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
-        auto* splitter = new QSplitter(Qt::Vertical, this);
+        mainLayout->setContentsMargins(0, 0, 0, 0);
+        auto* scrollArea = new QScrollArea(this);
+        scrollArea->setWidgetResizable(true);
+        scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scrollArea->setFrameShape(QFrame::NoFrame);
+
+        auto* content = new QWidget(scrollArea);
+        content->setAutoFillBackground(true);
+        content->setBackgroundRole(QPalette::Window);
+        auto* contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(5, 5, 5, 5);
+        auto* splitter = new QSplitter(Qt::Vertical, content);
+        splitter->setAutoFillBackground(true);
+        splitter->setBackgroundRole(QPalette::Window);
         QWidget* pipelineGroup = setupModuleList();
         QWidget* parametersGroup = setupModuleConfig();
         setupRunControls();
@@ -354,9 +373,11 @@ namespace scopeone::ui
         splitter->addWidget(parametersGroup);
         splitter->setStretchFactor(0, 2);
         splitter->setStretchFactor(1, 3);
-        mainLayout->addWidget(splitter, 1);
-        mainLayout->addWidget(m_runControlsWidget);
-        mainLayout->addWidget(m_sourceControlsWidget);
+        contentLayout->addWidget(splitter, 1);
+        contentLayout->addWidget(m_runControlsWidget);
+        contentLayout->addWidget(m_sourceControlsWidget);
+        scrollArea->setWidget(content);
+        mainLayout->addWidget(scrollArea);
     }
 
     void ImageProcessingWidget::setupSourceControls()

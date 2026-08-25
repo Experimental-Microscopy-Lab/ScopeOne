@@ -123,7 +123,6 @@ namespace scopeone::ui
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QScrollArea* m_imageControlsWidget{nullptr};
         QScrollArea* m_hardwareControlsWidget{nullptr};
-        QLabel* m_hardwareContextLabel{nullptr};
         QGroupBox* m_previewControlsGroup{nullptr};
         QGroupBox* m_cameraControlsGroup{nullptr};
         QGroupBox* m_stageControlsGroup{nullptr};

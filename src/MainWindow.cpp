@@ -38,7 +38,6 @@
 #include <QStatusBar>
 #include <QStyleHints>
 #include <QStandardPaths>
-#include <QTabWidget>
 #include <QTimer>
 #include <QUrl>
 #include <QVector>
@@ -600,7 +599,6 @@ namespace scopeone::ui
                     m_deviceControlWidget->setPreviewWidget(
                         m_imageWorkspace->activePreviewWidget());
                     m_deviceControlWidget->setViewerContext(liveViewer);
-                    m_inspectorDockWidget->setWindowTitle(tr("Inspector"));
                 });
         connect(m_imageWorkspace, &ImageWorkspace::activeDocumentChanged,
                 this, [this](const QString& documentId)
@@ -632,7 +630,6 @@ namespace scopeone::ui
                 {
                     updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
-                    m_imageWorkspace->openSession(session);
                 });
         connect(m_deviceControlWidget, &DeviceControlWidget::snapRequested,
                 this, [this](const QString& target)
@@ -955,59 +952,72 @@ namespace scopeone::ui
     void MainWindow::setupImageProcessing()
     {
         m_imageProcessingWidget = new ImageProcessingWidget(m_scopeonecore, m_imageWorkspace, this);
-        m_inspectorDockWidget = new QDockWidget(tr("Inspector"), this);
-        m_inspectorDockWidget->setFeatures(QDockWidget::DockWidgetMovable |
-                                           QDockWidget::DockWidgetFloatable |
-                                           QDockWidget::DockWidgetClosable);
-        m_inspectorTabs = new QTabWidget(m_inspectorDockWidget);
-        m_inspectorTabs->addTab(m_deviceControlWidget->hardwareControlsWidget(), tr("Acquire"));
-        m_inspectorTabs->addTab(m_deviceControlWidget->imageControlsWidget(), tr("View"));
-        m_inspectorTabs->addTab(m_inspectWidget, tr("Analyze"));
-        m_inspectorTabs->addTab(m_imageProcessingWidget, tr("Process"));
-        m_inspectorDockWidget->setWidget(m_inspectorTabs);
-        addDockWidget(Qt::RightDockWidgetArea, m_inspectorDockWidget);
+
+        m_controlDockWidget = new QDockWidget(tr("Control"), this);
+        m_controlDockWidget->setWidget(m_deviceControlWidget->hardwareControlsWidget());
+        m_controlDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        addDockWidget(Qt::RightDockWidgetArea, m_controlDockWidget);
+
+        m_viewDockWidget = new QDockWidget(tr("View"), this);
+        m_viewDockWidget->setWidget(m_deviceControlWidget->imageControlsWidget());
+        m_viewDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        tabifyDockWidget(m_controlDockWidget, m_viewDockWidget);
+
+        m_analyzeDockWidget = new QDockWidget(tr("Analyze"), this);
+        m_analyzeDockWidget->setWidget(m_inspectWidget);
+        m_analyzeDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        tabifyDockWidget(m_controlDockWidget, m_analyzeDockWidget);
+
+        m_processDockWidget = new QDockWidget(tr("Process"), this);
+        m_processDockWidget->setWidget(m_imageProcessingWidget);
+        m_processDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        tabifyDockWidget(m_controlDockWidget, m_processDockWidget);
+
+        m_consoleDockWidget = new QDockWidget(tr("Console"), this);
+        m_consoleWidget = new ConsoleWidget(m_consoleDockWidget);
+        m_consoleDockWidget->setWidget(m_consoleWidget);
+        m_consoleDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        tabifyDockWidget(m_controlDockWidget, m_consoleDockWidget);
+        m_controlDockWidget->raise();
     }
 
-    // Create the log console dock and install the Qt message sink
+    // Install the Qt message sink for the embedded console
     void MainWindow::setupConsole()
     {
-        m_consoleDockWidget = new QDockWidget(tr("Console"), this);
-        m_consoleWidget = new ConsoleWidget(this);
-        m_consoleDockWidget->setWidget(m_consoleWidget);
-
         ConsoleWidget::installAsQtMessageSink(m_consoleWidget);
-
-        addDockWidget(Qt::BottomDockWidgetArea, m_consoleDockWidget);
     }
 
     // Create the device property and config preset dock
     void MainWindow::setupPropertyBrowser()
     {
-        m_propertyDockWidget = new QDockWidget(tr("Device Properties"), this);
+        m_propertyDockWidget = new QDockWidget(tr("Properties"), this);
         m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
         m_propertyBrowser = new DevicePropertyWidget(m_scopeonecore, this);
         m_configPresetWidget = new ConfigPresetWidget(m_scopeonecore, this);
 
-        auto* tabWidget = new QTabWidget(m_propertyDockWidget);
-        tabWidget->addTab(m_propertyBrowser, tr("Properties"));
-        tabWidget->addTab(m_configPresetWidget, tr("Configs"));
-        m_propertyDockWidget->setWidget(tabWidget);
-
+        m_propertyDockWidget->setWidget(m_propertyBrowser);
+        m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
         addDockWidget(Qt::LeftDockWidgetArea, m_propertyDockWidget);
+
+        m_configPresetDockWidget = new QDockWidget(tr("Configs"), this);
+        m_configPresetDockWidget->setWidget(m_configPresetWidget);
+        m_configPresetDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        tabifyDockWidget(m_propertyDockWidget, m_configPresetDockWidget);
     }
 
     // Create the recording control dock
     void MainWindow::setupRecording()
     {
         m_recordingDockWidget = new QDockWidget(tr("Recording"), this);
-        m_recordingDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        m_recordingDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
 
         m_recordingWidget = new RecordingWidget(m_scopeonecore, this);
         m_recordingDockWidget->setWidget(m_recordingWidget);
 
-        addDockWidget(Qt::LeftDockWidgetArea, m_recordingDockWidget);
-        splitDockWidget(m_propertyDockWidget, m_recordingDockWidget, Qt::Vertical);
+        addDockWidget(Qt::RightDockWidgetArea, m_recordingDockWidget);
+        tabifyDockWidget(m_controlDockWidget, m_recordingDockWidget);
+        m_controlDockWidget->raise();
     }
 
     // Create the image gallery dock
@@ -1023,7 +1033,7 @@ namespace scopeone::ui
         m_imageGalleryDockWidget->setWidget(m_imageGalleryWidget);
 
         addDockWidget(Qt::LeftDockWidgetArea, m_imageGalleryDockWidget);
-        tabifyDockWidget(m_recordingDockWidget, m_imageGalleryDockWidget);
+        tabifyDockWidget(m_propertyDockWidget, m_imageGalleryDockWidget);
         m_imageGalleryDockWidget->raise();
     }
 
@@ -1113,11 +1123,15 @@ namespace scopeone::ui
             m_dockWidgetsMenu->addAction(action);
         };
 
-        addDock(m_propertyDockWidget, QStringLiteral("Device Properties"));
+        addDock(m_propertyDockWidget, QStringLiteral("Properties"));
+        addDock(m_configPresetDockWidget, QStringLiteral("Configs"));
         addDock(m_recordingDockWidget, QStringLiteral("Recording"));
         addDock(m_imageGalleryDockWidget, QStringLiteral("Image Gallery"));
+        addDock(m_controlDockWidget, QStringLiteral("Control"));
+        addDock(m_viewDockWidget, QStringLiteral("View"));
+        addDock(m_analyzeDockWidget, QStringLiteral("Analyze"));
+        addDock(m_processDockWidget, QStringLiteral("Process"));
         addDock(m_consoleDockWidget, QStringLiteral("Console"));
-        addDock(m_inspectorDockWidget, QStringLiteral("Inspector"));
     }
 
     // Push loaded camera ids into every dependent panel

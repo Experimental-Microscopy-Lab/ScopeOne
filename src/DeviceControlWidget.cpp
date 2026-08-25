@@ -129,26 +129,8 @@ namespace scopeone::ui
         auto* hardwareLayout = new QVBoxLayout(hardwareContainer);
         hardwareLayout->setSpacing(5);
         hardwareLayout->setContentsMargins(5, 5, 5, 5);
-        m_hardwareContextLabel = new QLabel(
-            QStringLiteral("Hardware controls are available in Live"), hardwareContainer);
-        m_hardwareContextLabel->setWordWrap(true);
-        hardwareLayout->addWidget(m_hardwareContextLabel);
         hardwareLayout->addWidget(createControlGroup());
-        auto* stageToggle = new QToolButton(hardwareContainer);
-        stageToggle->setText(QStringLiteral("Stage"));
-        stageToggle->setCheckable(true);
-        stageToggle->setChecked(false);
-        stageToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        stageToggle->setArrowType(Qt::RightArrow);
         auto* stageGroup = createStageGroup();
-        stageGroup->setVisible(false);
-        connect(stageToggle, &QToolButton::toggled,
-                hardwareContainer, [stageToggle, stageGroup](bool expanded)
-                {
-                    stageToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
-                    stageGroup->setVisible(expanded);
-                });
-        hardwareLayout->addWidget(stageToggle);
         hardwareLayout->addWidget(stageGroup);
         hardwareLayout->addStretch();
         m_hardwareControlsWidget->setWidget(hardwareContainer);
@@ -347,8 +329,6 @@ namespace scopeone::ui
         auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
         auto* transformLayout = new QGridLayout(transformGroup);
         transformLayout->setContentsMargins(6, 6, 6, 6);
-        transformGroup->setCheckable(true);
-        transformGroup->setChecked(false);
         m_alignXLabel = new QLabel("X offset:", transformGroup);
         m_alignXSpinBox = new QSpinBox(transformGroup);
         m_alignXSpinBox->setRange(-1000, 1000);
@@ -376,30 +356,6 @@ namespace scopeone::ui
         m_alignResetButton = new QPushButton("Reset", transformGroup);
         m_alignResetButton->setMaximumWidth(50);
         m_alignResetButton->setToolTip("Reset offset and flip");
-
-        const QList<QWidget*> transformWidgets{
-            m_alignXLabel,
-            m_alignXSpinBox,
-            m_alignYLabel,
-            m_alignYSpinBox,
-            m_alignZoomLabel,
-            m_alignZoomSpinBox,
-            m_alignFlipXCheckBox,
-            m_alignFlipYCheckBox,
-            m_alignResetButton,
-        };
-        connect(transformGroup, &QGroupBox::toggled,
-                transformGroup, [transformWidgets](bool expanded)
-                {
-                    for (QWidget* widget : transformWidgets)
-                    {
-                        widget->setVisible(expanded);
-                    }
-                });
-        for (QWidget* widget : transformWidgets)
-        {
-            widget->setVisible(false);
-        }
 
         transformLayout->addWidget(m_alignXLabel, 0, 0);
         transformLayout->addWidget(m_alignXSpinBox, 0, 1, Qt::AlignLeft);
@@ -1321,7 +1277,6 @@ namespace scopeone::ui
     void DeviceControlWidget::updateControlsState()
     {
         const bool canControlHardware = m_cameraInitialized && m_liveViewerContext;
-        m_hardwareContextLabel->setVisible(!m_liveViewerContext);
         m_cameraControlsGroup->setVisible(true);
         m_stageControlsGroup->setVisible(true);
         m_cameraControlsGroup->setEnabled(canControlHardware);

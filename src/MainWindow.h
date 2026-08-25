@@ -16,7 +16,6 @@ class QDockWidget;
 class QLabel;
 class QMenu;
 class QProgressDialog;
-class QTabWidget;
 class QTimer;
 
 namespace scopeone::core
@@ -118,10 +117,10 @@ namespace scopeone::ui
 
         scopeone::core::ImageSceneModel* m_imageSceneModel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
-        QDockWidget* m_consoleDockWidget{nullptr};
         ConsoleWidget* m_consoleWidget{nullptr};
 
         QDockWidget* m_propertyDockWidget{nullptr};
+        QDockWidget* m_configPresetDockWidget{nullptr};
         DevicePropertyWidget* m_propertyBrowser{nullptr};
         ConfigPresetWidget* m_configPresetWidget{nullptr};
 
@@ -135,8 +134,11 @@ namespace scopeone::ui
 
         ImageProcessingWidget* m_imageProcessingWidget{nullptr};
 
-        QDockWidget* m_inspectorDockWidget{nullptr};
-        QTabWidget* m_inspectorTabs{nullptr};
+        QDockWidget* m_controlDockWidget{nullptr};
+        QDockWidget* m_viewDockWidget{nullptr};
+        QDockWidget* m_analyzeDockWidget{nullptr};
+        QDockWidget* m_processDockWidget{nullptr};
+        QDockWidget* m_consoleDockWidget{nullptr};
         InspectWidget* m_inspectWidget{nullptr};
 
         QMenu* m_fileMenu{nullptr};

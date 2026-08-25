@@ -212,11 +212,11 @@ namespace scopeone::ui
         m_liveButton = new QPushButton(QStringLiteral("Live"), this);
         m_openButton = new QPushButton(QStringLiteral("Preview"), this);
         m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
-        m_removeButton = new QPushButton(QStringLiteral("Remove"), this);
+        m_deleteButton = new QPushButton(QStringLiteral("Delete"), this);
         buttonLayout->addWidget(m_liveButton);
         buttonLayout->addWidget(m_openButton);
         buttonLayout->addWidget(m_saveCheckedButton);
-        buttonLayout->addWidget(m_removeButton);
+        buttonLayout->addWidget(m_deleteButton);
         layout->addLayout(buttonLayout);
 
         connect(m_sessionList, &QListWidget::currentItemChanged, this,
@@ -253,7 +253,7 @@ namespace scopeone::ui
                         emit saveSessionsRequested(sessions);
                     }
                 });
-        connect(m_removeButton, &QPushButton::clicked, this,
+        connect(m_deleteButton, &QPushButton::clicked, this,
                 [this]()
                 {
                     QListWidgetItem* item = m_sessionList->currentItem();
@@ -278,7 +278,7 @@ namespace scopeone::ui
         const auto session = currentSession();
         const bool hasCurrent = session != nullptr;
         m_openButton->setEnabled(canPreviewSession(session));
-        m_removeButton->setEnabled(hasCurrent);
+        m_deleteButton->setEnabled(hasCurrent);
         m_saveCheckedButton->setEnabled(!checkedSessions().isEmpty());
     }
 

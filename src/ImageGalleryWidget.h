@@ -47,7 +47,7 @@ namespace scopeone::ui
         QPushButton* m_liveButton{nullptr};
         QPushButton* m_openButton{nullptr};
         QPushButton* m_saveCheckedButton{nullptr};
-        QPushButton* m_removeButton{nullptr};
+        QPushButton* m_deleteButton{nullptr};
         int m_nextSnapshotTitleIndex{1};
         int m_nextRecordingTitleIndex{1};
     };

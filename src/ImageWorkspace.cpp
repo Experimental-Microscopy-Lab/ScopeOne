@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QSlider>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -177,6 +178,41 @@ namespace scopeone::ui
             const QString baseName = session.capturePlan().baseName.trimmed();
             return baseName.isEmpty() ? cameraId : baseName + QStringLiteral(" - ") + cameraId;
         }
+
+        QString compactViewerTitle(const QString& title)
+        {
+            static const QRegularExpression timestampPattern(
+                QStringLiteral("(\\d{8})_(\\d{6})"));
+            const QRegularExpressionMatch firstMatch = timestampPattern.match(title);
+            if (!firstMatch.hasMatch())
+            {
+                return title;
+            }
+            const QDateTime timestamp = QDateTime::fromString(
+                firstMatch.captured(1) + QStringLiteral("_") + firstMatch.captured(2),
+                QStringLiteral("yyyyMMdd_HHmmss"));
+            if (!timestamp.isValid())
+            {
+                return title;
+            }
+            QString compact = title.left(firstMatch.capturedStart())
+                + timestamp.toString(QStringLiteral("MM-dd HH:mm:ss"))
+                + title.mid(firstMatch.capturedEnd());
+
+            QRegularExpressionMatchIterator iterator = timestampPattern.globalMatch(compact);
+            QList<QPair<int, int>> duplicateRanges;
+            while (iterator.hasNext())
+            {
+                const QRegularExpressionMatch duplicate = iterator.next();
+                duplicateRanges.append({duplicate.capturedStart(), duplicate.capturedLength()});
+            }
+            for (auto it = duplicateRanges.crbegin(); it != duplicateRanges.crend(); ++it)
+            {
+                compact.remove(it->first, it->second);
+            }
+            compact.remove(QRegularExpression(QStringLiteral("\\s*[-|_]\\s*$")));
+            return compact.trimmed();
+        }
     }
 
     struct ImageWorkspace::Document
@@ -239,6 +275,9 @@ namespace scopeone::ui
         hostLayout->addWidget(m_viewerStack, 1);
 
         setupViewerToolbar();
+        const int viewerToolbarHeight = m_viewerToolbar->sizeHint().height();
+        m_viewerToolbar->setMinimumHeight(viewerToolbarHeight);
+        m_viewerToolbar->setMaximumHeight(viewerToolbarHeight);
         connect(m_viewerTabs, &QTabWidget::currentChanged,
                 this, [this](int index)
                 {
@@ -682,7 +721,9 @@ namespace scopeone::ui
             connect(document->page, &ImageDocumentPage::frameIndexRequested,
                     this, &ImageWorkspace::requestDocumentFrame);
             m_documents.push_back(std::move(document));
-            m_viewerTabs->addTab(m_documents.back()->page, m_documents.back()->title);
+            const int tabIndex = m_viewerTabs->addTab(
+                m_documents.back()->page, compactViewerTitle(m_documents.back()->title));
+            m_viewerTabs->setTabToolTip(tabIndex, m_documents.back()->title);
             if (!requestFrame(*m_documents.back(), 0))
             {
                 closeDocument(id);
@@ -1243,7 +1284,9 @@ namespace scopeone::ui
         }
         for (const auto& document : m_documents)
         {
-            m_viewerTabs->addTab(document->page, document->title);
+            const int tabIndex = m_viewerTabs->addTab(
+                document->page, compactViewerTitle(document->title));
+            m_viewerTabs->setTabToolTip(tabIndex, document->title);
         }
         if (Document* active = findDocument(m_activeDocumentId))
         {
@@ -1411,7 +1454,9 @@ namespace scopeone::ui
                 this, &ImageWorkspace::requestDocumentFrame);
         const QString id = document->id;
         m_documents.push_back(std::move(document));
-        m_viewerTabs->addTab(m_documents.back()->page, m_documents.back()->title);
+        const int tabIndex = m_viewerTabs->addTab(
+            m_documents.back()->page, compactViewerTitle(m_documents.back()->title));
+        m_viewerTabs->setTabToolTip(tabIndex, m_documents.back()->title);
         if (!requestFrame(*m_documents.back(), source->frameIndex))
         {
             removeDocument(id);
