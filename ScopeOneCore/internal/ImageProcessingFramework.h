@@ -22,7 +22,7 @@ namespace scopeone::core::internal
         ProcessingResult processThrough(int endModuleIndex, const ImageFrame& input, int processingBitDepth);
 
     private:
-        ProcessingResult processRange(const ImageFrame& input,
+        ProcessingResult processRange(const ProcessingValue& input,
                                       int processingBitDepth,
                                       int startModuleIndex,
                                       int endModuleIndexExclusive);

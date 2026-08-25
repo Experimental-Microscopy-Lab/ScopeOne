@@ -3993,7 +3993,7 @@ namespace scopeone::core
             {
                 if (cancelToken->load())
                 {
-                    return ProcessingResult{{}, QStringLiteral("Processing canceled")};
+                    return ProcessingResult(ImageFrame{}, QStringLiteral("Processing canceled"));
                 }
                 return pipeline->process(frame, bitDepth);
             }));

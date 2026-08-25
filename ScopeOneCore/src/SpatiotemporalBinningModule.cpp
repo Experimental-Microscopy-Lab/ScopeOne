@@ -352,7 +352,7 @@ namespace scopeone::core::internal
     {
         if (!frame.isValid())
         {
-            return {{}, QStringLiteral("Invalid input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid input"));
         }
 
         try
@@ -360,7 +360,7 @@ namespace scopeone::core::internal
             ImageFrame workingFrame;
             if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                return {{}, QStringLiteral("Unsupported input frame")};
+                return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported input frame"));
             }
             if (!m_frameBuffer.empty() && !m_frameBuffer.front().isCompatibleWith(workingFrame))
             {
@@ -418,7 +418,7 @@ namespace scopeone::core::internal
         }
         catch (const std::exception& e)
         {
-            return {{}, QString("Spatiotemporal binning failed: %1").arg(e.what())};
+            return ProcessingResult(ImageFrame{}, QString("Spatiotemporal binning failed: %1").arg(e.what()));
         }
     }
 

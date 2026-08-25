@@ -213,7 +213,7 @@ namespace scopeone::core::internal
         const qint64 pixelCount = static_cast<qint64>(workingFrame.width) * workingFrame.height;
         if (pixelCount <= 0)
         {
-            return {{}, QStringLiteral("Invalid running background dimensions")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid running background dimensions"));
         }
         if (m_runningSum.size() != static_cast<size_t>(pixelCount))
         {
@@ -276,7 +276,7 @@ namespace scopeone::core::internal
 
         if (outputBytes.isEmpty())
         {
-            return {{}, QStringLiteral("Failed to allocate running background output")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Failed to allocate running background output"));
         }
 
         ImageFrame output = makeFrameLike(workingFrame,
@@ -293,7 +293,7 @@ namespace scopeone::core::internal
     {
         if (!frame.isValid())
         {
-            return {{}, QStringLiteral("Invalid input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid input"));
         }
 
         try
@@ -301,7 +301,7 @@ namespace scopeone::core::internal
             ImageFrame workingFrame;
             if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                return {{}, QStringLiteral("Unsupported input frame")};
+                return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported input frame"));
             }
 
             if ((!m_buffer.empty() && !m_buffer.front().isCompatibleWith(workingFrame))
@@ -396,7 +396,7 @@ namespace scopeone::core::internal
         }
         catch (const std::exception& e)
         {
-            return {{}, QString("Background calibration failed: %1").arg(e.what())};
+            return ProcessingResult(ImageFrame{}, QString("Background calibration failed: %1").arg(e.what()));
         }
     }
 

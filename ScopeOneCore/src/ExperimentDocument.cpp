@@ -589,7 +589,7 @@ namespace scopeone::core
                 }
             };
 
-            if (moduleId == QStringLiteral("fft"))
+            if (moduleId == QStringLiteral("frequency_domain_filter"))
             {
                 normalizeDouble(QStringLiteral("min_feature_size"));
                 normalizeDouble(QStringLiteral("max_feature_size"));

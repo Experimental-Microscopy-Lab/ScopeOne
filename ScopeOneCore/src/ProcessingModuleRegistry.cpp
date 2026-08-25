@@ -3,7 +3,10 @@
 #include "internal/BackgroundCalibrationModule.h"
 #include "internal/DifferentialRollingModule.h"
 #include "internal/FFTModule.h"
+#include "internal/FrequencyDomainFilterModule.h"
+#include "internal/MaskModule.h"
 #include "internal/GaussianBlurModule.h"
+#include "internal/IFFTModule.h"
 #include "internal/SpatiotemporalBinningModule.h"
 #include "scopeone/PluginManifest.h"
 
@@ -136,14 +139,40 @@ namespace scopeone::core::internal
 
             registerBuiltIn<FFTModule>(
                 registry,
-                {QStringLiteral("fft"),
-                 QStringLiteral("FFT"),
+                {QStringLiteral("fft"), QStringLiteral("FFT"), 1, {}});
+
+            registerBuiltIn<FrequencyDomainFilterModule>(
+                registry,
+                {QStringLiteral("frequency_domain_filter"),
+                 QStringLiteral("Frequency Domain Filter"),
                  1,
                  {choiceParameter("output_mode", "Output", 2,
-                                  {"FFT Spectrum", "Bandpass FFT Spectrum", "Bandpass IFFT Image"}),
-                  realParameter("min_feature_size", "Min feature size", 2.0, 0.0, 1000.0, 0.1, 2),
-                  realParameter("max_feature_size", "Max feature size", 10.0, 0.0, 1000.0, 0.1, 2),
-                  choiceParameter("filter_kind", "Filter kind", 0, {"Smooth", "Hard"})}});
+                                  {"Spectrum", "Filtered spectrum", "Filtered image"}),
+                  realParameter("min_feature_size", "Min feature size", 2.0,
+                                0.0, 1000.0, 0.1, 2),
+                  realParameter("max_feature_size", "Max feature size", 10.0,
+                                0.0, 1000.0, 0.1, 2),
+                  choiceParameter("filter_kind", "Filter kind", 0,
+                                  {"Smooth", "Hard"})}});
+
+            registerBuiltIn<MaskModule>(
+                registry,
+                {QStringLiteral("mask"),
+                 QStringLiteral("Mask"),
+                 1,
+                 {choiceParameter("shape", "Shape", 0, {"Ellipse", "Rectangle", "Annulus"}),
+                  realParameter("center_x", "Center X", 0.0, -0.5, 0.5, 0.001, 3),
+                  realParameter("center_y", "Center Y", 0.0, -0.5, 0.5, 0.001, 3),
+                  realParameter("size_x", "Size X", 0.1, 0.001, 1.0, 0.001, 3),
+                  realParameter("size_y", "Size Y", 0.1, 0.001, 1.0, 0.001, 3),
+                  realParameter("inner_size", "Inner size", 0.0, 0.0, 1.0, 0.001, 3),
+                  realParameter("rotation", "Rotation", 0.0, -180.0, 180.0, 0.1, 1),
+                  realParameter("edge_width", "Edge width", 0.0, 0.0, 0.5, 0.001, 3),
+                  booleanParameter("invert", "Invert", false)}});
+
+            registerBuiltIn<IFFTModule>(
+                registry,
+                {QStringLiteral("ifft"), QStringLiteral("IFFT"), 1, {}});
 
             registerBuiltIn<DifferentialRollingModule>(
                 registry,

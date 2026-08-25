@@ -20,7 +20,7 @@ namespace scopeone::core::internal
     {
         if (!frame.isValid())
         {
-            return {{}, QStringLiteral("Invalid input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid input"));
         }
 
         try
@@ -28,7 +28,7 @@ namespace scopeone::core::internal
             ImageFrame workingFrame;
             if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                return {{}, QStringLiteral("Unsupported input frame")};
+                return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported input frame"));
             }
 
             const int cvType = workingFrame.isMono16() ? CV_16UC1 : CV_8UC1;
@@ -40,7 +40,7 @@ namespace scopeone::core::internal
                                    : allocatePixelBytes<uchar>(workingFrame.width, workingFrame.height);
             if (bytes.isEmpty())
             {
-                return {{}, QStringLiteral("Failed to allocate Gaussian blur output")};
+                return ProcessingResult(ImageFrame{}, QStringLiteral("Failed to allocate Gaussian blur output"));
             }
             cv::Mat blurred(workingFrame.height,
                             workingFrame.width,
@@ -53,7 +53,7 @@ namespace scopeone::core::internal
         }
         catch (const std::exception& e)
         {
-            return {{}, QString("Gaussian blur failed: %1").arg(e.what())};
+            return ProcessingResult(ImageFrame{}, QString("Gaussian blur failed: %1").arg(e.what()));
         }
     }
 

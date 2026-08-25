@@ -212,7 +212,7 @@ namespace scopeone::core::internal
     {
         if (!frame.isValid())
         {
-            return {{}, QStringLiteral("Invalid input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid input"));
         }
 
         try
@@ -220,7 +220,7 @@ namespace scopeone::core::internal
             ImageFrame workingFrame;
             if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
             {
-                return {{}, QStringLiteral("Unsupported input frame")};
+                return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported input frame"));
             }
 
             const bool incompatibleBuffers = (!m_state.batchA.empty() && !m_state.batchA.front().isCompatibleWith(
@@ -279,7 +279,7 @@ namespace scopeone::core::internal
         }
         catch (const std::exception& e)
         {
-            return {{}, QString("Differential rolling failed: %1").arg(e.what())};
+            return ProcessingResult(ImageFrame{}, QString("Differential rolling failed: %1").arg(e.what()));
         }
     }
 

@@ -30,7 +30,7 @@ namespace scopeone::core::internal
     // Runs all runtime modules in order for one frame
     ProcessingResult ProcessingPipelineRuntime::process(const ImageFrame& input, int processingBitDepth)
     {
-        return processRange(input,
+        return processRange(ProcessingValue{input},
                             processingBitDepth,
                             0,
                             (std::numeric_limits<int>::max)());
@@ -41,7 +41,7 @@ namespace scopeone::core::internal
                                                             const ImageFrame& input,
                                                             int processingBitDepth)
     {
-        return processRange(input,
+        return processRange(ProcessingValue{input},
                             processingBitDepth,
                             startModuleIndex,
                             (std::numeric_limits<int>::max)());
@@ -55,30 +55,32 @@ namespace scopeone::core::internal
         const int endModuleIndexExclusive = endModuleIndex >= (std::numeric_limits<int>::max)() - 1
                                                 ? (std::numeric_limits<int>::max)()
                                                 : qMax(0, endModuleIndex + 1);
-        return processRange(input,
+        return processRange(ProcessingValue{input},
                             processingBitDepth,
                             0,
                             endModuleIndexExclusive);
     }
 
     // Runs a runtime pipeline segment and returns its frame or error
-    ProcessingResult ProcessingPipelineRuntime::processRange(const ImageFrame& input,
+    ProcessingResult ProcessingPipelineRuntime::processRange(const ProcessingValue& input,
                                                              int processingBitDepth,
                                                              int startModuleIndex,
                                                              int endModuleIndexExclusive)
     {
-        if (!input.isValid())
+        if (!std::holds_alternative<ImageFrame>(input)
+            || !std::get<ImageFrame>(input).isValid())
         {
-            return {{}, QStringLiteral("Invalid processing input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid processing input"));
         }
 
-        ImageFrame currentFrame(input);
+        ProcessingValue currentValue(input);
+        ImageFrame displayFrame;
         const int startIndex = std::clamp(startModuleIndex, 0, static_cast<int>(m_modules.size()));
         const int endIndex = std::clamp(endModuleIndexExclusive, startIndex, static_cast<int>(m_modules.size()));
         for (int moduleIndex = startIndex; moduleIndex < endIndex; ++moduleIndex)
         {
             ProcessingModule* module = m_modules[static_cast<size_t>(moduleIndex)].get();
-            ProcessingResult result = module->process(currentFrame, processingBitDepth);
+            ProcessingResult result = module->processValue(currentValue, processingBitDepth);
             if (!result.succeeded())
             {
                 if (result.error.isEmpty())
@@ -88,10 +90,30 @@ namespace scopeone::core::internal
                 return result;
             }
 
-            copyFrameMetadata(currentFrame, result.frame);
-            currentFrame = std::move(result.frame);
+            if (result.hasImage())
+            {
+                ImageFrame image = std::holds_alternative<ImageFrame>(result.value)
+                                        ? std::get<ImageFrame>(result.value)
+                                        : result.frame;
+                if (std::holds_alternative<ImageFrame>(currentValue))
+                {
+                    copyFrameMetadata(std::get<ImageFrame>(currentValue), image);
+                }
+                result.value = image;
+                result.frame = image;
+            }
+            else if (result.frame.isValid())
+            {
+                displayFrame = result.frame;
+            }
+            currentValue = std::move(result.value);
         }
-        return {std::move(currentFrame), {}};
+        ProcessingResult result(std::move(currentValue));
+        if (!result.hasImage())
+        {
+            result.frame = std::move(displayFrame);
+        }
+        return result;
     }
 
     // Adds one module to the editable pipeline definition
@@ -327,11 +349,13 @@ namespace scopeone::core::internal
         if (!result.succeeded())
         {
             emit processingError(result.error.isEmpty()
-                                     ? QStringLiteral("Processing returned an invalid frame")
+                                     ? QStringLiteral("Processing pipeline returned no output")
                                      : result.error);
             return {};
         }
-        return std::move(result.frame);
+        return result.hasImage()
+                   ? std::get<ImageFrame>(std::move(result.value))
+                   : std::move(result.frame);
     }
 
     // Builds a stable key for camera specific processing state

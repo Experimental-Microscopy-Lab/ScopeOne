@@ -15,9 +15,11 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineF>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPalette>
+#include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QScrollArea>
@@ -26,7 +28,11 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+#include <QMouseEvent>
 #include <QDebug>
+
+#include <cmath>
+#include <functional>
 
 namespace scopeone::ui
 {
@@ -36,6 +42,173 @@ namespace scopeone::ui
         using ProcessingModuleInfo = scopeone::core::ScopeOneCore::ProcessingModuleInfo;
         using ProcessingParameterDescriptor = scopeone::core::ProcessingParameterDescriptor;
         using ProcessingParameterType = scopeone::core::ProcessingParameterType;
+
+        class MaskPreviewWidget final : public QWidget
+        {
+        public:
+            explicit MaskPreviewWidget(QWidget* parent)
+                : QWidget(parent)
+            {
+                setMinimumSize(220, 220);
+                setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                setMouseTracking(true);
+            }
+
+            void setParameters(const QVariantMap& parameters)
+            {
+                m_parameters = parameters;
+                update();
+            }
+
+            void setParametersChanged(std::function<void(const QVariantMap&)> callback)
+            {
+                m_parametersChanged = std::move(callback);
+            }
+
+        protected:
+            void paintEvent(QPaintEvent*) override
+            {
+                QPainter painter(this);
+                painter.fillRect(rect(), QColor(24, 27, 31));
+                painter.setRenderHint(QPainter::Antialiasing);
+                const QRectF area = plotArea();
+                painter.setPen(QColor(82, 88, 96));
+                painter.drawLine(area.center().x(), area.top(), area.center().x(), area.bottom());
+                painter.drawLine(area.left(), area.center().y(), area.right(), area.center().y());
+
+                const QPointF center = toWidget(m_parameters.value("center_x").toDouble(),
+                                                m_parameters.value("center_y").toDouble());
+                const double sizeX = m_parameters.value("size_x", 0.1).toDouble() * area.width();
+                const double sizeY = m_parameters.value("size_y", 0.1).toDouble() * area.height();
+                const double rotation = m_parameters.value("rotation").toDouble();
+                const int shape = m_parameters.value("shape").toInt();
+                painter.save();
+                painter.translate(center);
+                painter.rotate(-rotation);
+                painter.setPen(QPen(QColor(90, 210, 255), 2));
+                painter.setBrush(QColor(90, 210, 255, 70));
+                if (shape == 1)
+                {
+                    painter.drawRect(QRectF(-sizeX / 2.0, -sizeY / 2.0, sizeX, sizeY));
+                }
+                else
+                {
+                    painter.drawEllipse(QRectF(-sizeX / 2.0, -sizeY / 2.0, sizeX, sizeY));
+                    if (shape == 2)
+                    {
+                        const double inner = m_parameters.value("inner_size").toDouble()
+                                              * area.width();
+                        painter.setBrush(QColor(24, 27, 31));
+                        painter.drawEllipse(QRectF(-inner / 2.0, -inner / 2.0, inner, inner));
+                    }
+                }
+                painter.restore();
+
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(255, 120, 90));
+                painter.drawEllipse(center, 4, 4);
+                painter.setBrush(QColor(90, 210, 255));
+                painter.drawEllipse(toWidget(m_parameters.value("center_x").toDouble()
+                                                 + m_parameters.value("size_x", 0.1).toDouble() / 2.0,
+                                             m_parameters.value("center_y").toDouble()),
+                                    5, 5);
+            }
+
+            void mousePressEvent(QMouseEvent* event) override
+            {
+                const QPointF center = toWidget(m_parameters.value("center_x").toDouble(),
+                                                m_parameters.value("center_y").toDouble());
+                const QPointF handle = toWidget(m_parameters.value("center_x").toDouble()
+                                                    + m_parameters.value("size_x", 0.1).toDouble() / 2.0,
+                                                m_parameters.value("center_y").toDouble());
+                if (QLineF(event->position(), center).length() < 14.0)
+                {
+                    m_dragMode = DragMode::Move;
+                }
+                else if (QLineF(event->position(), handle).length() < 14.0)
+                {
+                    m_dragMode = DragMode::Resize;
+                }
+                else
+                {
+                    m_dragMode = DragMode::None;
+                }
+                m_lastPosition = event->position();
+            }
+
+            void mouseMoveEvent(QMouseEvent* event) override
+            {
+                if (m_dragMode == DragMode::None)
+                {
+                    return;
+                }
+                QVariantMap parameters = m_parameters;
+                if (m_dragMode == DragMode::Move)
+                {
+                    const QPointF delta = event->position() - m_lastPosition;
+                    parameters["center_x"] = qBound(-0.5,
+                                                     parameters.value("center_x").toDouble()
+                                                         + delta.x() / plotArea().width(),
+                                                     0.5);
+                    parameters["center_y"] = qBound(-0.5,
+                                                     parameters.value("center_y").toDouble()
+                                                         + delta.y() / plotArea().height(),
+                                                     0.5);
+                }
+                else
+                {
+                    const QPointF center = toWidget(parameters.value("center_x").toDouble(),
+                                                    parameters.value("center_y").toDouble());
+                    parameters["size_x"] = qBound(0.001,
+                                                    2.0 * std::abs(event->position().x() - center.x())
+                                                        / plotArea().width(),
+                                                    1.0);
+                    parameters["size_y"] = qBound(0.001,
+                                                    2.0 * std::abs(event->position().y() - center.y())
+                                                        / plotArea().height(),
+                                                    1.0);
+                }
+                m_lastPosition = event->position();
+                if (m_parametersChanged)
+                {
+                    m_parametersChanged(parameters);
+                }
+            }
+
+            void mouseReleaseEvent(QMouseEvent*) override
+            {
+                m_dragMode = DragMode::None;
+            }
+
+        private:
+            enum class DragMode
+            {
+                None,
+                Move,
+                Resize
+            };
+
+            QPointF toWidget(double x, double y) const
+            {
+                const QRectF area = plotArea();
+                return {area.left() + (x + 0.5) * area.width(),
+                        area.top() + (y + 0.5) * area.height()};
+            }
+
+            QRectF plotArea() const
+            {
+                const qreal side = qMin(width(), height());
+                return QRectF((width() - side) / 2.0,
+                              (height() - side) / 2.0,
+                              side,
+                              side);
+            }
+
+            QVariantMap m_parameters;
+            std::function<void(const QVariantMap&)> m_parametersChanged;
+            QPointF m_lastPosition;
+            DragMode m_dragMode{DragMode::None};
+        };
 
         void configureSpinBox(QAbstractSpinBox* spinBox)
         {
@@ -55,6 +228,18 @@ namespace scopeone::ui
                 auto* layout = new QVBoxLayout(this);
                 auto* group = new QGroupBox(info.name(), this);
                 auto* form = new QFormLayout(group);
+                if (info.descriptor().id == QStringLiteral("mask"))
+                {
+                    auto* preview = new MaskPreviewWidget(group);
+                    preview->setParameters(info.parameters());
+                    preview->setParametersChanged([this, preview](const QVariantMap& parameters)
+                    {
+                        preview->setParameters(parameters);
+                        m_core->setProcessingModuleParameters(m_moduleIndex, parameters);
+                    });
+                    form->addRow(preview);
+                    m_maskPreview = preview;
+                }
                 for (const ProcessingParameterDescriptor& parameter : info.descriptor().parameters)
                 {
                     QWidget* editor = createEditor(parameter,
@@ -104,6 +289,10 @@ namespace scopeone::ui
                         break;
                     }
                     }
+                }
+                if (m_maskPreview)
+                {
+                    m_maskPreview->setParameters(parameters);
                 }
             }
 
@@ -191,6 +380,7 @@ namespace scopeone::ui
             int m_moduleIndex;
             QHash<QString, QWidget*> m_editors;
             QHash<QString, ProcessingParameterDescriptor> m_descriptors;
+            MaskPreviewWidget* m_maskPreview{nullptr};
         };
     }
 
