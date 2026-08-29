@@ -39,6 +39,7 @@
 #include <QStyleHints>
 #include <QStandardPaths>
 #include <QTimer>
+#include <algorithm>
 #include <QUrl>
 #include <QVector>
 #include <cmath>
@@ -378,6 +379,14 @@ namespace scopeone::ui
                 {
                     const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
                     m_previewWidget->removeStaticLayer(layerKey);
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::toolStreamFramePublished,
+                this, [this](const QString& sourceId,
+                             const QString&,
+                             const scopeone::core::ImageFrame& frame)
+                {
+                    m_previewWidget->setGraphToolLayerFrame(sourceId, frame);
+                    schedulePreviewCursorStatusRefresh();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
                 this, [this]()
@@ -819,8 +828,31 @@ namespace scopeone::ui
         return m_imageWorkspace->activeLayerKey();
     }
 
+    scopeone::core::ImageFrame MainWindow::currentFrame() const
+    {
+        return m_scopeonecore->graphFrame(currentLayerKey());
+    }
+
+    scopeone::core::ImageFrame MainWindow::publishToolStreamFrame(
+        const QString& sourceId,
+        const scopeone::core::ImageFrame& frame,
+        const QString& displayName)
+    {
+        return m_scopeonecore->publishToolStreamFrame(sourceId, frame, displayName);
+    }
+
     void MainWindow::showLayers(const QStringList& layerKeys, bool sideBySide)
     {
+        auto* activeScene = m_imageWorkspace->activeSceneModel();
+        const bool belongsToLiveScene = std::all_of(
+            layerKeys.cbegin(), layerKeys.cend(), [this](const QString& layerKey)
+            {
+                return m_imageSceneModel->layerIds().contains(layerKey);
+            });
+        if (belongsToLiveScene && activeScene != m_imageSceneModel)
+        {
+            m_imageWorkspace->activateLiveViewer();
+        }
         m_imageWorkspace->setVisibleLayers(layerKeys, sideBySide);
     }
 

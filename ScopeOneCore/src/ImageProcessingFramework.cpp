@@ -30,7 +30,13 @@ namespace scopeone::core::internal
     // Runs all runtime modules in order for one frame
     ProcessingResult ProcessingPipelineRuntime::process(const ImageFrame& input, int processingBitDepth)
     {
-        return processRange(ProcessingValue{input},
+        return processValue(ProcessingValue{input}, processingBitDepth);
+    }
+
+    ProcessingResult ProcessingPipelineRuntime::processValue(const ProcessingValue& input,
+                                                              int processingBitDepth)
+    {
+        return processRange(input,
                             processingBitDepth,
                             0,
                             (std::numeric_limits<int>::max)());
@@ -67,8 +73,8 @@ namespace scopeone::core::internal
                                                              int startModuleIndex,
                                                              int endModuleIndexExclusive)
     {
-        if (!std::holds_alternative<ImageFrame>(input)
-            || !std::get<ImageFrame>(input).isValid())
+        if (std::holds_alternative<ImageFrame>(input)
+            && !std::get<ImageFrame>(input).isValid())
         {
             return ProcessingResult(ImageFrame{}, QStringLiteral("Invalid processing input"));
         }
@@ -119,10 +125,6 @@ namespace scopeone::core::internal
     // Adds one module to the editable pipeline definition
     void ProcessingPipelineDefinition::addModule(std::unique_ptr<ProcessingModule> module)
     {
-        if (!module)
-        {
-            qFatal("Processing pipeline requires a valid module");
-        }
         QMutexLocker locker(&m_modulesMutex);
         m_modules.push_back(std::move(module));
     }

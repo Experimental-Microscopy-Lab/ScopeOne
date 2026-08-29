@@ -54,6 +54,7 @@ namespace scopeone::core
     {
         Raw,
         Processed,
+        Tool,
         Static,
         Gallery
     };

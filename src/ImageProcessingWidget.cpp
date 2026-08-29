@@ -389,10 +389,6 @@ namespace scopeone::ui
                                                  QWidget* parent)
         : QWidget(parent), m_scopeonecore(core), m_workspace(workspace)
     {
-        if (!core || !workspace)
-        {
-            qFatal("ImageProcessingWidget requires ScopeOneCore and ImageWorkspace");
-        }
         setAutoFillBackground(true);
         setBackgroundRole(QPalette::Window);
         m_processingRunning = core->isRealTimeProcessingEnabled();

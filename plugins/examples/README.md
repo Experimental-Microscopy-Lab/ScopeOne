@@ -17,3 +17,15 @@ To build only the examples:
 Each example plugin declares `id`, `name`, `version`, `scopeOneApi`, and `kind` in `plugin.json`. Hardware providers use the public `DriverHostProviderPlugin` contract and run in `ScopeOne_DriverHost`. `ExampleHardwarePlugin` wraps the public `SimulatorProvider` to demonstrate a complete external hardware plugin.
 
 Install processing plugins under `plugins/processing`, tool plugins under `plugins/tools`, and hardware plugins under `plugins/hardware`.
+
+Tool plugins can create an independent processing pipeline without changing the main Process panel:
+
+```cpp
+auto pipeline = context.core().createProcessingPipeline();
+pipeline->addModule(context.core().createProcessingModule("fft"));
+pipeline->addModule(context.core().createProcessingModule("mask"));
+pipeline->addModule(context.core().createProcessingModule("ifft"));
+auto result = pipeline->process(scopeone::core::ProcessingValue{inputFrame});
+```
+
+The pipeline accepts image and complex intermediate values. Publish image results with `publishExternalFrame` and show the returned layer through the tool context.

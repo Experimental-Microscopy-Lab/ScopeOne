@@ -486,6 +486,39 @@ namespace scopeone::ui
         return layerKey;
     }
 
+    // Adds or updates one realtime tool layer
+    QString PreviewWidget::setGraphToolLayerFrame(const QString& layerId,
+                                                   const ImageFrame& frame)
+    {
+        const QString normalizedId = layerId.trimmed();
+        if (normalizedId.isEmpty() || !frame.isValid())
+        {
+            return {};
+        }
+        const QString layerKey = ScopeOneCore::toolLayerKey(normalizedId);
+        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
+        if (normalizedSourceId(frame.cameraId) != sourceId)
+        {
+            return {};
+        }
+        const bool newLayer = !m_toolSourceIds.contains(sourceId);
+        m_toolSourceIds.insert(sourceId);
+        if (!storeSourceFrame(sourceId, FrameRole::Raw, frame))
+        {
+            return {};
+        }
+        initializeLayerInfo(layerKey);
+        updateLayerFps(layerKey, 1);
+        updateLayerInfoDisplay();
+        updateImageDisplay();
+        if (newLayer)
+        {
+            emit availableLayerKeysChanged(availableLayerKeys());
+            emit visibleLayerKeysChanged(visibleLayerKeys());
+        }
+        return layerKey;
+    }
+
     // Removes one static image layer from the preview
     bool PreviewWidget::removeStaticLayer(const QString& layerKey)
     {
@@ -556,6 +589,17 @@ namespace scopeone::ui
         for (const QString& sourceId : m_staticSourceIds)
         {
             const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
+            scopeone::core::DocumentLayer layer;
+            if (!m_sceneModel->findLayer(layerKey, layer))
+            {
+                continue;
+            }
+            availableKeys.append(layerKey);
+            availableSet.insert(layerKey);
+        }
+        for (const QString& sourceId : m_toolSourceIds)
+        {
+            const QString layerKey = ScopeOneCore::toolLayerKey(sourceId);
             scopeone::core::DocumentLayer layer;
             if (!m_sceneModel->findLayer(layerKey, layer))
             {
@@ -817,6 +861,10 @@ namespace scopeone::ui
         for (const QString& sourceId : m_staticSourceIds)
         {
             keys.insert(ScopeOneCore::staticLayerKey(sourceId));
+        }
+        for (const QString& sourceId : m_toolSourceIds)
+        {
+            keys.insert(ScopeOneCore::toolLayerKey(sourceId));
         }
         return keys;
     }
@@ -1997,7 +2045,6 @@ namespace scopeone::ui
             showPlaceholder(m_placeholderText);
             return;
         }
-
         if (canGpu)
         {
             if (renderItems.empty())

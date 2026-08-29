@@ -1124,13 +1124,9 @@ namespace scopeone::ui
           , m_scopeonecore(core)
           , m_previewWidget(previewWidget)
           , m_imageWorkspace(imageWorkspace)
-          , m_sceneModel(core ? core->imageSceneModel() : nullptr)
+          , m_sceneModel(core->imageSceneModel())
           , m_server(new QLocalServer(this))
     {
-        if (!core || !previewWidget || !imageWorkspace)
-        {
-            qFatal("ScopeOneLocalApiServer requires Core, PreviewWidget and ImageWorkspace");
-        }
         m_taskPool.setMaxThreadCount(1);
         connect(m_imageWorkspace, &ImageWorkspace::activeViewerChanged,
                 this, [this]()

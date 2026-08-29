@@ -138,10 +138,6 @@ namespace scopeone::ui
 
     void DeviceControlWidget::setImageWorkspace(ImageWorkspace* workspace)
     {
-        if (!workspace)
-        {
-            qFatal("DeviceControlWidget requires ImageWorkspace");
-        }
         m_workspace = workspace;
         connect(m_workspace, &ImageWorkspace::activeLayerChanged,
                 this, [this](const QString&)
@@ -176,10 +172,6 @@ namespace scopeone::ui
     // Connects the preview widget to control panel state
     void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
     {
-        if (!preview)
-        {
-            qFatal("DeviceControlWidget requires PreviewWidget");
-        }
         if (m_previewWidget)
         {
             disconnect(m_previewWidget, nullptr, this, nullptr);

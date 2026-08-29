@@ -10,6 +10,7 @@
 #include <QPluginLoader>
 #include <QPointer>
 #include <QSet>
+#include <QTimer>
 
 namespace scopeone::ui
 {
@@ -108,33 +109,26 @@ namespace scopeone::ui
                 continue;
             }
 
-            for (const ToolDescriptor& descriptor : descriptors)
-            {
-                for (const auto& entry : m_entries)
-                {
-                    if (entry->descriptor.id == descriptor.id.trimmed())
-                    {
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-            if (!valid)
-            {
-                errors.append(QStringLiteral("%1: tool id conflicts with an existing tool")
-                                  .arg(file.fileName()));
-                loader->unload();
-                continue;
-            }
-
+            const size_t entryCount = m_entries.size();
             for (const ToolDescriptor& descriptor : descriptors)
             {
                 const QString id = descriptor.id.trimmed();
-                registerTool(descriptor, [plugin, id](ScopeOneToolContext& context,
-                                                       QWidget* parent)
+                if (!registerTool(descriptor, [plugin, id](ScopeOneToolContext& context,
+                                                            QWidget* parent)
                 {
                     return plugin->createTool(id, context, parent);
-                });
+                }))
+                {
+                    m_entries.resize(entryCount);
+                    errors.append(QStringLiteral("%1: tool id conflicts with an existing tool")
+                                      .arg(file.fileName()));
+                    loader->unload();
+                    break;
+                }
+            }
+            if (m_entries.size() == entryCount)
+            {
+                continue;
             }
             m_pluginLoaders.push_back(std::move(loader));
         }
@@ -221,9 +215,21 @@ namespace scopeone::ui
                 delete tool;
                 return;
             }
+            tool->setWindowFlag(Qt::Window, true);
             tool->setAttribute(Qt::WA_DeleteOnClose);
             entry->instance = tool;
             tool->show();
+            QTimer::singleShot(0, tool, [tool, parent]()
+            {
+                QWidget* host = parent ? parent->window() : nullptr;
+                if (!host)
+                {
+                    return;
+                }
+                const QPoint position = host->frameGeometry().center()
+                                      - tool->frameGeometry().center();
+                tool->move(position);
+            });
         }
     }
 }

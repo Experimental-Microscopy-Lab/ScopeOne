@@ -46,6 +46,11 @@ namespace scopeone::ui
 
         scopeone::core::ScopeOneCore& core() const override;
         QString currentLayerKey() const override;
+        scopeone::core::ImageFrame currentFrame() const override;
+        scopeone::core::ImageFrame publishToolStreamFrame(
+            const QString& sourceId,
+            const scopeone::core::ImageFrame& frame,
+            const QString& displayName = QString()) override;
         void showLayers(const QStringList& layerKeys, bool sideBySide = false) override;
         void showToolStatus(const QString& message, int timeoutMs = 5000) override;
         void presentSession(

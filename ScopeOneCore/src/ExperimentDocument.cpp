@@ -770,6 +770,11 @@ namespace scopeone::core
                 kind = DocumentLayerKind::Static;
                 return true;
             }
+            if (name == QStringLiteral("Tool"))
+            {
+                kind = DocumentLayerKind::Tool;
+                return true;
+            }
             if (name == QStringLiteral("Gallery"))
             {
                 kind = DocumentLayerKind::Gallery;
@@ -3181,6 +3186,8 @@ namespace scopeone::core
             return QStringLiteral("Processed");
         case DocumentLayerKind::Static:
             return QStringLiteral("Static");
+        case DocumentLayerKind::Tool:
+            return QStringLiteral("Tool");
         case DocumentLayerKind::Gallery:
             return QStringLiteral("Gallery");
         }

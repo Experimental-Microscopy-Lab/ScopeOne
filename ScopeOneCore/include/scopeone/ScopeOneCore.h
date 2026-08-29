@@ -24,6 +24,7 @@
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingPipeline.h"
 #include "scopeone/scopeone_core_export.h"
 
 class CMMCore;
@@ -515,10 +516,12 @@ namespace scopeone::core
         static QString getZlibVersion();
         static QString rawLayerKey(const QString& cameraId);
         static QString processedLayerKey(const QString& cameraId);
+        static QString toolLayerKey(const QString& sourceId);
         static QString staticLayerKey(const QString& sourceId);
         static QString sourceIdFromLayerKey(const QString& layerKey);
         static bool isRawLayerKey(const QString& layerKey);
         static bool isProcessedLayerKey(const QString& layerKey);
+        static bool isToolLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
         ImageSceneModel* imageSceneModel() const { return m_imageSceneModel; }
 
@@ -561,6 +564,9 @@ namespace scopeone::core
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
+        ImageFrame publishToolStreamFrame(const QString& sourceId,
+                                          const ImageFrame& frame,
+                                          const QString& displayName = QString());
         ImageFrame publishExternalFrame(const QString& sourceId, const ImageFrame& frame);
         void removeStaticFrame(const QString& sourceId);
         void clearStaticFrames();
@@ -654,6 +660,8 @@ namespace scopeone::core
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleDescriptor> availableProcessingModules() const;
+        std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
+        std::unique_ptr<ProcessingPipeline> createProcessingPipeline() const;
         QList<ProcessingModuleInfo> processingModules() const;
         bool addProcessingModule(const QString& moduleId);
         bool removeProcessingModule(int index);
@@ -728,6 +736,9 @@ namespace scopeone::core
         void staticFramePublished(const QString& sourceId,
                                   const QString& displayName,
                                   const ImageFrame& frame);
+        void toolStreamFramePublished(const QString& sourceId,
+                                      const QString& displayName,
+                                      const ImageFrame& frame);
         void staticFrameRemoved(const QString& sourceId);
         void staticFramesCleared();
         void liveFramesCleared(const QString& cameraId);
@@ -804,6 +815,7 @@ namespace scopeone::core
         {
             Raw,
             Processed,
+            Tool,
             Static,
             External
         };
@@ -824,6 +836,7 @@ namespace scopeone::core
 
             QHash<QString, ImageFrame> m_rawFrames;
             QHash<QString, ImageFrame> m_processedFrames;
+            QHash<QString, ImageFrame> m_toolFrames;
             QHash<QString, ImageFrame> m_staticFrames;
             QHash<QString, ImageFrame> m_externalFrames;
         };
@@ -871,12 +884,14 @@ namespace scopeone::core
         void clearLayerAnalysisByPrefix(const QString& prefix);
         void updateLineProfile(const QString& cameraId,
                                bool processed,
+                               bool toolSource,
                                const ImageFrame& frame);
         bool updateStaticLineProfile(const QString& sourceId, const ImageFrame& frame);
         void setLineProfile(const QString& cameraId,
                             const QPoint& start,
                             const QPoint& end,
-                            bool processed);
+                            bool processed,
+                            bool toolSource = false);
         void setStaticLineProfile(const QString& sourceId,
                                   const QPoint& start,
                                   const QPoint& end);
@@ -895,6 +910,7 @@ namespace scopeone::core
             QPoint start;
             QPoint end;
             bool processed{false};
+            bool toolSource{false};
             bool staticSource{false};
             bool active{false};
         };

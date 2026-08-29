@@ -36,6 +36,10 @@ namespace scopeone::ui
             {
                 return QStringLiteral("static");
             }
+            if (scopeone::core::ScopeOneCore::isToolLayerKey(layerKey))
+            {
+                return QStringLiteral("tool");
+            }
             return scopeone::core::ScopeOneCore::isProcessedLayerKey(layerKey)
                        ? QStringLiteral("proc")
                        : QStringLiteral("raw");
@@ -461,11 +465,6 @@ namespace scopeone::ui
           , m_scopeonecore(core)
           , m_workspace(workspace)
     {
-        if (!core || !workspace)
-        {
-            qFatal("InspectWidget requires ScopeOneCore and ImageWorkspace");
-        }
-
         setWindowTitle(QStringLiteral("Inspect"));
         setupUI();
         updateControlsState();
@@ -1195,10 +1194,14 @@ namespace scopeone::ui
         const bool liveCrossSectionEnabled = m_cameraInitialized
                                              && isLiveLayerKey(layerKey)
                                              && m_availableCameraIds.contains(currentLayerCameraId());
+        const bool toolCrossSectionEnabled = scopeone::core::ScopeOneCore::isToolLayerKey(layerKey)
+                                             && currentLayerHasStats;
         const bool staticCrossSectionEnabled = scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
                                                && currentLayerHasStats;
         const bool crossSectionEnabled = !layerKey.isEmpty()
-                                         && (liveCrossSectionEnabled || staticCrossSectionEnabled);
+                                         && (liveCrossSectionEnabled
+                                             || toolCrossSectionEnabled
+                                             || staticCrossSectionEnabled);
         m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
         m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !layerKey.isEmpty());
         const bool annotationEnabled = !layerKey.isEmpty()

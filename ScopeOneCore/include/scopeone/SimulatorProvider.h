@@ -60,6 +60,12 @@ namespace scopeone::core
                                int timeoutMs) override;
 
     private:
+        enum class ImageMode
+        {
+            Gradient,
+            Hologram
+        };
+
         bool accepts(const QString& cameraIdOrAll) const;
         ImageFrame makeFrame();
         void updateTimerInterval();
@@ -70,6 +76,7 @@ namespace scopeone::core
         int m_sensorHeight{512};
         QRect m_roi;
         double m_exposureMs{10.0};
+        ImageMode m_imageMode{ImageMode::Gradient};
         quint64 m_frameIndex{0};
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;

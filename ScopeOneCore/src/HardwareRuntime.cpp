@@ -173,19 +173,10 @@ namespace scopeone::core::internal
     HardwareRuntime::HardwareRuntime(QObject* parent)
         : QObject(parent)
           , m_registry(this)
-          , m_frameRouter(this)
-          , m_acquisitionEngine(&m_registry, this)
+          , m_acquisitionEngine(m_registry)
     {
         connect(&m_registry, &DeviceRegistry::changed,
                 this, &HardwareRuntime::devicesChanged);
-        connect(&m_frameRouter, &FrameRouter::frameReady,
-                this, [this](const ImageFrame& frame)
-                {
-                    if (m_frameSink)
-                    {
-                        m_frameSink(frame);
-                    }
-                });
     }
 
     void HardwareRuntime::setFrameSink(FrameSink sink)
@@ -882,7 +873,11 @@ namespace scopeone::core::internal
         {
             cameraProvider->setFrameSink([this](const ImageFrame& frame)
             {
-                m_frameRouter.publish(frame);
+                if (m_frameSink)
+                {
+                    m_frameSink(frame);
+                }
+                emit frameReady(frame);
             });
             cameraProvider->setPreviewStateSink([this](bool)
             {
@@ -898,7 +893,10 @@ namespace scopeone::core::internal
                             break;
                         }
                     }
-                    if (m_previewStateSink) m_previewStateSink(running);
+                    if (m_previewStateSink)
+                    {
+                        m_previewStateSink(running);
+                    }
                     emit previewStateChanged(running);
                 };
                 if (QThread::currentThread() == thread()) publishState();

@@ -93,10 +93,6 @@ namespace scopeone::core::internal
               , m_connectionId(connectionId)
               , m_socket(socket)
         {
-            if (!socket)
-            {
-                qFatal("ControlConnection requires QLocalSocket");
-            }
             m_socket->setParent(this);
 
             connect(m_socket, &QLocalSocket::readyRead,

@@ -243,7 +243,6 @@ $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 $pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
-$qtPrefixPath = "C:/Qt/6.11.0/msvc2022_64"
 
 if ($clean) {
     if ($target -eq "scopewriter") {
@@ -428,16 +427,21 @@ if ($target -in @("all", "plugins")) {
     }
 
     if ($needPluginConfigure) {
+        $pluginConfigureArgs = @(
+            "-S", $pluginSourceDir,
+            "-B", $pluginBuildDir,
+            "-DScopeOneCore_ROOT=$coreInstallDir",
+            "-DCMAKE_PREFIX_PATH=$coreInstallDir",
+            "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
+        )
+        $coreQt6Dir = Get-CMakeCacheValue -CachePath $coreCachePath -Key "Qt6_DIR"
+        if ($coreQt6Dir) {
+            $pluginConfigureArgs += "-DQt6_DIR=$coreQt6Dir"
+        }
         Invoke-Step `
             -Label "Configuring ScopeOne plugin examples" `
             -FilePath $cmake `
-            -Arguments @(
-                "-S", $pluginSourceDir,
-                "-B", $pluginBuildDir,
-                "-DScopeOneCore_ROOT=$coreInstallDir",
-                "-DCMAKE_PREFIX_PATH=$qtPrefixPath;$coreInstallDir",
-                "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
-            ) `
+            -Arguments $pluginConfigureArgs `
             -WorkingDirectory $repoRoot
     }
 

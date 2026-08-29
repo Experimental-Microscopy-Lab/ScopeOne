@@ -5,18 +5,13 @@
 
 namespace scopeone::core::internal
 {
-    AcquisitionEngine::AcquisitionEngine(DeviceRegistry* deviceRegistry, QObject* parent)
-        : QObject(parent)
-          , m_deviceRegistry(deviceRegistry)
+    AcquisitionEngine::AcquisitionEngine(DeviceRegistry& deviceRegistry)
+        : m_deviceRegistry(deviceRegistry)
     {
     }
 
     bool AcquisitionEngine::start(const QString& cameraIdOrAll)
     {
-        if (!m_deviceRegistry)
-        {
-            return false;
-        }
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
@@ -31,14 +26,14 @@ namespace scopeone::core::internal
             };
             QList<StartedCamera> startedCameras;
             bool found = false;
-            for (const HardwareDeviceDescriptor& device : m_deviceRegistry->devices())
+            for (const HardwareDeviceDescriptor& device : m_deviceRegistry.devices())
             {
                 if (device.kind != HardwareDeviceKind::Camera)
                 {
                     continue;
                 }
                 found = true;
-                const HardwareProviderPtr provider = m_deviceRegistry->provider(device.providerId);
+                const HardwareProviderPtr provider = m_deviceRegistry.provider(device.providerId);
                 auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
                 if (!cameraProvider)
                 {
@@ -64,17 +59,13 @@ namespace scopeone::core::internal
             }
             return found;
         }
-        const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
+        const HardwareProviderPtr provider = m_deviceRegistry.providerForDevice(target);
         auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
         return cameraProvider && cameraProvider->startPreviewFor(target);
     }
 
     bool AcquisitionEngine::stop(const QString& cameraIdOrAll)
     {
-        if (!m_deviceRegistry)
-        {
-            return false;
-        }
         const QString target = cameraIdOrAll.trimmed();
         if (target.isEmpty())
         {
@@ -84,14 +75,14 @@ namespace scopeone::core::internal
         {
             bool found = false;
             bool stopped = true;
-            for (const HardwareDeviceDescriptor& device : m_deviceRegistry->devices())
+            for (const HardwareDeviceDescriptor& device : m_deviceRegistry.devices())
             {
                 if (device.kind != HardwareDeviceKind::Camera)
                 {
                     continue;
                 }
                 found = true;
-                const HardwareProviderPtr provider = m_deviceRegistry->provider(device.providerId);
+                const HardwareProviderPtr provider = m_deviceRegistry.provider(device.providerId);
                 auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
                 if (!cameraProvider)
                 {
@@ -105,7 +96,7 @@ namespace scopeone::core::internal
             }
             return found && stopped;
         }
-        const HardwareProviderPtr provider = m_deviceRegistry->providerForDevice(target);
+        const HardwareProviderPtr provider = m_deviceRegistry.providerForDevice(target);
         auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
         return cameraProvider && cameraProvider->stopPreviewFor(target);
     }

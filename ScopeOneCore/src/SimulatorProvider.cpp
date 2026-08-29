@@ -151,6 +151,7 @@ namespace scopeone::core
     {
         return accepts(cameraId)
                    ? QStringList{QStringLiteral("Exposure"),
+                                 QStringLiteral("ImageMode"),
                                  QStringLiteral("SensorWidth"),
                                  QStringLiteral("SensorHeight")}
                    : QStringList{};
@@ -168,6 +169,13 @@ namespace scopeone::core
         {
             QMutexLocker locker(&m_mutex);
             return QString::number(m_exposureMs, 'g', 12);
+        }
+        if (name == QStringLiteral("ImageMode"))
+        {
+            QMutexLocker locker(&m_mutex);
+            return m_imageMode == ImageMode::Hologram
+                       ? QStringLiteral("Hologram")
+                       : QStringLiteral("Gradient");
         }
         if (name == QStringLiteral("SensorWidth"))
         {
@@ -189,7 +197,7 @@ namespace scopeone::core
         {
             errorMessage->clear();
         }
-        if (!accepts(cameraId) || name != QStringLiteral("Exposure"))
+        if (!accepts(cameraId))
         {
             if (errorMessage)
             {
@@ -197,17 +205,41 @@ namespace scopeone::core
             }
             return false;
         }
-        bool ok = false;
-        const double exposureMs = value.toDouble(&ok);
-        if (!ok || !setExposure(cameraId, exposureMs))
+        if (name == QStringLiteral("ImageMode"))
         {
+            const QString mode = value.trimmed();
+            if (mode != QStringLiteral("Gradient") && mode != QStringLiteral("Hologram"))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Invalid image mode");
+                }
+                return false;
+            }
+            QMutexLocker locker(&m_mutex);
+            m_imageMode = mode == QStringLiteral("Hologram")
+                              ? ImageMode::Hologram
+                              : ImageMode::Gradient;
+            return true;
+        }
+        if (name == QStringLiteral("Exposure"))
+        {
+            bool ok = false;
+            const double exposureMs = value.toDouble(&ok);
+            if (ok && setExposure(cameraId, exposureMs))
+            {
+                return true;
+            }
             if (errorMessage)
             {
                 *errorMessage = QStringLiteral("Invalid exposure value");
             }
-            return false;
         }
-        return true;
+        else if (errorMessage)
+        {
+            *errorMessage = QStringLiteral("Property is not writable");
+        }
+        return false;
     }
 
     QString SimulatorProvider::getPropertyType(const QString& cameraId, const QString& name)
@@ -215,13 +247,17 @@ namespace scopeone::core
         return accepts(cameraId) && listProperties(cameraId).contains(name)
                    ? (name == QStringLiteral("Exposure")
                           ? QStringLiteral("Float")
-                          : QStringLiteral("Integer"))
+                          : name == QStringLiteral("ImageMode")
+                                ? QStringLiteral("String")
+                                : QStringLiteral("Integer"))
                    : QStringLiteral("Unknown");
     }
 
     bool SimulatorProvider::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
-        return !accepts(cameraId) || name != QStringLiteral("Exposure");
+        return !accepts(cameraId)
+            || (name != QStringLiteral("Exposure")
+                && name != QStringLiteral("ImageMode"));
     }
 
     bool SimulatorProvider::isPropertyPreInit(const QString&, const QString&)
@@ -229,8 +265,13 @@ namespace scopeone::core
         return false;
     }
 
-    QStringList SimulatorProvider::getAllowedPropertyValues(const QString&, const QString&)
+    QStringList SimulatorProvider::getAllowedPropertyValues(const QString& cameraId,
+                                                             const QString& name)
     {
+        if (accepts(cameraId) && name == QStringLiteral("ImageMode"))
+        {
+            return {QStringLiteral("Gradient"), QStringLiteral("Hologram")};
+        }
         return {};
     }
 
@@ -331,13 +372,37 @@ namespace scopeone::core
         frame.sourceRoiWidth = m_roi.width();
         frame.sourceRoiHeight = m_roi.height();
         frame.bytes.resize(static_cast<qsizetype>(frame.width) * frame.height);
+        const bool hologram = m_imageMode == ImageMode::Hologram;
+        constexpr double twoPi = 6.28318530717958647692;
         for (int y = 0; y < frame.height; ++y)
         {
             uchar* row = reinterpret_cast<uchar*>(frame.bytes.data())
                 + static_cast<qsizetype>(y) * frame.stride;
             for (int x = 0; x < frame.width; ++x)
             {
-                row[x] = static_cast<uchar>((x + y + frame.frameIndex) & 0xffu);
+                if (!hologram)
+                {
+                    row[x] = static_cast<uchar>((x + y + frame.frameIndex) & 0xffu);
+                    continue;
+                }
+
+                const int sensorX = m_roi.x() + x;
+                const int sensorY = m_roi.y() + y;
+                const double nx = (sensorX - 0.5 * m_sensorWidth) / m_sensorWidth;
+                const double ny = (sensorY - 0.5 * m_sensorHeight) / m_sensorHeight;
+                const double objectAmplitude =
+                    0.65 * std::exp(-35.0 * (nx * nx + ny * ny))
+                    + 0.35 * std::exp(-90.0 * ((nx - 0.18) * (nx - 0.18)
+                                               + (ny + 0.12) * (ny + 0.12)));
+                const double objectPhase = 18.0 * (nx * nx + ny * ny)
+                                         + 0.015 * static_cast<double>(frame.frameIndex);
+                const double carrier = twoPi * (48.0 * sensorX / m_sensorWidth
+                                                 + 32.0 * sensorY / m_sensorHeight);
+                const double intensity = 70.0
+                                       + 55.0 * objectAmplitude * objectAmplitude
+                                       + 120.0 * objectAmplitude
+                                             * std::cos(carrier + objectPhase);
+                row[x] = static_cast<uchar>(std::clamp(intensity, 0.0, 255.0));
             }
         }
         return frame;

@@ -79,7 +79,6 @@ set(CORE_SOURCES
         src/ExperimentDocument.cpp
         src/AcquisitionEngine.cpp
         src/DriverHostProviderProxy.cpp
-        src/FrameRouter.cpp
         src/HardwareProvider.cpp
         src/PluginManifest.cpp
         src/HardwareRuntime.cpp
@@ -91,6 +90,9 @@ set(CORE_SOURCES
         src/ParticleAnalysis.cpp
         src/StageMosaicManager.cpp
         src/ImageProcessingFramework.cpp
+        src/ProcessingPipeline.cpp
+        src/ToolTask.cpp
+        src/ToolFrameStream.cpp
         src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
@@ -122,7 +124,6 @@ set(CORE_HEADERS
         include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
         internal/HardwareRuntime.h
-        internal/FrameRouter.h
         internal/MicroManagerProvider.h
         internal/MMCoreManager.h
         internal/FrameBufferUtils.h
@@ -132,6 +133,9 @@ set(CORE_HEADERS
         internal/ProcessingModule.h
         internal/ProcessingModuleRegistry.h
         include/scopeone/ProcessingPlugin.h
+        include/scopeone/ProcessingPipeline.h
+        include/scopeone/ToolTask.h
+        include/scopeone/ToolFrameStream.h
         include/scopeone/ToolPlugin.h
         internal/DriverHostProtocol.h
         internal/SharedFrameRing.h

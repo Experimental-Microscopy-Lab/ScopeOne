@@ -4,7 +4,6 @@
 #include "internal/AcquisitionEngine.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
-#include "internal/FrameRouter.h"
 #include "internal/DriverHostProviderProxy.h"
 #include "internal/HardwareRuntime.h"
 #include "internal/MMCoreManager.h"
@@ -451,7 +450,6 @@ namespace scopeone::core
 {
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::HardwareRuntime;
-    using scopeone::core::internal::FrameRouter;
     using scopeone::core::internal::MMCoreManager;
     using scopeone::core::internal::CameraManager;
     using scopeone::core::internal::CameraRuntimeControl;
@@ -490,6 +488,7 @@ namespace scopeone::core
     {
         m_rawFrames.clear();
         m_processedFrames.clear();
+        m_toolFrames.clear();
         m_staticFrames.clear();
         m_externalFrames.clear();
     }
@@ -552,6 +551,10 @@ namespace scopeone::core
         {
             return m_staticFrames;
         }
+        if (stream == FrameGraphStream::Tool)
+        {
+            return m_toolFrames;
+        }
         if (stream == FrameGraphStream::External)
         {
             return m_externalFrames;
@@ -568,6 +571,10 @@ namespace scopeone::core
         if (stream == FrameGraphStream::Static)
         {
             return m_staticFrames;
+        }
+        if (stream == FrameGraphStream::Tool)
+        {
+            return m_toolFrames;
         }
         if (stream == FrameGraphStream::External)
         {
@@ -1066,6 +1073,12 @@ namespace scopeone::core
         return QStringLiteral("proc:%1").arg(cameraId.trimmed());
     }
 
+    // Build the graph layer key for one tool stream
+    QString ScopeOneCore::toolLayerKey(const QString& sourceId)
+    {
+        return QStringLiteral("tool:%1").arg(sourceId.trimmed());
+    }
+
     // Build the graph layer key for one static source
     QString ScopeOneCore::staticLayerKey(const QString& sourceId)
     {
@@ -1088,6 +1101,11 @@ namespace scopeone::core
     bool ScopeOneCore::isProcessedLayerKey(const QString& layerKey)
     {
         return layerKey.trimmed().startsWith(QStringLiteral("proc:"));
+    }
+
+    bool ScopeOneCore::isToolLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("tool:"));
     }
 
     bool ScopeOneCore::isStaticLayerKey(const QString& layerKey)
@@ -1242,9 +1260,9 @@ namespace scopeone::core
                 session.setPresentationState(layers, markups);
             });
 
-        connect(m_managers->hardwareRuntime->frameRouter(), &FrameRouter::frameReady,
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
-        connect(m_managers->hardwareRuntime->frameRouter(), &FrameRouter::frameReady,
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
                 this, [this](const ImageFrame& frame)
                 {
                     const HardwareDeviceDescriptor device =
@@ -2115,7 +2133,8 @@ namespace scopeone::core
     void ScopeOneCore::setLineProfile(const QString& cameraId,
                                       const QPoint& start,
                                       const QPoint& end,
-                                      bool processed)
+                                      bool processed,
+                                      bool toolSource)
     {
         const QString trimmedCameraId = cameraId.trimmed();
         if (trimmedCameraId.isEmpty())
@@ -2128,16 +2147,26 @@ namespace scopeone::core
         m_activeLineProfile.start = start;
         m_activeLineProfile.end = end;
         m_activeLineProfile.processed = processed;
+        m_activeLineProfile.toolSource = toolSource;
         m_activeLineProfile.staticSource = false;
         m_activeLineProfile.active = true;
         m_lineProfileUpdateTimer.invalidate();
 
+        if (toolSource)
+        {
+            const ImageFrame frame = graphFrame(toolLayerKey(trimmedCameraId));
+            if (frame.isValid())
+            {
+                updateLineProfile(trimmedCameraId, false, true, frame);
+            }
+            return;
+        }
         if (processed)
         {
             const ImageFrame frame = graphFrame(processedLayerKey(trimmedCameraId));
             if (frame.isValid())
             {
-                updateLineProfile(trimmedCameraId, true, frame);
+                updateLineProfile(trimmedCameraId, true, false, frame);
             }
             return;
         }
@@ -2145,7 +2174,7 @@ namespace scopeone::core
         const ImageFrame frame = graphFrame(rawLayerKey(trimmedCameraId));
         if (frame.isValid())
         {
-            updateLineProfile(trimmedCameraId, false, frame);
+            updateLineProfile(trimmedCameraId, false, false, frame);
         }
     }
 
@@ -2211,7 +2240,8 @@ namespace scopeone::core
                 setLineProfile(markup.sourceId,
                                markup.start,
                                markup.end,
-                               markup.layerKind == DocumentLayerKind::Processed);
+                               markup.layerKind == DocumentLayerKind::Processed,
+                               markup.layerKind == DocumentLayerKind::Tool);
             }
             return;
         }
@@ -2239,7 +2269,7 @@ namespace scopeone::core
         emit newRawFrameReady(normalizedFrame);
         queuePreviewRawFrame(normalizedFrame);
         scheduleHistogramStats(layerKey, normalizedFrame);
-        updateLineProfile(cameraId, false, normalizedFrame);
+        updateLineProfile(cameraId, false, false, normalizedFrame);
     }
 
     // Submits one acquisition frame without crossing the UI event queue
@@ -2333,7 +2363,7 @@ namespace scopeone::core
             emit processedFramesCompleted(frame.cameraId, it.value().completedCount);
             m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
             scheduleHistogramStats(layerKey, frame);
-            updateLineProfile(frame.cameraId, true, frame);
+            updateLineProfile(frame.cameraId, true, false, frame);
         }
     }
 
@@ -2401,6 +2431,10 @@ namespace scopeone::core
         if (isStaticLayerKey(trimmedLayerKey))
         {
             return m_frameGraph.latest(FrameGraphStream::Static, sourceId);
+        }
+        if (isToolLayerKey(trimmedLayerKey))
+        {
+            return m_frameGraph.latest(FrameGraphStream::Tool, sourceId);
         }
         if (trimmedLayerKey.startsWith(QStringLiteral("external:")))
         {
@@ -2508,6 +2542,33 @@ namespace scopeone::core
             clearLineProfile();
         }
         emit staticFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
+        return storedFrame;
+    }
+
+    // Publish the latest frame of a tool-owned realtime stream
+    ImageFrame ScopeOneCore::publishToolStreamFrame(const QString& sourceId,
+                                                    const ImageFrame& frame,
+                                                    const QString& displayName)
+    {
+        if (!m_frameGraph.publishLatest(FrameGraphStream::Tool, sourceId, frame))
+        {
+            return {};
+        }
+        const ImageFrame storedFrame = graphFrame(toolLayerKey(sourceId));
+        const QString layerKey = toolLayerKey(storedFrame.cameraId);
+        ensureSceneLayer(layerKey,
+                         storedFrame.cameraId,
+                         displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed(),
+                         DocumentLayerKind::Tool);
+        m_imageSceneModel->setLayerName(
+            layerKey,
+            displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed());
+        m_imageSceneModel->updateLayerFrame(layerKey, storedFrame);
+        m_imageSceneModel->setLayerVisible(layerKey, true);
+        m_latestHistogramStats.remove(layerKey);
+        scheduleHistogramStats(layerKey, storedFrame);
+        emit toolStreamFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
+        updateLineProfile(storedFrame.cameraId, false, true, storedFrame);
         return storedFrame;
     }
 
@@ -2628,6 +2689,7 @@ namespace scopeone::core
 
         m_frameGraph.remove(FrameGraphStream::Raw, trimmedCameraId);
         m_frameGraph.remove(FrameGraphStream::Processed, trimmedCameraId);
+        m_frameGraph.remove(FrameGraphStream::Tool, trimmedCameraId);
         {
             QMutexLocker locker(&m_managers->processedDeliveryMutex);
             m_managers->pendingProcessedFrames.remove(trimmedCameraId);
@@ -3039,6 +3101,7 @@ namespace scopeone::core
     // Emit a line profile when the active request matches this frame
     void ScopeOneCore::updateLineProfile(const QString& cameraId,
                                          bool processed,
+                                         bool toolSource,
                                          const ImageFrame& frame)
     {
         if (!frame.isValid())
@@ -3048,6 +3111,7 @@ namespace scopeone::core
 
         if (!m_activeLineProfile.active
             || m_activeLineProfile.staticSource
+            || m_activeLineProfile.toolSource != toolSource
             || m_activeLineProfile.processed != processed
             || m_activeLineProfile.sourceId != cameraId)
         {
@@ -3070,7 +3134,9 @@ namespace scopeone::core
             return;
         }
 
-        const QString layerKey = histogramLayerKey(cameraId, processed);
+        const QString layerKey = m_activeLineProfile.toolSource
+                                     ? toolLayerKey(cameraId)
+                                     : histogramLayerKey(cameraId, processed);
         emit lineProfileUpdated(cameraId, processed, values);
         emit layerLineProfileUpdated(layerKey, values);
     }
@@ -3854,6 +3920,17 @@ namespace scopeone::core
     QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
     {
         return m_managers->processingModuleRegistry->descriptors();
+    }
+
+    std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(
+        const QString& moduleId) const
+    {
+        return m_managers->processingModuleRegistry->create(moduleId);
+    }
+
+    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline() const
+    {
+        return std::make_unique<ProcessingPipeline>();
     }
 
     // Export processing module descriptions for the UI

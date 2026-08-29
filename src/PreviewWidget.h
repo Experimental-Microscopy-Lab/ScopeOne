@@ -62,6 +62,8 @@ namespace scopeone::ui
         void setAvailableCameraIds(const QStringList& cameraIds);
         QString setGraphStaticLayerFrame(const QString& layerId,
                                          const scopeone::core::ImageFrame& frame);
+        QString setGraphToolLayerFrame(const QString& layerId,
+                                       const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
         void clearStaticLayers();
         QStringList availableCameraIds() const;
@@ -195,6 +197,7 @@ signals:
     private:
         QStringList m_availableCameraIds;
         QSet<QString> m_staticSourceIds;
+        QSet<QString> m_toolSourceIds;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
         QMap<QString, double> m_layerFps;
         QString m_layerInfoText{QStringLiteral("No image loaded")};

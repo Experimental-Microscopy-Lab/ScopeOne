@@ -12,7 +12,6 @@
 #include "scopeone/CameraProvider.h"
 #include "internal/AcquisitionEngine.h"
 #include "internal/CameraRuntimeControl.h"
-#include "internal/FrameRouter.h"
 
 namespace scopeone::core::internal
 {
@@ -149,7 +148,6 @@ namespace scopeone::core::internal
 
         DeviceRegistry* deviceRegistry() { return &m_registry; }
         const DeviceRegistry* deviceRegistry() const { return &m_registry; }
-        FrameRouter* frameRouter() { return &m_frameRouter; }
         void clear();
         bool registerProvider(const HardwareProviderPtr& provider);
         void unregisterProvider(const QString& providerId);
@@ -157,6 +155,7 @@ namespace scopeone::core::internal
         bool stopPreviewForProvider(const QString& providerId);
 
     signals:
+        void frameReady(const ImageFrame& frame);
         void devicesChanged();
         void previewStateChanged(bool running);
 
@@ -172,7 +171,6 @@ namespace scopeone::core::internal
             const QStringList& cameraIds) const;
 
         DeviceRegistry m_registry;
-        FrameRouter m_frameRouter;
         AcquisitionEngine m_acquisitionEngine;
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;

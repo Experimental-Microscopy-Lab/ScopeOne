@@ -235,11 +235,6 @@ namespace scopeone::ui
                                    QObject* parent)
         : QObject(parent), m_core(core)
     {
-        if (!core)
-        {
-            qFatal("ImageWorkspace requires ScopeOneCore");
-        }
-
         m_viewerHost = new QWidget(windowParent);
         auto* hostLayout = new QVBoxLayout(m_viewerHost);
         hostLayout->setContentsMargins(0, 0, 0, 0);

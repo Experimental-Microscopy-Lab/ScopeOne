@@ -18,6 +18,7 @@ namespace scopeone::core::internal
         explicit ProcessingPipelineRuntime(std::vector<std::unique_ptr<ProcessingModule>> modules);
 
         ProcessingResult process(const ImageFrame& input, int processingBitDepth);
+        ProcessingResult processValue(const ProcessingValue& input, int processingBitDepth);
         ProcessingResult processFrom(int startModuleIndex, const ImageFrame& input, int processingBitDepth);
         ProcessingResult processThrough(int endModuleIndex, const ImageFrame& input, int processingBitDepth);
 

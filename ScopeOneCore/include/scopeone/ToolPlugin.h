@@ -34,6 +34,11 @@ namespace scopeone::ui
 
         virtual scopeone::core::ScopeOneCore& core() const = 0;
         virtual QString currentLayerKey() const = 0;
+        virtual scopeone::core::ImageFrame currentFrame() const = 0;
+        virtual scopeone::core::ImageFrame publishToolStreamFrame(
+            const QString& sourceId,
+            const scopeone::core::ImageFrame& frame,
+            const QString& displayName = QString()) = 0;
         virtual void showLayers(const QStringList& layerKeys, bool sideBySide = false) = 0;
         virtual void showToolStatus(const QString& message, int timeoutMs = 5000) = 0;
         virtual void presentSession(
