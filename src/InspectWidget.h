@@ -9,19 +9,15 @@
 #include <QVector>
 #include <QWidget>
 
-class QCheckBox;
-class QColor;
 class QGroupBox;
 class QLabel;
 class QPushButton;
 class QSlider;
-class QVBoxLayout;
 
 namespace scopeone::ui
 {
     class ImageWorkspace;
     class InspectCrossSectionWidget;
-    class InspectHistogramWidget;
 
     class InspectWidget : public QWidget
     {
@@ -66,8 +62,6 @@ namespace scopeone::ui
         {
             QString layerKey;
             QGroupBox* groupBox{nullptr};
-            InspectHistogramWidget* histogramWidget{nullptr};
-            QCheckBox* logScaleCheckBox{nullptr};
             QSlider* minSlider{nullptr};
             QSlider* maxSlider{nullptr};
             QLabel* minSliderValueLabel{nullptr};
@@ -95,17 +89,14 @@ namespace scopeone::ui
         void removeLayerInfo(const QString& layerKey);
         void updateLayerInspect(const QString& layerKey,
                                 const scopeone::core::ScopeOneCore::HistogramStats& stats);
-        void onLogScaleChanged(const QString& layerKey, bool checked);
         void updateStatisticsDisplay(const QString& layerKey,
                                      const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void updateControlsState();
         void updateLayerVisibility();
-        void requestVisibleHistograms();
         void saveViewerState();
         void restoreViewerState();
         QString currentLayerKey() const;
         LayerInspectState& getOrCreateLayerState(const QString& layerKey);
-        QColor getLayerColor(const QString& layerKey) const;
         void onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue);
         QString currentLayerCameraId() const;
 
@@ -116,8 +107,6 @@ namespace scopeone::ui
         QHash<QString, LayerInspectState> m_layerStates;
         QStringList m_availableLayerKeys;
         QStringList m_availableCameraIds;
-        QVBoxLayout* m_histogramContainerLayout{nullptr};
-        QCheckBox* m_compareLayersCheckBox{nullptr};
         QPushButton* m_drawMeasurementLineButton{nullptr};
         QPushButton* m_clearMeasurementLinesButton{nullptr};
         QLabel* m_measurementInfoLabel{nullptr};
@@ -130,8 +119,6 @@ namespace scopeone::ui
         QString m_crossSectionLayerKey;
         QHash<QString, ViewerInspectState> m_viewerStates;
         QString m_activeViewerStateId;
-        QStringList m_visibleLayerKeys;
-        quint64 m_histogramRequestGeneration{0};
         bool m_inspectingLive{true};
     };
 }

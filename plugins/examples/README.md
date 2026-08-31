@@ -1,6 +1,6 @@
 # ScopeOne plugin examples
 
-These projects use the installed `scopeone::PluginSDK` target and do not depend on ScopeOne source files.
+These projects use the installed `scopeone::PluginSDK` target and do not depend on ScopeOne source files. Include `scopeone/PluginSDK.h` as the public SDK entry point.
 
 The normal ScopeOne build script builds and installs these examples automatically during a full build:
 
@@ -14,7 +14,7 @@ To build only the examples:
 .\scripts\build.ps1 --target plugins
 ```
 
-Each example plugin declares `id`, `name`, `version`, `scopeOneApi`, and `kind` in `plugin.json`. Hardware providers use the public `DriverHostProviderPlugin` contract and run in `ScopeOne_DriverHost`. `ExampleHardwarePlugin` wraps the public `SimulatorProvider` to demonstrate a complete external hardware plugin.
+Each example plugin declares `id`, `name`, `version`, `scopeOneApi`, and `kind` in `plugin.json`. Processing plugins implement `ProcessingPlugin` and add modules to the shared pipeline. Hardware providers implement `DriverHostProviderPlugin` and run in `ScopeOne_DriverHost`. Tool plugins implement `ScopeOneToolPlugin` and own an independent workflow window. `ExampleHardwarePlugin` wraps the public `SimulatorProvider` to demonstrate a complete external hardware plugin.
 
 Install processing plugins under `plugins/processing`, tool plugins under `plugins/tools`, and hardware plugins under `plugins/hardware`.
 

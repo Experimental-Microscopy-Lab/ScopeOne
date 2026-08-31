@@ -121,6 +121,7 @@ set(CORE_HEADERS
         include/scopeone/HardwareTypes.h
         include/scopeone/HardwareProvider.h
         include/scopeone/PluginManifest.h
+        include/scopeone/PluginSDK.h
         include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
         internal/HardwareRuntime.h

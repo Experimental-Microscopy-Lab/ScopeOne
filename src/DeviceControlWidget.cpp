@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -17,6 +18,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QPainter>
+#include <QPalette>
+#include <QPaintEvent>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -28,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace scopeone::ui
 {
@@ -48,6 +53,125 @@ namespace scopeone::ui
             return text;
         }
     } // namespace
+
+    class LayerHistogramWidget : public QWidget
+    {
+    public:
+        explicit LayerHistogramWidget(QWidget* parent = nullptr)
+            : QWidget(parent)
+        {
+            setMinimumHeight(150);
+        }
+
+        void setStats(const scopeone::core::ScopeOneCore::HistogramStats& stats)
+        {
+            m_stats = stats;
+            update();
+        }
+
+        void clear()
+        {
+            m_stats = {};
+            update();
+        }
+
+        void setLogScale(bool enabled)
+        {
+            m_logScale = enabled;
+            update();
+        }
+
+    protected:
+        void paintEvent(QPaintEvent*) override
+        {
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing);
+            const QPalette& colors = palette();
+            const QFontMetrics metrics = painter.fontMetrics();
+            const int labelHeight = metrics.height() + 4;
+            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
+            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
+            const QRect plot = rect().adjusted(
+                yLabelWidth + 6,
+                labelHeight + 2,
+                -(xLabelWidth / 2 + 4),
+                -(2 * labelHeight + 8));
+
+            painter.fillRect(plot, colors.brush(QPalette::Base));
+            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            painter.drawRect(plot);
+
+            if (!m_stats.hasData() || m_stats.histogram.empty())
+            {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
+                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
+                return;
+            }
+
+            int maxCount = 0;
+            for (const int count : m_stats.histogram)
+            {
+                maxCount = qMax(maxCount, count);
+            }
+            if (maxCount == 0)
+            {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
+                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
+                return;
+            }
+
+            painter.setPen(QPen(colors.color(QPalette::Highlight), 1));
+            const int histogramSize = static_cast<int>(m_stats.histogram.size());
+            for (int i = 0; i < histogramSize; ++i)
+            {
+                const int count = m_stats.histogram[static_cast<size_t>(i)];
+                const double normalized = m_logScale && count > 0
+                                              ? log10(count + 1.0) / log10(maxCount + 1.0)
+                                              : static_cast<double>(count) / maxCount;
+                const int x = plot.left() + (i * plot.width()) / histogramSize;
+                const int height = static_cast<int>(normalized * plot.height());
+                painter.drawLine(x, plot.bottom(), x, plot.bottom() - height);
+            }
+
+            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            painter.drawLine(plot.left(), plot.top(), plot.left(), plot.bottom());
+            painter.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom());
+
+            const int maxValue = qMax(1, m_stats.maxValue);
+            for (int i = 0; i <= 4; ++i)
+            {
+                const int x = plot.left() + (i * plot.width()) / 4;
+                const int value = (i * maxValue) / 4;
+                painter.drawLine(x, plot.bottom(), x, plot.bottom() + 5);
+                painter.setPen(colors.color(QPalette::Text));
+                painter.drawText(QRect(x - xLabelWidth / 2,
+                                       plot.bottom() + 5,
+                                       xLabelWidth,
+                                       labelHeight),
+                                 Qt::AlignCenter,
+                                 QString::number(value));
+                painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            }
+
+            painter.setPen(colors.color(QPalette::Text));
+            painter.drawText(QRect(plot.left(),
+                                   plot.bottom() + labelHeight + 5,
+                                   plot.width(),
+                                   labelHeight),
+                             Qt::AlignCenter,
+                             QStringLiteral("Intensity"));
+            painter.drawText(QRect(0,
+                                   plot.top() - labelHeight,
+                                   plot.left() - 8,
+                                   labelHeight),
+                             Qt::AlignRight | Qt::AlignVCenter,
+                             QStringLiteral("Count"));
+        }
+
+    private:
+        scopeone::core::ScopeOneCore::HistogramStats m_stats;
+        bool m_logScale{false};
+    };
 
     // Creates the device control widget and initializes controls
     DeviceControlWidget::DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
@@ -74,6 +198,16 @@ namespace scopeone::ui
                     }
                 },
                 Qt::QueuedConnection);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerHistogramReady,
+                this, &DeviceControlWidget::onLayerHistogramReady);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerAnalysisCleared,
+                this, [this](const QString& layerKey)
+                {
+                    if (layerKey == currentLayerKey())
+                    {
+                        m_layerHistogramWidget->clear();
+                    }
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stagePositionChanged,
                 this, [this]()
                 {
@@ -144,13 +278,21 @@ namespace scopeone::ui
                 {
                     syncLayerSelection();
                     refreshPreviewLayerSettings();
+                    refreshLayerHistogram();
                     updateControlsState();
                     if (m_liveViewerContext)
                     {
                         syncControlTargetToSelectedRawLayer();
                     }
                 });
+        connect(m_workspace, &ImageWorkspace::activeFrameChanged,
+                this, &DeviceControlWidget::refreshLayerHistogram);
+        connect(m_workspace, &ImageWorkspace::activeViewerChanged,
+                this, &DeviceControlWidget::refreshLayerHistogram);
+        connect(m_workspace, &ImageWorkspace::histogramReady,
+                this, &DeviceControlWidget::onLayerHistogramReady);
         syncLayerSelection();
+        refreshLayerHistogram();
     }
 
     QWidget* DeviceControlWidget::imageControlsWidget() const
@@ -264,6 +406,16 @@ namespace scopeone::ui
         m_layerTable->setMinimumHeight(94);
         m_layerTable->setMaximumHeight(150);
 
+        m_layerHistogramGroup = new QGroupBox(QStringLiteral("Histogram"), m_previewControlsGroup);
+        auto* histogramLayout = new QVBoxLayout(m_layerHistogramGroup);
+        histogramLayout->setContentsMargins(6, 6, 6, 6);
+        m_layerHistogramWidget = new LayerHistogramWidget(m_layerHistogramGroup);
+        histogramLayout->addWidget(m_layerHistogramWidget);
+        m_layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), m_layerHistogramGroup);
+        histogramLayout->addWidget(m_layerHistogramLogCheckBox);
+        connect(m_layerHistogramLogCheckBox, &QCheckBox::toggled,
+                m_layerHistogramWidget, &LayerHistogramWidget::setLogScale);
+
         m_layerSettingsGroup = new QGroupBox("Layer Settings", this);
         QGridLayout* layerSettingsLayout = new QGridLayout(m_layerSettingsGroup);
         layerSettingsLayout->setContentsMargins(6, 6, 6, 6);
@@ -364,8 +516,9 @@ namespace scopeone::ui
         m_alignYLabel->setMinimumWidth(20);
         m_alignZoomLabel->setMinimumWidth(60);
         controlLayout->addWidget(m_layerTable, 0, 0, 1, 6);
-        controlLayout->addWidget(m_layerSettingsGroup, 1, 0, 1, 6);
-        controlLayout->addWidget(transformGroup, 2, 0, 1, 6);
+        controlLayout->addWidget(m_layerHistogramGroup, 1, 0, 1, 6);
+        controlLayout->addWidget(m_layerSettingsGroup, 2, 0, 1, 6);
+        controlLayout->addWidget(transformGroup, 3, 0, 1, 6);
 
         controlLayout->setColumnStretch(5, 1);
 
@@ -650,6 +803,7 @@ namespace scopeone::ui
     {
         rebuildPreviewLayerTable(layerKeys);
         applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
+        refreshLayerHistogram();
         updateControlsState();
     }
 
@@ -721,6 +875,7 @@ namespace scopeone::ui
             m_workspace->setActiveLayerKey(layerKey);
         }
         refreshPreviewLayerSettings();
+        refreshLayerHistogram();
         updateControlsState();
     }
 
@@ -738,6 +893,44 @@ namespace scopeone::ui
     {
         m_scopeonecore->removeStaticFrame(
             scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
+    }
+
+    void DeviceControlWidget::onLayerHistogramReady(
+        const QString& layerKey,
+        const scopeone::core::ScopeOneCore::HistogramStats& stats)
+    {
+        if (layerKey == currentLayerKey())
+        {
+            m_layerHistogramWidget->setStats(stats);
+        }
+    }
+
+    void DeviceControlWidget::refreshLayerHistogram()
+    {
+        const QString layerKey = currentLayerKey();
+        if (layerKey.isEmpty())
+        {
+            m_layerHistogramWidget->clear();
+            return;
+        }
+
+        if (m_workspace->isLiveViewerActive())
+        {
+            scopeone::core::ScopeOneCore::HistogramStats stats;
+            if (m_scopeonecore->getLayerHistogram(layerKey, stats))
+            {
+                m_layerHistogramWidget->setStats(stats);
+            }
+            else
+            {
+                m_layerHistogramWidget->clear();
+            }
+            m_scopeonecore->setActiveHistogramLayer(layerKey);
+            return;
+        }
+
+        m_layerHistogramWidget->clear();
+        m_workspace->requestHistogram(layerKey);
     }
 
     // Use the selected raw camera layer as the hardware control target
@@ -1321,11 +1514,7 @@ namespace scopeone::ui
                 m_minExposureMs = lower;
                 m_maxExposureMs = upper;
             }
-            m_exposureLabel->setText(
-                tr("Exposure (ms)\n%1: %2 to %3")
-                    .arg(m_currentTarget,
-                         formatExposureMs(m_minExposureMs),
-                         formatExposureMs(m_maxExposureMs)));
+            m_exposureLabel->setText(tr("Exposure (ms):"));
             return;
         }
 
@@ -1362,10 +1551,7 @@ namespace scopeone::ui
             m_minExposureMs = commonLower;
             m_maxExposureMs = commonUpper;
         }
-        m_exposureLabel->setText(
-            tr("Exposure (ms)\nAll cameras: %1 to %2")
-                .arg(formatExposureMs(m_minExposureMs),
-                     formatExposureMs(m_maxExposureMs)));
+        m_exposureLabel->setText(tr("Exposure (ms):"));
     }
 
     // Updates preview running state for the control button

@@ -2,12 +2,7 @@
 #include "ImageWorkspace.h"
 #include "scopeone/ImageSceneModel.h"
 
-#include <QCheckBox>
-#include <QColor>
 #include <QFrame>
-#include <QFutureWatcher>
-#include <QFont>
-#include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -20,7 +15,6 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
-#include <QtConcurrent>
 #include <QtMath>
 #include <QtGlobal>
 #include <cmath>
@@ -185,278 +179,6 @@ namespace scopeone::ui
         QVector<int> m_values;
     };
 
-    struct LayerHistogramData
-    {
-        QString layerKey;
-        scopeone::core::ScopeOneCore::HistogramStats stats;
-        QColor color{Qt::blue};
-    };
-
-    class InspectHistogramWidget : public QWidget
-    {
-    public:
-        explicit InspectHistogramWidget(QWidget* parent = nullptr)
-            : QWidget(parent)
-        {
-            setMinimumHeight(150);
-        }
-
-        // Store histogram data for one layer and repaint
-        void updateLayerHistogram(const QString& layerKey,
-                                  const scopeone::core::ScopeOneCore::HistogramStats& stats,
-                                  const QColor& color)
-        {
-            LayerHistogramData data;
-            data.layerKey = layerKey;
-            data.stats = stats;
-            data.color = color;
-            m_layerData[layerKey] = data;
-            update();
-        }
-
-        // Toggle logarithmic histogram display
-        void setLogScale(bool logScale)
-        {
-            m_logScale = logScale;
-            update();
-        }
-
-    protected:
-        // Paint all tracked camera histograms in one chart
-        void paintEvent(QPaintEvent*) override
-        {
-            QPainter painter(this);
-            painter.setRenderHint(QPainter::Antialiasing);
-            const QPalette& colors = palette();
-            const QFontMetrics metrics = painter.fontMetrics();
-            const int labelHeight = metrics.height() + 4;
-            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
-            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
-
-            const QRect rect = this->rect().adjusted(
-                yLabelWidth + 6,
-                labelHeight + 2,
-                -(xLabelWidth / 2 + 4),
-                -(2 * labelHeight + 8));
-
-            painter.fillRect(rect, colors.brush(QPalette::Base));
-            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
-            painter.drawRect(rect);
-
-            if (m_layerData.isEmpty())
-            {
-                painter.setPen(colors.color(QPalette::PlaceholderText));
-                painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Layer Data"));
-                return;
-            }
-
-            int globalMaxValue = 255;
-            int globalMaxCount = 0;
-            for (const LayerHistogramData& layerData : m_layerData)
-            {
-                if (!layerData.stats.hasData() || layerData.stats.histogram.empty())
-                {
-                    continue;
-                }
-                globalMaxValue = qMax(globalMaxValue, layerData.stats.maxValue);
-                for (int count : layerData.stats.histogram)
-                {
-                    globalMaxCount = qMax(globalMaxCount, count);
-                }
-            }
-
-            if (globalMaxCount == 0)
-            {
-                painter.setPen(colors.color(QPalette::PlaceholderText));
-                painter.drawText(rect, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
-                return;
-            }
-
-            for (const LayerHistogramData& layerData : m_layerData)
-            {
-                if (!layerData.stats.hasData() || layerData.stats.histogram.empty())
-                {
-                    continue;
-                }
-
-                const int histSize = static_cast<int>(layerData.stats.histogram.size());
-                QColor histColor = layerData.color;
-                histColor.setAlpha(180);
-                painter.setPen(QPen(histColor, 1));
-
-                for (int i = 0; i < histSize; ++i)
-                {
-                    const int x = rect.left() + (i * rect.width()) / histSize;
-                    const int count = layerData.stats.histogram[static_cast<size_t>(i)];
-
-                    double normalizedCount = 0.0;
-                    if (m_logScale && count > 0)
-                    {
-                        normalizedCount = log10(count + 1.0) / log10(globalMaxCount + 1.0);
-                    }
-                    else
-                    {
-                        normalizedCount = static_cast<double>(count) / globalMaxCount;
-                    }
-
-                    const int height = static_cast<int>(normalizedCount * rect.height());
-                    if (height > 0)
-                    {
-                        painter.drawLine(x, rect.bottom(), x, rect.bottom() - height);
-                    }
-                }
-            }
-
-            drawAxes(painter, rect, globalMaxValue, xLabelWidth, labelHeight);
-        }
-
-    private:
-        // Draw intensity and count axes for the histogram plot
-        void drawAxes(QPainter& painter,
-                      const QRect& rect,
-                      int maxValue,
-                      int xLabelWidth,
-                      int labelHeight)
-        {
-            const QColor axisColor = palette().color(QPalette::Mid);
-            const QColor textColor = palette().color(QPalette::Text);
-            painter.setPen(QPen(axisColor, 1));
-
-            QList<int> xTicks;
-            xTicks << 0 << maxValue / 4 << maxValue / 2 << (maxValue * 3) / 4 << maxValue;
-
-            for (int i = 0; i < xTicks.size(); ++i)
-            {
-                const int x = rect.left() + (i * rect.width()) / (xTicks.size() - 1);
-                painter.drawLine(x, rect.bottom(), x, rect.bottom() + 5);
-
-                const QString label = QString::number(xTicks[i]);
-                const QRect textRect(
-                    x - xLabelWidth / 2,
-                    rect.bottom() + 5,
-                    xLabelWidth,
-                    labelHeight);
-                painter.setPen(textColor);
-                painter.drawText(textRect, Qt::AlignCenter, label);
-                painter.setPen(QPen(axisColor, 1));
-            }
-
-            painter.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom());
-
-            int maxCount = 0;
-            for (const LayerHistogramData& layerData : m_layerData)
-            {
-                if (!layerData.stats.hasData())
-                {
-                    continue;
-                }
-                for (int count : layerData.stats.histogram)
-                {
-                    maxCount = qMax(maxCount, count);
-                }
-            }
-
-            if (maxCount <= 0)
-            {
-                return;
-            }
-
-            QList<int> yTicks;
-            if (m_logScale)
-            {
-                yTicks = {1, 10, 100, 1000, 10000};
-            }
-            else
-            {
-                int step = maxCount / 4;
-                if (step == 0)
-                {
-                    step = 1;
-                }
-
-                int magnitude = 1;
-                while (step > magnitude * 10)
-                {
-                    magnitude *= 10;
-                }
-                step = ((step / magnitude) + 1) * magnitude;
-
-                for (int i = 0; i <= 4; ++i)
-                {
-                    const int value = i * step;
-                    if (value <= maxCount)
-                    {
-                        yTicks.append(value);
-                    }
-                }
-            }
-
-            for (int count : yTicks)
-            {
-                if (count > maxCount)
-                {
-                    continue;
-                }
-
-                double normalizedCount = 0.0;
-                if (m_logScale && count > 0)
-                {
-                    normalizedCount = log10(count + 1.0) / log10(maxCount + 1.0);
-                }
-                else
-                {
-                    normalizedCount = static_cast<double>(count) / maxCount;
-                }
-
-                const int y = rect.bottom() - static_cast<int>(normalizedCount * rect.height());
-                painter.drawLine(rect.left() - 5, y, rect.left(), y);
-
-                QString label;
-                if (count >= 1000000000)
-                {
-                    label = QStringLiteral("%1G").arg(count / 1000000000.0, 0, 'f', 1);
-                }
-                else if (count >= 1000000)
-                {
-                    label = QStringLiteral("%1M").arg(count / 1000000.0, 0, 'f', 1);
-                }
-                else if (count >= 1000)
-                {
-                    label = QStringLiteral("%1k").arg(count / 1000.0, 0, 'f', 1);
-                }
-                else
-                {
-                    label = QString::number(count);
-                }
-                const QRect textRect(
-                    0,
-                    y - labelHeight / 2,
-                    rect.left() - 8,
-                    labelHeight);
-                painter.setPen(textColor);
-                painter.drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, label);
-                painter.setPen(QPen(axisColor, 1));
-            }
-
-            painter.setPen(textColor);
-            painter.drawText(QRect(rect.left(),
-                                   rect.bottom() + labelHeight + 5,
-                                   rect.width(),
-                                   labelHeight),
-                             Qt::AlignCenter,
-                             QStringLiteral("Intensity"));
-            painter.drawText(QRect(0,
-                                   rect.top() - labelHeight,
-                                   rect.left() - 8,
-                                   labelHeight),
-                             Qt::AlignRight | Qt::AlignVCenter,
-                             QStringLiteral("Count"));
-        }
-
-        QHash<QString, LayerHistogramData> m_layerData;
-        bool m_logScale{false};
-    };
-
     // Create the inspection panel and subscribe to core analysis signals
     InspectWidget::InspectWidget(scopeone::core::ScopeOneCore* core,
                                  ImageWorkspace* workspace,
@@ -487,7 +209,6 @@ namespace scopeone::ui
                         return;
                     }
                     m_workspace->requestHistogram(currentLayerKey());
-                    requestVisibleHistograms();
                 });
         connect(m_workspace, &ImageWorkspace::activeLayerChanged,
                 this, [this](const QString&)
@@ -501,7 +222,6 @@ namespace scopeone::ui
                     {
                         m_workspace->requestHistogram(layerKey);
                     }
-                    requestVisibleHistograms();
                     updateLayerVisibility();
                     updateControlsState();
                 });
@@ -591,7 +311,6 @@ namespace scopeone::ui
                 updateLayerInspect(it.key(), it->stats);
             }
         }
-        requestVisibleHistograms();
         updateControlsState();
     }
 
@@ -894,20 +613,6 @@ namespace scopeone::ui
         crossSectionLayout->addWidget(m_crossSectionWidget);
         contentLayout->addWidget(m_crossSectionGroup);
 
-        m_histogramContainerLayout = new QVBoxLayout();
-        m_histogramContainerLayout->setSpacing(10);
-        m_compareLayersCheckBox = new QCheckBox(QStringLiteral("Show all visible layers"), contentContainer);
-        connect(m_compareLayersCheckBox, &QCheckBox::toggled,
-                this, [this](bool enabled)
-                {
-                    updateLayerVisibility();
-                    if (enabled)
-                    {
-                        requestVisibleHistograms();
-                    }
-                });
-        contentLayout->addWidget(m_compareLayersCheckBox);
-        contentLayout->addLayout(m_histogramContainerLayout);
         contentLayout->addStretch();
 
         connect(m_drawCrossSectionButton, &QPushButton::clicked, this, [this]()
@@ -938,7 +643,7 @@ namespace scopeone::ui
         mainLayout->addWidget(scrollArea);
     }
 
-    // Create histogram controls for one layer
+    // Create statistics controls for one layer
     QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
@@ -947,16 +652,6 @@ namespace scopeone::ui
         LayerInfoGroup infoGroup;
         infoGroup.layerKey = normalizedLayerKey;
         infoGroup.groupBox = group;
-
-        auto* histLabel = new QLabel(QStringLiteral("Histogram"), group);
-        QFont boldFont = histLabel->font();
-        boldFont.setBold(true);
-        histLabel->setFont(boldFont);
-        layout->addWidget(histLabel);
-
-        auto* histogramWidget = new InspectHistogramWidget(group);
-        layout->addWidget(histogramWidget);
-        infoGroup.histogramWidget = histogramWidget;
 
         auto* slidersLayout = new QHBoxLayout();
 
@@ -986,13 +681,6 @@ namespace scopeone::ui
         slidersLayout->addWidget(maxSliderValueLabel);
         layout->addLayout(slidersLayout);
 
-        auto* histControlLayout = new QHBoxLayout();
-        auto* logScaleCheckBox = new QCheckBox(QStringLiteral("Log hist"), group);
-        histControlLayout->addWidget(logScaleCheckBox);
-        histControlLayout->addStretch();
-        layout->addLayout(histControlLayout);
-
-        infoGroup.logScaleCheckBox = logScaleCheckBox;
         infoGroup.minSlider = minSlider;
         infoGroup.maxSlider = maxSlider;
         infoGroup.minSliderValueLabel = minSliderValueLabel;
@@ -1000,10 +688,6 @@ namespace scopeone::ui
         layout->addWidget(createStatisticsGroup(infoGroup));
         m_layerInfoGroups.insert(normalizedLayerKey, infoGroup);
 
-        connect(logScaleCheckBox, &QCheckBox::toggled, this, [this, normalizedLayerKey](bool checked)
-        {
-            onLogScaleChanged(normalizedLayerKey, checked);
-        });
         connect(minSlider, &QSlider::valueChanged, this,
                 [this, normalizedLayerKey, minSlider, maxSlider, minSliderValueLabel](int value)
                 {
@@ -1076,8 +760,7 @@ namespace scopeone::ui
             return;
         }
 
-        QWidget* histogramGroup = createLayerInfoGroup(normalizedLayerKey);
-        m_histogramContainerLayout->addWidget(histogramGroup);
+        createLayerInfoGroup(normalizedLayerKey);
         updateLayerVisibility();
         updateControlsState();
     }
@@ -1092,7 +775,6 @@ namespace scopeone::ui
         }
 
         LayerInfoGroup& infoGroup = it.value();
-        m_histogramContainerLayout->removeWidget(infoGroup.groupBox);
         infoGroup.groupBox->deleteLater();
         m_layerInfoGroups.erase(it);
     }
@@ -1124,9 +806,6 @@ namespace scopeone::ui
             return;
         }
 
-        const QColor layerColor = getLayerColor(normalizedLayerKey);
-        infoGroup.histogramWidget->updateLayerHistogram(normalizedLayerKey, stats, layerColor);
-
         const int maxValue = qMax(1, layer.display.levelDomainMax);
         const int displayMin = qBound(0, layer.display.levelMin, maxValue - 1);
         const int displayMax = qBound(displayMin + 1, layer.display.levelMax, maxValue);
@@ -1142,17 +821,6 @@ namespace scopeone::ui
         infoGroup.maxSliderValueLabel->setText(QString::number(displayMax));
         updateStatisticsDisplay(normalizedLayerKey, stats);
         updateControlsState();
-    }
-
-    // Toggle logarithmic histogram scaling for one layer
-    void InspectWidget::onLogScaleChanged(const QString& layerKey, bool checked)
-    {
-        auto it = m_layerInfoGroups.find(layerKey);
-        if (it == m_layerInfoGroups.end())
-        {
-            return;
-        }
-        it.value().histogramWidget->setLogScale(checked);
     }
 
     // Update numeric statistics labels for one layer
@@ -1217,7 +885,6 @@ namespace scopeone::ui
             const bool isActiveLayer = infoGroup.layerKey == layerKey;
             infoGroup.minSlider->setEnabled(hasStats && isActiveLayer);
             infoGroup.maxSlider->setEnabled(hasStats && isActiveLayer);
-            infoGroup.logScaleCheckBox->setEnabled(hasStats);
         }
     }
 
@@ -1228,89 +895,15 @@ namespace scopeone::ui
         const QStringList visibleLayerKeys = m_sceneModel
                                                  ? m_sceneModel->visibleLayerIds()
                                                  : QStringList{};
-        const bool visibleLayersChanged = visibleLayerKeys != m_visibleLayerKeys;
-        m_visibleLayerKeys = visibleLayerKeys;
         for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
         {
             LayerInfoGroup& infoGroup = it.value();
             const bool showLayer = visibleLayerKeys.contains(infoGroup.layerKey)
-                                   && (m_compareLayersCheckBox->isChecked()
-                                       || infoGroup.layerKey == layerKey);
+                                   && infoGroup.layerKey == layerKey;
             infoGroup.groupBox->setVisible(showLayer);
             infoGroup.groupBox->setTitle(
                 inspectLayerTitle(infoGroup.layerKey, infoGroup.layerKey == layerKey));
         }
-        if (visibleLayersChanged)
-        {
-            requestVisibleHistograms();
-        }
-    }
-
-    void InspectWidget::requestVisibleHistograms()
-    {
-        const quint64 generation = ++m_histogramRequestGeneration;
-        if (!m_compareLayersCheckBox->isChecked()
-            || !m_sceneModel
-            || m_visibleLayerKeys.isEmpty())
-        {
-            return;
-        }
-
-        const QString viewerId = m_activeViewerStateId;
-        const QString activeLayerKey = currentLayerKey();
-        QHash<QString, scopeone::core::ImageFrame> frames;
-        for (const QString& layerKey : m_visibleLayerKeys)
-        {
-            if (layerKey == activeLayerKey)
-            {
-                continue;
-            }
-            const scopeone::core::ImageFrame frame = m_workspace->isLiveViewerActive()
-                                                         ? m_scopeonecore->graphFrame(layerKey)
-                                                         : m_workspace->frameForLayer(layerKey);
-            if (!frame.isValid())
-            {
-                continue;
-            }
-            frames.insert(layerKey, frame);
-        }
-        if (frames.isEmpty())
-        {
-            return;
-        }
-
-        auto* watcher = new QFutureWatcher<QHash<QString,
-                                                scopeone::core::ScopeOneCore::HistogramStats>>(this);
-        connect(watcher, &QFutureWatcherBase::finished, this,
-                [this, watcher, generation, viewerId]()
-                {
-                    if (generation == m_histogramRequestGeneration
-                        && viewerId == m_activeViewerStateId)
-                    {
-                        const auto results = watcher->result();
-                        for (auto it = results.cbegin(); it != results.cend(); ++it)
-                        {
-                            if (m_visibleLayerKeys.contains(it.key()))
-                            {
-                                setLayerInspect(it.key(), it.value());
-                            }
-                        }
-                    }
-                    watcher->deleteLater();
-                });
-        watcher->setFuture(QtConcurrent::run([frames]()
-        {
-            QHash<QString, scopeone::core::ScopeOneCore::HistogramStats> results;
-            for (auto it = frames.cbegin(); it != frames.cend(); ++it)
-            {
-                scopeone::core::ScopeOneCore::HistogramStats stats;
-                if (scopeone::core::ScopeOneCore::computeHistogramStats(it.value(), stats))
-                {
-                    results.insert(it.key(), stats);
-                }
-            }
-            return results;
-        }));
     }
 
     // Return persistent inspect state for one preview layer
@@ -1324,20 +917,6 @@ namespace scopeone::ui
             it = m_layerStates.insert(layerKey, state);
         }
         return it.value();
-    }
-
-    // Pick a stable display color from the layer key
-    QColor InspectWidget::getLayerColor(const QString& layerKey) const
-    {
-        static const QList<QColor> layerColors = {
-            QColor(0, 120, 215),
-            QColor(232, 17, 35),
-            QColor(16, 124, 16),
-            QColor(247, 99, 12)
-        };
-
-        const int index = qHash(layerKey) % layerColors.size();
-        return layerColors[index];
     }
 
     // Apply manual display range changes from layer sliders

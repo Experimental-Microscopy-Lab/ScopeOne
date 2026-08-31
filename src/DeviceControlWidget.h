@@ -1,5 +1,7 @@
 #pragma once
 
+#include "scopeone/ScopeOneCore.h"
+
 #include <QMap>
 #include <QSet>
 #include <QString>
@@ -26,6 +28,7 @@ class QTableWidget;
 namespace scopeone::ui
 {
     class ImageWorkspace;
+    class LayerHistogramWidget;
     class PreviewWidget;
 
     class DeviceControlWidget : public QWidget
@@ -104,6 +107,9 @@ namespace scopeone::ui
         void onPreviewLayerMoveUpClicked();
         void onPreviewLayerMoveDownClicked();
         void onPreviewLayerRemoveClicked();
+        void onLayerHistogramReady(const QString& layerKey,
+                                   const scopeone::core::ScopeOneCore::HistogramStats& stats);
+        void refreshLayerHistogram();
         void syncControlTargetToSelectedRawLayer();
         void resetSelectedLayerTransform();
         void syncLayerSelection();
@@ -140,6 +146,9 @@ namespace scopeone::ui
         QPushButton* m_layerAutoButton{nullptr};
         QPushButton* m_layerFullRangeButton{nullptr};
         QCheckBox* m_layerAutoStretchCheckBox{nullptr};
+        LayerHistogramWidget* m_layerHistogramWidget{nullptr};
+        QCheckBox* m_layerHistogramLogCheckBox{nullptr};
+        QGroupBox* m_layerHistogramGroup{nullptr};
         QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
         QLabel* m_alignYLabel{nullptr};
