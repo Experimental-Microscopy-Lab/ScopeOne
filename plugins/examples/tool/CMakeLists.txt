@@ -14,6 +14,8 @@ add_library(ScopeOneDhmTool MODULE
 target_compile_features(ScopeOneDhmTool PRIVATE cxx_std_20)
 target_link_libraries(ScopeOneDhmTool PRIVATE
     scopeone::PluginSDK
+    opencv_imgcodecs
+    opencv_imgproc
     Qt6::Widgets
 )
 scopeone_example_plugin(ScopeOneDhmTool tools)

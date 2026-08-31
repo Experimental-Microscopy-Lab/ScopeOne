@@ -5,13 +5,18 @@
 
 #include <QFormLayout>
 #include <QCheckBox>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QObject>
 #include <QPushButton>
+#include <QPixmap>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <memory>
@@ -26,9 +31,16 @@ namespace
         {
             setWindowFlag(Qt::Window, true);
             setWindowTitle(QStringLiteral("DHM Reconstruction"));
-            resize(320, 190);
+            resize(640, 430);
 
             auto* layout = new QVBoxLayout(this);
+            auto* previews = new QHBoxLayout();
+            m_inputPreview = createPreview(QStringLiteral("Hologram input"));
+            m_resultPreview = createPreview(QStringLiteral("Reconstructed phase"));
+            previews->addWidget(m_inputPreview);
+            previews->addWidget(m_resultPreview);
+            layout->addLayout(previews);
+
             auto* form = new QFormLayout();
             m_offsetX = createSpinBox(-10000, 10000, 48);
             m_offsetY = createSpinBox(-10000, 10000, 32);
@@ -43,9 +55,11 @@ namespace
             layout->addWidget(m_liveCheckBox);
 
             auto* buttons = new QHBoxLayout();
+            m_loadButton = new QPushButton(QStringLiteral("Load hologram"), this);
             m_reconstructButton = new QPushButton(QStringLiteral("Reconstruct once"), this);
             m_cancelButton = new QPushButton(QStringLiteral("Cancel"), this);
             m_cancelButton->setEnabled(false);
+            buttons->addWidget(m_loadButton);
             buttons->addWidget(m_reconstructButton);
             buttons->addWidget(m_cancelButton);
             layout->addLayout(buttons);
@@ -57,6 +71,20 @@ namespace
 
             connect(m_reconstructButton, &QPushButton::clicked, this,
                     [this]() { startReconstruction(); });
+            connect(m_loadButton, &QPushButton::clicked, this, [this]()
+            {
+                const QString path = QFileDialog::getOpenFileName(
+                    this, QStringLiteral("Load hologram"), QString(),
+                    QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
+                if (path.isEmpty())
+                {
+                    return;
+                }
+                m_fileInput = imageFrame(path);
+                m_liveCheckBox->setChecked(false);
+                m_sourceId = m_fileInput.cameraId;
+                startReconstruction();
+            });
             connect(m_cancelButton, &QPushButton::clicked, this,
                     [this]()
                     {
@@ -89,6 +117,7 @@ namespace
                                              : QStringLiteral("Ready"));
                     return;
                 }
+                m_fileInput = {};
                 const auto frame = m_context.currentFrame();
                 if (frame.isValid()
                     && scopeone::core::ScopeOneCore::isRawLayerKey(
@@ -119,9 +148,59 @@ namespace
             return spinBox;
         }
 
+        static QLabel* createPreview(const QString& title)
+        {
+            auto* preview = new QLabel(title);
+            preview->setAlignment(Qt::AlignCenter);
+            preview->setMinimumSize(280, 180);
+            preview->setFrameShape(QFrame::Box);
+            preview->setStyleSheet(QStringLiteral("background: #202020; color: #aaaaaa;"));
+            return preview;
+        }
+
+        static scopeone::core::ImageFrame imageFrame(const QString& source)
+        {
+            const cv::Mat image = cv::imread(source.toStdString(), cv::IMREAD_UNCHANGED);
+            cv::Mat gray;
+            if (image.channels() == 1)
+            {
+                gray = image;
+            }
+            else
+            {
+                cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+            }
+            if (gray.depth() != CV_16U)
+            {
+                gray.convertTo(gray, CV_16U, 257.0);
+            }
+            gray = gray.clone();
+            scopeone::core::ImageFrame frame;
+            frame.cameraId = source;
+            frame.width = gray.cols;
+            frame.height = gray.rows;
+            frame.stride = static_cast<int>(gray.step);
+            frame.bitsPerSample = 16;
+            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono16;
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
+                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
+            return frame;
+        }
+
+        static void showPreview(QLabel* preview,
+                                const scopeone::core::ImageFrame& frame)
+        {
+            const QImage image(reinterpret_cast<const uchar*>(frame.bytes.constData()),
+                               frame.width, frame.height,
+                               static_cast<qsizetype>(frame.stride),
+                               QImage::Format_Grayscale16);
+            preview->setPixmap(QPixmap::fromImage(image).scaled(
+                preview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+
         void startReconstruction()
         {
-            const auto input = m_context.currentFrame();
+            const auto input = m_fileInput.isValid() ? m_fileInput : m_context.currentFrame();
             if (!input.isValid())
             {
                 m_status->setText(QStringLiteral("No image loaded"));
@@ -135,6 +214,7 @@ namespace
 
         void queueFrame(const scopeone::core::ImageFrame& input)
         {
+            showPreview(m_inputPreview, input);
             m_stream->setProcessing(true);
             const int offsetX = m_offsetX->value();
             const int offsetY = m_offsetY->value();
@@ -184,6 +264,7 @@ namespace
                 finishTask(QStringLiteral("Reconstruction failed"));
                 return;
             }
+            showPreview(m_resultPreview, *m_result);
             const auto stored = m_context.publishToolStreamFrame(
                 QStringLiteral("dhm.phase"), *m_result, QStringLiteral("DHM Phase"));
             if (stored.isValid())
@@ -229,7 +310,10 @@ namespace
         QSpinBox* m_offsetX{nullptr};
         QSpinBox* m_offsetY{nullptr};
         QSpinBox* m_radius{nullptr};
+        QLabel* m_inputPreview{nullptr};
+        QLabel* m_resultPreview{nullptr};
         QCheckBox* m_liveCheckBox{nullptr};
+        QPushButton* m_loadButton{nullptr};
         QPushButton* m_reconstructButton{nullptr};
         QPushButton* m_cancelButton{nullptr};
         QLabel* m_status{nullptr};
@@ -237,6 +321,7 @@ namespace
         scopeone::ui::ScopeOneToolFrameStream* m_stream{nullptr};
         std::shared_ptr<scopeone::core::ImageFrame> m_result;
         QString m_sourceId;
+        scopeone::core::ImageFrame m_fileInput;
         bool m_layersPresented{false};
     };
 

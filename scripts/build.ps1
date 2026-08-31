@@ -438,6 +438,13 @@ if ($target -in @("all", "plugins")) {
         if ($coreQt6Dir) {
             $pluginConfigureArgs += "-DQt6_DIR=$coreQt6Dir"
         }
+        $coreOpenCvDir = Get-CMakeCacheValue -CachePath $coreCachePath -Key "OpenCV_DIR"
+        if (-not $coreOpenCvDir) {
+            $coreOpenCvDir = Join-Path $coreSourceDir "external\opencv-4.12.0\build"
+        }
+        if ($coreOpenCvDir) {
+            $pluginConfigureArgs += "-DOpenCV_DIR=$coreOpenCvDir"
+        }
         Invoke-Step `
             -Label "Configuring ScopeOne plugin examples" `
             -FilePath $cmake `
