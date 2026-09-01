@@ -97,6 +97,7 @@ namespace scopeone::ui
                                  PreviewInteractionTarget& outTarget,
                                  const QString& sourceId = QString(),
                                  bool rawOnly = false) const;
+        QVector<PreviewInteractionTarget> interactionTargetsAt(const QPoint& widgetPos) const;
 signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
@@ -191,6 +192,13 @@ signals:
             bool hasRawFrame{false};
         };
 
+        struct ViewportState
+        {
+            int zoomPercent{100};
+            QPoint offset;
+            bool fitToWindow{true};
+        };
+
         struct LayerRenderItem
         {
             const FrameSourceRenderInfo* info{nullptr};
@@ -223,9 +231,8 @@ signals:
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
         quint64 m_nextFrameRevision{0};
-        int m_zoomPercent{100};
-        bool m_fitToWindow{true};
-        QPoint m_viewOffset;
+        QMap<QString, ViewportState> m_viewportStates;
+        ViewportState m_overlayViewportState;
         QString m_placeholderText{QStringLiteral("No image loaded")};
 
         bool m_glInited{false};
@@ -240,7 +247,6 @@ signals:
         bool m_clippingWarning{false};
         QString m_activeLayerKey;
         QStringList m_savedVisibleLayerKeys;
-        QPoint m_hoverWidgetPos{-1, -1};
         std::function<double(const QString&)> m_pixelSizeCallback;
 
         struct CachedTexture
@@ -277,6 +283,10 @@ signals:
         QPoint m_dragMarkupStartImagePos;
         MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
         bool m_markupDragging{false};
+        bool m_viewPanning{false};
+        QPoint m_panStartWidgetPos;
+        QPoint m_panStartOffset;
+        QString m_panLayerKey;
         void updateImageDisplay();
         void updateLayerFps(const QString& layerKey, quint64 frameCount = 1);
         void updateFrameRates();
@@ -300,6 +310,7 @@ signals:
                                  std::vector<RenderItem>& renderItems) const;
         bool resolveDisplayGeometry(const FrameSourceState& frameState,
                                     bool processed,
+                                    const QString& layerKey,
                                     const QRect& area,
                                     QRect& displayRect,
                                     QSize& imageSize) const;
@@ -316,16 +327,19 @@ signals:
                                       const QString& layerKey) const;
         bool mapWidgetPositionToImage(const FrameSourceState& frameState,
                                       bool processed,
+                                      const QString& layerKey,
                                       const QRect& area,
                                       const QPoint& widgetPos,
                                       QPoint& imagePos) const;
         bool mapWidgetRectToImage(const FrameSourceState& frameState,
                                   bool processed,
+                                  const QString& layerKey,
                                   const QRect& area,
                                   const QRect& widgetRect,
                                   QRect& imageRect) const;
         bool mapImagePositionToWidget(const FrameSourceState& frameState,
                                       bool processed,
+                                      const QString& layerKey,
                                       const QRect& area,
                                       const QPoint& imagePos,
                                       QPoint& widgetPos) const;
@@ -337,7 +351,6 @@ signals:
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
-        void drawCursorHud(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,
@@ -348,16 +361,22 @@ signals:
         void drawFrameInRect(const QString& textureKey,
                              const scopeone::core::ImageFrame& frame,
                              quint64 frameRevision,
-                             const QRect& r,
+                             const QRect& displayRect,
+                             const QRect& clipRect,
                              bool flipX,
                              bool flipY,
                              const LayerDisplaySettings& display,
                              bool firstVisibleInArea);
         QRect targetRectForImageSize(const QSize& imageSize,
                                      const FrameSourceState& frameState,
+                                     const QString& layerKey,
                                      const QRect& avail) const;
         void setUvTransform(bool flipX, bool flipY);
         void applyViewportForRect(const QRect& logicalRect);
+        void applyScissorForRect(const QRect& logicalRect);
+        ViewportState& viewportStateForLayer(const QString& layerKey);
+        ViewportState viewportStateForLayer(const QString& layerKey) const;
+        QString viewportControlLayerKey() const;
         std::vector<QRect> computeLayout(int count) const;
         std::vector<RenderItem> buildRenderItems(const std::vector<FrameSourceRenderInfo>& frameSourceRenderInfos) const;
 

@@ -1398,22 +1398,54 @@ namespace scopeone::ui
             return;
         }
 
-        PreviewWidget::PreviewInteractionTarget target;
         PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-        if (!preview || !preview->interactionTargetAt(m_lastPreviewMousePos, target))
+        if (!preview)
         {
             clearCursorStatus();
             return;
         }
 
-        int value = 0;
-        const bool valueOk = m_imageWorkspace->pixelValue(target.layerKey, target.imagePos, value);
-        const QString msg = QStringLiteral("x=%1 y=%2 value=%3")
-                                .arg(target.imagePos.x(), 5, 10, QLatin1Char(' '))
-                                .arg(target.imagePos.y(), 5, 10, QLatin1Char(' '))
-                                .arg(valueOk ? QString::number(value) : QStringLiteral("-"),
-                                     6,
-                                     QLatin1Char(' '));
+        const QVector<PreviewWidget::PreviewInteractionTarget> targets =
+            preview->interactionTargetsAt(m_lastPreviewMousePos);
+        if (targets.isEmpty())
+        {
+            clearCursorStatus();
+            return;
+        }
+
+        const PreviewWidget::PreviewInteractionTarget& activeTarget = targets.constLast();
+        const auto valueText = [this](const PreviewWidget::PreviewInteractionTarget& target)
+        {
+            int value = 0;
+            return m_imageWorkspace->pixelValue(target.layerKey, target.imagePos, value)
+                       ? QString::number(value)
+                       : QStringLiteral("-");
+        };
+
+        QString msg;
+        if (preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::SideBySide)
+        {
+            msg = QStringLiteral("[%1] X: %2  Y: %3 | Val: %4")
+                      .arg(preview->layerName(activeTarget.layerKey))
+                      .arg(activeTarget.imagePos.x())
+                      .arg(activeTarget.imagePos.y())
+                      .arg(valueText(activeTarget));
+        }
+        else
+        {
+            QStringList values;
+            values.reserve(targets.size());
+            for (const auto& target : targets)
+            {
+                values.append(QStringLiteral("[%1]: %2")
+                                  .arg(preview->layerName(target.layerKey))
+                                  .arg(valueText(target)));
+            }
+            msg = QStringLiteral("X: %1  Y: %2 | %3")
+                      .arg(activeTarget.imagePos.x())
+                      .arg(activeTarget.imagePos.y())
+                      .arg(values.join(QStringLiteral(" ")));
+        }
         setCursorStatus(msg);
     }
 

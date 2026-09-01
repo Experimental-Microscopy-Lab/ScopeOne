@@ -869,43 +869,73 @@ namespace scopeone::ui
         return keys;
     }
 
-    // Sets the global preview zoom percentage
+    // Returns the viewport state used by one layer or by the overlay
+    PreviewWidget::ViewportState& PreviewWidget::viewportStateForLayer(const QString& layerKey)
+    {
+        if (m_layerLayoutMode == LayerLayoutMode::Overlay)
+        {
+            return m_overlayViewportState;
+        }
+        return m_viewportStates[layerKey];
+    }
+
+    PreviewWidget::ViewportState PreviewWidget::viewportStateForLayer(const QString& layerKey) const
+    {
+        if (m_layerLayoutMode == LayerLayoutMode::Overlay)
+        {
+            return m_overlayViewportState;
+        }
+        return m_viewportStates.value(layerKey);
+    }
+
+    QString PreviewWidget::viewportControlLayerKey() const
+    {
+        if (!m_activeLayerKey.isEmpty())
+        {
+            return m_activeLayerKey;
+        }
+        return visibleLayerKeys().value(0);
+    }
+
+    // Sets the preview zoom for the active layer or the overlay
     void PreviewWidget::setZoomPercent(int percent)
     {
         const int nextPercent = qBound(10, percent, 500);
-        if (m_zoomPercent == nextPercent)
+        ViewportState& state = viewportStateForLayer(viewportControlLayerKey());
+        if (state.zoomPercent == nextPercent)
         {
             return;
         }
-        m_zoomPercent = nextPercent;
-        emit zoomLevelChanged(m_zoomPercent);
+        state.zoomPercent = nextPercent;
+        emit zoomLevelChanged(state.zoomPercent);
         update();
     }
 
     int PreviewWidget::zoomPercent() const
     {
-        return m_zoomPercent;
+        return viewportStateForLayer(viewportControlLayerKey()).zoomPercent;
     }
 
-    // Enables or disables fit to window display mode
+    // Enables or disables fit to window for the active layer or the overlay
     void PreviewWidget::setFitToWindow(bool enabled)
     {
-        if (m_fitToWindow == enabled)
+        ViewportState& state = viewportStateForLayer(viewportControlLayerKey());
+        if (state.fitToWindow == enabled)
         {
             return;
         }
-        m_fitToWindow = enabled;
-        if (m_fitToWindow)
+        state.fitToWindow = enabled;
+        if (state.fitToWindow)
         {
-            m_viewOffset = QPoint();
+            state.offset = QPoint();
         }
-        emit fitToWindowChanged(m_fitToWindow);
+        emit fitToWindowChanged(state.fitToWindow);
         update();
     }
 
     bool PreviewWidget::isFitToWindow() const
     {
-        return m_fitToWindow;
+        return viewportStateForLayer(viewportControlLayerKey()).fitToWindow;
     }
 
     // Sets whether the calibrated scale bar is drawn on preview
@@ -1075,6 +1105,7 @@ namespace scopeone::ui
     // Resolves the displayed image rectangle for one layer
     bool PreviewWidget::resolveDisplayGeometry(const FrameSourceState& frameState,
                                                bool processed,
+                                               const QString& layerKey,
                                                const QRect& area,
                                                QRect& displayRect,
                                                QSize& imageSize) const
@@ -1086,7 +1117,7 @@ namespace scopeone::ui
                 return false;
             }
             imageSize = frameState.processedFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, area);
+            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
         }
         else
         {
@@ -1095,7 +1126,7 @@ namespace scopeone::ui
                 return false;
             }
             imageSize = frameState.rawFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, area);
+            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
         }
 
         return imageSize.width() > 0
@@ -1127,7 +1158,7 @@ namespace scopeone::ui
             frameState = *item.info->frameState;
             processed = item.processed;
             itemArea = item.area;
-            return resolveDisplayGeometry(frameState, processed, itemArea, displayRect, imageSize);
+            return resolveDisplayGeometry(frameState, processed, layerKey, itemArea, displayRect, imageSize);
         }
 
         return false;
@@ -1136,13 +1167,14 @@ namespace scopeone::ui
     // Maps one widget position into image coordinates
     bool PreviewWidget::mapWidgetPositionToImage(const FrameSourceState& frameState,
                                                  bool processed,
+                                                 const QString& layerKey,
                                                  const QRect& area,
                                                  const QPoint& widgetPos,
                                                  QPoint& imagePos) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize)
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize)
             || !displayRect.contains(widgetPos))
         {
             return false;
@@ -1171,13 +1203,14 @@ namespace scopeone::ui
     // Maps one widget rectangle into image rectangle bounds
     bool PreviewWidget::mapWidgetRectToImage(const FrameSourceState& frameState,
                                              bool processed,
+                                             const QString& layerKey,
                                              const QRect& area,
                                              const QRect& widgetRect,
                                              QRect& imageRect) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize))
         {
             return false;
         }
@@ -1231,13 +1264,14 @@ namespace scopeone::ui
     // Maps one image coordinate into widget coordinates
     bool PreviewWidget::mapImagePositionToWidget(const FrameSourceState& frameState,
                                                  bool processed,
+                                                 const QString& layerKey,
                                                  const QRect& area,
                                                  const QPoint& imagePos,
                                                  QPoint& widgetPos) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize))
         {
             return false;
         }
@@ -1293,6 +1327,7 @@ namespace scopeone::ui
         QSize imageSize;
         if (!resolveDisplayGeometry(*item.info->frameState,
                                     item.processed,
+                                    item.layerKey,
                                     item.area,
                                     displayRect,
                                     imageSize))
@@ -1319,11 +1354,13 @@ namespace scopeone::ui
             QPoint endWidget;
             if (!mapImagePositionToWidget(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           startImage,
                                           startWidget)
                 || !mapImagePositionToWidget(*item.info->frameState,
                                              item.processed,
+                                             item.layerKey,
                                              item.area,
                                              endImage,
                                              endWidget))
@@ -1356,11 +1393,13 @@ namespace scopeone::ui
             }
             if (!mapImagePositionToWidget(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           imageRect.topLeft(),
                                           topLeft)
                 || !mapImagePositionToWidget(*item.info->frameState,
                                              item.processed,
+                                             item.layerKey,
                                              item.area,
                                              imageRect.bottomRight(),
                                              bottomRight))
@@ -1432,6 +1471,7 @@ namespace scopeone::ui
                 QPoint clippedEnd;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
@@ -1442,11 +1482,13 @@ namespace scopeone::ui
                                        clippedEnd)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedStart,
                                                  markup.start)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedEnd,
                                                  markup.end))
@@ -1475,17 +1517,20 @@ namespace scopeone::ui
                 QPoint imageEnd;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
                     || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedStart,
                                                  imageStart)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedEnd,
                                                  imageEnd))
@@ -1516,6 +1561,7 @@ namespace scopeone::ui
                 QRect imageRect;
                 if (!mapWidgetRectToImage(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           QRect(m_roiStart, m_roiEnd),
                                           imageRect))
@@ -1552,7 +1598,12 @@ namespace scopeone::ui
 
             QRect displayRect;
             QSize imageSize;
-            if (!resolveDisplayGeometry(*item.info->frameState, item.processed, item.area, displayRect, imageSize))
+            if (!resolveDisplayGeometry(*item.info->frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize))
             {
                 continue;
             }
@@ -1716,69 +1767,6 @@ namespace scopeone::ui
         painter.restore();
     }
 
-    // Draws live cursor coordinates and pixel value HUD badge in bottom-left
-    void PreviewWidget::drawCursorHud(QPainter& painter, const std::vector<RenderItem>& renderItems) const
-    {
-        if (m_hoverWidgetPos.x() < 0 || m_hoverWidgetPos.y() < 0)
-        {
-            return;
-        }
-
-        for (const auto& item : renderItems)
-        {
-            if (!item.info || !item.info->frameState || !item.area.contains(m_hoverWidgetPos))
-            {
-                continue;
-            }
-
-            QPoint imagePos;
-            if (mapWidgetPositionToImage(*item.info->frameState, item.processed, item.area, m_hoverWidgetPos, imagePos))
-            {
-                const auto& frame = item.processed ? item.info->frameState->processedFrame : item.info->frameState->rawFrame;
-                int pixelVal = 0;
-                bool hasVal = false;
-                if (frame.isValid() && imagePos.x() >= 0 && imagePos.x() < frame.width
-                    && imagePos.y() >= 0 && imagePos.y() < frame.height)
-                {
-                    if (frame.isMono8())
-                    {
-                        const uchar* ptr = reinterpret_cast<const uchar*>(frame.bytes.constData());
-                        pixelVal = ptr[imagePos.y() * frame.stride + imagePos.x()];
-                        hasVal = true;
-                    }
-                    else if (frame.isMono16())
-                    {
-                        const quint16* ptr = reinterpret_cast<const quint16*>(
-                            frame.bytes.constData() + imagePos.y() * frame.stride);
-                        pixelVal = ptr[imagePos.x()];
-                        hasVal = true;
-                    }
-                }
-
-                painter.save();
-                painter.setRenderHint(QPainter::Antialiasing);
-                const QFont font(QStringLiteral("Segoe UI"), 9);
-                painter.setFont(font);
-                const QFontMetrics fm(font);
-
-                const QString hudText = hasVal
-                                            ? QString("X: %1  Y: %2 | Val: %3").arg(imagePos.x()).arg(imagePos.y()).arg(pixelVal)
-                                            : QString("X: %1  Y: %2").arg(imagePos.x()).arg(imagePos.y());
-                const int textWidth = fm.horizontalAdvance(hudText);
-                const QRect hudRect(item.area.left() + 8, item.area.bottom() - fm.height() - 14, textWidth + 14, fm.height() + 6);
-
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(15, 18, 22, 200));
-                painter.drawRoundedRect(hudRect, 4, 4);
-
-                painter.setPen(QColor(0, 200, 255));
-                painter.drawText(hudRect, Qt::AlignCenter, hudText);
-                painter.restore();
-                break;
-            }
-        }
-    }
-
     bool PreviewWidget::markupAtWidgetPosition(const QPoint& widgetPos,
                                                ImageSceneModel::Markup& outMarkup,
                                                PreviewInteractionTarget& outTarget,
@@ -1814,6 +1802,7 @@ namespace scopeone::ui
                 QSize imageSize;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
@@ -1825,6 +1814,7 @@ namespace scopeone::ui
                 QPoint imagePos;
                 if (!mapWidgetPositionToImage(*item.info->frameState,
                                                item.processed,
+                                               item.layerKey,
                                                item.area,
                                                widgetPos,
                                                imagePos))
@@ -1838,11 +1828,13 @@ namespace scopeone::ui
                     QPoint endWidget;
                     if (!mapImagePositionToWidget(*item.info->frameState,
                                                   item.processed,
+                                                  item.layerKey,
                                                   item.area,
                                                   markup.start,
                                                   startWidget)
                         || !mapImagePositionToWidget(*item.info->frameState,
                                                      item.processed,
+                                                     item.layerKey,
                                                      item.area,
                                                      markup.end,
                                                      endWidget))
@@ -1872,11 +1864,13 @@ namespace scopeone::ui
                     QPoint bottomRight;
                     if (!mapImagePositionToWidget(*item.info->frameState,
                                                   item.processed,
+                                                  item.layerKey,
                                                   item.area,
                                                   markup.rect.normalized().topLeft(),
                                                   topLeft)
                         || !mapImagePositionToWidget(*item.info->frameState,
                                                      item.processed,
+                                                     item.layerKey,
                                                      item.area,
                                                      markup.rect.normalized().bottomRight(),
                                                      bottomRight))
@@ -1960,7 +1954,12 @@ namespace scopeone::ui
         const FrameSourceState& frameState = *item.info->frameState;
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState,
+                                    item.processed,
+                                    item.layerKey,
+                                    item.area,
+                                    displayRect,
+                                    imageSize))
         {
             return;
         }
@@ -1971,6 +1970,7 @@ namespace scopeone::ui
                             frameState.processedFrame,
                             frameState.processedRevision,
                             displayRect,
+                            item.area,
                             frameState.flipX,
                             frameState.flipY,
                             item.display,
@@ -1984,6 +1984,7 @@ namespace scopeone::ui
                             frameState.rawFrame,
                             frameState.rawRevision,
                             displayRect,
+                            item.area,
                             frameState.flipX,
                             frameState.flipY,
                             item.display,
@@ -2100,14 +2101,24 @@ namespace scopeone::ui
             const FrameSourceState& frameState = *item.info->frameState;
             QRect displayRect;
             QSize imageSize;
-            if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize)
+            if (!resolveDisplayGeometry(frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize)
                 || !displayRect.contains(widgetPos))
             {
                 continue;
             }
 
             QPoint imagePos;
-            if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos))
+            if (!mapWidgetPositionToImage(frameState,
+                                          item.processed,
+                                          item.layerKey,
+                                          item.area,
+                                          widgetPos,
+                                          imagePos))
             {
                 continue;
             }
@@ -2131,6 +2142,62 @@ namespace scopeone::ui
                                             bool rawOnly) const
     {
         return resolveInteractionTarget(widgetPos, outTarget, sourceId, rawOnly, QString());
+    }
+
+    // Resolves all visible layers under one widget point
+    QVector<PreviewWidget::PreviewInteractionTarget> PreviewWidget::interactionTargetsAt(
+        const QPoint& widgetPos) const
+    {
+        QVector<PreviewInteractionTarget> targets;
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        for (const RenderItem& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState || !item.area.contains(widgetPos))
+            {
+                continue;
+            }
+            if (item.display.blending != Blending::Opaque && item.display.opacityPercent <= 0)
+            {
+                continue;
+            }
+
+            const FrameSourceState& frameState = *item.info->frameState;
+            QRect displayRect;
+            QSize imageSize;
+            if (!resolveDisplayGeometry(frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize)
+                || !displayRect.contains(widgetPos))
+            {
+                continue;
+            }
+
+            QPoint imagePos;
+            if (!mapWidgetPositionToImage(frameState,
+                                          item.processed,
+                                          item.layerKey,
+                                          item.area,
+                                          widgetPos,
+                                          imagePos))
+            {
+                continue;
+            }
+
+            targets.append({item.layerKey,
+                            item.info->sourceId,
+                            imagePos,
+                            item.area,
+                            displayRect,
+                            item.processed});
+        }
+        return targets;
     }
 
     // Initializes OpenGL state for preview rendering
@@ -2355,6 +2422,10 @@ namespace scopeone::ui
                 drawRenderItem(item);
             }
 
+            glDisable(GL_SCISSOR_TEST);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            applyViewportForRect(rect());
             QPainter p(this);
             if (m_sceneModel->hasMarkups()
                 || (m_roiDrawingMode && m_roiDragging)
@@ -2368,7 +2439,6 @@ namespace scopeone::ui
                 drawScaleBar(p, renderItems);
             }
             drawTileLabelsAndBadges(p, renderItems);
-            drawCursorHud(p, renderItems);
             return;
         }
 
@@ -2521,13 +2591,14 @@ namespace scopeone::ui
     void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                         const ImageFrame& frame,
                                         quint64 frameRevision,
-                                        const QRect& r,
+                                        const QRect& displayRect,
+                                        const QRect& clipRect,
                                         bool flipX,
                                         bool flipY,
                                         const LayerDisplaySettings& display,
                                         bool firstVisibleInArea)
     {
-        if (!frame.isValid() || r.width() <= 0 || r.height() <= 0) return;
+        if (!frame.isValid() || displayRect.width() <= 0 || displayRect.height() <= 0) return;
 
         ensureGlPipeline();
 
@@ -2631,13 +2702,16 @@ namespace scopeone::ui
             }
         }
 
-        applyViewportForRect(r);
+        glEnable(GL_SCISSOR_TEST);
+        applyScissorForRect(clipRect);
+        applyViewportForRect(displayRect);
 
         m_vao.bind();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         m_vao.release();
         glBlendEquation(GL_FUNC_ADD);
         glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
         m_prog.release();
     }
 
@@ -2645,29 +2719,31 @@ namespace scopeone::ui
     // Computes the target rectangle for an image inside an area
     QRect PreviewWidget::targetRectForImageSize(const QSize& imageSize,
                                                 const FrameSourceState& frameState,
+                                                const QString& layerKey,
                                                 const QRect& avail) const
     {
         if (imageSize.width() <= 0 || imageSize.height() <= 0 || avail.width() <= 0 || avail.height() <= 0) return
             avail;
 
+        const ViewportState viewport = viewportStateForLayer(layerKey);
         QSize s = imageSize;
-        if (m_fitToWindow)
+        if (viewport.fitToWindow)
         {
             s.scale(avail.size(), Qt::KeepAspectRatio);
             s = s * (frameState.zoomPercent / 100.0);
         }
         else
         {
-            const double z = (m_zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
+            const double z = (viewport.zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
             s = s * z;
         }
 
         int x = avail.x() + (avail.width() - s.width()) / 2 + frameState.offsetX;
         int y = avail.y() + (avail.height() - s.height()) / 2 + frameState.offsetY;
-        if (!m_fitToWindow)
+        if (!viewport.fitToWindow)
         {
-            x += m_viewOffset.x();
-            y += m_viewOffset.y();
+            x += viewport.offset.x();
+            y += viewport.offset.y();
         }
         return QRect(QPoint(x, y), s);
     }
@@ -2688,6 +2764,26 @@ namespace scopeone::ui
         const int hPx = qMax(1, qRound(logicalRect.height() * dpr));
         const int glY = totalHeightPx - hPx - yPx;
         glViewport(xPx, glY, wPx, hPx);
+    }
+
+    // Applies an OpenGL scissor rectangle in logical widget coordinates
+    void PreviewWidget::applyScissorForRect(const QRect& logicalRect)
+    {
+        const QRect clippedRect = logicalRect.intersected(rect());
+        if (clippedRect.width() <= 0 || clippedRect.height() <= 0)
+        {
+            glScissor(0, 0, 0, 0);
+            return;
+        }
+
+        const qreal dpr = devicePixelRatioF();
+        const int totalHeightPx = qMax(1, qRound(height() * dpr));
+        const int xPx = qRound(clippedRect.x() * dpr);
+        const int yPx = qRound(clippedRect.y() * dpr);
+        const int wPx = qMax(1, qRound(clippedRect.width() * dpr));
+        const int hPx = qMax(1, qRound(clippedRect.height() * dpr));
+        const int glY = totalHeightPx - hPx - yPx;
+        glScissor(xPx, glY, wPx, hPx);
     }
 
     // Returns an existing texture or creates one with matching shape
@@ -2850,6 +2946,50 @@ namespace scopeone::ui
     {
         emit activated();
         emit mousePositionChanged(event->pos());
+        if (event->button() == Qt::MiddleButton)
+        {
+            PreviewInteractionTarget target;
+            if (!interactionTargetAt(event->pos(), target))
+            {
+                return;
+            }
+
+            setActiveLayerKey(target.layerKey);
+            emit layerClicked(target.layerKey);
+            const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
+            ViewportState& viewport = viewportStateForLayer(target.layerKey);
+            if (viewport.fitToWindow)
+            {
+                const QPointF relativePos(
+                    static_cast<double>(event->pos().x() - target.displayRect.x())
+                        / static_cast<double>(target.displayRect.width()),
+                    static_cast<double>(event->pos().y() - target.displayRect.y())
+                        / static_cast<double>(target.displayRect.height()));
+                viewport.fitToWindow = false;
+                QRect newRect;
+                QSize imageSize;
+                if (resolveDisplayGeometry(frameState,
+                                            target.processed,
+                                            target.layerKey,
+                                            target.itemArea,
+                                            newRect,
+                                            imageSize))
+                {
+                    const int desiredX = qRound(event->pos().x() - relativePos.x() * newRect.width());
+                    const int desiredY = qRound(event->pos().y() - relativePos.y() * newRect.height());
+                    viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
+                }
+                emit fitToWindowChanged(false);
+            }
+            m_viewPanning = true;
+            m_panLayerKey = target.layerKey;
+            m_panStartWidgetPos = event->pos();
+            m_panStartOffset = viewport.offset;
+            setCursor(Qt::ClosedHandCursor);
+            update();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode && event->button() == Qt::LeftButton)
         {
             PreviewInteractionTarget target;
@@ -2946,7 +3086,7 @@ namespace scopeone::ui
         QOpenGLWidget::mousePressEvent(event);
     }
 
-    // Handles double click to maximize or restore grid tile
+    // Toggles visibility of the layer under the double click
     void PreviewWidget::mouseDoubleClickEvent(QMouseEvent* event)
     {
         if (event->button() == Qt::LeftButton)
@@ -2981,7 +3121,6 @@ namespace scopeone::ui
     // Updates active drawing interactions during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
-        m_hoverWidgetPos = event->pos();
         emit mousePositionChanged(event->pos());
         update();
         if (m_measurementLineDrawingMode && m_measurementLineDragging)
@@ -3005,6 +3144,15 @@ namespace scopeone::ui
             return;
         }
 
+        if (m_viewPanning)
+        {
+            ViewportState& viewport = viewportStateForLayer(m_panLayerKey);
+            viewport.offset = m_panStartOffset + event->pos() - m_panStartWidgetPos;
+            emit mousePositionChanged(event->pos());
+            update();
+            return;
+        }
+
         if (m_markupDragging)
         {
             FrameSourceState frameState;
@@ -3019,7 +3167,12 @@ namespace scopeone::ui
                                             itemArea,
                                             displayRect,
                                             imageSize)
-                && mapWidgetPositionToImage(frameState, processed, itemArea, event->pos(), imagePos))
+                && mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             m_dragMarkupOriginal.layerKey,
+                                             itemArea,
+                                             event->pos(),
+                                             imagePos))
             {
                 if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Line)
                 {
@@ -3089,6 +3242,15 @@ namespace scopeone::ui
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_viewPanning && event->button() == Qt::MiddleButton)
+        {
+            m_viewPanning = false;
+            m_panLayerKey.clear();
+            unsetCursor();
+            update();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode
             && event->button() == Qt::LeftButton
             && m_measurementLineDragging)
@@ -3130,11 +3292,13 @@ namespace scopeone::ui
                                 clippedEnd)
                 || !mapWidgetPositionToImage(frameState,
                                              processed,
+                                             m_measurementLineTargetLayerKey,
                                              itemArea,
                                              clippedStart,
                                              imageStart)
                 || !mapWidgetPositionToImage(frameState,
                                              processed,
+                                             m_measurementLineTargetLayerKey,
                                              itemArea,
                                              clippedEnd,
                                              imageEnd)
@@ -3178,8 +3342,18 @@ namespace scopeone::ui
                                                 displayRect,
                                                 imageSize)
                 || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
-                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedStart, imgStart)
-                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedEnd, imgEnd))
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             startTarget.layerKey,
+                                             itemArea,
+                                             clippedStart,
+                                             imgStart)
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             startTarget.layerKey,
+                                             itemArea,
+                                             clippedEnd,
+                                             imgEnd))
             {
                 cancelCrossSectionDrawing();
                 return;
@@ -3243,7 +3417,12 @@ namespace scopeone::ui
             }
 
             QRect imageRect;
-            if (!mapWidgetRectToImage(frameState, false, itemArea, clippedRect, imageRect))
+            if (!mapWidgetRectToImage(frameState,
+                                      false,
+                                      startTarget.layerKey,
+                                      itemArea,
+                                      clippedRect,
+                                      imageRect))
             {
                 cancelROIDrawing();
                 return;
@@ -3286,7 +3465,6 @@ namespace scopeone::ui
     // Clears the cursor readout after the pointer leaves the preview
     void PreviewWidget::leaveEvent(QEvent* event)
     {
-        m_hoverWidgetPos = QPoint(-1, -1);
         emit mousePositionChanged(QPoint(-1, -1));
         update();
         QOpenGLWidget::leaveEvent(event);
@@ -3308,53 +3486,52 @@ namespace scopeone::ui
             return;
         }
 
-        const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
         PreviewInteractionTarget target;
-        QPointF relativePos;
-        const bool hasAnchor = interactionTargetAt(event->position().toPoint(), target)
-            && !target.sourceId.isEmpty()
-            && target.displayRect.width() > 0
-            && target.displayRect.height() > 0;
-        if (hasAnchor)
+        const QPoint widgetPos = event->position().toPoint();
+        if (!interactionTargetAt(widgetPos, target))
         {
-            relativePos = QPointF(
-                static_cast<double>(event->position().x() - target.displayRect.x())
-                    / static_cast<double>(target.displayRect.width()),
-                static_cast<double>(event->position().y() - target.displayRect.y())
-                    / static_cast<double>(target.displayRect.height()));
+            event->accept();
+            return;
         }
-        if (m_fitToWindow)
-        {
-            setFitToWindow(false);
-        }
-        setZoomPercent(m_zoomPercent + steps * 10);
 
-        if (hasAnchor)
+        if (m_activeLayerKey != target.layerKey)
         {
-            FrameSourceState frameState;
-            const QMap<QString, FrameSourceState> frameSources = snapshotFrameSources();
-            const auto frameStateIt = frameSources.constFind(target.sourceId);
-            const bool hasFrameState = frameStateIt != frameSources.constEnd();
-            if (hasFrameState)
-            {
-                frameState = frameStateIt.value();
-            }
-
-            if (hasFrameState)
-            {
-                QRect newRect;
-                QSize imageSize;
-                if (!resolveDisplayGeometry(frameState, target.processed, target.itemArea, newRect, imageSize))
-                {
-                    event->accept();
-                    return;
-                }
-                const int desiredX = qRound(event->position().x() - relativePos.x() * newRect.width());
-                const int desiredY = qRound(event->position().y() - relativePos.y() * newRect.height());
-                m_viewOffset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
-                update();
-            }
+            setActiveLayerKey(target.layerKey);
+            emit layerClicked(target.layerKey);
         }
+
+        const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
+        const QPointF relativePos(
+            static_cast<double>(widgetPos.x() - target.displayRect.x())
+                / static_cast<double>(target.displayRect.width()),
+            static_cast<double>(widgetPos.y() - target.displayRect.y())
+                / static_cast<double>(target.displayRect.height()));
+        ViewportState& viewport = viewportStateForLayer(target.layerKey);
+        const bool wasFitToWindow = viewport.fitToWindow;
+        viewport.fitToWindow = false;
+        viewport.zoomPercent = qBound(10, viewport.zoomPercent + steps * 10, 500);
+
+        if (wasFitToWindow)
+        {
+            emit fitToWindowChanged(false);
+        }
+        emit zoomLevelChanged(viewport.zoomPercent);
+
+        const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
+        QRect newRect;
+        QSize imageSize;
+        if (resolveDisplayGeometry(frameState,
+                                   target.processed,
+                                   target.layerKey,
+                                   target.itemArea,
+                                   newRect,
+                                   imageSize))
+        {
+            const int desiredX = qRound(widgetPos.x() - relativePos.x() * newRect.width());
+            const int desiredY = qRound(widgetPos.y() - relativePos.y() * newRect.height());
+            viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
+        }
+        update();
         event->accept();
     }
 
