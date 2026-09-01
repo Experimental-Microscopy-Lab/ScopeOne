@@ -8,8 +8,6 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
-#include <QFont>
-#include <QFontMetrics>
 #include <QFutureWatcher>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -445,15 +443,6 @@ namespace scopeone::ui
     // Builds the compact controls used by the active image viewer
     void ImageWorkspace::setupViewerToolbar()
     {
-        m_viewerContextLabel = new QLabel(tr("Live Preview"), m_viewerToolbar);
-        QFont contextFont = m_viewerContextLabel->font();
-        contextFont.setBold(true);
-        m_viewerContextLabel->setFont(contextFont);
-        m_viewerContextLabel->setFixedWidth(180);
-        m_viewerContextLabel->setToolTip(tr("Current image viewer"));
-        m_viewerToolbar->addWidget(m_viewerContextLabel);
-        m_viewerToolbar->addSeparator();
-
         m_fitToWindowAction = m_viewerToolbar->addAction(tr("Fit"));
         m_fitToWindowAction->setCheckable(true);
         m_fitToWindowAction->setToolTip(tr("Fit the image to the viewer"));
@@ -479,11 +468,55 @@ namespace scopeone::ui
                     }
                 });
 
+        m_zoomCombo = new QComboBox(m_viewerToolbar);
+        m_zoomCombo->setEditable(true);
+        m_zoomCombo->setMinimumWidth(76);
+        m_zoomCombo->setInsertPolicy(QComboBox::NoInsert);
+        m_zoomCombo->addItem(tr("Fit"));
+        m_zoomCombo->addItems({QStringLiteral("25%"),
+                               QStringLiteral("50%"),
+                               QStringLiteral("75%"),
+                               QStringLiteral("100%"),
+                               QStringLiteral("150%"),
+                               QStringLiteral("200%"),
+                               QStringLiteral("300%"),
+                               QStringLiteral("400%"),
+                               QStringLiteral("800%")});
+        m_zoomCombo->setToolTip(tr("Choose the viewport zoom percentage"));
+        m_viewerToolbar->addWidget(m_zoomCombo);
+        auto applyZoomText = [this]()
+        {
+            PreviewWidget* preview = activePreviewWidget();
+            const QString text = m_zoomCombo->currentText().trimmed();
+            if (text.compare(QStringLiteral("Fit"), Qt::CaseInsensitive) == 0)
+            {
+                preview->setFitToWindow(true);
+                return;
+            }
+
+            QString numericText = text;
+            if (numericText.endsWith(QLatin1Char('%')))
+            {
+                numericText.chop(1);
+            }
+            bool ok = false;
+            const int percent = numericText.toInt(&ok);
+            if (ok)
+            {
+                preview->setFitToWindow(false);
+                preview->setZoomPercent(percent);
+            }
+            updateViewerToolbar();
+        };
+        connect(m_zoomCombo, qOverload<int>(&QComboBox::activated), this,
+                [applyZoomText](int) { applyZoomText(); });
+        connect(m_zoomCombo->lineEdit(), &QLineEdit::editingFinished,
+                this, applyZoomText);
+
         m_viewerToolbar->addSeparator();
-        m_viewerToolbar->addWidget(new QLabel(tr("Layer Layout"), m_viewerToolbar));
         m_layoutCombo = new QComboBox(m_viewerToolbar);
-        m_layoutCombo->addItem(tr("Side by side"));
-        m_layoutCombo->addItem(tr("Overlay"));
+        m_layoutCombo->addItem(tr("Grid View (G)"));
+        m_layoutCombo->addItem(tr("Overlay (G)"));
         m_layoutCombo->setToolTip(tr("Choose how multiple image layers are arranged"));
         m_viewerToolbar->addWidget(m_layoutCombo);
         connect(m_layoutCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -497,7 +530,7 @@ namespace scopeone::ui
                     }
                 });
 
-        m_viewerToolbar->addSeparator();
+        m_compareSeparator = m_viewerToolbar->addSeparator();
         m_compareAction = m_viewerToolbar->addAction(tr("Compare"));
         m_compareAction->setCheckable(true);
         m_compareAction->setToolTip(tr("Show two image documents side by side"));
@@ -526,21 +559,28 @@ namespace scopeone::ui
         connect(m_compareDocumentCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
                 [this](int index)
                 {
-                    if (!comparisonActive() || index < 0)
+                    if (index < 0)
                     {
                         return;
                     }
                     QString rightId = m_compareDocumentCombo->itemData(index).toString();
-                    const QString leftId = m_compareLeftDocumentId;
+                    const QString leftId = comparisonActive()
+                                               ? m_compareLeftDocumentId
+                                               : m_activeDocumentId;
                     if (rightId == QStringLiteral("duplicate"))
                     {
                         rightId = duplicateDocument(leftId);
                     }
-                    if (rightId.isEmpty() || rightId == m_compareRightDocumentId)
+                    if (rightId.isEmpty()
+                        || rightId == leftId
+                        || (comparisonActive() && rightId == m_compareRightDocumentId))
                     {
                         return;
                     }
-                    endComparison();
+                    if (comparisonActive())
+                    {
+                        endComparison();
+                    }
                     setActiveDocument(leftId);
                     {
                         const QSignalBlocker blocker(m_compareAction);
@@ -564,25 +604,28 @@ namespace scopeone::ui
     {
         PreviewWidget* preview = activePreviewWidget();
         const ImageDocumentInfo activeDocument = document();
-        const QString contextTitle = activeDocument.isValid()
-                                          ? activeDocument.title
-                                          : tr("Live Preview");
-        m_viewerContextLabel->setText(
-            QFontMetrics(m_viewerContextLabel->font()).elidedText(
-                contextTitle, Qt::ElideRight, m_viewerContextLabel->width()));
-        m_viewerContextLabel->setToolTip(activeDocument.isValid()
-                                             ? tr("Static image: %1").arg(contextTitle)
-                                             : tr("Live camera viewer"));
         m_fitToWindowAction->setEnabled(preview != nullptr);
         m_oneToOneAction->setEnabled(preview != nullptr);
-        m_compareAction->setEnabled(activeDocument.isValid());
-        m_compareDocumentCombo->setVisible(comparisonActive());
-        m_linkFramesAction->setVisible(comparisonActive());
+        m_zoomCombo->setEnabled(preview != nullptr);
+        const bool staticDocument = activeDocument.isValid();
+        m_compareSeparator->setVisible(staticDocument);
+        m_compareAction->setVisible(staticDocument);
+        m_compareAction->setEnabled(staticDocument);
+        m_compareDocumentCombo->setVisible(staticDocument);
+        m_compareDocumentCombo->setEnabled(staticDocument);
+        m_linkFramesAction->setVisible(staticDocument && comparisonActive());
         if (preview)
         {
             {
                 const QSignalBlocker blocker(m_fitToWindowAction);
                 m_fitToWindowAction->setChecked(preview->isFitToWindow());
+            }
+            {
+                const QSignalBlocker blocker(m_zoomCombo);
+                m_zoomCombo->setEditText(
+                    preview->isFitToWindow()
+                        ? tr("Fit")
+                        : QStringLiteral("%1%").arg(preview->zoomPercent()));
             }
             {
                 const QSignalBlocker blocker(m_layoutCombo);
@@ -594,20 +637,24 @@ namespace scopeone::ui
         {
             const QSignalBlocker blocker(m_compareDocumentCombo);
             m_compareDocumentCombo->clear();
-            if (!m_compareLeftDocumentId.isEmpty())
+            const QString leftDocumentId = comparisonActive()
+                                               ? m_compareLeftDocumentId
+                                               : m_activeDocumentId;
+            if (!leftDocumentId.isEmpty())
             {
-                const Document* left = findDocument(m_compareLeftDocumentId);
+                const Document* left = findDocument(leftDocumentId);
                 m_compareDocumentCombo->addItem(
                     left ? tr("Same sequence, independent frame") : tr("Duplicate current document"),
                     QStringLiteral("duplicate"));
                 for (const auto& candidate : m_documents)
                 {
-                    if (candidate->id != m_compareLeftDocumentId)
+                    if (candidate->id != leftDocumentId)
                     {
                         m_compareDocumentCombo->addItem(candidate->title, candidate->id);
                     }
                 }
-                const int rightIndex = m_compareDocumentCombo->findData(m_compareRightDocumentId);
+                const int rightIndex = m_compareDocumentCombo->findData(
+                    comparisonActive() ? m_compareRightDocumentId : QStringLiteral("duplicate"));
                 m_compareDocumentCombo->setCurrentIndex(rightIndex >= 0 ? rightIndex : 0);
             }
         }

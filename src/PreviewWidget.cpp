@@ -900,7 +900,7 @@ namespace scopeone::ui
     // Sets the preview zoom for the active layer or the overlay
     void PreviewWidget::setZoomPercent(int percent)
     {
-        const int nextPercent = qBound(10, percent, 500);
+        const int nextPercent = qBound(10, percent, 800);
         ViewportState& state = viewportStateForLayer(viewportControlLayerKey());
         if (state.zoomPercent == nextPercent)
         {
@@ -3509,7 +3509,7 @@ namespace scopeone::ui
         ViewportState& viewport = viewportStateForLayer(target.layerKey);
         const bool wasFitToWindow = viewport.fitToWindow;
         viewport.fitToWindow = false;
-        viewport.zoomPercent = qBound(10, viewport.zoomPercent + steps * 10, 500);
+        viewport.zoomPercent = qBound(10, viewport.zoomPercent + steps * 10, 800);
 
         if (wasFitToWindow)
         {

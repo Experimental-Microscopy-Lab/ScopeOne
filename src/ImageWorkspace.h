@@ -153,10 +153,11 @@ namespace scopeone::ui
         QGroupBox* m_compareRightHost{nullptr};
         QAction* m_fitToWindowAction{nullptr};
         QAction* m_oneToOneAction{nullptr};
+        QAction* m_compareSeparator{nullptr};
         QAction* m_compareAction{nullptr};
         QAction* m_linkFramesAction{nullptr};
-        QLabel* m_viewerContextLabel{nullptr};
         QComboBox* m_layoutCombo{nullptr};
+        QComboBox* m_zoomCombo{nullptr};
         QComboBox* m_compareDocumentCombo{nullptr};
         int m_liveTabIndex{-1};
         PreviewWidget* m_livePreviewWidget{nullptr};
