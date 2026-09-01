@@ -673,6 +673,10 @@ namespace scopeone::ui
         m_removeModuleButton = new QPushButton(tr("Remove"), group);
         m_moveModuleUpButton = new QPushButton(tr("Up"), group);
         m_moveModuleDownButton = new QPushButton(tr("Down"), group);
+        m_addModuleButton->setFixedWidth(52);
+        m_moveModuleUpButton->setFixedWidth(42);
+        m_moveModuleDownButton->setFixedWidth(52);
+        m_removeModuleButton->setFixedWidth(64);
         connect(m_addModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onAddModuleClicked);
         connect(m_removeModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onRemoveModuleClicked);
         connect(m_moveModuleUpButton, &QPushButton::clicked,

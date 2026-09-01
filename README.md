@@ -11,7 +11,7 @@ ScopeOne is open-source microscopy control software built with C++ and Qt. Hardw
 It retains compatibility with the Micro-Manager device ecosystem while allowing native vendor providers and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 <p align="center">
-  <img src="resources/MainWindow.png" width="720"><br>
+  <img src="resources/Screenshot 2026-09-01 140040.png" width="720"><br>
   <sub> Graphical User Interface of ScopeOne</sub>
 </p>
 
