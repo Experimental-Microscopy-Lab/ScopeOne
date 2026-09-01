@@ -13,6 +13,7 @@ class QGroupBox;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QVBoxLayout;
 
 namespace scopeone::ui
 {
@@ -103,6 +104,8 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         ImageWorkspace* m_workspace{nullptr};
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
+        QWidget* m_contentContainer{nullptr};
+        QVBoxLayout* m_contentLayout{nullptr};
         QHash<QString, LayerInfoGroup> m_layerInfoGroups;
         QHash<QString, LayerInspectState> m_layerStates;
         QStringList m_availableLayerKeys;

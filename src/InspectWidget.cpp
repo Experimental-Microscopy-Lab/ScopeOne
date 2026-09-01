@@ -583,7 +583,9 @@ namespace scopeone::ui
         scrollArea->setFrameShape(QFrame::NoFrame);
 
         auto* contentContainer = new QWidget(scrollArea);
+        m_contentContainer = contentContainer;
         auto* contentLayout = new QVBoxLayout(contentContainer);
+        m_contentLayout = contentLayout;
         contentLayout->setSpacing(8);
         contentLayout->setContentsMargins(5, 5, 5, 5);
 
@@ -647,7 +649,7 @@ namespace scopeone::ui
     QWidget* InspectWidget::createLayerInfoGroup(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
-        auto* group = new QGroupBox(inspectLayerTitle(normalizedLayerKey, false), this);
+        auto* group = new QGroupBox(inspectLayerTitle(normalizedLayerKey, false), m_contentContainer);
         auto* layout = new QVBoxLayout(group);
         LayerInfoGroup infoGroup;
         infoGroup.layerKey = normalizedLayerKey;
@@ -687,6 +689,7 @@ namespace scopeone::ui
         infoGroup.maxSliderValueLabel = maxSliderValueLabel;
         layout->addWidget(createStatisticsGroup(infoGroup));
         m_layerInfoGroups.insert(normalizedLayerKey, infoGroup);
+        m_contentLayout->insertWidget(m_contentLayout->count() - 1, group);
 
         connect(minSlider, &QSlider::valueChanged, this,
                 [this, normalizedLayerKey, minSlider, maxSlider, minSliderValueLabel](int value)
@@ -775,6 +778,7 @@ namespace scopeone::ui
         }
 
         LayerInfoGroup& infoGroup = it.value();
+        m_contentLayout->removeWidget(infoGroup.groupBox);
         infoGroup.groupBox->deleteLater();
         m_layerInfoGroups.erase(it);
     }
