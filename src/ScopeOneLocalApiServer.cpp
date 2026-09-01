@@ -227,6 +227,7 @@ namespace scopeone::ui
             object.insert(QStringLiteral("index"), index);
             object.insert(QStringLiteral("kind"), info.id());
             object.insert(QStringLiteral("name"), info.name());
+            object.insert(QStringLiteral("enabled"), info.enabled());
             object.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(info.parameters()));
             return object;
         }

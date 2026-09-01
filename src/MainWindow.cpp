@@ -880,6 +880,7 @@ namespace scopeone::ui
         setupPropertyBrowser();
         setupRecording();
         setupImageGallery();
+        setTabPosition(Qt::LeftDockWidgetArea, QTabWidget::North);
         updateDockWidgetMenu();
     }
 

@@ -3947,6 +3947,7 @@ namespace scopeone::core
             info.setName(module->name());
             info.setParameters(module->parameters());
             info.setDescriptor(m_managers->processingModuleRegistry->descriptor(module->id()));
+            info.setEnabled(module->isEnabled());
             out.append(std::move(info));
         });
         return out;
@@ -3988,6 +3989,48 @@ namespace scopeone::core
             setRealTimeProcessingEnabled(false);
         }
         emit processingModulesChanged();
+        return true;
+    }
+
+    // Move one editable processing module and rebuild runtime pipelines
+    bool ScopeOneCore::moveProcessingModule(int from, int to)
+    {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        if (!definition.moveModule(from, to))
+        {
+            return false;
+        }
+        m_managers->imageProcessingManager->clearRuntimePipelines();
+        emit processingModulesChanged();
+        return true;
+    }
+
+    // Enable or bypass one editable processing module
+    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled)
+    {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        bool updated = false;
+        if (!definition.withModule(index, [enabled, &updated](ProcessingModule* module)
+        {
+            updated = module->isEnabled() != enabled;
+            module->setEnabled(enabled);
+        }))
+        {
+            return false;
+        }
+        if (updated)
+        {
+            m_managers->imageProcessingManager->clearRuntimePipelines();
+            emit processingModulesChanged();
+        }
         return true;
     }
 

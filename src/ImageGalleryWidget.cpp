@@ -295,7 +295,7 @@ namespace scopeone::ui
 
         m_emptyLabel = new QLabel(QStringLiteral("No captured images"), this);
         m_emptyLabel->setAlignment(Qt::AlignCenter);
-        layout->addWidget(m_emptyLabel);
+        layout->addWidget(m_emptyLabel, 1);
 
         m_sessionList = new QListWidget(this);
         m_sessionList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -314,13 +314,13 @@ namespace scopeone::ui
         buttonLayout->setSpacing(6);
         m_deleteButton = new QPushButton(QStringLiteral("Delete"), this);
         m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
-        m_saveCheckedButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        m_deleteButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        m_saveCheckedButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_deleteButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         m_deleteButton->setToolTip(QStringLiteral("Delete the selected gallery session"));
         m_saveCheckedButton->setToolTip(QStringLiteral("Save all checked unsaved sessions"));
         buttonLayout->addWidget(m_saveCheckedButton, 1);
         buttonLayout->addWidget(m_deleteButton);
-        layout->addLayout(buttonLayout);
+        layout->addLayout(buttonLayout, 0);
 
         connect(m_sessionList, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem*, QListWidgetItem*)

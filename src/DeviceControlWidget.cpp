@@ -616,7 +616,21 @@ namespace scopeone::ui
         histogramLayout->setContentsMargins(6, 6, 6, 6);
         m_layerHistogramWidget = new LayerHistogramWidget(m_layerHistogramGroup);
         histogramLayout->addWidget(m_layerHistogramWidget);
+        auto* histogramLevelsLayout = new QHBoxLayout;
+        m_layerAutoButton = new QPushButton(QStringLiteral("Auto"), m_layerHistogramGroup);
+        m_layerAutoButton->setToolTip(QStringLiteral("Set display levels from the current image"));
+        m_layerFullRangeButton = new QPushButton(QStringLiteral("Full Range"), m_layerHistogramGroup);
+        m_layerFullRangeButton->setToolTip(QStringLiteral("Show the complete intensity range"));
+        histogramLevelsLayout->addWidget(m_layerAutoButton);
+        histogramLevelsLayout->addWidget(m_layerFullRangeButton);
+        histogramLayout->addLayout(histogramLevelsLayout);
+
+        m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), m_layerHistogramGroup);
+        m_layerAutoStretchCheckBox->setToolTip(
+            QStringLiteral("Update display levels continuously as images arrive"));
+
         m_layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), m_layerHistogramGroup);
+        histogramLayout->addWidget(m_layerAutoStretchCheckBox);
         histogramLayout->addWidget(m_layerHistogramLogCheckBox);
         connect(m_layerHistogramLogCheckBox, &QCheckBox::toggled,
                 m_layerHistogramWidget, &LayerHistogramWidget::setLogScale);
@@ -650,13 +664,6 @@ namespace scopeone::ui
 
         m_layerColormapComboBox = new QComboBox(m_layerSettingsGroup);
         m_layerBlendingComboBox = new QComboBox(m_layerSettingsGroup);
-        m_layerAutoButton = new QPushButton(QStringLiteral("Auto"), m_layerSettingsGroup);
-        m_layerAutoButton->setToolTip(QStringLiteral("Set display levels from the current image"));
-        m_layerFullRangeButton = new QPushButton(QStringLiteral("Full Range"), m_layerSettingsGroup);
-        m_layerFullRangeButton->setToolTip(QStringLiteral("Show the complete intensity range"));
-        m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), m_layerSettingsGroup);
-        m_layerAutoStretchCheckBox->setToolTip(
-            QStringLiteral("Update display levels continuously as images arrive"));
         m_clippingCheckBox = new QCheckBox(QStringLiteral("Hi-Lo Warn"), m_layerSettingsGroup);
         m_clippingCheckBox->setToolTip(QStringLiteral("Highlight saturated pixels in red and zero pixels in blue (Hotkey: C)"));
         m_scaleBarCheckBox = new QCheckBox(QStringLiteral("Scale Bar"), m_layerSettingsGroup);
@@ -676,11 +683,8 @@ namespace scopeone::ui
         layerSettingsLayout->addWidget(m_layerColormapComboBox, 3, 1);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 3, 2);
         layerSettingsLayout->addWidget(m_layerBlendingComboBox, 3, 3, 1, 3);
-        layerSettingsLayout->addWidget(m_layerAutoButton, 4, 0, 1, 2);
-        layerSettingsLayout->addWidget(m_layerFullRangeButton, 4, 2, 1, 2);
-        layerSettingsLayout->addWidget(m_layerAutoStretchCheckBox, 4, 4, 1, 2);
-        layerSettingsLayout->addWidget(m_clippingCheckBox, 5, 0, 1, 3);
-        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 5, 3, 1, 3);
+        layerSettingsLayout->addWidget(m_clippingCheckBox, 4, 0, 1, 3);
+        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 4, 3, 1, 3);
 
         auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
         auto* transformLayout = new QGridLayout(transformGroup);
@@ -929,6 +933,9 @@ namespace scopeone::ui
         const QString layerKey = currentLayerKey();
         const bool hasLayer = !layerKey.isEmpty() && m_layerRows.contains(layerKey);
         m_layerSettingsGroup->setEnabled(hasLayer);
+        m_layerAutoButton->setEnabled(hasLayer);
+        m_layerFullRangeButton->setEnabled(hasLayer);
+        m_layerAutoStretchCheckBox->setEnabled(hasLayer);
         if (!hasLayer)
         {
             m_selectedLayerLabel->setText(QStringLiteral("No layer selected"));

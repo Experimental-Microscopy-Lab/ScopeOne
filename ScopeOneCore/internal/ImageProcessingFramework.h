@@ -36,6 +36,7 @@ namespace scopeone::core::internal
     public:
         void addModule(std::unique_ptr<ProcessingModule> module);
         bool removeModule(int index);
+        bool moveModule(int from, int to);
         std::shared_ptr<ProcessingPipelineRuntime> createRuntime() const;
         void forEachModule(const std::function<void(const ProcessingModule *)>& visitor) const;
         bool withModule(int index, const std::function<void(ProcessingModule *)>& visitor);

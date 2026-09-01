@@ -86,6 +86,10 @@ namespace scopeone::core::internal
         for (int moduleIndex = startIndex; moduleIndex < endIndex; ++moduleIndex)
         {
             ProcessingModule* module = m_modules[static_cast<size_t>(moduleIndex)].get();
+            if (!module->isEnabled())
+            {
+                continue;
+            }
             ProcessingResult result = module->processValue(currentValue, processingBitDepth);
             if (!result.succeeded())
             {
@@ -141,6 +145,25 @@ namespace scopeone::core::internal
         return false;
     }
 
+    // Moves one configured module to a new pipeline position
+    bool ProcessingPipelineDefinition::moveModule(int from, int to)
+    {
+        QMutexLocker locker(&m_modulesMutex);
+        if (from < 0 || from >= static_cast<int>(m_modules.size())
+            || to < 0 || to >= static_cast<int>(m_modules.size()))
+        {
+            return false;
+        }
+        if (from == to)
+        {
+            return true;
+        }
+        auto module = std::move(m_modules[static_cast<size_t>(from)]);
+        m_modules.erase(m_modules.begin() + from);
+        m_modules.insert(m_modules.begin() + to, std::move(module));
+        return true;
+    }
+
     // Creates an independent runtime from the current definition
     std::shared_ptr<ProcessingPipelineRuntime> ProcessingPipelineDefinition::createRuntime() const
     {
@@ -149,7 +172,9 @@ namespace scopeone::core::internal
         modules.reserve(m_modules.size());
         for (const auto& module : m_modules)
         {
-            modules.push_back(module->createRuntime());
+            auto runtimeModule = module->createRuntime();
+            runtimeModule->setEnabled(module->isEnabled());
+            modules.push_back(std::move(runtimeModule));
         }
         return std::make_shared<ProcessingPipelineRuntime>(std::move(modules));
     }

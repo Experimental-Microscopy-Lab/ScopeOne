@@ -6,10 +6,13 @@
 #include <memory>
 
 class QListWidget;
+class QListWidgetItem;
 class QCheckBox;
 class QComboBox;
+class QLabel;
 class QPushButton;
 class QProgressBar;
+class QRadioButton;
 class QStackedWidget;
 
 namespace scopeone::ui
@@ -36,15 +39,19 @@ namespace scopeone::ui
     private:
         void onAddModuleClicked();
         void onRemoveModuleClicked();
+        void onMoveModuleUpClicked();
+        void onMoveModuleDownClicked();
+        void onModuleItemChanged(QListWidgetItem* item);
         void onModuleSelectionChanged();
         void onProcessingBitDepthChanged();
+        void onInputModeChanged();
         void onLiveProcessingToggled(bool enabled);
         void onRunOfflineProcessing();
         void onCancelProcessing();
 
         void setupUI();
-        void setupRunControls();
-        void setupSourceControls();
+        void setupInputControls();
+        void setupExecutionControls();
         QWidget* setupModuleList();
         QWidget* setupModuleConfig();
         void updateProcessingSettings();
@@ -58,11 +65,14 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         ImageWorkspace* m_workspace{nullptr};
         bool m_processingRunning{false};
-        QWidget* m_runControlsWidget{nullptr};
-        QWidget* m_sourceControlsWidget{nullptr};
+        QWidget* m_inputControlsWidget{nullptr};
+        QWidget* m_executionControlsWidget{nullptr};
         QComboBox* m_sourceCombo{nullptr};
-        QCheckBox* m_liveProcessingCheckBox{nullptr};
-        QPushButton* m_runOfflineButton{nullptr};
+        QRadioButton* m_liveModeRadio{nullptr};
+        QRadioButton* m_staticModeRadio{nullptr};
+        QLabel* m_sourceLabel{nullptr};
+        QLabel* m_rangeLabel{nullptr};
+        QPushButton* m_executeButton{nullptr};
         QPushButton* m_cancelProcessingButton{nullptr};
         QProgressBar* m_processingProgress{nullptr};
         QComboBox* m_processingBitDepthCombo{nullptr};
@@ -71,6 +81,8 @@ namespace scopeone::ui
         QListWidget* m_moduleList{nullptr};
         QPushButton* m_addModuleButton{nullptr};
         QPushButton* m_removeModuleButton{nullptr};
+        QPushButton* m_moveModuleUpButton{nullptr};
+        QPushButton* m_moveModuleDownButton{nullptr};
         QComboBox* m_moduleTypeCombo{nullptr};
         QStackedWidget* m_configStack{nullptr};
         QWidget* m_emptyConfigWidget{nullptr};

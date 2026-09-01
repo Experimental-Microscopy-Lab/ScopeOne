@@ -456,16 +456,19 @@ namespace scopeone::core
             const QString& name() const { return m_name; }
             const QVariantMap& parameters() const { return m_parameters; }
             const ProcessingModuleDescriptor& descriptor() const { return m_descriptor; }
+            bool enabled() const { return m_enabled; }
             void setId(const QString& id) { m_id = id; }
             void setName(const QString& name) { m_name = name; }
             void setParameters(const QVariantMap& parameters) { m_parameters = parameters; }
             void setDescriptor(const ProcessingModuleDescriptor& descriptor) { m_descriptor = descriptor; }
+            void setEnabled(bool enabled) { m_enabled = enabled; }
 
         private:
             QString m_id;
             QString m_name;
             QVariantMap m_parameters;
             ProcessingModuleDescriptor m_descriptor;
+            bool m_enabled{true};
         };
 
         class DevicePropertyInfo
@@ -665,6 +668,8 @@ namespace scopeone::core
         QList<ProcessingModuleInfo> processingModules() const;
         bool addProcessingModule(const QString& moduleId);
         bool removeProcessingModule(int index);
+        bool moveProcessingModule(int from, int to);
+        bool setProcessingModuleEnabled(int index, bool enabled);
         bool setProcessingModuleParameters(int index, const QVariantMap& parameters);
         bool resetProcessingModuleState(int index);
         quint64 requestImageProcessing(const ImageFrame& frame,

@@ -119,6 +119,9 @@ namespace scopeone::core
     public:
         virtual ~ProcessingModule() = default;
 
+        bool isEnabled() const { return m_enabled; }
+        void setEnabled(bool enabled) { m_enabled = enabled; }
+
         virtual QString id() const = 0;
         virtual QString name() const = 0;
         virtual QVariantMap parameters() const = 0;
@@ -136,6 +139,9 @@ namespace scopeone::core
             }
             return process(std::get<ImageFrame>(input), processingBitDepth);
         }
+
+    private:
+        bool m_enabled{true};
     };
 
     class ProcessingPlugin
