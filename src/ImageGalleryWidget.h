@@ -27,7 +27,6 @@ namespace scopeone::ui
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> unsavedSessions() const;
 
     signals:
-        void livePreviewRequested();
         void sessionOpenRequested(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void sessionRemoved(const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void saveSessionAsRequested(
@@ -54,8 +53,6 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_core{nullptr};
         QListWidget* m_sessionList{nullptr};
         QLabel* m_emptyLabel{nullptr};
-        QPushButton* m_liveButton{nullptr};
-        QPushButton* m_openButton{nullptr};
         QPushButton* m_saveCheckedButton{nullptr};
         QPushButton* m_deleteButton{nullptr};
         int m_nextSnapshotTitleIndex{1};

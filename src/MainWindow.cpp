@@ -38,6 +38,7 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QInputDialog>
+#include <QJsonObject>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyleHints>
@@ -47,6 +48,7 @@
 #include <QUrl>
 #include <QVector>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -169,7 +171,87 @@ namespace scopeone::ui
         setupUI();
         m_imageWorkspace->setLiveViewer(m_previewWidget);
         setupSignalWiring();
-        new ScopeOneLocalApiServer(m_scopeonecore, m_previewWidget, m_imageWorkspace, this);
+        m_localApiServer = new ScopeOneLocalApiServer(
+            m_scopeonecore, m_previewWidget, m_imageWorkspace, this);
+        m_consoleWidget->setApiDispatcher(
+            [this](const QJsonObject& request,
+                   std::function<void(const QJsonObject&)> callback)
+            {
+                QJsonObject routedRequest = request;
+                const QString type = routedRequest.value(QStringLiteral("type")).toString();
+
+                if (type == QStringLiteral("set_fit_to_window"))
+                {
+                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+                    preview->setFitToWindow(
+                        routedRequest.value(QStringLiteral("enabled")).toBool());
+                    QJsonObject response;
+                    response.insert(QStringLiteral("type"), type);
+                    response.insert(QStringLiteral("ok"), true);
+                    response.insert(QStringLiteral("enabled"),
+                                   preview->isFitToWindow());
+                    callback(response);
+                    return;
+                }
+
+                if (type == QStringLiteral("set_zoom"))
+                {
+                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+                    preview->setFitToWindow(false);
+                    preview->setZoomPercent(
+                        routedRequest.value(QStringLiteral("zoomPercent")).toInt());
+                    QJsonObject response;
+                    response.insert(QStringLiteral("type"), type);
+                    response.insert(QStringLiteral("ok"), true);
+                    response.insert(QStringLiteral("zoomPercent"),
+                                   preview->zoomPercent());
+                    callback(response);
+                    return;
+                }
+
+                if (type == QStringLiteral("draw_roi")
+                    || type == QStringLiteral("set_half_roi")
+                    || type == QStringLiteral("clear_roi"))
+                {
+                    QString camera = routedRequest.value(QStringLiteral("camera")).toString();
+                    if (camera.isEmpty()
+                        || camera.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+                    {
+                        camera = m_currentControlTarget;
+                        if (camera.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+                        {
+                            camera = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(
+                                m_imageWorkspace->activeLayerKey());
+                        }
+                        routedRequest.insert(QStringLiteral("camera"), camera);
+                    }
+                }
+
+                if (type == QStringLiteral("draw_roi"))
+                {
+                    m_imageWorkspace->activePreviewWidget()->startROIDrawing(
+                        routedRequest.value(QStringLiteral("camera")).toString());
+                    QJsonObject response;
+                    response.insert(QStringLiteral("type"), type);
+                    response.insert(QStringLiteral("ok"), true);
+                    callback(response);
+                    return;
+                }
+
+                if (type == QStringLiteral("auto_layer_levels")
+                    && !routedRequest.contains(QStringLiteral("layerKey")))
+                {
+                    routedRequest.insert(QStringLiteral("layerKey"),
+                                         m_imageWorkspace->activeLayerKey());
+                }
+
+                m_localApiServer->dispatchRequest(
+                    routedRequest,
+                    [callback = std::move(callback)](QJsonObject response)
+                    {
+                        callback(response);
+                    });
+            });
         logStartupSummary();
 
         setWindowTitle("ScopeOne");
@@ -669,8 +751,6 @@ namespace scopeone::ui
                     }
                     m_imageWorkspace->openSession(session);
                 });
-        connect(m_imageGalleryWidget, &ImageGalleryWidget::livePreviewRequested,
-                this, &MainWindow::showLivePreview);
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)

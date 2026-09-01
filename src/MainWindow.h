@@ -36,6 +36,7 @@ namespace scopeone::ui
     class ConsoleWidget;
     class DeviceControlWidget;
     class RecordingWidget;
+    class ScopeOneLocalApiServer;
     class MainWindow : public QMainWindow, public ScopeOneToolContext
     {
         Q_OBJECT
@@ -124,6 +125,7 @@ namespace scopeone::ui
         scopeone::core::ImageSceneModel* m_imageSceneModel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
         ConsoleWidget* m_consoleWidget{nullptr};
+        ScopeOneLocalApiServer* m_localApiServer{nullptr};
 
         QDockWidget* m_propertyDockWidget{nullptr};
         QDockWidget* m_configPresetDockWidget{nullptr};

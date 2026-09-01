@@ -10,6 +10,7 @@
 
 class QTextEdit;
 class QEvent;
+class QPoint;
 class QLineEdit;
 class QPushButton;
 class QCheckBox;
@@ -69,6 +70,7 @@ namespace scopeone::ui
         void updateDisplay();
         QString formatMessage(const ConsoleMessage& msg) const;
         QString getTypeColor(const QString& type) const;
+        bool messageMatchesCurrentFilter(const ConsoleMessage& msg) const;
         void scrollToBottom();
         void executeCommand(const QString& commandText);
         void showHelp();

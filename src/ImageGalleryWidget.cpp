@@ -2,7 +2,7 @@
 
 #include <QAbstractItemView>
 #include <QColor>
-#include <QGridLayout>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QIcon>
 #include <QKeySequence>
@@ -310,26 +310,16 @@ namespace scopeone::ui
             "QListWidget::item:selected { background: #31485d; }"));
         layout->addWidget(m_sessionList, 1);
 
-        auto* buttonLayout = new QGridLayout();
-        buttonLayout->setHorizontalSpacing(6);
-        buttonLayout->setVerticalSpacing(6);
-        m_openButton = new QPushButton(QStringLiteral("Preview"), this);
+        auto* buttonLayout = new QHBoxLayout();
+        buttonLayout->setSpacing(6);
         m_deleteButton = new QPushButton(QStringLiteral("Delete"), this);
         m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
-        m_liveButton = new QPushButton(QStringLiteral("Live"), this);
-        m_openButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         m_saveCheckedButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         m_deleteButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        m_liveButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        m_openButton->setToolTip(QStringLiteral("Open the selected image preview"));
         m_deleteButton->setToolTip(QStringLiteral("Delete the selected gallery session"));
         m_saveCheckedButton->setToolTip(QStringLiteral("Save all checked unsaved sessions"));
-        m_liveButton->setToolTip(QStringLiteral("Return to the live preview"));
-        buttonLayout->addWidget(m_openButton, 0, 0);
-        buttonLayout->addWidget(m_deleteButton, 0, 1);
-        buttonLayout->addWidget(m_saveCheckedButton, 1, 0);
-        buttonLayout->addWidget(m_liveButton, 1, 1);
-        buttonLayout->setColumnStretch(0, 1);
+        buttonLayout->addWidget(m_saveCheckedButton, 1);
+        buttonLayout->addWidget(m_deleteButton);
         layout->addLayout(buttonLayout);
 
         connect(m_sessionList, &QListWidget::currentItemChanged, this,
@@ -342,8 +332,6 @@ namespace scopeone::ui
         connect(m_sessionList, &QListWidget::itemChanged, this, [this](QListWidgetItem*) { updateButtons(); });
         connect(m_sessionList, &QListWidget::customContextMenuRequested,
                 this, &ImageGalleryWidget::showContextMenu);
-        connect(m_liveButton, &QPushButton::clicked, this, &ImageGalleryWidget::livePreviewRequested);
-        connect(m_openButton, &QPushButton::clicked, this, &ImageGalleryWidget::openCurrentSession);
         connect(m_saveCheckedButton, &QPushButton::clicked,
                 this, &ImageGalleryWidget::saveCheckedSessions);
         connect(m_deleteButton, &QPushButton::clicked, this, &ImageGalleryWidget::deleteCurrentSession);
@@ -363,7 +351,6 @@ namespace scopeone::ui
     {
         const auto session = currentSession();
         const bool hasCurrent = session != nullptr;
-        m_openButton->setEnabled(canPreviewSession(session));
         m_deleteButton->setEnabled(hasCurrent);
         m_saveCheckedButton->setEnabled(!checkedSessions().isEmpty());
     }

@@ -7,14 +7,28 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QAction>
+#include <QClipboard>
+#include <QFile>
+#include <QFileDialog>
 #include <QFont>
 #include <QFontDatabase>
+#include <QGuiApplication>
+#include <QJsonDocument>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QRegularExpression>
+#include <QShortcut>
 #include <QTextEdit>
+#include <QTextStream>
 #include <QtCore/qlogging.h>
 #include <atomic>
+#include <utility>
 
 namespace scopeone::ui
 {
@@ -102,6 +116,22 @@ namespace scopeone::ui
         connect(m_autoScrollCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::onAutoScrollToggled);
         connect(m_filterComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &ConsoleWidget::onFilterChanged);
+        connect(m_searchInput, &QLineEdit::textChanged, this,
+                [this](const QString& text)
+                {
+                    m_searchKeyword = text.trimmed();
+                    updateDisplay();
+                });
+        connect(m_runButton, &QPushButton::clicked, this,
+                [this]() { executeCommand(m_commandInput->text()); });
+        m_consoleTextEdit->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_consoleTextEdit, &QTextEdit::customContextMenuRequested,
+                this, &ConsoleWidget::showContextMenu);
+        m_commandInput->installEventFilter(this);
+
+        auto* clearShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
+        clearShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(clearShortcut, &QShortcut::activated, this, &ConsoleWidget::clearMessages);
 
         updateDisplay();
     }
@@ -115,7 +145,7 @@ namespace scopeone::ui
         }
     }
 
-    // Build the console text view and filter controls
+    // Build the console text view and interactive command controls
     void ConsoleWidget::setupUI()
     {
         auto* mainLayout = new QVBoxLayout(this);
@@ -139,38 +169,75 @@ namespace scopeone::ui
             "}"
         );
 
-        auto* controlLayout = new QHBoxLayout();
+        auto* topBarLayout = new QVBoxLayout();
+        topBarLayout->setSpacing(4);
+        topBarLayout->setContentsMargins(0, 0, 0, 0);
 
-        m_clearButton = new QPushButton("Clear", this);
-        m_clearButton->setMaximumWidth(60);
+        auto* row1Layout = new QHBoxLayout();
+        row1Layout->setSpacing(4);
 
-        m_showTimestampsCheckBox = new QCheckBox("Timestamps", this);
+        m_searchInput = new QLineEdit(this);
+        m_searchInput->setPlaceholderText(tr("Search logs..."));
+        m_searchInput->setClearButtonEnabled(true);
+        m_searchInput->setMinimumWidth(80);
+
+        m_filterComboBox = new QComboBox(this);
+        m_filterComboBox->addItems({tr("All"),
+                                    QStringLiteral("INFO"),
+                                    QStringLiteral("DEBUG"),
+                                    QStringLiteral("WARNING"),
+                                    QStringLiteral("ERROR")});
+        m_filterComboBox->setFixedWidth(80);
+
+        m_clearButton = new QPushButton(tr("Clear"), this);
+        m_clearButton->setFixedWidth(50);
+
+        row1Layout->addWidget(m_searchInput, 1);
+        row1Layout->addWidget(m_filterComboBox);
+        row1Layout->addWidget(m_clearButton);
+
+        auto* row2Layout = new QHBoxLayout();
+        row2Layout->setSpacing(8);
+
+        m_showTimestampsCheckBox = new QCheckBox(tr("Timestamps"), this);
         m_showTimestampsCheckBox->setChecked(m_showTimestamps);
 
-        m_autoScrollCheckBox = new QCheckBox("Auto-scroll", this);
+        m_autoScrollCheckBox = new QCheckBox(tr("Auto-scroll"), this);
         m_autoScrollCheckBox->setChecked(m_autoScroll);
 
-        auto* filterLabel = new QLabel("Filter:", this);
-        m_filterComboBox = new QComboBox(this);
-        m_filterComboBox->addItem("All");
-        m_filterComboBox->addItem("INFO");
-        m_filterComboBox->addItem("DEBUG");
-        m_filterComboBox->addItem("WARNING");
-        m_filterComboBox->addItem("ERROR");
-        m_filterComboBox->setMaximumWidth(120);
+        m_messageCountLabel = new QLabel(tr("Messages: 0"), this);
+        m_messageCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        m_messageCountLabel = new QLabel("Messages: 0", this);
+        row2Layout->addWidget(m_showTimestampsCheckBox);
+        row2Layout->addWidget(m_autoScrollCheckBox);
+        row2Layout->addStretch(1);
+        row2Layout->addWidget(m_messageCountLabel);
 
-        controlLayout->addWidget(m_clearButton);
-        controlLayout->addWidget(m_showTimestampsCheckBox);
-        controlLayout->addWidget(m_autoScrollCheckBox);
-        controlLayout->addWidget(filterLabel);
-        controlLayout->addWidget(m_filterComboBox);
-        controlLayout->addStretch();
-        controlLayout->addWidget(m_messageCountLabel);
+        topBarLayout->addLayout(row1Layout);
+        topBarLayout->addLayout(row2Layout);
 
+        mainLayout->addLayout(topBarLayout, 0);
         mainLayout->addWidget(m_consoleTextEdit, 1);
-        mainLayout->addLayout(controlLayout, 0);
+
+        auto* commandLayout = new QHBoxLayout();
+        auto* promptLabel = new QLabel(QStringLiteral(">>> "), this);
+        promptLabel->setStyleSheet(QStringLiteral("color: #51cf66;"));
+        promptLabel->setFont(consoleFont);
+
+        m_commandInput = new QLineEdit(this);
+        m_commandInput->setPlaceholderText(tr("Enter a command, then press Enter"));
+        m_commandInput->setFont(consoleFont);
+        m_commandInput->setStyleSheet(
+            QStringLiteral("QLineEdit { background: #1e1e1e; color: #f8f9fa; "
+                           "border: 1px solid #495057; padding: 3px 6px; }"));
+
+        m_runButton = new QPushButton(tr("Run"), this);
+        m_runButton->setFixedWidth(64);
+
+        commandLayout->addWidget(promptLabel);
+        commandLayout->addWidget(m_commandInput, 1);
+        commandLayout->addWidget(m_runButton);
+        mainLayout->addLayout(commandLayout, 0);
     }
 
     // Append one message and trim old history
@@ -189,9 +256,7 @@ namespace scopeone::ui
 
         m_messages.append(msg);
 
-        m_messageCountLabel->setText(QString("Messages: %1").arg(m_messages.size()));
-
-        if (m_messageFilter.isEmpty() || m_messageFilter.contains(msg.type))
+        if (messageMatchesCurrentFilter(msg))
         {
             QString formattedMessage = formatMessage(msg);
             m_consoleTextEdit->append(formattedMessage);
@@ -201,6 +266,14 @@ namespace scopeone::ui
                 scrollToBottom();
             }
         }
+        if (m_messageFilter.isEmpty() && m_searchKeyword.isEmpty())
+        {
+            m_messageCountLabel->setText(tr("Messages: %1").arg(m_messages.size()));
+        }
+        else
+        {
+            updateDisplay();
+        }
     }
 
     // Clear all stored and visible messages
@@ -208,7 +281,7 @@ namespace scopeone::ui
     {
         m_messages.clear();
         m_consoleTextEdit->clear();
-        m_messageCountLabel->setText("Messages: 0");
+        m_messageCountLabel->setText(tr("Messages: 0"));
     }
 
     // Toggle timestamp rendering for stored log entries
@@ -263,14 +336,21 @@ namespace scopeone::ui
         QString htmlContent;
         htmlContent.reserve(m_messages.size() * 100);
 
+        int visibleCount = 0;
         for (const auto& msg : m_messages)
         {
-            if (m_messageFilter.isEmpty() || m_messageFilter.contains(msg.type))
+            if (messageMatchesCurrentFilter(msg))
             {
+                ++visibleCount;
                 htmlContent += formatMessage(msg);
                 htmlContent += "<br>";
             }
         }
+
+        m_messageCountLabel->setText(
+            visibleCount == m_messages.size()
+                ? tr("Messages: %1").arg(m_messages.size())
+                : tr("Messages: %1/%2").arg(visibleCount).arg(m_messages.size()));
 
         if (!htmlContent.isEmpty())
         {
@@ -312,7 +392,23 @@ namespace scopeone::ui
         if (type == "ERROR") return "#ff6b6b";
         if (type == "WARNING") return "#f59f00";
         if (type == "DEBUG") return "#1581ed";
+        if (type == "COMMAND") return "#51cf66";
+        if (type == "API") return "#66d9ef";
         return "#dee2e6";
+    }
+
+    bool ConsoleWidget::messageMatchesCurrentFilter(const ConsoleMessage& msg) const
+    {
+        if (!m_messageFilter.isEmpty() && !m_messageFilter.contains(msg.type))
+        {
+            return false;
+        }
+        if (m_searchKeyword.isEmpty())
+        {
+            return true;
+        }
+        return msg.message.contains(m_searchKeyword, Qt::CaseInsensitive)
+            || msg.type.contains(m_searchKeyword, Qt::CaseInsensitive);
     }
 
     // Scroll the console view to the newest message
@@ -342,7 +438,7 @@ namespace scopeone::ui
     {
         QString selectedFilter = m_filterComboBox->currentText();
 
-        if (selectedFilter == "All")
+        if (selectedFilter == tr("All"))
         {
             m_messageFilter.clear();
         }
@@ -353,6 +449,363 @@ namespace scopeone::ui
         }
 
         updateDisplay();
+    }
+
+    void ConsoleWidget::setApiDispatcher(ApiDispatcher dispatcher)
+    {
+        m_apiDispatcher = std::move(dispatcher);
+    }
+
+    // Execute one shorthand command or raw Local API request
+    void ConsoleWidget::executeCommand(const QString& commandText)
+    {
+        const QString command = commandText.trimmed();
+        if (command.isEmpty())
+        {
+            return;
+        }
+
+        m_commandHistory.append(command);
+        if (m_commandHistory.size() > 100)
+        {
+            m_commandHistory.removeFirst();
+        }
+        m_historyIndex = m_commandHistory.size();
+        m_commandInput->clear();
+        addMessage(QStringLiteral(">>> ") + command, QStringLiteral("COMMAND"));
+
+        const QStringList tokens = command.split(
+            QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        const QString verb = tokens.at(0).toLower();
+
+        if (verb == QStringLiteral("clear") || verb == QStringLiteral("cls"))
+        {
+            clearMessages();
+            return;
+        }
+        if (verb == QStringLiteral("help") || verb == QStringLiteral("?"))
+        {
+            showHelp();
+            return;
+        }
+
+        QJsonObject request;
+        if (verb == QStringLiteral("snap"))
+        {
+            request.insert(QStringLiteral("type"), QStringLiteral("record"));
+            request.insert(QStringLiteral("frames"), 1);
+            if (tokens.size() > 1)
+            {
+                request.insert(QStringLiteral("camera"), tokens.at(1));
+            }
+        }
+        else if (verb == QStringLiteral("preview") || verb == QStringLiteral("live"))
+        {
+            const QString action = tokens.value(1).toLower();
+            if (action != QStringLiteral("start")
+                && action != QStringLiteral("on")
+                && action != QStringLiteral("stop")
+                && action != QStringLiteral("off"))
+            {
+                addMessage(tr("Usage: preview start|stop [camera]"), QStringLiteral("ERROR"));
+                return;
+            }
+            request.insert(QStringLiteral("type"),
+                           action == QStringLiteral("stop") || action == QStringLiteral("off")
+                               ? QStringLiteral("stop_preview")
+                               : QStringLiteral("start_preview"));
+            if (tokens.size() > 2)
+            {
+                request.insert(QStringLiteral("camera"), tokens.at(2));
+            }
+        }
+        else if (verb == QStringLiteral("exp") || verb == QStringLiteral("exposure"))
+        {
+            bool ok = false;
+            const double exposureMs = tokens.value(1).toDouble(&ok);
+            if (!ok || exposureMs <= 0.0)
+            {
+                addMessage(tr("Usage: exp <milliseconds> [camera]"), QStringLiteral("ERROR"));
+                return;
+            }
+            request.insert(QStringLiteral("type"), QStringLiteral("set_exposure"));
+            request.insert(QStringLiteral("exposureMs"), exposureMs);
+            if (tokens.size() > 2)
+            {
+                request.insert(QStringLiteral("camera"), tokens.at(2));
+            }
+        }
+        else if (verb == QStringLiteral("stage"))
+        {
+            const QString axis = tokens.value(1).toLower();
+            if (axis == QStringLiteral("z"))
+            {
+                bool ok = false;
+                const double dz = tokens.value(2).toDouble(&ok);
+                if (!ok)
+                {
+                    addMessage(tr("Usage: stage z <dz_um>"), QStringLiteral("ERROR"));
+                    return;
+                }
+                request.insert(QStringLiteral("type"), QStringLiteral("move_z_relative"));
+                request.insert(QStringLiteral("dz"), dz);
+            }
+            else if (axis == QStringLiteral("xy"))
+            {
+                bool okX = false;
+                bool okY = false;
+                const double dx = tokens.value(2).toDouble(&okX);
+                const double dy = tokens.value(3).toDouble(&okY);
+                if (!okX || !okY)
+                {
+                    addMessage(tr("Usage: stage xy <dx_um> <dy_um>"), QStringLiteral("ERROR"));
+                    return;
+                }
+                request.insert(QStringLiteral("type"), QStringLiteral("move_xy_relative"));
+                request.insert(QStringLiteral("dx"), dx);
+                request.insert(QStringLiteral("dy"), dy);
+            }
+            else
+            {
+                addMessage(tr("Usage: stage z <dz_um> or stage xy <dx_um> <dy_um>"),
+                            QStringLiteral("ERROR"));
+                return;
+            }
+        }
+        else if (verb == QStringLiteral("roi"))
+        {
+            const QString action = tokens.value(1).toLower();
+            if (action == QStringLiteral("draw"))
+            {
+                request.insert(QStringLiteral("type"), QStringLiteral("draw_roi"));
+            }
+            else if (action == QStringLiteral("half"))
+            {
+                request.insert(QStringLiteral("type"), QStringLiteral("set_half_roi"));
+            }
+            else if (action == QStringLiteral("clear"))
+            {
+                request.insert(QStringLiteral("type"), QStringLiteral("clear_roi"));
+            }
+            else
+            {
+                addMessage(tr("Usage: roi draw|half|clear [camera]"), QStringLiteral("ERROR"));
+                return;
+            }
+            if (tokens.size() > 2)
+            {
+                request.insert(QStringLiteral("camera"), tokens.at(2));
+            }
+        }
+        else if (verb == QStringLiteral("fit"))
+        {
+            request.insert(QStringLiteral("type"), QStringLiteral("set_fit_to_window"));
+            request.insert(QStringLiteral("enabled"), true);
+        }
+        else if (verb == QStringLiteral("zoom"))
+        {
+            bool ok = false;
+            const int zoomPercent = tokens.value(1).toInt(&ok);
+            if (!ok || zoomPercent <= 0)
+            {
+                addMessage(tr("Usage: zoom <percent>"), QStringLiteral("ERROR"));
+                return;
+            }
+            request.insert(QStringLiteral("type"), QStringLiteral("set_zoom"));
+            request.insert(QStringLiteral("zoomPercent"), zoomPercent);
+        }
+        else if (verb == QStringLiteral("auto"))
+        {
+            request.insert(QStringLiteral("type"), QStringLiteral("auto_layer_levels"));
+        }
+        else if (verb == QStringLiteral("status"))
+        {
+            request.insert(QStringLiteral("type"), QStringLiteral("status"));
+        }
+        else if (verb == QStringLiteral("api"))
+        {
+            const QString operationType = tokens.value(1);
+            if (operationType.isEmpty())
+            {
+                addMessage(tr("Usage: api <operation_type> [json_payload]"),
+                           QStringLiteral("ERROR"));
+                return;
+            }
+            const int payloadStart = command.indexOf(operationType) + operationType.size();
+            const QString payload = command.mid(payloadStart).trimmed();
+            if (!payload.isEmpty())
+            {
+                QJsonParseError parseError;
+                const QJsonDocument document = QJsonDocument::fromJson(
+                    payload.toUtf8(), &parseError);
+                if (parseError.error != QJsonParseError::NoError || !document.isObject())
+                {
+                    addMessage(tr("Invalid JSON: %1").arg(parseError.errorString()),
+                               QStringLiteral("ERROR"));
+                    return;
+                }
+                request = document.object();
+            }
+            request.insert(QStringLiteral("type"), operationType);
+        }
+        else
+        {
+            addMessage(tr("Unknown command '%1'. Type 'help' for available commands.")
+                           .arg(verb),
+                       QStringLiteral("WARNING"));
+            return;
+        }
+
+        m_apiDispatcher(request,
+                        [this](const QJsonObject& response)
+                        {
+                            showCommandResponse(response);
+                        });
+    }
+
+    // Print the command grammar in the console
+    void ConsoleWidget::showHelp()
+    {
+        addMessage(QStringLiteral(
+                        "Commands:\n"
+                        "  help, ?                         Show this help\n"
+                        "  clear, cls                      Clear the console\n"
+                        "  snap [camera]                   Capture one frame\n"
+                        "  preview start|stop [camera]     Control live preview\n"
+                        "  exp <ms> [camera]               Set exposure\n"
+                        "  stage z <dz_um>                 Move focus stage\n"
+                        "  stage xy <dx_um> <dy_um>        Move XY stage\n"
+                        "  roi draw|half|clear [camera]    Control ROI\n"
+                        "  fit                             Fit preview to window\n"
+                        "  zoom <percent>                  Set preview zoom\n"
+                        "  auto                            Auto-stretch active layer\n"
+                        "  status                          Show application status\n"
+                        "  api <type> [json]               Send a raw Local API request"),
+                    QStringLiteral("INFO"));
+    }
+
+    // Show one Local API response in a readable form
+    void ConsoleWidget::showCommandResponse(const QJsonObject& response)
+    {
+        if (!response.value(QStringLiteral("ok")).toBool())
+        {
+            addMessage(response.value(QStringLiteral("error"))
+                           .toString(),
+                       QStringLiteral("ERROR"));
+            return;
+        }
+
+        const QString type = response.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("record"))
+        {
+            addMessage(tr("Snapshot captured"), QStringLiteral("INFO"));
+            return;
+        }
+        if (type == QStringLiteral("set_exposure")
+            && response.contains(QStringLiteral("exposureMs")))
+        {
+            addMessage(tr("Exposure set to %1 ms")
+                           .arg(response.value(QStringLiteral("exposureMs")).toDouble()),
+                       QStringLiteral("INFO"));
+            return;
+        }
+        if (type == QStringLiteral("start_preview"))
+        {
+            addMessage(tr("Live preview started"), QStringLiteral("INFO"));
+            return;
+        }
+        if (type == QStringLiteral("stop_preview"))
+        {
+            addMessage(tr("Live preview stopped"), QStringLiteral("INFO"));
+            return;
+        }
+
+        addMessage(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Indented)),
+                   QStringLiteral("API"));
+    }
+
+    // Export the current visible console text
+    void ConsoleWidget::exportLogsToFile()
+    {
+        const QString filePath = QFileDialog::getSaveFileName(
+            this, tr("Export Console Logs"), QString(), tr("Log files (*.log);;All files (*.*)"));
+        if (filePath.isEmpty())
+        {
+            return;
+        }
+
+        QFile file(filePath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        {
+            addMessage(tr("Failed to export logs to %1").arg(filePath), QStringLiteral("ERROR"));
+            return;
+        }
+        QTextStream stream(&file);
+        stream << m_consoleTextEdit->toPlainText();
+        addMessage(tr("Logs exported to %1").arg(filePath), QStringLiteral("INFO"));
+    }
+
+    // Build the console context menu for copy, export, and clear actions
+    void ConsoleWidget::showContextMenu(const QPoint& position)
+    {
+        QMenu menu(this);
+        QAction* copySelection = menu.addAction(tr("Copy Selection"));
+        copySelection->setEnabled(m_consoleTextEdit->textCursor().hasSelection());
+        connect(copySelection, &QAction::triggered,
+                m_consoleTextEdit, &QTextEdit::copy);
+
+        QAction* copyAll = menu.addAction(tr("Copy All"));
+        connect(copyAll, &QAction::triggered, this,
+                [this]()
+                {
+                    QGuiApplication::clipboard()->setText(m_consoleTextEdit->toPlainText());
+                });
+
+        menu.addSeparator();
+        QAction* exportAction = menu.addAction(tr("Export Logs to File..."));
+        connect(exportAction, &QAction::triggered, this, &ConsoleWidget::exportLogsToFile);
+
+        menu.addSeparator();
+        QAction* clearAction = menu.addAction(tr("Clear Console (Ctrl+L)"));
+        connect(clearAction, &QAction::triggered, this, &ConsoleWidget::clearMessages);
+
+        menu.exec(m_consoleTextEdit->viewport()->mapToGlobal(position));
+    }
+
+    // Provide terminal-style history navigation in the command input
+    bool ConsoleWidget::eventFilter(QObject* object, QEvent* event)
+    {
+        if (object == m_commandInput && event->type() == QEvent::KeyPress)
+        {
+            auto* keyEvent = static_cast<QKeyEvent*>(event);
+            if (keyEvent->key() == Qt::Key_Up)
+            {
+                if (!m_commandHistory.isEmpty())
+                {
+                    m_historyIndex = qMax(0, m_historyIndex - 1);
+                    m_commandInput->setText(m_commandHistory.at(m_historyIndex));
+                }
+                return true;
+            }
+            if (keyEvent->key() == Qt::Key_Down)
+            {
+                if (!m_commandHistory.isEmpty())
+                {
+                    m_historyIndex = qMin(m_commandHistory.size(), m_historyIndex + 1);
+                    m_commandInput->setText(
+                        m_historyIndex == m_commandHistory.size()
+                            ? QString()
+                            : m_commandHistory.at(m_historyIndex));
+                }
+                return true;
+            }
+            if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+            {
+                executeCommand(m_commandInput->text());
+                return true;
+            }
+        }
+        return QWidget::eventFilter(object, event);
     }
 
     // Forward Qt log output into this widget
