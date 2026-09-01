@@ -155,6 +155,15 @@ namespace scopeone::ui
 
         QAction* m_exitAction{nullptr};
         QAction* m_fullScreenAction{nullptr};
+        QAction* m_fitToWindowAction{nullptr};
+        QAction* m_actualSizeAction{nullptr};
+        QAction* m_zoomInAction{nullptr};
+        QAction* m_zoomOutAction{nullptr};
+        QAction* m_scaleBarAction{nullptr};
+        QAction* m_clippingAction{nullptr};
+        QAction* m_togglePreviewAction{nullptr};
+        QAction* m_snapAction{nullptr};
+        QAction* m_autoContrastAction{nullptr};
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_saveImageAsAction{nullptr};
@@ -179,5 +188,6 @@ namespace scopeone::ui
         int m_closeSaveTotal{0};
         bool m_closeSaveInProgress{false};
         bool m_closeAfterSave{false};
+        bool m_previewRunning{false};
     };
 }

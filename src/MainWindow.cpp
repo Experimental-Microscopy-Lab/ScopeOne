@@ -30,6 +30,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -64,21 +67,6 @@ namespace scopeone::ui
                 layerKeys.append(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
             }
             return layerKeys;
-        }
-
-        // Keep only raw layers from the current preview selection
-        QStringList rawOnlyLayerKeys(const QStringList& layerKeys)
-        {
-            QStringList rawKeys;
-            rawKeys.reserve(layerKeys.size());
-            for (const QString& layerKey : layerKeys)
-            {
-                if (scopeone::core::ScopeOneCore::isRawLayerKey(layerKey))
-                {
-                    rawKeys.append(layerKey);
-                }
-            }
-            return rawKeys;
         }
 
         // Apply common status label presentation
@@ -332,6 +320,7 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewStateChanged,
                 this, [this](bool running)
                 {
+                    m_previewRunning = running;
                     m_previewWidget->resetLiveFrameRates();
                     m_deviceControlWidget->setPreviewRunning(running);
                     m_deviceControlWidget->setControlTargetEnabled(!running);
@@ -471,6 +460,11 @@ namespace scopeone::ui
                     }
                 });
 
+        connect(m_previewWidget, &PreviewWidget::stageStepRequested,
+                m_deviceControlWidget, &DeviceControlWidget::moveXYStep);
+        connect(m_previewWidget, &PreviewWidget::stageZStepRequested,
+                m_deviceControlWidget, &DeviceControlWidget::moveZStep);
+
         connect(m_deviceControlWidget, &DeviceControlWidget::controlTargetChanged,
                 this, &MainWindow::updateControlTarget);
         connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
@@ -541,33 +535,12 @@ namespace scopeone::ui
                                        tr("Processing: Live"),
                                        tr("Processing is running"));
                     showStatusMessage(tr("Image processing started"), 3000);
-                    QStringList visibleLayerKeys = m_previewWidget->visibleLayerKeys();
                     const QStringList availableCameraIds = m_previewWidget->availableCameraIds();
-
-                    for (const QString& layerKey : std::as_const(visibleLayerKeys))
+                    QStringList visibleLayerKeys;
+                    for (const QString& cameraId : availableCameraIds)
                     {
-                        if (!scopeone::core::ScopeOneCore::isRawLayerKey(layerKey))
-                        {
-                            continue;
-                        }
-                        const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
-                        if (cameraId.isEmpty() || !availableCameraIds.contains(cameraId))
-                        {
-                            continue;
-                        }
-                        const QString processedLayerKey = scopeone::core::ScopeOneCore::processedLayerKey(cameraId);
-                        if (!visibleLayerKeys.contains(processedLayerKey))
-                        {
-                            visibleLayerKeys.append(processedLayerKey);
-                        }
-                    }
-
-                    if (visibleLayerKeys.isEmpty())
-                    {
-                        for (const QString& cameraId : availableCameraIds)
-                        {
-                            visibleLayerKeys.append(scopeone::core::ScopeOneCore::processedLayerKey(cameraId));
-                        }
+                        visibleLayerKeys.append(scopeone::core::ScopeOneCore::rawLayerKey(cameraId));
+                        visibleLayerKeys.append(scopeone::core::ScopeOneCore::processedLayerKey(cameraId));
                     }
 
                     m_imageWorkspace->setVisibleLayers(visibleLayerKeys, true);
@@ -579,11 +552,8 @@ namespace scopeone::ui
                                        tr("Processing: Off"),
                                        tr("Processing is off"));
                     showStatusMessage(tr("Image processing stopped"), 3000);
-                    QStringList visibleLayerKeys = rawOnlyLayerKeys(m_previewWidget->visibleLayerKeys());
-                    if (visibleLayerKeys.isEmpty())
-                    {
-                        visibleLayerKeys = rawLayerKeys(m_previewWidget->availableCameraIds());
-                    }
+                    const QStringList visibleLayerKeys =
+                        rawLayerKeys(m_previewWidget->availableCameraIds());
                     m_imageWorkspace->setVisibleLayers(visibleLayerKeys);
                 });
         connect(m_imageProcessingWidget, &ImageProcessingWidget::processedLayerReady,
@@ -763,6 +733,10 @@ namespace scopeone::ui
     void MainWindow::setupUI()
     {
         m_previewWidget = new PreviewWidget(m_imageSceneModel, this);
+        m_previewWidget->setPixelSizeCallback([this](const QString& layerKey)
+        {
+            return m_imageWorkspace->pixelSizeUm(layerKey);
+        });
         setCentralWidget(m_imageWorkspace->viewerHost());
         setupTools();
 
@@ -936,8 +910,104 @@ namespace scopeone::ui
         m_viewMenu = menuBar()->addMenu(tr("&View"));
         m_fullScreenAction = m_viewMenu->addAction(tr("&Full Screen"));
         m_fullScreenAction->setCheckable(true);
+        m_fullScreenAction->setShortcut(QKeySequence::FullScreen);
+
+        m_fitToWindowAction = m_viewMenu->addAction(tr("Fit to &Window"));
+        m_fitToWindowAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+        connect(m_fitToWindowAction, &QAction::triggered, this, [this]()
+        {
+            m_previewWidget->setFitToWindow(true);
+        });
+
+        m_actualSizeAction = m_viewMenu->addAction(tr("&Actual Size (100%)"));
+        m_actualSizeAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
+        connect(m_actualSizeAction, &QAction::triggered, this, [this]()
+        {
+            m_previewWidget->setFitToWindow(false);
+            m_previewWidget->setZoomPercent(100);
+        });
+
+        m_zoomInAction = m_viewMenu->addAction(tr("Zoom &In"));
+        m_zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++"))});
+        connect(m_zoomInAction, &QAction::triggered, this, [this]()
+        {
+            m_previewWidget->setFitToWindow(false);
+            m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() + 20);
+        });
+
+        m_zoomOutAction = m_viewMenu->addAction(tr("Zoom &Out"));
+        m_zoomOutAction->setShortcut(QKeySequence::ZoomOut);
+        connect(m_zoomOutAction, &QAction::triggered, this, [this]()
+        {
+            m_previewWidget->setFitToWindow(false);
+            m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() - 20);
+        });
+
+        m_viewMenu->addSeparator();
+
+        m_scaleBarAction = m_viewMenu->addAction(tr("Show &Scale Bar"));
+        m_scaleBarAction->setCheckable(true);
+        m_scaleBarAction->setChecked(m_previewWidget->isScaleBarVisible());
+        connect(m_scaleBarAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setScaleBarVisible);
+        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged, m_scaleBarAction, &QAction::setChecked);
+
+        m_clippingAction = m_viewMenu->addAction(tr("Show &Saturation Warning (Hi-Lo)"));
+        m_clippingAction->setCheckable(true);
+        m_clippingAction->setShortcut(QKeySequence(Qt::Key_C));
+        m_clippingAction->setChecked(m_previewWidget->isClippingWarningEnabled());
+        connect(m_clippingAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
+        connect(m_previewWidget, &PreviewWidget::clippingWarningChanged, m_clippingAction, &QAction::setChecked);
+
         m_viewMenu->addSeparator();
         m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
+
+        m_togglePreviewAction = new QAction(tr("Toggle Live Preview"), this);
+        m_togglePreviewAction->setShortcut(QKeySequence(Qt::Key_Space));
+        m_togglePreviewAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(m_togglePreviewAction, &QAction::triggered, this, [this]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            if (m_previewRunning)
+            {
+                m_scopeonecore->stopPreview(m_currentControlTarget);
+            }
+            else
+            {
+                m_scopeonecore->startPreview(m_currentControlTarget);
+            }
+        });
+        addAction(m_togglePreviewAction);
+
+        m_snapAction = new QAction(tr("Snap"), this);
+        m_snapAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)});
+        m_snapAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(m_snapAction, &QAction::triggered, this, [this]()
+        {
+            m_recordingWidget->snapToGallery(m_currentControlTarget);
+        });
+        addAction(m_snapAction);
+
+        m_autoContrastAction = new QAction(tr("Auto Contrast"), this);
+        m_autoContrastAction->setShortcut(QKeySequence(Qt::Key_A));
+        m_autoContrastAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(m_autoContrastAction, &QAction::triggered, this, [this]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            const QString activeLayer = m_imageWorkspace->activeLayerKey();
+            if (!activeLayer.isEmpty())
+            {
+                m_imageWorkspace->autoLayerLevels(activeLayer);
+            }
+        });
+        addAction(m_autoContrastAction);
 
         m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
         m_toolRegistry->populateMenu(m_toolsMenu, this);

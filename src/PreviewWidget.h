@@ -15,6 +15,7 @@
 #include <QSize>
 #include <QTimer>
 #include <QVector>
+#include <functional>
 #include <vector>
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
@@ -80,6 +81,11 @@ namespace scopeone::ui
         int zoomPercent() const;
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
+        void setScaleBarVisible(bool visible);
+        bool isScaleBarVisible() const;
+        void setClippingWarningEnabled(bool enabled);
+        bool isClippingWarningEnabled() const;
+        void setPixelSizeCallback(std::function<double(const QString&)> callback);
         void startROIDrawing(const QString& cameraId);
         void startMeasurementLineDrawingForLayer(const QString& layerKey);
         void startCrossSectionDrawingForLayer(const QString& layerKey);
@@ -97,6 +103,10 @@ signals:
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
+        void scaleBarVisibilityChanged(bool visible);
+        void clippingWarningChanged(bool enabled);
+        void stageStepRequested(double dxScale, double dyScale, bool big);
+        void stageZStepRequested(double dzScale, bool big);
         void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
@@ -221,7 +231,10 @@ signals:
         QOpenGLShaderProgram m_prog;
         GLint m_uTex{-1}, m_uMinNorm{-1}, m_uMaxNorm{-1}, m_uTexNormScale{-1}, m_uAlpha{-1};
         GLint m_uGamma{-1}, m_uColormap{-1}, m_uColormapLut{-1};
-        GLint m_uUvScale{-1}, m_uUvOffset{-1};
+        GLint m_uUvScale{-1}, m_uUvOffset{-1}, m_uShowClipping{-1};
+        bool m_scaleBarVisible{true};
+        bool m_clippingWarning{false};
+        std::function<double(const QString&)> m_pixelSizeCallback;
 
         struct CachedTexture
         {
@@ -315,6 +328,7 @@ signals:
                         const RenderItem& item) const;
         void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,

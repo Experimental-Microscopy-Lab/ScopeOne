@@ -53,9 +53,10 @@ namespace scopeone::ui
         void refreshStageDevices();
         void refreshCameraParameters();
 
-        void onCameraInitialized(bool initialized);
-
         void setPreviewRunning(bool running);
+        void onCameraInitialized(bool initialized);
+        void moveXYStep(double dxScale, double dyScale, bool big = false);
+        void moveZStep(double dzScale, bool big = false);
 
     signals :
         void startPreviewRequested();
@@ -146,6 +147,8 @@ namespace scopeone::ui
         QPushButton* m_layerAutoButton{nullptr};
         QPushButton* m_layerFullRangeButton{nullptr};
         QCheckBox* m_layerAutoStretchCheckBox{nullptr};
+        QCheckBox* m_clippingCheckBox{nullptr};
+        QCheckBox* m_scaleBarCheckBox{nullptr};
         LayerHistogramWidget* m_layerHistogramWidget{nullptr};
         QCheckBox* m_layerHistogramLogCheckBox{nullptr};
         QGroupBox* m_layerHistogramGroup{nullptr};

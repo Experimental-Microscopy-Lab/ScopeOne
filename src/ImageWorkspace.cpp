@@ -46,6 +46,7 @@ namespace scopeone::ui
             ImageDocumentPage(const QString& documentId,
                               const QString& title,
                               const QString& cameraId,
+                              const std::shared_ptr<RecordingSessionData>& session,
                               const scopeone::core::ExperimentDocument& presentation,
                               int frameCount,
                               QWidget* parent)
@@ -107,6 +108,10 @@ namespace scopeone::ui
                 auto* layout = new QVBoxLayout(this);
                 layout->setContentsMargins(0, 0, 0, 0);
                 m_preview = new PreviewWidget(scene, this);
+                m_preview->setPixelSizeCallback([session, cameraId](const QString&)
+                {
+                    return session ? session->cameraPixelSizeUm(cameraId) : 0.0;
+                });
                 layout->addWidget(m_preview, 1);
 
                 auto* navigation = new QWidget(this);
@@ -708,6 +713,7 @@ namespace scopeone::ui
             document->page = new ImageDocumentPage(document->id,
                                                    document->title,
                                                    camera,
+                                                   session,
                                                    session->experimentDocument(),
                                                    document->frameCount,
                                                    m_viewerTabs);
@@ -1441,6 +1447,7 @@ namespace scopeone::ui
         document->page = new ImageDocumentPage(document->id,
                                                document->title,
                                                document->cameraId,
+                                               document->session,
                                                document->session->experimentDocument(),
                                                document->frameCount,
                                                m_viewerTabs);

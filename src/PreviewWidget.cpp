@@ -908,6 +908,47 @@ namespace scopeone::ui
         return m_fitToWindow;
     }
 
+    // Sets whether the calibrated scale bar is drawn on preview
+    void PreviewWidget::setScaleBarVisible(bool visible)
+    {
+        if (m_scaleBarVisible == visible)
+        {
+            return;
+        }
+        m_scaleBarVisible = visible;
+        emit scaleBarVisibilityChanged(m_scaleBarVisible);
+        update();
+    }
+
+    bool PreviewWidget::isScaleBarVisible() const
+    {
+        return m_scaleBarVisible;
+    }
+
+    // Sets whether overexposure and underexposure clipping warning is active
+    void PreviewWidget::setClippingWarningEnabled(bool enabled)
+    {
+        if (m_clippingWarning == enabled)
+        {
+            return;
+        }
+        m_clippingWarning = enabled;
+        emit clippingWarningChanged(m_clippingWarning);
+        update();
+    }
+
+    bool PreviewWidget::isClippingWarningEnabled() const
+    {
+        return m_clippingWarning;
+    }
+
+    // Sets the callback providing pixel size in micrometers per layer
+    void PreviewWidget::setPixelSizeCallback(std::function<double(const QString&)> callback)
+    {
+        m_pixelSizeCallback = std::move(callback);
+        update();
+    }
+
     // Refreshes placeholder state and schedules repaint
     void PreviewWidget::updateImageDisplay()
     {
@@ -1480,6 +1521,122 @@ namespace scopeone::ui
                 drawMarkup(painter, markup, item);
                 break;
             }
+        }
+    }
+
+    // Draws a calibrated scale bar overlay in the corner of visible image areas
+    void PreviewWidget::drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (renderItems.empty())
+        {
+            return;
+        }
+
+        QSet<QRect> drawnAreas;
+        for (const RenderItem& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState || drawnAreas.contains(item.area))
+            {
+                continue;
+            }
+
+            QRect displayRect;
+            QSize imageSize;
+            if (!resolveDisplayGeometry(*item.info->frameState, item.processed, item.area, displayRect, imageSize))
+            {
+                continue;
+            }
+
+            if (imageSize.width() <= 0 || displayRect.width() <= 0)
+            {
+                continue;
+            }
+
+            const double pixelSize = m_pixelSizeCallback ? m_pixelSizeCallback(item.layerKey) : 0.0;
+            if (pixelSize <= 0.0)
+            {
+                continue;
+            }
+
+            const double pixelsPerImagePixel = static_cast<double>(displayRect.width()) / static_cast<double>(imageSize.width());
+            const double screenPixelsPerUm = pixelsPerImagePixel / pixelSize;
+            if (screenPixelsPerUm <= 1e-6)
+            {
+                continue;
+            }
+
+            const double targetUm = 80.0 / screenPixelsPerUm;
+            static const double niceSteps[] = {
+                0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0,
+                100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 25000.0, 50000.0
+            };
+
+            double bestUm = niceSteps[0];
+            double minDiff = std::abs(targetUm - bestUm);
+            for (double step : niceSteps)
+            {
+                const double diff = std::abs(targetUm - step);
+                if (diff < minDiff)
+                {
+                    minDiff = diff;
+                    bestUm = step;
+                }
+            }
+
+            const int barWidthPx = static_cast<int>(std::round(bestUm * screenPixelsPerUm));
+            if (barWidthPx < 10 || barWidthPx > displayRect.width() - 20)
+            {
+                continue;
+            }
+
+            QString labelText;
+            if (bestUm >= 1000.0)
+            {
+                labelText = QString::number(bestUm / 1000.0, 'g', 3) + QStringLiteral(" mm");
+            }
+            else if (bestUm >= 1.0)
+            {
+                labelText = QString::number(bestUm, 'g', 3) + QStringLiteral(" um");
+            }
+            else
+            {
+                labelText = QString::number(bestUm * 1000.0, 'g', 3) + QStringLiteral(" nm");
+            }
+
+            painter.save();
+            painter.setRenderHint(QPainter::Antialiasing, true);
+
+            QFont font = painter.font();
+            font.setPointSize(9);
+            font.setBold(true);
+            painter.setFont(font);
+
+            const QFontMetrics fm(font);
+            const int textWidth = fm.horizontalAdvance(labelText);
+            const int boxWidth = std::max(barWidthPx, textWidth) + 16;
+            const int boxHeight = fm.height() + 14;
+
+            const int margin = 12;
+            const int boxX = displayRect.right() - boxWidth - margin;
+            const int boxY = displayRect.bottom() - boxHeight - margin;
+            const QRect boxRect(boxX, boxY, boxWidth, boxHeight);
+
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 160));
+            painter.drawRoundedRect(boxRect, 4, 4);
+
+            painter.setPen(Qt::white);
+            const QRect textRect(boxX, boxY + 2, boxWidth, fm.height());
+            painter.drawText(textRect, Qt::AlignCenter, labelText);
+
+            const int barX = boxX + (boxWidth - barWidthPx) / 2;
+            const int barY = boxY + fm.height() + 6;
+            QPen linePen(Qt::white, 3, Qt::SolidLine, Qt::RoundCap);
+            painter.setPen(linePen);
+            painter.drawLine(barX, barY, barX + barWidthPx, barY);
+
+            painter.restore();
+            drawnAreas.insert(item.area);
         }
     }
 
@@ -2061,11 +2218,16 @@ namespace scopeone::ui
 
             if (m_sceneModel->hasMarkups()
                 || (m_roiDrawingMode && m_roiDragging)
-                || (m_crossSectionDrawingMode && m_crossSectionDragging))
+                || (m_crossSectionDrawingMode && m_crossSectionDragging)
+                || m_scaleBarVisible)
             {
                 QPainter p(this);
                 drawMarkups(p, renderItems);
                 drawActiveInteractionMarkup(p, renderItems);
+                if (m_scaleBarVisible)
+                {
+                    drawScaleBar(p, renderItems);
+                }
             }
             return;
         }
@@ -2122,6 +2284,7 @@ namespace scopeone::ui
         uniform float uAlpha;
         uniform float uGamma;
         uniform int uColormap;
+        uniform int uShowClipping;
         uniform sampler2D uColormapLut;
         vec3 applyColormap(float t, int map) {
             vec2 lutSize = vec2(textureSize(uColormapLut, 0));
@@ -2132,6 +2295,16 @@ namespace scopeone::ui
         void main(){
             vec4 s = texture(uTex, vUV);
             float t0 = s.r * uTexNormScale;
+            if (uShowClipping == 1) {
+                if (t0 >= 0.999) {
+                    FragColor = vec4(1.0, 0.0, 0.0, uAlpha);
+                    return;
+                }
+                if (t0 <= 0.0001) {
+                    FragColor = vec4(0.0, 0.2, 1.0, uAlpha);
+                    return;
+                }
+            }
             float t = clamp((t0 - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
             t = pow(t, 1.0 / max(uGamma, 1e-3));
             FragColor = vec4(applyColormap(t, uColormap), uAlpha);
@@ -2170,6 +2343,7 @@ namespace scopeone::ui
         m_uColormapLut = m_prog.uniformLocation("uColormapLut");
         m_uUvScale = m_prog.uniformLocation("uUvScale");
         m_uUvOffset = m_prog.uniformLocation("uUvOffset");
+        m_uShowClipping = m_prog.uniformLocation("uShowClipping");
 
         // Uploads all colormaps once for shader lookup
         glGenTextures(1, &m_colormapTexture);
@@ -2276,6 +2450,7 @@ namespace scopeone::ui
         m_prog.setUniformValue(m_uAlpha, opacity);
         m_prog.setUniformValue(m_uGamma, static_cast<float>(std::clamp(display.gamma, 0.2, 2.0)));
         m_prog.setUniformValue(m_uColormap, display.colormapIndex);
+        m_prog.setUniformValue(m_uShowClipping, m_clippingWarning ? 1 : 0);
         setUvTransform(flipX, flipY);
 
         if (display.blending == Blending::Opaque)
@@ -3033,6 +3208,44 @@ namespace scopeone::ui
         if (event->key() == Qt::Key_Escape)
         {
             m_sceneModel->selectOnly(QString());
+            event->accept();
+            return;
+        }
+
+        const bool bigStep = (event->modifiers() & Qt::ShiftModifier);
+        if (event->key() == Qt::Key_Up)
+        {
+            emit stageStepRequested(0.0, 1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Down)
+        {
+            emit stageStepRequested(0.0, -1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Left)
+        {
+            emit stageStepRequested(-1.0, 0.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Right)
+        {
+            emit stageStepRequested(1.0, 0.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_PageUp)
+        {
+            emit stageZStepRequested(1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_PageDown)
+        {
+            emit stageZStepRequested(-1.0, bigStep);
             event->accept();
             return;
         }

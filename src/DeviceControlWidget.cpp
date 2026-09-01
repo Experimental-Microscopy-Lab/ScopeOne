@@ -57,15 +57,27 @@ namespace scopeone::ui
     class LayerHistogramWidget : public QWidget
     {
     public:
+        using LevelsCallback = std::function<void(int minLevel, int maxLevel)>;
+        using AutoLevelsCallback = std::function<void()>;
+
         explicit LayerHistogramWidget(QWidget* parent = nullptr)
             : QWidget(parent)
         {
             setMinimumHeight(150);
+            setMouseTracking(true);
         }
 
         void setStats(const scopeone::core::ScopeOneCore::HistogramStats& stats)
         {
             m_stats = stats;
+            update();
+        }
+
+        void setLevels(int minLevel, int maxLevel, int domainMax)
+        {
+            m_minLevel = minLevel;
+            m_maxLevel = maxLevel;
+            m_domainMax = qMax(1, domainMax);
             update();
         }
 
@@ -81,6 +93,29 @@ namespace scopeone::ui
             update();
         }
 
+        void setOnLevelsChanged(LevelsCallback callback)
+        {
+            m_levelsCallback = std::move(callback);
+        }
+
+        void setOnAutoLevelsRequested(AutoLevelsCallback callback)
+        {
+            m_autoLevelsCallback = std::move(callback);
+        }
+
+        QRect plotRect() const
+        {
+            const QFontMetrics metrics = fontMetrics();
+            const int labelHeight = metrics.height() + 4;
+            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
+            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
+            return rect().adjusted(
+                yLabelWidth + 6,
+                labelHeight + 2,
+                -(xLabelWidth / 2 + 4),
+                -(2 * labelHeight + 8));
+        }
+
     protected:
         void paintEvent(QPaintEvent*) override
         {
@@ -90,12 +125,7 @@ namespace scopeone::ui
             const QFontMetrics metrics = painter.fontMetrics();
             const int labelHeight = metrics.height() + 4;
             const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
-            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
-            const QRect plot = rect().adjusted(
-                yLabelWidth + 6,
-                labelHeight + 2,
-                -(xLabelWidth / 2 + 4),
-                -(2 * labelHeight + 8));
+            const QRect plot = plotRect();
 
             painter.fillRect(plot, colors.brush(QPalette::Base));
             painter.setPen(QPen(colors.color(QPalette::Mid), 1));
@@ -133,6 +163,33 @@ namespace scopeone::ui
                 painter.drawLine(x, plot.bottom(), x, plot.bottom() - height);
             }
 
+            const int domain = qMax(1, m_domainMax);
+            const int xMin = qBound(plot.left(), plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain), plot.right());
+            const int xMax = qBound(plot.left(), plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain), plot.right());
+
+            if (xMin > plot.left())
+            {
+                painter.fillRect(QRect(plot.left(), plot.top(), xMin - plot.left(), plot.height()), QColor(0, 0, 0, 70));
+            }
+            if (xMax < plot.right())
+            {
+                painter.fillRect(QRect(xMax, plot.top(), plot.right() - xMax, plot.height()), QColor(0, 0, 0, 70));
+            }
+
+            painter.setPen(QPen(QColor(0, 200, 255), 2));
+            painter.drawLine(xMin, plot.top(), xMin, plot.bottom());
+            QPolygon minHandle;
+            minHandle << QPoint(xMin - 4, plot.top()) << QPoint(xMin + 4, plot.top()) << QPoint(xMin, plot.top() + 6);
+            painter.setBrush(QColor(0, 200, 255));
+            painter.drawPolygon(minHandle);
+
+            painter.setPen(QPen(QColor(255, 180, 0), 2));
+            painter.drawLine(xMax, plot.top(), xMax, plot.bottom());
+            QPolygon maxHandle;
+            maxHandle << QPoint(xMax - 4, plot.top()) << QPoint(xMax + 4, plot.top()) << QPoint(xMax, plot.top() + 6);
+            painter.setBrush(QColor(255, 180, 0));
+            painter.drawPolygon(maxHandle);
+
             painter.setPen(QPen(colors.color(QPalette::Mid), 1));
             painter.drawLine(plot.left(), plot.top(), plot.left(), plot.bottom());
             painter.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom());
@@ -166,11 +223,142 @@ namespace scopeone::ui
                                    labelHeight),
                              Qt::AlignRight | Qt::AlignVCenter,
                              QStringLiteral("Count"));
+
+            const QString readout = QStringLiteral("Min: %1  Max: %2").arg(m_minLevel).arg(m_maxLevel);
+            painter.drawText(QRect(plot.left(), 0, plot.width(), labelHeight), Qt::AlignRight | Qt::AlignVCenter, readout);
+        }
+
+        void mousePressEvent(QMouseEvent* event) override
+        {
+            if (event->button() != Qt::LeftButton)
+            {
+                QWidget::mousePressEvent(event);
+                return;
+            }
+            const QRect plot = plotRect();
+            if (plot.width() <= 0) return;
+            const int domain = qMax(1, m_domainMax);
+            const int xMin = plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain);
+            const int xMax = plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain);
+            const int mx = event->pos().x();
+            if (std::abs(mx - xMin) <= 8)
+            {
+                m_dragMode = DragMode::MinLevel;
+            }
+            else if (std::abs(mx - xMax) <= 8)
+            {
+                m_dragMode = DragMode::MaxLevel;
+            }
+            else if (std::abs(mx - xMin) < std::abs(mx - xMax))
+            {
+                m_dragMode = DragMode::MinLevel;
+                updateLevelFromMouse(mx);
+            }
+            else
+            {
+                m_dragMode = DragMode::MaxLevel;
+                updateLevelFromMouse(mx);
+            }
+            event->accept();
+        }
+
+        void mouseMoveEvent(QMouseEvent* event) override
+        {
+            const QRect plot = plotRect();
+            if (m_dragMode != DragMode::None)
+            {
+                updateLevelFromMouse(event->pos().x());
+                event->accept();
+                return;
+            }
+            if (plot.width() > 0)
+            {
+                const int domain = qMax(1, m_domainMax);
+                const int xMin = plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain);
+                const int xMax = plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain);
+                const int mx = event->pos().x();
+                if (std::abs(mx - xMin) <= 8 || std::abs(mx - xMax) <= 8)
+                {
+                    setCursor(Qt::SizeHorCursor);
+                }
+                else
+                {
+                    setCursor(Qt::ArrowCursor);
+                }
+            }
+            QWidget::mouseMoveEvent(event);
+        }
+
+        void mouseReleaseEvent(QMouseEvent* event) override
+        {
+            if (m_dragMode != DragMode::None)
+            {
+                m_dragMode = DragMode::None;
+                event->accept();
+                return;
+            }
+            QWidget::mouseReleaseEvent(event);
+        }
+
+        void mouseDoubleClickEvent(QMouseEvent* event) override
+        {
+            if (event->button() == Qt::LeftButton)
+            {
+                if (m_autoLevelsCallback)
+                {
+                    m_autoLevelsCallback();
+                }
+                event->accept();
+                return;
+            }
+            QWidget::mouseDoubleClickEvent(event);
         }
 
     private:
+        enum class DragMode { None, MinLevel, MaxLevel };
+
+        void updateLevelFromMouse(int mouseX)
+        {
+            const QRect plot = plotRect();
+            if (plot.width() <= 0) return;
+            const int domain = qMax(1, m_domainMax);
+            const int rawVal = static_cast<int>(static_cast<qint64>(mouseX - plot.left()) * domain / plot.width());
+            if (m_dragMode == DragMode::MinLevel)
+            {
+                const int newMin = qBound(0, rawVal, m_maxLevel - 1);
+                if (newMin != m_minLevel)
+                {
+                    m_minLevel = newMin;
+                    if (m_levelsCallback)
+                    {
+                        m_levelsCallback(m_minLevel, m_maxLevel);
+                    }
+                    update();
+                }
+            }
+            else if (m_dragMode == DragMode::MaxLevel)
+            {
+                const int newMax = qBound(m_minLevel + 1, rawVal, domain);
+                if (newMax != m_maxLevel)
+                {
+                    m_maxLevel = newMax;
+                    if (m_levelsCallback)
+                    {
+                        m_levelsCallback(m_minLevel, m_maxLevel);
+                    }
+                    update();
+                }
+            }
+        }
+
         scopeone::core::ScopeOneCore::HistogramStats m_stats;
         bool m_logScale{false};
+        int m_minLevel{0};
+        int m_maxLevel{255};
+        int m_domainMax{255};
+        DragMode m_dragMode{DragMode::None};
+        LevelsCallback m_levelsCallback;
+        AutoLevelsCallback m_autoLevelsCallback;
     };
 
     // Creates the device control widget and initializes controls
@@ -377,6 +565,23 @@ namespace scopeone::ui
         onPreviewAvailableLayerKeysChanged(m_previewWidget->availableLayerKeys());
         applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
         onPreviewLayerInfoTextChanged(m_previewWidget->layerInfoSummaryText());
+
+        if (m_clippingCheckBox)
+        {
+            m_clippingCheckBox->setChecked(m_previewWidget->isClippingWarningEnabled());
+            connect(m_clippingCheckBox, &QCheckBox::toggled,
+                    m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
+            connect(m_previewWidget, &PreviewWidget::clippingWarningChanged,
+                    m_clippingCheckBox, &QCheckBox::setChecked);
+        }
+        if (m_scaleBarCheckBox)
+        {
+            m_scaleBarCheckBox->setChecked(m_previewWidget->isScaleBarVisible());
+            connect(m_scaleBarCheckBox, &QCheckBox::toggled,
+                    m_previewWidget, &PreviewWidget::setScaleBarVisible);
+            connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged,
+                    m_scaleBarCheckBox, &QCheckBox::setChecked);
+        }
     }
 
     // Builds layer and alignment controls
@@ -452,6 +657,11 @@ namespace scopeone::ui
         m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), m_layerSettingsGroup);
         m_layerAutoStretchCheckBox->setToolTip(
             QStringLiteral("Update display levels continuously as images arrive"));
+        m_clippingCheckBox = new QCheckBox(QStringLiteral("Hi-Lo Warn"), m_layerSettingsGroup);
+        m_clippingCheckBox->setToolTip(QStringLiteral("Highlight saturated pixels in red and zero pixels in blue (Hotkey: C)"));
+        m_scaleBarCheckBox = new QCheckBox(QStringLiteral("Scale Bar"), m_layerSettingsGroup);
+        m_scaleBarCheckBox->setToolTip(QStringLiteral("Display calibrated scale bar in viewport"));
+        m_scaleBarCheckBox->setChecked(true);
 
         layerSettingsLayout->addWidget(m_selectedLayerLabel, 0, 0, 1, 6);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 1, 0);
@@ -469,6 +679,8 @@ namespace scopeone::ui
         layerSettingsLayout->addWidget(m_layerAutoButton, 4, 0, 1, 2);
         layerSettingsLayout->addWidget(m_layerFullRangeButton, 4, 2, 1, 2);
         layerSettingsLayout->addWidget(m_layerAutoStretchCheckBox, 4, 4, 1, 2);
+        layerSettingsLayout->addWidget(m_clippingCheckBox, 5, 0, 1, 3);
+        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 5, 3, 1, 3);
 
         auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
         auto* transformLayout = new QGridLayout(transformGroup);
@@ -544,6 +756,26 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewLayerFullRangeClicked);
         connect(m_layerAutoStretchCheckBox, &QCheckBox::toggled,
                 this, &DeviceControlWidget::onPreviewLayerAutoStretchToggled);
+        m_layerHistogramWidget->setOnLevelsChanged([this](int minLevel, int maxLevel)
+        {
+            const QString layerKey = currentLayerKey();
+            if (layerKey.isEmpty() || !m_sceneModel) return;
+            scopeone::core::DocumentLayer layer;
+            if (m_sceneModel->findLayer(layerKey, layer))
+            {
+                const int domainMax = layer.display.levelDomainMax > 0 ? layer.display.levelDomainMax : 255;
+                if (m_workspace)
+                {
+                    m_workspace->setLayerAutoStretchEnabled(layerKey, false);
+                }
+                m_layerAutoStretchCheckBox->setChecked(false);
+                m_sceneModel->setLayerDisplayLevels(layerKey, minLevel, maxLevel, domainMax);
+            }
+        });
+        m_layerHistogramWidget->setOnAutoLevelsRequested([this]()
+        {
+            onPreviewLayerAutoClicked();
+        });
         const auto applySourceTransform = [this]()
         {
             const QString sourceId = selectedLayerSourceId();
@@ -730,6 +962,9 @@ namespace scopeone::ui
             m_layerAutoStretchCheckBox->setChecked(
                 m_workspace->layerAutoStretchEnabled(layerKey));
         }
+
+        m_layerHistogramWidget->setLevels(
+            layer.display.levelMin, layer.display.levelMax, layer.display.levelDomainMax);
 
         const int row = m_layerTable->currentRow();
         m_layerMoveUpButton->setEnabled(row > 0);
@@ -936,7 +1171,8 @@ namespace scopeone::ui
     // Use the selected raw camera layer as the hardware control target
     void DeviceControlWidget::syncControlTargetToSelectedRawLayer()
     {
-        if (!scopeone::core::ScopeOneCore::isRawLayerKey(currentLayerKey()))
+        if (isAllTarget(m_currentTarget)
+            || !scopeone::core::ScopeOneCore::isRawLayerKey(currentLayerKey()))
         {
             return;
         }
@@ -1422,6 +1658,26 @@ namespace scopeone::ui
         emit stageMoveFailed(tr("Failed to queue Z stage move: %1").arg(zLabel));
     }
 
+    // Moves XY stage with step factor
+    void DeviceControlWidget::moveXYStep(double dxScale, double dyScale, bool big)
+    {
+        const QLineEdit* lineEdit = big ? m_xyBigStepLineEdit : m_xyStepLineEdit;
+        if (!lineEdit) return;
+        const double stepValue = lineEdit->text().toDouble();
+        if (stepValue <= 0.0) return;
+        moveXYStage(dxScale * stepValue, dyScale * stepValue);
+    }
+
+    // Moves Z stage with step factor
+    void DeviceControlWidget::moveZStep(double dzScale, bool big)
+    {
+        const QLineEdit* lineEdit = big ? m_zBigStepLineEdit : m_zStepLineEdit;
+        if (!lineEdit) return;
+        const double stepValue = lineEdit->text().toDouble();
+        if (stepValue <= 0.0) return;
+        moveZStage(dzScale * stepValue);
+    }
+
     // Updates control state when cameras initialize
     void DeviceControlWidget::onCameraInitialized(bool initialized)
     {
@@ -1581,8 +1837,6 @@ namespace scopeone::ui
     // Rebuilds available camera control targets
     void DeviceControlWidget::setControlTargets(const QStringList& cameraIds)
     {
-        QString current = m_cameraSelectCombo->currentText();
-
         {
             QSignalBlocker blocker(m_cameraSelectCombo);
             m_cameraSelectCombo->clear();
@@ -1592,26 +1846,13 @@ namespace scopeone::ui
                 m_cameraSelectCombo->addItem(id);
             }
 
-            int idx = m_cameraSelectCombo->findText(current);
-            const bool currentIsAll = isAllTarget(current);
-            if (!cameraIds.isEmpty())
+            if (cameraIds.size() > 1)
             {
-                if (currentIsAll && cameraIds.size() > 1)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(0);
-                }
-                else if (currentIsAll)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(1);
-                }
-                else if (idx >= 0)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(idx);
-                }
-                else
-                {
-                    m_cameraSelectCombo->setCurrentIndex(1);
-                }
+                m_cameraSelectCombo->setCurrentIndex(0);
+            }
+            else if (cameraIds.size() == 1)
+            {
+                m_cameraSelectCombo->setCurrentIndex(1);
             }
             else
             {
