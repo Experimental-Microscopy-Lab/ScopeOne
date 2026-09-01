@@ -37,6 +37,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QInputDialog>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyleHints>
@@ -688,6 +689,61 @@ namespace scopeone::ui
                             updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                             m_scopeonecore->saveRecordingSession(session);
                         }
+                    }
+                });
+        connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionAsRequested,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    const QString saveDir = QFileDialog::getExistingDirectory(
+                        this, tr("Select Dataset Folder"), QDir::homePath());
+                    if (saveDir.isEmpty())
+                    {
+                        return;
+                    }
+
+                    bool accepted = false;
+                    QString baseName = QInputDialog::getText(
+                                           this,
+                                           tr("Save Image Dataset As"),
+                                           tr("Dataset name and optional format suffix"),
+                                           QLineEdit::Normal,
+                                           session->capturePlan().baseName + QStringLiteral(".ome.tiff"),
+                                           &accepted)
+                                           .trimmed();
+                    if (!accepted || baseName.isEmpty())
+                    {
+                        return;
+                    }
+
+                    scopeone::core::ScopeOneCore::RecordingSaveOptions options;
+                    if (baseName.endsWith(QStringLiteral(".ome.tiff"), Qt::CaseInsensitive))
+                    {
+                        baseName.chop(9);
+                        options.format = scopeone::core::RecordingFormat::OmeTiff;
+                    }
+                    else if (baseName.endsWith(QStringLiteral(".ome.zarr"), Qt::CaseInsensitive))
+                    {
+                        baseName.chop(9);
+                        options.format = scopeone::core::RecordingFormat::OmeZarr;
+                    }
+                    else if (baseName.endsWith(QStringLiteral(".tiff"), Qt::CaseInsensitive))
+                    {
+                        baseName.chop(5);
+                        options.format = scopeone::core::RecordingFormat::Tiff;
+                    }
+                    else if (baseName.endsWith(QStringLiteral(".bin"), Qt::CaseInsensitive))
+                    {
+                        baseName.chop(4);
+                        options.format = scopeone::core::RecordingFormat::Binary;
+                    }
+                    options.saveDir = saveDir;
+                    options.baseName = baseName;
+                    options.enableCompression = options.format != scopeone::core::RecordingFormat::Binary;
+                    updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
+                    if (!m_scopeonecore->saveRecordingSession(session, options))
+                    {
+                        showStatusMessage(tr("Could not start saving the selected session"), 5000);
                     }
                 });
 

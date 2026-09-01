@@ -1,13 +1,25 @@
 #include "ImageGalleryWidget.h"
 
 #include <QAbstractItemView>
-#include <QHBoxLayout>
+#include <QColor>
+#include <QGridLayout>
+#include <QImage>
+#include <QIcon>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
+#include <QShortcut>
+#include <QSizePolicy>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <cstring>
+#include <limits>
 
 namespace scopeone::ui
 {
@@ -83,6 +95,64 @@ namespace scopeone::ui
         {
             return session.recordedFrameCount();
         }
+
+        // Build a square grayscale thumbnail from a stored camera frame
+        QIcon frameThumbnail(const scopeone::core::ImageFrame& frame)
+        {
+            if (!frame.isValid())
+            {
+                return {};
+            }
+
+            QImage image(frame.width, frame.height, QImage::Format_Grayscale8);
+            if (frame.isMono8())
+            {
+                for (int y = 0; y < frame.height; ++y)
+                {
+                    const char* source = frame.bytes.constData()
+                                         + static_cast<qint64>(y) * frame.stride;
+                    std::memcpy(image.scanLine(y), source, static_cast<size_t>(frame.width));
+                }
+            }
+            else
+            {
+                quint16 minimum = (std::numeric_limits<quint16>::max)();
+                quint16 maximum = 0;
+                for (int y = 0; y < frame.height; ++y)
+                {
+                    const auto* source = reinterpret_cast<const quint16*>(
+                        frame.bytes.constData() + static_cast<qint64>(y) * frame.stride);
+                    for (int x = 0; x < frame.width; ++x)
+                    {
+                        minimum = (std::min)(minimum, source[x]);
+                        maximum = (std::max)(maximum, source[x]);
+                    }
+                }
+
+                const int range = static_cast<int>(maximum) - static_cast<int>(minimum);
+                for (int y = 0; y < frame.height; ++y)
+                {
+                    const auto* source = reinterpret_cast<const quint16*>(
+                        frame.bytes.constData() + static_cast<qint64>(y) * frame.stride);
+                    uchar* target = image.scanLine(y);
+                    for (int x = 0; x < frame.width; ++x)
+                    {
+                        target[x] = range > 0
+                                        ? static_cast<uchar>(
+                                              (static_cast<int>(source[x]) - minimum) * 255 / range)
+                                        : static_cast<uchar>(source[x] > 0 ? 255 : 0);
+                    }
+                }
+            }
+
+            const QImage scaled = image.scaled(QSize(48, 48), Qt::KeepAspectRatio,
+                                                Qt::SmoothTransformation);
+            QPixmap pixmap(48, 48);
+            pixmap.fill(QColor(QStringLiteral("#1c2229")));
+            QPainter painter(&pixmap);
+            painter.drawImage((48 - scaled.width()) / 2, (48 - scaled.height()) / 2, scaled);
+            return QIcon(pixmap);
+        }
     }
 
     // Create the image gallery panel
@@ -110,6 +180,19 @@ namespace scopeone::ui
                     }
                     updateButtons();
                     updateEmptyState();
+                });
+        connect(m_core, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
+                this,
+                [this](quint64,
+                       const std::shared_ptr<RecordingSessionData>& session,
+                       const QString&,
+                       int,
+                       const scopeone::core::ImageFrame& frame)
+                {
+                    if (session && frame.isValid())
+                    {
+                        updateSessionThumbnail(session->capturePlan().experimentId, frame);
+                    }
                 });
     }
 
@@ -139,11 +222,21 @@ namespace scopeone::ui
 
         auto* item = new QListWidgetItem(m_sessionList);
         item->setText(displayTitle(*session, title) + QLatin1Char('\n') + itemSubtitle(*session));
+        item->setSizeHint(QSize(0, 64));
         item->setData(kSessionIdRole, id);
         if (!session->isSaved())
         {
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(Qt::Unchecked);
+        }
+        const QStringList cameraIds = session->recordedCameraIds();
+        for (const QString& cameraId : cameraIds)
+        {
+            if (session->recordedFrameCount(cameraId) > 0)
+            {
+                m_core->requestRecordingSessionFrame(session, cameraId, 0);
+                break;
+            }
         }
         m_sessionList->setCurrentItem(item);
 
@@ -206,17 +299,37 @@ namespace scopeone::ui
 
         m_sessionList = new QListWidget(this);
         m_sessionList->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_sessionList->setIconSize(QSize(48, 48));
+        m_sessionList->setSpacing(4);
+        m_sessionList->setUniformItemSizes(true);
+        m_sessionList->setTextElideMode(Qt::ElideRight);
+        m_sessionList->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_sessionList->setStyleSheet(QStringLiteral(
+            "QListWidget { border: 1px solid #3a424b; border-radius: 4px; padding: 2px; }"
+            "QListWidget::item { padding: 6px; border-radius: 4px; }"
+            "QListWidget::item:selected { background: #31485d; }"));
         layout->addWidget(m_sessionList, 1);
 
-        auto* buttonLayout = new QHBoxLayout();
-        m_liveButton = new QPushButton(QStringLiteral("Live"), this);
+        auto* buttonLayout = new QGridLayout();
+        buttonLayout->setHorizontalSpacing(6);
+        buttonLayout->setVerticalSpacing(6);
         m_openButton = new QPushButton(QStringLiteral("Preview"), this);
-        m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
         m_deleteButton = new QPushButton(QStringLiteral("Delete"), this);
-        buttonLayout->addWidget(m_liveButton);
-        buttonLayout->addWidget(m_openButton);
-        buttonLayout->addWidget(m_saveCheckedButton);
-        buttonLayout->addWidget(m_deleteButton);
+        m_saveCheckedButton = new QPushButton(QStringLiteral("Save Checked"), this);
+        m_liveButton = new QPushButton(QStringLiteral("Live"), this);
+        m_openButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        m_saveCheckedButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        m_deleteButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        m_liveButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        m_openButton->setToolTip(QStringLiteral("Open the selected image preview"));
+        m_deleteButton->setToolTip(QStringLiteral("Delete the selected gallery session"));
+        m_saveCheckedButton->setToolTip(QStringLiteral("Save all checked unsaved sessions"));
+        m_liveButton->setToolTip(QStringLiteral("Return to the live preview"));
+        buttonLayout->addWidget(m_openButton, 0, 0);
+        buttonLayout->addWidget(m_deleteButton, 0, 1);
+        buttonLayout->addWidget(m_saveCheckedButton, 1, 0);
+        buttonLayout->addWidget(m_liveButton, 1, 1);
+        buttonLayout->setColumnStretch(0, 1);
         layout->addLayout(buttonLayout);
 
         connect(m_sessionList, &QListWidget::currentItemChanged, this,
@@ -225,51 +338,24 @@ namespace scopeone::ui
                     updateButtons();
                 });
         connect(m_sessionList, &QListWidget::itemDoubleClicked, this,
-                [this](QListWidgetItem*)
-                {
-                    auto session = currentSession();
-                    if (canPreviewSession(session))
-                    {
-                        emit sessionOpenRequested(session);
-                    }
-                });
+                [this](QListWidgetItem*) { openCurrentSession(); });
         connect(m_sessionList, &QListWidget::itemChanged, this, [this](QListWidgetItem*) { updateButtons(); });
+        connect(m_sessionList, &QListWidget::customContextMenuRequested,
+                this, &ImageGalleryWidget::showContextMenu);
         connect(m_liveButton, &QPushButton::clicked, this, &ImageGalleryWidget::livePreviewRequested);
-        connect(m_openButton, &QPushButton::clicked, this,
-                [this]()
-                {
-                    auto session = currentSession();
-                    if (canPreviewSession(session))
-                    {
-                        emit sessionOpenRequested(session);
-                    }
-                });
-        connect(m_saveCheckedButton, &QPushButton::clicked, this,
-                [this]()
-                {
-                    const auto sessions = checkedSessions();
-                    if (!sessions.isEmpty())
-                    {
-                        emit saveSessionsRequested(sessions);
-                    }
-                });
-        connect(m_deleteButton, &QPushButton::clicked, this,
-                [this]()
-                {
-                    QListWidgetItem* item = m_sessionList->currentItem();
-                    if (!item)
-                    {
-                        return;
-                    }
-                    auto session = m_core->recordingSession(item->data(kSessionIdRole).toString());
-                    delete m_sessionList->takeItem(m_sessionList->row(item));
-                    if (session)
-                    {
-                        emit sessionRemoved(session);
-                    }
-                    updateButtons();
-                    updateEmptyState();
-                });
+        connect(m_openButton, &QPushButton::clicked, this, &ImageGalleryWidget::openCurrentSession);
+        connect(m_saveCheckedButton, &QPushButton::clicked,
+                this, &ImageGalleryWidget::saveCheckedSessions);
+        connect(m_deleteButton, &QPushButton::clicked, this, &ImageGalleryWidget::deleteCurrentSession);
+
+        auto* returnShortcut = new QShortcut(QKeySequence(Qt::Key_Return), m_sessionList);
+        connect(returnShortcut, &QShortcut::activated, this, &ImageGalleryWidget::openCurrentSession);
+        auto* enterShortcut = new QShortcut(QKeySequence(Qt::Key_Enter), m_sessionList);
+        connect(enterShortcut, &QShortcut::activated, this, &ImageGalleryWidget::openCurrentSession);
+        auto* deleteShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), m_sessionList);
+        connect(deleteShortcut, &QShortcut::activated, this, &ImageGalleryWidget::deleteCurrentSession);
+        auto* backspaceShortcut = new QShortcut(QKeySequence(Qt::Key_Backspace), m_sessionList);
+        connect(backspaceShortcut, &QShortcut::activated, this, &ImageGalleryWidget::deleteCurrentSession);
     }
 
     // Enable actions only when they have valid targets
@@ -280,6 +366,121 @@ namespace scopeone::ui
         m_openButton->setEnabled(canPreviewSession(session));
         m_deleteButton->setEnabled(hasCurrent);
         m_saveCheckedButton->setEnabled(!checkedSessions().isEmpty());
+    }
+
+    // Open the currently selected session
+    void ImageGalleryWidget::openCurrentSession()
+    {
+        const auto session = currentSession();
+        if (canPreviewSession(session))
+        {
+            emit sessionOpenRequested(session);
+        }
+    }
+
+    // Remove the currently selected session from the gallery
+    void ImageGalleryWidget::deleteCurrentSession()
+    {
+        QListWidgetItem* item = m_sessionList->currentItem();
+        if (!item)
+        {
+            return;
+        }
+        const auto session = m_core->recordingSession(item->data(kSessionIdRole).toString());
+        delete m_sessionList->takeItem(m_sessionList->row(item));
+        if (session)
+        {
+            emit sessionRemoved(session);
+        }
+        updateButtons();
+        updateEmptyState();
+    }
+
+    // Save all checked unsaved sessions
+    void ImageGalleryWidget::saveCheckedSessions()
+    {
+        const auto sessions = checkedSessions();
+        if (!sessions.isEmpty())
+        {
+            emit saveSessionsRequested(sessions);
+        }
+    }
+
+    // Check or uncheck every session that supports gallery selection
+    void ImageGalleryWidget::setAllSessionsChecked(bool checked)
+    {
+        for (int row = 0; row < m_sessionList->count(); ++row)
+        {
+            QListWidgetItem* item = m_sessionList->item(row);
+            if (item->flags() & Qt::ItemIsUserCheckable)
+            {
+                item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+            }
+        }
+    }
+
+    // Show gallery actions for the item under the pointer
+    void ImageGalleryWidget::showContextMenu(const QPoint& position)
+    {
+        if (QListWidgetItem* item = m_sessionList->itemAt(position))
+        {
+            m_sessionList->setCurrentItem(item);
+        }
+        else
+        {
+            m_sessionList->clearSelection();
+            m_sessionList->setCurrentItem(nullptr);
+        }
+
+        const auto session = currentSession();
+        QMenu menu(this);
+        QAction* openAction = menu.addAction(QStringLiteral("Open Preview (Enter)"));
+        QAction* saveAsAction = menu.addAction(QStringLiteral("Save Selected As..."));
+        QAction* deleteAction = menu.addAction(QStringLiteral("Delete (Del)"));
+        menu.addSeparator();
+        QAction* selectAllAction = menu.addAction(QStringLiteral("Select All"));
+        QAction* unselectAllAction = menu.addAction(QStringLiteral("Unselect All"));
+        QAction* saveCheckedAction = menu.addAction(QStringLiteral("Save Checked"));
+
+        openAction->setEnabled(canPreviewSession(session));
+        saveAsAction->setEnabled(session != nullptr);
+        deleteAction->setEnabled(session != nullptr);
+        saveCheckedAction->setEnabled(!checkedSessions().isEmpty());
+
+        connect(openAction, &QAction::triggered, this, &ImageGalleryWidget::openCurrentSession);
+        connect(saveAsAction, &QAction::triggered, this,
+                [this]()
+                {
+                    const auto selected = currentSession();
+                    if (selected)
+                    {
+                        emit saveSessionAsRequested(selected);
+                    }
+                });
+        connect(deleteAction, &QAction::triggered, this, &ImageGalleryWidget::deleteCurrentSession);
+        connect(selectAllAction, &QAction::triggered, this,
+                [this]() { setAllSessionsChecked(true); });
+        connect(unselectAllAction, &QAction::triggered, this,
+                [this]() { setAllSessionsChecked(false); });
+        connect(saveCheckedAction, &QAction::triggered,
+                this, &ImageGalleryWidget::saveCheckedSessions);
+        menu.exec(m_sessionList->viewport()->mapToGlobal(position));
+    }
+
+    // Apply an asynchronously loaded frame to its gallery item
+    void ImageGalleryWidget::updateSessionThumbnail(
+        const QString& sessionId,
+        const scopeone::core::ImageFrame& frame)
+    {
+        for (int row = 0; row < m_sessionList->count(); ++row)
+        {
+            QListWidgetItem* item = m_sessionList->item(row);
+            if (item->data(kSessionIdRole).toString() == sessionId.trimmed())
+            {
+                item->setIcon(frameThumbnail(frame));
+                return;
+            }
+        }
     }
 
     // Show a simple empty state when no sessions exist
