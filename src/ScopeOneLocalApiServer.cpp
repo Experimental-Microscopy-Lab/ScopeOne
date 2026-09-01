@@ -1348,17 +1348,20 @@ namespace scopeone::ui
     // Starts Local API operations that must not run in the socket callback
     bool ScopeOneLocalApiServer::processAsyncRequest(QLocalSocket* socket,
                                                      const QJsonObject& request,
-                                                     const QJsonValue& requestId)
+                                                     const QJsonValue& requestId,
+                                                     const ResponseCallback& callback)
     {
         const QString type = request.value(QStringLiteral("type")).toString().trimmed();
         const QPointer<QLocalSocket> guardedSocket(socket);
-        const auto finish = [this, guardedSocket, requestId](QJsonObject response)
-        {
-            if (guardedSocket)
-            {
-                sendRequestResponse(guardedSocket, std::move(response), requestId);
-            }
-        };
+        const auto finish = callback
+                                ? callback
+                                : ResponseCallback([this, guardedSocket, requestId](QJsonObject response)
+                                {
+                                    if (guardedSocket)
+                                    {
+                                        sendRequestResponse(guardedSocket, std::move(response), requestId);
+                                    }
+                                });
 
         if (type == QStringLiteral("open_image_window"))
         {
@@ -2277,6 +2280,17 @@ namespace scopeone::ui
         }
 
         return false;
+    }
+
+    // Dispatch one request through the same synchronous or asynchronous path as the local socket
+    void ScopeOneLocalApiServer::dispatchRequest(const QJsonObject& request,
+                                                 ResponseCallback callback)
+    {
+        if (processAsyncRequest(nullptr, request, QJsonValue(), callback))
+        {
+            return;
+        }
+        callback(processRequest(request));
     }
 
     // Dispatches one local API request object

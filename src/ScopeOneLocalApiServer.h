@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
+#include <functional>
 #include <memory>
 
 #include "scopeone/ScopeOneCore.h"
@@ -24,11 +25,16 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
+        using ResponseCallback = std::function<void(QJsonObject)>;
+
         explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
                                         PreviewWidget* previewWidget,
                                         ImageWorkspace* imageWorkspace,
                                         QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
+
+        QJsonObject processRequest(const QJsonObject& request);
+        void dispatchRequest(const QJsonObject& request, ResponseCallback callback);
 
     private:
         void handleNewConnection();
@@ -40,8 +46,8 @@ namespace scopeone::ui
                                  const QJsonValue& requestId);
         bool processAsyncRequest(QLocalSocket* socket,
                                  const QJsonObject& request,
-                                 const QJsonValue& requestId);
-        QJsonObject processRequest(const QJsonObject& request);
+                                 const QJsonValue& requestId,
+                                 const ResponseCallback& callback = {});
         scopeone::core::ExperimentDocument createExperimentDocument();
         QJsonObject experimentStatusResponse(const QString& type,
                                              const QString& experimentId) const;
