@@ -85,6 +85,8 @@ namespace scopeone::ui
         bool isScaleBarVisible() const;
         void setClippingWarningEnabled(bool enabled);
         bool isClippingWarningEnabled() const;
+        void setActiveLayerKey(const QString& key);
+        QString activeLayerKey() const { return m_activeLayerKey; }
         void setPixelSizeCallback(std::function<double(const QString&)> callback);
         void startROIDrawing(const QString& cameraId);
         void startMeasurementLineDrawingForLayer(const QString& layerKey);
@@ -107,6 +109,7 @@ signals:
         void clippingWarningChanged(bool enabled);
         void stageStepRequested(double dxScale, double dyScale, bool big);
         void stageZStepRequested(double dzScale, bool big);
+        void layerClicked(const QString& layerKey);
         void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
@@ -127,6 +130,7 @@ signals:
         void resizeGL(int, int) override;
         void paintGL() override;
         void mousePressEvent(QMouseEvent* event) override;
+        void mouseDoubleClickEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
         void leaveEvent(QEvent* event) override;
@@ -234,6 +238,9 @@ signals:
         GLint m_uUvScale{-1}, m_uUvOffset{-1}, m_uShowClipping{-1};
         bool m_scaleBarVisible{true};
         bool m_clippingWarning{false};
+        QString m_activeLayerKey;
+        QStringList m_savedVisibleLayerKeys;
+        QPoint m_hoverWidgetPos{-1, -1};
         std::function<double(const QString&)> m_pixelSizeCallback;
 
         struct CachedTexture
@@ -329,6 +336,8 @@ signals:
         void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawCursorHud(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,

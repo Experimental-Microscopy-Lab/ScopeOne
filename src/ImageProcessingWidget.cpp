@@ -76,12 +76,12 @@ namespace scopeone::ui
                 painter.drawLine(area.center().x(), area.top(), area.center().x(), area.bottom());
                 painter.drawLine(area.left(), area.center().y(), area.right(), area.center().y());
 
-                const QPointF center = toWidget(m_parameters.value("center_x").toDouble(),
-                                                m_parameters.value("center_y").toDouble());
-                const double sizeX = m_parameters.value("size_x", 0.1).toDouble() * area.width();
-                const double sizeY = m_parameters.value("size_y", 0.1).toDouble() * area.height();
-                const double rotation = m_parameters.value("rotation").toDouble();
-                const int shape = m_parameters.value("shape").toInt();
+                const QPointF center = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble(),
+                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
+                const double sizeX = m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() * area.width();
+                const double sizeY = m_parameters.value(QStringLiteral("size_y"), 0.1).toDouble() * area.height();
+                const double rotation = m_parameters.value(QStringLiteral("rotation")).toDouble();
+                const int shape = m_parameters.value(QStringLiteral("shape")).toInt();
                 painter.save();
                 painter.translate(center);
                 painter.rotate(-rotation);
@@ -96,7 +96,7 @@ namespace scopeone::ui
                     painter.drawEllipse(QRectF(-sizeX / 2.0, -sizeY / 2.0, sizeX, sizeY));
                     if (shape == 2)
                     {
-                        const double inner = m_parameters.value("inner_size").toDouble()
+                        const double inner = m_parameters.value(QStringLiteral("inner_size")).toDouble()
                                               * area.width();
                         painter.setBrush(QColor(24, 27, 31));
                         painter.drawEllipse(QRectF(-inner / 2.0, -inner / 2.0, inner, inner));
@@ -108,19 +108,19 @@ namespace scopeone::ui
                 painter.setBrush(QColor(255, 120, 90));
                 painter.drawEllipse(center, 4, 4);
                 painter.setBrush(QColor(90, 210, 255));
-                painter.drawEllipse(toWidget(m_parameters.value("center_x").toDouble()
-                                                 + m_parameters.value("size_x", 0.1).toDouble() / 2.0,
-                                             m_parameters.value("center_y").toDouble()),
+                painter.drawEllipse(toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble()
+                                                 + m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() / 2.0,
+                                             m_parameters.value(QStringLiteral("center_y")).toDouble()),
                                     5, 5);
             }
 
             void mousePressEvent(QMouseEvent* event) override
             {
-                const QPointF center = toWidget(m_parameters.value("center_x").toDouble(),
-                                                m_parameters.value("center_y").toDouble());
-                const QPointF handle = toWidget(m_parameters.value("center_x").toDouble()
-                                                    + m_parameters.value("size_x", 0.1).toDouble() / 2.0,
-                                                m_parameters.value("center_y").toDouble());
+                const QPointF center = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble(),
+                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
+                const QPointF handle = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble()
+                                                    + m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() / 2.0,
+                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
                 if (QLineF(event->position(), center).length() < 14.0)
                 {
                     m_dragMode = DragMode::Move;
@@ -146,27 +146,27 @@ namespace scopeone::ui
                 if (m_dragMode == DragMode::Move)
                 {
                     const QPointF delta = event->position() - m_lastPosition;
-                    parameters["center_x"] = qBound(-0.5,
-                                                     parameters.value("center_x").toDouble()
-                                                         + delta.x() / plotArea().width(),
-                                                     0.5);
-                    parameters["center_y"] = qBound(-0.5,
-                                                     parameters.value("center_y").toDouble()
-                                                         + delta.y() / plotArea().height(),
-                                                     0.5);
+                    parameters[QStringLiteral("center_x")] = qBound(-0.5,
+                                                                    parameters.value(QStringLiteral("center_x")).toDouble()
+                                                                        + delta.x() / plotArea().width(),
+                                                                    0.5);
+                    parameters[QStringLiteral("center_y")] = qBound(-0.5,
+                                                                    parameters.value(QStringLiteral("center_y")).toDouble()
+                                                                        + delta.y() / plotArea().height(),
+                                                                    0.5);
                 }
                 else
                 {
-                    const QPointF center = toWidget(parameters.value("center_x").toDouble(),
-                                                    parameters.value("center_y").toDouble());
-                    parameters["size_x"] = qBound(0.001,
-                                                    2.0 * std::abs(event->position().x() - center.x())
-                                                        / plotArea().width(),
-                                                    1.0);
-                    parameters["size_y"] = qBound(0.001,
-                                                    2.0 * std::abs(event->position().y() - center.y())
-                                                        / plotArea().height(),
-                                                    1.0);
+                    const QPointF center = toWidget(parameters.value(QStringLiteral("center_x")).toDouble(),
+                                                    parameters.value(QStringLiteral("center_y")).toDouble());
+                    parameters[QStringLiteral("size_x")] = qBound(0.001,
+                                                                  2.0 * std::abs(event->position().x() - center.x())
+                                                                      / plotArea().width(),
+                                                                  1.0);
+                    parameters[QStringLiteral("size_y")] = qBound(0.001,
+                                                                  2.0 * std::abs(event->position().y() - center.y())
+                                                                      / plotArea().height(),
+                                                                  1.0);
                 }
                 m_lastPosition = event->position();
                 if (m_parametersChanged)

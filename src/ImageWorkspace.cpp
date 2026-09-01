@@ -1086,6 +1086,10 @@ namespace scopeone::ui
             }
             document->activeLayerKey = normalizedLayerKey;
         }
+        if (PreviewWidget* preview = activePreviewWidget())
+        {
+            preview->setActiveLayerKey(normalizedLayerKey);
+        }
         if (previousLayerKey != normalizedLayerKey)
         {
             emit activeLayerChanged(normalizedLayerKey);
@@ -1581,6 +1585,8 @@ namespace scopeone::ui
                 this, &ImageWorkspace::measurementLineInspected);
         connect(preview, &PreviewWidget::measurementLineCleared,
                 this, &ImageWorkspace::measurementLineCleared);
+        connect(preview, &PreviewWidget::layerClicked,
+                this, [this](const QString& layerKey) { setActiveLayerKey(layerKey); });
         connect(preview, &PreviewWidget::mousePositionChanged,
                 this, [this, documentId](const QPoint& position)
                 {

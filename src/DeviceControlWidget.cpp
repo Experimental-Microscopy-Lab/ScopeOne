@@ -1661,21 +1661,21 @@ namespace scopeone::ui
     // Moves XY stage with step factor
     void DeviceControlWidget::moveXYStep(double dxScale, double dyScale, bool big)
     {
-        const QLineEdit* lineEdit = big ? m_xyBigStepLineEdit : m_xyStepLineEdit;
-        if (!lineEdit) return;
-        const double stepValue = lineEdit->text().toDouble();
-        if (stepValue <= 0.0) return;
-        moveXYStage(dxScale * stepValue, dyScale * stepValue);
+        const double stepValue = (big ? m_xyBigStepLineEdit : m_xyStepLineEdit)->text().toDouble();
+        if (stepValue > 0.0)
+        {
+            moveXYStage(dxScale * stepValue, dyScale * stepValue);
+        }
     }
 
     // Moves Z stage with step factor
     void DeviceControlWidget::moveZStep(double dzScale, bool big)
     {
-        const QLineEdit* lineEdit = big ? m_zBigStepLineEdit : m_zStepLineEdit;
-        if (!lineEdit) return;
-        const double stepValue = lineEdit->text().toDouble();
-        if (stepValue <= 0.0) return;
-        moveZStage(dzScale * stepValue);
+        const double stepValue = (big ? m_zBigStepLineEdit : m_zStepLineEdit)->text().toDouble();
+        if (stepValue > 0.0)
+        {
+            moveZStage(dzScale * stepValue);
+        }
     }
 
     // Updates control state when cameras initialize

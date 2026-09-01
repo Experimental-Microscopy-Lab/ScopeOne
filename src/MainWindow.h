@@ -79,6 +79,7 @@ namespace scopeone::ui
         void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
+        void syncCameraState();
         void applyLoadedCameraState(const QStringList& cameraIds);
         void applyNoCameraState();
         void refreshDevicePanels(bool fromCache = false);
@@ -161,6 +162,7 @@ namespace scopeone::ui
         QAction* m_zoomOutAction{nullptr};
         QAction* m_scaleBarAction{nullptr};
         QAction* m_clippingAction{nullptr};
+        QAction* m_toggleLayoutAction{nullptr};
         QAction* m_togglePreviewAction{nullptr};
         QAction* m_snapAction{nullptr};
         QAction* m_autoContrastAction{nullptr};

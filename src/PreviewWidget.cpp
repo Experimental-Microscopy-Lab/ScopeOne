@@ -942,6 +942,16 @@ namespace scopeone::ui
         return m_clippingWarning;
     }
 
+    void PreviewWidget::setActiveLayerKey(const QString& key)
+    {
+        if (m_activeLayerKey == key)
+        {
+            return;
+        }
+        m_activeLayerKey = key;
+        update();
+    }
+
     // Sets the callback providing pixel size in micrometers per layer
     void PreviewWidget::setPixelSizeCallback(std::function<double(const QString&)> callback)
     {
@@ -1640,6 +1650,135 @@ namespace scopeone::ui
         }
     }
 
+    // Draws tile names and active border outlines in Grid View
+    void PreviewWidget::drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (renderItems.empty())
+        {
+            return;
+        }
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+
+        const QFont font(QStringLiteral("Segoe UI"), 9);
+        painter.setFont(font);
+        const QFontMetrics fm(font);
+        const bool overlay = m_layerLayoutMode == LayerLayoutMode::Overlay
+                             && renderItems.size() > 1;
+        bool overlayBadgeDrawn = false;
+
+        for (const auto& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState)
+            {
+                continue;
+            }
+
+            if (overlay)
+            {
+                if (!m_activeLayerKey.isEmpty() && item.layerKey != m_activeLayerKey)
+                {
+                    continue;
+                }
+                if (overlayBadgeDrawn)
+                {
+                    continue;
+                }
+            }
+
+            if (!m_activeLayerKey.isEmpty() && item.layerKey == m_activeLayerKey && renderItems.size() > 1)
+            {
+                painter.setPen(QPen(QColor(0, 200, 255, 200), 2));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(item.area.adjusted(1, 1, -1, -1));
+            }
+
+            if (m_layerLayoutMode == LayerLayoutMode::SideBySide || renderItems.size() > 1)
+            {
+                const QString name = layerName(item.layerKey);
+                const int frameW = item.processed ? item.info->frameState->processedFrame.width : item.info->frameState->rawFrame.width;
+                const int frameH = item.processed ? item.info->frameState->processedFrame.height : item.info->frameState->rawFrame.height;
+                const QString labelText = (frameW > 0 && frameH > 0)
+                                              ? QString("%1 (%2x%3)").arg(name).arg(frameW).arg(frameH)
+                                              : name;
+                const int textWidth = fm.horizontalAdvance(labelText);
+                const QRect badgeRect(item.area.left() + 8, item.area.top() + 8, textWidth + 14, fm.height() + 6);
+
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(15, 18, 22, 180));
+                painter.drawRoundedRect(badgeRect, 4, 4);
+
+                painter.setPen(QColor(230, 235, 240));
+                painter.drawText(badgeRect, Qt::AlignCenter, labelText);
+                overlayBadgeDrawn = true;
+            }
+        }
+        painter.restore();
+    }
+
+    // Draws live cursor coordinates and pixel value HUD badge in bottom-left
+    void PreviewWidget::drawCursorHud(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (m_hoverWidgetPos.x() < 0 || m_hoverWidgetPos.y() < 0)
+        {
+            return;
+        }
+
+        for (const auto& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState || !item.area.contains(m_hoverWidgetPos))
+            {
+                continue;
+            }
+
+            QPoint imagePos;
+            if (mapWidgetPositionToImage(*item.info->frameState, item.processed, item.area, m_hoverWidgetPos, imagePos))
+            {
+                const auto& frame = item.processed ? item.info->frameState->processedFrame : item.info->frameState->rawFrame;
+                int pixelVal = 0;
+                bool hasVal = false;
+                if (frame.isValid() && imagePos.x() >= 0 && imagePos.x() < frame.width
+                    && imagePos.y() >= 0 && imagePos.y() < frame.height)
+                {
+                    if (frame.isMono8())
+                    {
+                        const uchar* ptr = reinterpret_cast<const uchar*>(frame.bytes.constData());
+                        pixelVal = ptr[imagePos.y() * frame.stride + imagePos.x()];
+                        hasVal = true;
+                    }
+                    else if (frame.isMono16())
+                    {
+                        const quint16* ptr = reinterpret_cast<const quint16*>(
+                            frame.bytes.constData() + imagePos.y() * frame.stride);
+                        pixelVal = ptr[imagePos.x()];
+                        hasVal = true;
+                    }
+                }
+
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing);
+                const QFont font(QStringLiteral("Segoe UI"), 9);
+                painter.setFont(font);
+                const QFontMetrics fm(font);
+
+                const QString hudText = hasVal
+                                            ? QString("X: %1  Y: %2 | Val: %3").arg(imagePos.x()).arg(imagePos.y()).arg(pixelVal)
+                                            : QString("X: %1  Y: %2").arg(imagePos.x()).arg(imagePos.y());
+                const int textWidth = fm.horizontalAdvance(hudText);
+                const QRect hudRect(item.area.left() + 8, item.area.bottom() - fm.height() - 14, textWidth + 14, fm.height() + 6);
+
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(15, 18, 22, 200));
+                painter.drawRoundedRect(hudRect, 4, 4);
+
+                painter.setPen(QColor(0, 200, 255));
+                painter.drawText(hudRect, Qt::AlignCenter, hudText);
+                painter.restore();
+                break;
+            }
+        }
+    }
+
     bool PreviewWidget::markupAtWidgetPosition(const QPoint& widgetPos,
                                                ImageSceneModel::Markup& outMarkup,
                                                PreviewInteractionTarget& outTarget,
@@ -2216,19 +2355,20 @@ namespace scopeone::ui
                 drawRenderItem(item);
             }
 
+            QPainter p(this);
             if (m_sceneModel->hasMarkups()
                 || (m_roiDrawingMode && m_roiDragging)
-                || (m_crossSectionDrawingMode && m_crossSectionDragging)
-                || m_scaleBarVisible)
+                || (m_crossSectionDrawingMode && m_crossSectionDragging))
             {
-                QPainter p(this);
                 drawMarkups(p, renderItems);
                 drawActiveInteractionMarkup(p, renderItems);
-                if (m_scaleBarVisible)
-                {
-                    drawScaleBar(p, renderItems);
-                }
             }
+            if (m_scaleBarVisible)
+            {
+                drawScaleBar(p, renderItems);
+            }
+            drawTileLabelsAndBadges(p, renderItems);
+            drawCursorHud(p, renderItems);
             return;
         }
 
@@ -2357,6 +2497,7 @@ namespace scopeone::ui
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8,
                      kColormapSize, colormaps.size(), 0,
                      GL_RGB, GL_UNSIGNED_BYTE, atlas.constData());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glActiveTexture(GL_TEXTURE0);
         m_prog.release();
         m_vao.release();
@@ -2426,6 +2567,7 @@ namespace scopeone::ui
                             frame.width, frame.height,
                             GL_RED, uploadType, frame.bytes.constData());
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             cachedTexture.uploadedRevision = frameRevision;
         }
 
@@ -2793,15 +2935,55 @@ namespace scopeone::ui
                 return;
             }
             m_sceneModel->selectOnly(QString());
+
+            if (interactionTargetAt(event->pos(), target) && !target.layerKey.isEmpty())
+            {
+                setActiveLayerKey(target.layerKey);
+                emit layerClicked(target.layerKey);
+            }
         }
 
         QOpenGLWidget::mousePressEvent(event);
     }
 
+    // Handles double click to maximize or restore grid tile
+    void PreviewWidget::mouseDoubleClickEvent(QMouseEvent* event)
+    {
+        if (event->button() == Qt::LeftButton)
+        {
+            PreviewInteractionTarget target;
+            if (interactionTargetAt(event->pos(), target) && !target.layerKey.isEmpty())
+            {
+                if (m_savedVisibleLayerKeys.isEmpty())
+                {
+                    m_savedVisibleLayerKeys = m_sceneModel->visibleLayerIds();
+                    m_sceneModel->setVisibleLayers({target.layerKey});
+                }
+                else
+                {
+                    m_sceneModel->setVisibleLayers(m_savedVisibleLayerKeys);
+                    m_savedVisibleLayerKeys.clear();
+                }
+                update();
+                return;
+            }
+            if (!m_savedVisibleLayerKeys.isEmpty())
+            {
+                m_sceneModel->setVisibleLayers(m_savedVisibleLayerKeys);
+                m_savedVisibleLayerKeys.clear();
+                update();
+                return;
+            }
+        }
+        QOpenGLWidget::mouseDoubleClickEvent(event);
+    }
+
     // Updates active drawing interactions during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
+        m_hoverWidgetPos = event->pos();
         emit mousePositionChanged(event->pos());
+        update();
         if (m_measurementLineDrawingMode && m_measurementLineDragging)
         {
             m_measurementLineEnd = event->pos();
@@ -3104,7 +3286,9 @@ namespace scopeone::ui
     // Clears the cursor readout after the pointer leaves the preview
     void PreviewWidget::leaveEvent(QEvent* event)
     {
+        m_hoverWidgetPos = QPoint(-1, -1);
         emit mousePositionChanged(QPoint(-1, -1));
+        update();
         QOpenGLWidget::leaveEvent(event);
     }
 

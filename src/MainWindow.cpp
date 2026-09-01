@@ -255,18 +255,11 @@ namespace scopeone::ui
                     m_deviceControlWidget->setControlsEnabled(!configurationRunning);
                     m_toolRegistry->setEnabled(!configurationRunning);
 
-                    const QStringList cameraIds = m_scopeonecore->cameraIds();
-                    if (cameraIds.isEmpty())
-                    {
-                        applyNoCameraState();
-                    }
-                    else
-                    {
-                        applyLoadedCameraState(cameraIds);
-                    }
+                    syncCameraState();
                     if (!configurationRunning)
                     {
                         refreshDevicePanels(false);
+                        const QStringList cameraIds = m_scopeonecore->cameraIds();
                         if (m_scopeonecore->loadedConfigurationPath().isEmpty())
                         {
                             showStatusMessage(tr("Configuration unloaded"), 3000);
@@ -285,9 +278,7 @@ namespace scopeone::ui
                 this, [this]()
                 {
                     if (m_scopeonecore->configurationOperationRunning()) return;
-                    const QStringList cameraIds = m_scopeonecore->cameraIds();
-                    if (cameraIds.isEmpty()) applyNoCameraState();
-                    else applyLoadedCameraState(cameraIds);
+                    syncCameraState();
                     refreshDevicePanels(false);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationLoadFinished,
@@ -609,6 +600,8 @@ namespace scopeone::ui
                 {
                     updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
+                    m_imageGalleryDockWidget->show();
+                    m_imageGalleryDockWidget->raise();
                 });
         connect(m_deviceControlWidget, &DeviceControlWidget::snapRequested,
                 this, [this](const QString& target)
@@ -627,6 +620,8 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     m_imageGalleryWidget->addSession(session);
+                    m_imageGalleryDockWidget->show();
+                    m_imageGalleryDockWidget->raise();
                     QTimer::singleShot(0, m_deviceControlWidget,
                                        [this]() { m_deviceControlWidget->refreshCameraParameters(); });
                     const QString result = session
@@ -958,6 +953,29 @@ namespace scopeone::ui
         connect(m_clippingAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
         connect(m_previewWidget, &PreviewWidget::clippingWarningChanged, m_clippingAction, &QAction::setChecked);
 
+        m_toggleLayoutAction = m_viewMenu->addAction(tr("Toggle &Grid / Overlay Layout"));
+        m_toggleLayoutAction->setShortcut(QKeySequence(Qt::Key_G));
+        m_toggleLayoutAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(m_toggleLayoutAction, &QAction::triggered, this, [this]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            if (m_previewWidget->layerLayoutMode() == PreviewWidget::LayerLayoutMode::SideBySide)
+            {
+                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
+                showStatusMessage(tr("Layout: Overlay Blended"), 2000);
+            }
+            else
+            {
+                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::SideBySide);
+                showStatusMessage(tr("Layout: Grid Split View"), 2000);
+            }
+        });
+        addAction(m_toggleLayoutAction);
+
         m_viewMenu->addSeparator();
         m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
 
@@ -1093,40 +1111,37 @@ namespace scopeone::ui
     void MainWindow::setupPropertyBrowser()
     {
         m_propertyDockWidget = new QDockWidget(tr("Properties"), this);
-        m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
 
         m_propertyBrowser = new DevicePropertyWidget(m_scopeonecore, this);
         m_configPresetWidget = new ConfigPresetWidget(m_scopeonecore, this);
 
         m_propertyDockWidget->setWidget(m_propertyBrowser);
-        m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
         addDockWidget(Qt::LeftDockWidgetArea, m_propertyDockWidget);
 
         m_configPresetDockWidget = new QDockWidget(tr("Configs"), this);
         m_configPresetDockWidget->setWidget(m_configPresetWidget);
-        m_configPresetDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-        tabifyDockWidget(m_propertyDockWidget, m_configPresetDockWidget);
+        m_configPresetDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
     }
 
     // Create the recording control dock
     void MainWindow::setupRecording()
     {
         m_recordingDockWidget = new QDockWidget(tr("Recording"), this);
-        m_recordingDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
+        m_recordingDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
 
         m_recordingWidget = new RecordingWidget(m_scopeonecore, this);
         m_recordingDockWidget->setWidget(m_recordingWidget);
 
-        addDockWidget(Qt::RightDockWidgetArea, m_recordingDockWidget);
-        tabifyDockWidget(m_controlDockWidget, m_recordingDockWidget);
-        m_controlDockWidget->raise();
+        addDockWidget(Qt::LeftDockWidgetArea, m_recordingDockWidget);
+        splitDockWidget(m_propertyDockWidget, m_recordingDockWidget, Qt::Vertical);
     }
 
     // Create the image gallery dock
     void MainWindow::setupImageGallery()
     {
         m_imageGalleryDockWidget = new QDockWidget(tr("Image Gallery"), this);
-        m_imageGalleryDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        m_imageGalleryDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
         m_imageGalleryDockWidget->setFeatures(QDockWidget::DockWidgetMovable |
             QDockWidget::DockWidgetFloatable |
             QDockWidget::DockWidgetClosable);
@@ -1134,9 +1149,11 @@ namespace scopeone::ui
         m_imageGalleryWidget = new ImageGalleryWidget(m_scopeonecore, this);
         m_imageGalleryDockWidget->setWidget(m_imageGalleryWidget);
 
+        addDockWidget(Qt::LeftDockWidgetArea, m_configPresetDockWidget);
+        tabifyDockWidget(m_propertyDockWidget, m_configPresetDockWidget);
         addDockWidget(Qt::LeftDockWidgetArea, m_imageGalleryDockWidget);
         tabifyDockWidget(m_propertyDockWidget, m_imageGalleryDockWidget);
-        m_imageGalleryDockWidget->raise();
+        m_propertyDockWidget->raise();
     }
 
     // Close the modal configuration progress dialog if present
@@ -1257,6 +1274,20 @@ namespace scopeone::ui
 
         m_recordingWidget->setAvailableCameras(cameraIds);
         m_toolRegistry->updateActions();
+    }
+
+    // Synchronizes camera lists and UI state based on available devices
+    void MainWindow::syncCameraState()
+    {
+        const QStringList cameraIds = m_scopeonecore->cameraIds();
+        if (cameraIds.isEmpty())
+        {
+            applyNoCameraState();
+        }
+        else
+        {
+            applyLoadedCameraState(cameraIds);
+        }
     }
 
     // Clear preview and panel state when no camera is available

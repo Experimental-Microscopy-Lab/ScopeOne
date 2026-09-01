@@ -321,12 +321,16 @@ namespace scopeone::core::internal
             QTimer timer;
             timer.setSingleShot(true);
             connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+            struct LoopGuard
+            {
+                QEventLoop*& target;
+                ~LoopGuard() { target = nullptr; }
+            } loopGuard{m_waitingLoop};
             m_waitingLoop = &loop;
             m_socket->write(driverhost::encodeMessage(request));
             m_socket->flush();
             timer.start((std::max)(1, timeoutMs));
             loop.exec();
-            m_waitingLoop = nullptr;
 
             if (m_waitingResponse.isEmpty())
             {
