@@ -6,7 +6,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(ScopeOneCore CONFIG REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS imgcodecs imgproc)
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc)
 
 function(scopeone_example_plugin target kind)
     set_target_properties(${target} PROPERTIES

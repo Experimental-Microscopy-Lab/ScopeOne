@@ -16,5 +16,8 @@
         <file>luts/Inferno.lut</file>
         <file>luts/Magma.lut</file>
         <file>luts/Cividis.lut</file>
+        <file>luts/Jet.lut</file>
+        <file>luts/Rainbow.lut</file>
+        <file>luts/Turbo.lut</file>
     </qresource>
 </RCC>
