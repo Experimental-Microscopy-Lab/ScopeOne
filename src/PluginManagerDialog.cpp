@@ -1,8 +1,10 @@
 #include "PluginManagerDialog.h"
 
 #include "scopeone/PluginManifest.h"
+#include "scopeone/DaqDevice.h"
 #include "scopeone/DriverHostProviderPlugin.h"
 #include "scopeone/ProcessingPlugin.h"
+#include "scopeone/SignalSource.h"
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ToolPlugin.h"
 
@@ -33,16 +35,21 @@ namespace scopeone::ui
     {
         constexpr int kIdRole = Qt::UserRole;
         constexpr int kKindRole = Qt::UserRole + 1;
+        constexpr int kStatusRole = Qt::UserRole + 2;
+        constexpr int kMetadataRole = Qt::UserRole + 3;
 
         struct DiscoveredPlugin
         {
             scopeone::core::PluginManifest manifest;
             scopeone::core::PluginKind expectedKind{scopeone::core::PluginKind::Processing};
             QString path;
+            QString interfaceId;
+            QJsonObject metadata;
             QString error;
+            QString loadError;
         };
 
-        QString pluginInterfaceId(scopeone::core::PluginKind kind);
+        QStringList pluginInterfaceIds(scopeone::core::PluginKind kind);
 
         QList<DiscoveredPlugin> discoverPlugins()
         {
@@ -75,16 +82,29 @@ namespace scopeone::ui
                         plugin.expectedKind = kind;
                         plugin.path = file.absoluteFilePath();
                         const QJsonObject loaderMetadata = loader.metaData();
+                        plugin.interfaceId = loaderMetadata.value(QStringLiteral("IID")).toString();
+                        plugin.metadata = loaderMetadata.value(QStringLiteral("MetaData")).toObject();
                         scopeone::core::parsePluginManifest(
-                            loaderMetadata.value(QStringLiteral("MetaData")).toObject(),
+                            plugin.metadata,
                             kind,
                             plugin.manifest,
                             &plugin.error);
                         if (plugin.error.isEmpty()
-                            && loaderMetadata.value(QStringLiteral("IID")).toString()
-                                   != pluginInterfaceId(kind))
+                            && !pluginInterfaceIds(kind).contains(
+                                loaderMetadata.value(QStringLiteral("IID")).toString()))
                         {
                             plugin.error = QStringLiteral("plugin interface does not match its kind");
+                        }
+                        if (plugin.error.isEmpty())
+                        {
+                            if (!loader.load())
+                            {
+                                plugin.loadError = loader.errorString();
+                            }
+                            else
+                            {
+                                loader.unload();
+                            }
                         }
                         plugins.append(std::move(plugin));
                     }
@@ -105,16 +125,19 @@ namespace scopeone::ui
                        : scopeone::core::pluginKindName(kind);
         }
 
-        QString pluginInterfaceId(scopeone::core::PluginKind kind)
+        QStringList pluginInterfaceIds(scopeone::core::PluginKind kind)
         {
             switch (kind)
             {
             case scopeone::core::PluginKind::Processing:
-                return QStringLiteral(ScopeOneProcessingPlugin_iid);
+                return {QStringLiteral(ScopeOneProcessingPlugin_iid)};
             case scopeone::core::PluginKind::Tool:
-                return QStringLiteral(ScopeOneToolPlugin_iid);
+                return {QStringLiteral(ScopeOneToolPlugin_iid)};
             case scopeone::core::PluginKind::Hardware:
-                return QStringLiteral(ScopeOneDriverHostProviderPlugin_iid);
+                return {
+                    QStringLiteral(ScopeOneDriverHostProviderPlugin_iid),
+                    QStringLiteral(SCOPEONE_DAQ_DEVICE_PLUGIN_IID),
+                    QStringLiteral(SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID)};
             }
             return {};
         }
@@ -130,10 +153,15 @@ namespace scopeone::ui
             {
                 continue;
             }
-            if (!plugin.error.isEmpty())
+            if (plugin.interfaceId != QStringLiteral(ScopeOneDriverHostProviderPlugin_iid))
+            {
+                continue;
+            }
+            if (!plugin.error.isEmpty() || !plugin.loadError.isEmpty())
             {
                 errors.append(QStringLiteral("%1: %2")
-                                  .arg(QFileInfo(plugin.path).fileName(), plugin.error));
+                                  .arg(QFileInfo(plugin.path).fileName(),
+                                       plugin.error.isEmpty() ? plugin.loadError : plugin.error));
                 continue;
             }
 
@@ -173,7 +201,7 @@ namespace scopeone::ui
         : QDialog(parent)
     {
         setWindowTitle(tr("Plugin Manager"));
-        resize(820, 460);
+        resize(900, 600);
 
         auto* layout = new QVBoxLayout(this);
         m_table = new QTableWidget(this);
@@ -187,6 +215,12 @@ namespace scopeone::ui
         m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
         m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
         layout->addWidget(m_table, 1);
+
+        layout->addWidget(new QLabel(tr("Plugin metadata and diagnostics"), this));
+        m_detailsEdit = new QPlainTextEdit(this);
+        m_detailsEdit->setReadOnly(true);
+        m_detailsEdit->setMaximumHeight(160);
+        layout->addWidget(m_detailsEdit);
 
         layout->addWidget(new QLabel(tr("Hardware options (JSON)"), this));
         m_optionsEdit = new QPlainTextEdit(this);
@@ -220,7 +254,14 @@ namespace scopeone::ui
             auto* enabled = new QTableWidgetItem();
             enabled->setData(kIdRole, plugin.manifest.id);
             enabled->setData(kKindRole, static_cast<int>(plugin.expectedKind));
-            if (hardware && plugin.error.isEmpty())
+            const QString status = plugin.error.isEmpty()
+                                       ? (plugin.loadError.isEmpty() ? tr("Ready") : plugin.loadError)
+                                       : plugin.error;
+            enabled->setData(kStatusRole, status);
+            enabled->setData(
+                kMetadataRole,
+                QString::fromUtf8(QJsonDocument(plugin.metadata).toJson(QJsonDocument::Indented)));
+            if (hardware && plugin.error.isEmpty() && plugin.loadError.isEmpty())
             {
                 enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable);
                 const QString key = settingsKey(plugin.manifest.id, QStringLiteral("enabled"));
@@ -238,7 +279,7 @@ namespace scopeone::ui
                                  scopeone::core::pluginKindName(plugin.expectedKind)));
             m_table->setItem(row, 3, new QTableWidgetItem(plugin.manifest.version));
             m_table->setItem(row, 4, new QTableWidgetItem(
-                                 plugin.error.isEmpty() ? tr("Compatible") : plugin.error));
+                                 status));
             m_table->setItem(row, 5, new QTableWidgetItem(plugin.path));
         }
         if (m_table->rowCount() > 0)
@@ -259,7 +300,14 @@ namespace scopeone::ui
         const QTableWidgetItem* item = m_table->item(row, 0);
         const auto kind = static_cast<scopeone::core::PluginKind>(item->data(kKindRole).toInt());
         const QString id = item->data(kIdRole).toString();
-        const bool hardware = kind == scopeone::core::PluginKind::Hardware && !id.isEmpty();
+        const QString status = item->data(kStatusRole).toString();
+        m_detailsEdit->setPlainText(
+            item->data(kMetadataRole).toString()
+            + QStringLiteral("\n\n")
+            + tr("Status: %1").arg(status));
+        const bool hardware = kind == scopeone::core::PluginKind::Hardware
+                              && !id.isEmpty()
+                              && status == tr("Ready");
         m_optionsEdit->setEnabled(hardware);
         if (!hardware)
         {
@@ -305,7 +353,7 @@ namespace scopeone::ui
             QMessageBox::warning(this, tr("Plugin Manager"), error);
             return;
         }
-        if (loaderMetadata.value(QStringLiteral("IID")).toString() != pluginInterfaceId(kind))
+        if (!pluginInterfaceIds(kind).contains(loaderMetadata.value(QStringLiteral("IID")).toString()))
         {
             QMessageBox::warning(this, tr("Plugin Manager"),
                                  tr("The plugin interface does not match its declared type."));

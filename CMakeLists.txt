@@ -206,7 +206,7 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
     )
 endif ()
 
-foreach (_plugin_kind IN ITEMS processing tools hardware)
+foreach (_plugin_kind IN ITEMS processing hardware tools)
     set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/${_plugin_kind}")
     if (EXISTS "${_plugin_dir}")
         add_custom_command(TARGET ScopeOne POST_BUILD

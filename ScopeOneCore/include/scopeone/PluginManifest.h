@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scopeone/scopeone_core_export.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 #include <QJsonObject>
 #include <QString>
@@ -26,8 +26,8 @@ namespace scopeone::core
 
     inline constexpr int ScopeOnePluginApiVersion = 1;
 
-    SCOPEONE_CORE_EXPORT QString pluginKindName(PluginKind kind);
-    SCOPEONE_CORE_EXPORT bool parsePluginManifest(const QJsonObject& metadata,
+    SCOPEONE_SDK_EXPORT QString pluginKindName(PluginKind kind);
+    SCOPEONE_SDK_EXPORT bool parsePluginManifest(const QJsonObject& metadata,
                                                   PluginKind expectedKind,
                                                   PluginManifest& manifest,
                                                   QString* errorMessage = nullptr);

@@ -4,7 +4,7 @@
 #include <QString>
 #include <QVariantMap>
 
-#include "scopeone/scopeone_core_export.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 namespace scopeone::core
 {
@@ -44,14 +44,14 @@ namespace scopeone::core
         DriverHost
     };
 
-    struct SCOPEONE_CORE_EXPORT HardwareProviderDescriptor
+    struct SCOPEONE_SDK_EXPORT HardwareProviderDescriptor
     {
         QString id;
         QString name;
         QString version;
     };
 
-    struct SCOPEONE_CORE_EXPORT HardwareDeviceDescriptor
+    struct SCOPEONE_SDK_EXPORT HardwareDeviceDescriptor
     {
         QString logicalId;
         QString providerId;

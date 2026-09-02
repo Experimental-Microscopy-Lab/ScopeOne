@@ -187,6 +187,14 @@ namespace scopeone::ui
 
     void ToolRegistry::openTool(const QString& toolId, QWidget* parent)
     {
+        const auto centerTool = [parent](QWidget* tool)
+        {
+            QWidget* host = parent->window();
+            const QPoint position = host->frameGeometry().center()
+                                  - tool->frameGeometry().center();
+            tool->move(position);
+        };
+
         for (const auto& entry : m_entries)
         {
             if (entry->descriptor.id != toolId)
@@ -215,20 +223,17 @@ namespace scopeone::ui
                 delete tool;
                 return;
             }
-            tool->setWindowFlag(Qt::Window, true);
+            tool->setParent(nullptr, Qt::Window);
             tool->setAttribute(Qt::WA_DeleteOnClose);
             entry->instance = tool;
+            tool->adjustSize();
             tool->show();
-            QTimer::singleShot(0, tool, [tool, parent]()
+            tool->raise();
+            tool->activateWindow();
+            QTimer::singleShot(0, tool, [tool, centerTool]()
             {
-                QWidget* host = parent ? parent->window() : nullptr;
-                if (!host)
-                {
-                    return;
-                }
-                const QPoint position = host->frameGeometry().center()
-                                      - tool->frameGeometry().center();
-                tool->move(position);
+                tool->adjustSize();
+                centerTool(tool);
             });
         }
     }

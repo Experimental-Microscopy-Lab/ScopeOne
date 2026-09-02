@@ -63,6 +63,7 @@ The expected layout is:
 ```text
 ScopeOne/
   ScopeOneCore/
+    include/scopeone/      Core API and external plugin contracts
     external/
       mmCoreAndDevices/
       opencv-4.12.0/
@@ -73,15 +74,16 @@ ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zs
 
 ### Plugin layout
 
-ScopeOne loads external plugins from three directories beside the application:
+ScopeOne loads external plugins from these directories beside the application:
 
 - `plugins/processing` adds processing modules to the shared pipeline
 - `plugins/tools` adds optional workflow windows to the Tools menu
 - `plugins/hardware` adds isolated hardware providers hosted by `ScopeOne_DriverHost`
+- `plugins/hardware` also contains DAQ devices and signal source plugins
 
-All plugins use the installed `scopeone::PluginSDK` CMake target and a common manifest with `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Minimal standalone projects are in `plugins/examples`.
+All plugins use the installed `scopeone::PluginSDK` CMake target and the public contracts in `ScopeOneCore/include/scopeone`. The Core package owns the stable plugin-facing headers for image frames, hardware providers, DAQ devices, signal sources, processing modules, tool plugins, shared frames and manifests. A common manifest contains `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Minimal standalone projects are in `plugins/examples`.
 
-Micro-Manager remains the built-in hardware provider and continues to load its Device Adapters from `.cfg` files. Native devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract.
+Micro-Manager remains the built-in camera provider and continues to load its Device Adapters from `.cfg` files. Native camera devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. DAQ and signal acquisition are separate plugin contracts and are not linked into `ScopeOne.exe`.
 
 The Image Processing panel can process all live cameras or one selected camera. Recorded images and stacks open in independent windows, and the active image viewer becomes the target for Layers, Inspect, Image Processing, and Save As. Processing the current image or complete stack runs in the background and opens the result in a new window; stack results also remain available in Gallery. Temporal module state is preserved across each stack without changing live pipeline state.
 

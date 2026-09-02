@@ -236,7 +236,7 @@ $writerBuildDir = Join-Path $writerBuildRoot "standalone"
 $writerInstallDir = Join-Path $writerSourceDir "install"
 $writerConsumerSourceDir = Join-Path $writerSourceDir "tests\consumer"
 $writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
-$pluginSourceDir = Join-Path $repoRoot "plugins\examples"
+$pluginSourceDir = Join-Path $repoRoot "plugins"
 $pluginBuildDir = Join-Path $repoRoot "build\plugins"
 $pluginInstallDir = Join-Path $coreInstallDir "bin"
 $config = "Release"
@@ -283,6 +283,16 @@ $needPluginConfigure = $configure -or -not (Test-Path $pluginCachePath) -or
     -not $pluginBuildFilesExist
 $pluginCachedInstallPrefix = Normalize-CMakePath (
     Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_INSTALL_PREFIX")
+$pluginCachedSourceDir = Normalize-CMakePath (
+    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_HOME_DIRECTORY")
+if ($pluginCachedSourceDir -and
+    $pluginCachedSourceDir -ne (Normalize-CMakePath $pluginSourceDir)) {
+    $needPluginConfigure = $true
+    if (Test-Path $pluginBuildDir) {
+        Write-Step "Removing stale plugin build directory"
+        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
+    }
+}
 if ($pluginCachedInstallPrefix -and
     $pluginCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
     $needPluginConfigure = $true
@@ -446,14 +456,14 @@ if ($target -in @("all", "plugins")) {
             $pluginConfigureArgs += "-DOpenCV_DIR=$coreOpenCvDir"
         }
         Invoke-Step `
-            -Label "Configuring ScopeOne plugin examples" `
+            -Label "Configuring ScopeOne plugins" `
             -FilePath $cmake `
             -Arguments $pluginConfigureArgs `
             -WorkingDirectory $repoRoot
     }
 
     Invoke-Step `
-        -Label "Building ScopeOne plugin examples ($config)" `
+        -Label "Building ScopeOne plugins ($config)" `
         -FilePath $cmake `
         -Arguments @(
             "--build", $pluginBuildDir,
@@ -463,7 +473,7 @@ if ($target -in @("all", "plugins")) {
         -WorkingDirectory $repoRoot
 
     Invoke-Step `
-        -Label "Installing ScopeOne plugin examples" `
+        -Label "Installing ScopeOne plugins" `
         -FilePath $cmake `
         -Arguments @(
             "--install", $pluginBuildDir,
@@ -548,7 +558,7 @@ if ($target -eq "scopewriter") {
 else {
     Write-Host "ScopeOneCore install: $coreInstallDir"
     if ($target -in @("all", "plugins")) {
-        Write-Host "Plugin examples: $pluginBuildDir"
+        Write-Host "Plugins: $pluginBuildDir"
     }
 }
 if ($target -ne "scopewriter") {

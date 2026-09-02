@@ -20,11 +20,13 @@
 #include <vector>
 
 #include "scopeone/ExperimentDocument.h"
+#include "scopeone/DaqDevice.h"
 #include "scopeone/HardwareTypes.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/ProcessingPlugin.h"
 #include "scopeone/ProcessingPipeline.h"
+#include "scopeone/SignalSource.h"
 #include "scopeone/scopeone_core_export.h"
 
 class CMMCore;
@@ -558,6 +560,18 @@ namespace scopeone::core
         bool setHalfROI(const QString& cameraId);
         bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
+        QList<SignalSourceDescriptor> signalSources() const;
+        bool startSignalTrace(const SignalAcquisitionConfig& config,
+                              QString* errorMessage = nullptr);
+        void stopSignalTrace(const QString& sourceId);
+        SignalSourceState signalSourceState(const QString& sourceId) const;
+        QString signalSourceStateMessage(const QString& sourceId) const;
+        QList<DaqDeviceDescriptor> daqDevices() const;
+        bool startDaqSession(const DaqSessionConfig& config,
+                             QString* errorMessage = nullptr);
+        void stopDaqSession(const QString& deviceId);
+        DaqState daqState(const QString& deviceId) const;
+        QString daqStateMessage(const QString& deviceId) const;
         ImageFrame graphFrame(const QString& layerKey) const;
         QList<ImageFrame> graphFrames(const QStringList& layerKeys) const;
         bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
@@ -734,6 +748,21 @@ namespace scopeone::core
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
+        void signalTimeSeriesReady(const TimeSeriesChunk& chunk);
+        void timestampedSignalEventsReady(const TimestampedEventChunk& chunk);
+        void signalSourceStateChanged(const QString& sourceId,
+                                      SignalSourceState state,
+                                      const QString& message);
+        void signalSourceError(const QString& sourceId,
+                               const QString& errorMessage);
+        void scanImageSessionReady(
+            const std::shared_ptr<RecordingSessionData>& session);
+        void daqStateChanged(const QString& deviceId,
+                             DaqState state,
+                             const QString& message);
+        void daqError(const QString& deviceId,
+                      const QString& errorMessage);
+        void daqInputDataReady(const DaqInputChunk& chunk);
         void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
         void processedFrameReady(const ImageFrame& frame);
         void processedFramesCompleted(const QString& cameraId, quint64 frameCount);
@@ -877,6 +906,13 @@ namespace scopeone::core
                               const QString& name,
                               DocumentLayerKind kind);
         void handleIncomingRawFrame(const ImageFrame& frame);
+        void handleSignalTimeSeries(const TimeSeriesChunk& chunk);
+        void handleTimestampedSignalEvents(const TimestampedEventChunk& chunk);
+        void publishScanFrames(const QString& sourceId,
+                               const QList<ImageFrame>& frames);
+        void finishScanImageSession(const QString& sourceId,
+                                    ExperimentRunState finalState,
+                                    const QString& message);
         void submitProcessingFrame(const ImageFrame& frame, quint64 processingToken = 0);
         void handleProcessedFrame(const ImageFrame& frame);
         void flushProcessedFrames();

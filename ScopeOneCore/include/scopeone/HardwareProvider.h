@@ -6,10 +6,11 @@
 #include <memory>
 
 #include "scopeone/HardwareTypes.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 namespace scopeone::core
 {
-    class SCOPEONE_CORE_EXPORT HardwareProvider
+    class SCOPEONE_SDK_EXPORT HardwareProvider
     {
     public:
         virtual ~HardwareProvider();

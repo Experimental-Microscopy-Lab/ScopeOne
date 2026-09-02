@@ -1,7 +1,7 @@
 #pragma once
 
 #include "scopeone/ImageFrame.h"
-#include "scopeone/scopeone_core_export.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 #include <QObject>
 #include <QString>
@@ -13,7 +13,7 @@ namespace scopeone::core
 
 namespace scopeone::ui
 {
-    class SCOPEONE_CORE_EXPORT ScopeOneToolFrameStream final : public QObject
+    class SCOPEONE_SDK_EXPORT ScopeOneToolFrameStream final : public QObject
     {
         Q_OBJECT
 

@@ -3,11 +3,11 @@
 #include <QString>
 #include <QStringList>
 
-#include "scopeone/scopeone_core_export.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 namespace scopeone::core
 {
-    class SCOPEONE_CORE_EXPORT DevicePropertyProvider
+    class SCOPEONE_SDK_EXPORT DevicePropertyProvider
     {
     public:
         virtual ~DevicePropertyProvider();
@@ -30,7 +30,7 @@ namespace scopeone::core
         virtual double getPropertyUpperLimit(const QString& deviceId, const QString& name) = 0;
     };
 
-    class SCOPEONE_CORE_EXPORT StageProvider
+    class SCOPEONE_SDK_EXPORT StageProvider
     {
     public:
         virtual ~StageProvider();
@@ -60,7 +60,7 @@ namespace scopeone::core
                                   QString* errorMessage = nullptr) = 0;
     };
 
-    class SCOPEONE_CORE_EXPORT ShutterProvider
+    class SCOPEONE_SDK_EXPORT ShutterProvider
     {
     public:
         virtual ~ShutterProvider();
@@ -73,7 +73,7 @@ namespace scopeone::core
                                     QString* errorMessage = nullptr) = 0;
     };
 
-    class SCOPEONE_CORE_EXPORT StateProvider
+    class SCOPEONE_SDK_EXPORT StateProvider
     {
     public:
         virtual ~StateProvider();
@@ -87,7 +87,7 @@ namespace scopeone::core
         virtual QString stateLabel(const QString& deviceId, long state) const = 0;
     };
 
-    class SCOPEONE_CORE_EXPORT ConfigurationProvider
+    class SCOPEONE_SDK_EXPORT ConfigurationProvider
     {
     public:
         virtual ~ConfigurationProvider();

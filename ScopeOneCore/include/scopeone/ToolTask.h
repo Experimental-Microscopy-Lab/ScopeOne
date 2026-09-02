@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scopeone/scopeone_core_export.h"
+#include "scopeone/scopeone_sdk_export.h"
 
 #include <QObject>
 #include <QString>
@@ -10,7 +10,7 @@
 
 namespace scopeone::ui
 {
-    class SCOPEONE_CORE_EXPORT ScopeOneToolTask final : public QObject
+    class SCOPEONE_SDK_EXPORT ScopeOneToolTask final : public QObject
     {
         Q_OBJECT
 

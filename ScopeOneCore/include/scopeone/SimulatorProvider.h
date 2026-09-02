@@ -7,6 +7,7 @@
 
 #include "scopeone/CameraProvider.h"
 #include "scopeone/HardwareProvider.h"
+#include "scopeone/scopeone_core_export.h"
 
 namespace scopeone::core
 {

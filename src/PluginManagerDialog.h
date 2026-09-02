@@ -29,6 +29,7 @@ namespace scopeone::ui
         void saveHardwareSettings();
 
         QTableWidget* m_table{nullptr};
+        QPlainTextEdit* m_detailsEdit{nullptr};
         QPlainTextEdit* m_optionsEdit{nullptr};
     };
 }

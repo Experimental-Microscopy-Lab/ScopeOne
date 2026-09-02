@@ -2,13 +2,13 @@
 
 `ScopeOneCore` is the reusable runtime library behind the desktop app.
 
-The desktop app currently assumes `ScopeOneCore` is checked out under the `ScopeOne` repository root.
+The desktop app consumes `ScopeOneCore` through its installed CMake package.
 
 ## Source Layout
 
 ```text
 ScopeOneCore/
-|-- include/scopeone/   Public C++ headers installed for consumers
+|-- include/scopeone/   Core facade and all public plugin contracts
 |-- internal/           Private headers used only while building ScopeOneCore
 |-- src/                C++ implementations for both public and private types
 |-- python/scopeone/    External Python client for a running ScopeOne app
@@ -18,7 +18,7 @@ ScopeOneCore/
 `-- install/            Generated local installation consumed by the desktop app
 ```
 
-`include/scopeone` defines the installed C++ contract. A header belongs here only when the desktop app or another external consumer must compile against it. Consumers include these files with the installed prefix, for example:
+`include/scopeone` contains the Core facade, Core-owned public models and all plugin contracts:
 
 ```cpp
 #include <scopeone/ScopeOneCore.h>
@@ -31,7 +31,7 @@ ScopeOneCore/
 
 Use this placement rule:
 
-- Put a stable type or function required by consumers in `include/scopeone`.
+- Put every public Core model, plugin contract and shared plugin data type in `ScopeOneCore/include/scopeone`.
 - Put a Core-only manager, algorithm or protocol detail in `internal`.
 - Put executable implementation in `src`.
 - Keep desktop widgets and Qt UI behavior in the top-level ScopeOne `src` directory, outside `ScopeOneCore`.
@@ -42,7 +42,8 @@ Use this placement rule:
 
 | Namespace | Purpose | Examples |
 |---|---|---|
-| `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
+| `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ExperimentDocument`, `ImageSceneModel` |
+| `scopeone::core` SDK contracts | Stable plugin-facing types and interfaces | `ImageFrame`, `CameraProvider`, `DaqDevice`, `SignalSource`, `ProcessingPlugin`, `ToolPlugin` |
 | `scopeone::core::internal` | Core-only managers and processing implementations | `CameraManager`, `MMCoreManager`, `RecordingManager`, processing modules |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
@@ -88,30 +89,21 @@ Outputs:
 - `build/Release/ScopeOneCore.dll`
 - `build/Release/ScopeOneCore.lib`
 - `build/Release/ScopeOne_DriverHost.exe`
-- The external hardware example is built under `plugins/examples/hardware`.
+- External plugins are built under `plugins`.
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_DriverHost.exe`
-- External hardware plugins are installed under `plugins/hardware`.
+- Hardware, DAQ and signal source plugins are installed under `plugins/hardware`.
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
-## Public API
+## Core and SDK API
 
-The installed headers are the source of truth for the public API:
+The installed headers in `include/scopeone` are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
-- `HardwareProvider.h`, `HardwareCapabilities.h` and `CameraProvider.h` define provider discovery, device control and frame delivery.
-- `DriverHostProviderPlugin.h` defines the module factory used to load external providers in isolated DriverHost processes.
-- `ProcessingPlugin.h` defines processing module descriptors, runtime modules and the external processing plugin contract.
-- `ToolPlugin.h` defines the restricted desktop tool context and external tool contract.
-- `PluginManifest.h` validates the common plugin identity and API version metadata.
-- `HardwareTypes.h` defines provider-independent device identity, state and endpoint metadata.
-- `SimulatorProvider.h` provides an in-process reference provider.
-- `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
-- `ExperimentDocument.h` defines experiment plans, results, persistence and provenance.
-- `ImageSceneModel.h` defines shared image-layer, display-state and markup state.
-- `SharedFrame.h` defines the language-neutral shared-memory frame layout.
+- `SimulatorProvider.h`, `ProcessingPipeline.h`, `ExperimentDocument.h` and `ImageSceneModel.h` are Core-owned runtime models and services.
+- The SDK provides `HardwareProvider.h`, `HardwareCapabilities.h`, `CameraProvider.h`, `DriverHostProviderPlugin.h`, `DaqDevice.h`, `SignalSource.h`, `ScanImageAssembler.h`, `ProcessingPlugin.h`, `ToolPlugin.h`, `PluginManifest.h`, `HardwareTypes.h`, `ImageFrame.h` and `SharedFrame.h`.
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
@@ -121,12 +113,14 @@ Providers use ScopeOne logical device IDs and publish `ImageFrame` objects throu
 ## Plugin Boundaries
 
 - `plugins/hardware` contains native `HardwareProvider` modules. Each provider runs in an isolated DriverHost process. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne plugins.
+- `plugins/hardware` contains DAQ and signal source plugins alongside native `HardwareProvider` modules. The Core selects each plugin by its interface without linking DAQ vendor libraries into the application.
+- `ScanImageAssembler` is implemented in Core as a provider-independent 1D-to-2D reconstruction algorithm, while its public contract is owned by the SDK. The Core publishes reconstructed frames through the shared frame graph and Gallery session path.
 - `plugins/processing` contains `ProcessingPlugin` modules loaded by ScopeOneCore. A plugin publishes stable module IDs, parameter descriptors and factories. Built-in processing methods use the same registry.
 - `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. These receive a restricted UI context rather than direct access to `MainWindow` or `PreviewWidget`. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
 
 External projects consume the exported `scopeone::PluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; incompatible manifests are rejected before the plugin instance is created.
 
-Hardware and processing contracts are installed public Core APIs. Desktop tool plugins target the ScopeOne application UI contract.
+Hardware, processing, DAQ, signal-source and tool contracts are installed SDK APIs. Desktop tool plugins target the ScopeOne application UI contract exposed by the SDK.
 
 ## Processing Data Flow
 

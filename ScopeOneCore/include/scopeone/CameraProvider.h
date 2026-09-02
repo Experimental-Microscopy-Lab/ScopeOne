@@ -10,7 +10,7 @@
 
 namespace scopeone::core
 {
-    class SCOPEONE_CORE_EXPORT CameraProvider : public DevicePropertyProvider
+    class SCOPEONE_SDK_EXPORT CameraProvider : public DevicePropertyProvider
     {
     public:
         using FrameSink = std::function<void(const ImageFrame&)>;
