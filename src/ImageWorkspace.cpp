@@ -530,6 +530,33 @@ namespace scopeone::ui
                     }
                 });
 
+        m_viewerToolbar->addSeparator();
+        m_dimensionAction = m_viewerToolbar->addAction(tr("3D Surface"));
+        m_dimensionAction->setCheckable(true);
+        m_dimensionAction->setToolTip(tr("Switch between flat 2D and 3D surface view"));
+        connect(m_dimensionAction, &QAction::toggled, this,
+                [this](bool enabled)
+                {
+                    if (PreviewWidget* preview = activePreviewWidget())
+                    {
+                        preview->setViewDimensionMode(
+                            enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                                    : PreviewWidget::ViewDimensionMode::TwoDimensional);
+                    }
+                    updateViewerToolbar();
+                });
+
+        m_reset3dAction = m_viewerToolbar->addAction(tr("Reset 3D"));
+        m_reset3dAction->setToolTip(tr("Reset the 3D camera view"));
+        connect(m_reset3dAction, &QAction::triggered, this,
+                [this]()
+                {
+                    if (PreviewWidget* preview = activePreviewWidget())
+                    {
+                        preview->reset3dCamera();
+                    }
+                });
+
         m_compareSeparator = m_viewerToolbar->addSeparator();
         m_compareAction = m_viewerToolbar->addAction(tr("Compare"));
         m_compareAction->setCheckable(true);
@@ -607,6 +634,7 @@ namespace scopeone::ui
         m_fitToWindowAction->setEnabled(preview != nullptr);
         m_oneToOneAction->setEnabled(preview != nullptr);
         m_zoomCombo->setEnabled(preview != nullptr);
+        m_dimensionAction->setEnabled(preview != nullptr);
         const bool staticDocument = activeDocument.isValid();
         m_compareSeparator->setVisible(staticDocument);
         m_compareAction->setVisible(staticDocument);
@@ -614,6 +642,8 @@ namespace scopeone::ui
         m_compareDocumentCombo->setVisible(staticDocument);
         m_compareDocumentCombo->setEnabled(staticDocument);
         m_linkFramesAction->setVisible(staticDocument && comparisonActive());
+        m_reset3dAction->setEnabled(
+            preview && preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional);
         if (preview)
         {
             {
@@ -631,6 +661,11 @@ namespace scopeone::ui
                 const QSignalBlocker blocker(m_layoutCombo);
                 m_layoutCombo->setCurrentIndex(
                     preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::Overlay ? 1 : 0);
+            }
+            {
+                const QSignalBlocker blocker(m_dimensionAction);
+                m_dimensionAction->setChecked(
+                    preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional);
             }
         }
 
@@ -1651,6 +1686,13 @@ namespace scopeone::ui
                 this, [this](bool) { updateViewerToolbar(); });
         connect(preview, &PreviewWidget::layerLayoutModeChanged,
                 this, [this](PreviewWidget::LayerLayoutMode) { updateViewerToolbar(); });
+        connect(preview, &PreviewWidget::viewDimensionModeChanged,
+                this, [this](PreviewWidget::ViewDimensionMode mode)
+                {
+                    Q_UNUSED(mode);
+                    emit viewDimensionModeChanged();
+                    updateViewerToolbar();
+                });
         connect(scene, &scopeone::core::ImageSceneModel::layersChanged,
                 this, [this, documentId]() { syncActiveLayer(documentId); });
         if (documentId.isEmpty())

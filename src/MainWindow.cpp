@@ -40,6 +40,7 @@
 #include <QInputDialog>
 #include <QJsonObject>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStyleHints>
 #include <QStandardPaths>
@@ -652,7 +653,10 @@ namespace scopeone::ui
                     m_deviceControlWidget->setPreviewWidget(
                         m_imageWorkspace->activePreviewWidget());
                     m_deviceControlWidget->setViewerContext(liveViewer);
+                    updateDimensionViewActions();
                 });
+        connect(m_imageWorkspace, &ImageWorkspace::viewDimensionModeChanged,
+                this, &MainWindow::updateDimensionViewActions);
         connect(m_imageWorkspace, &ImageWorkspace::activeDocumentChanged,
                 this, [this](const QString& documentId)
                 {
@@ -1113,6 +1117,24 @@ namespace scopeone::ui
         });
         addAction(m_toggleLayoutAction);
 
+        m_toggleDimensionAction = m_viewMenu->addAction(tr("3D Surface View"));
+        m_toggleDimensionAction->setCheckable(true);
+        m_toggleDimensionAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+3")),
+                                               QKeySequence(Qt::Key_D)});
+        m_toggleDimensionAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(m_toggleDimensionAction, &QAction::toggled, this, [this](bool enabled)
+        {
+            m_imageWorkspace->activePreviewWidget()->setViewDimensionMode(
+                enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                        : PreviewWidget::ViewDimensionMode::TwoDimensional);
+        });
+        addAction(m_toggleDimensionAction);
+
+        m_reset3dAction = m_viewMenu->addAction(tr("Reset 3D Camera"));
+        connect(m_reset3dAction, &QAction::triggered, this,
+                [this]() { m_imageWorkspace->activePreviewWidget()->reset3dCamera(); });
+        m_reset3dAction->setEnabled(false);
+
         m_viewMenu->addSeparator();
         m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
 
@@ -1498,7 +1520,21 @@ namespace scopeone::ui
             m_consoleWidget->addMessage(
                 QStringLiteral("External device adapters: %1").arg(adapterPaths.join(QStringLiteral("; "))));
         }
+        updateDimensionViewActions();
         showStatusMessage(tr("ScopeOne ready"), 3000);
+    }
+
+    void MainWindow::updateDimensionViewActions()
+    {
+        PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+        const bool threeDimensional =
+            preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional;
+        {
+            const QSignalBlocker blocker(m_toggleDimensionAction);
+            m_toggleDimensionAction->setChecked(threeDimensional);
+        }
+        m_toggleDimensionAction->setEnabled(true);
+        m_reset3dAction->setEnabled(threeDimensional);
     }
 
     // Show one transient status message without disturbing persistent fields

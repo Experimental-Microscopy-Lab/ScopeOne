@@ -22,6 +22,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QScrollArea;
+class QSlider;
 class QSpinBox;
 class QTableWidget;
 
@@ -152,6 +153,12 @@ namespace scopeone::ui
         LayerHistogramWidget* m_layerHistogramWidget{nullptr};
         QCheckBox* m_layerHistogramLogCheckBox{nullptr};
         QGroupBox* m_layerHistogramGroup{nullptr};
+        QGroupBox* m_surfaceViewGroup{nullptr};
+        QComboBox* m_viewDimensionCombo{nullptr};
+        QSlider* m_3dZScaleSlider{nullptr};
+        QDoubleSpinBox* m_3dZScaleSpinBox{nullptr};
+        QCheckBox* m_3dWireframeCheckBox{nullptr};
+        QPushButton* m_3dResetButton{nullptr};
         QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
         QLabel* m_alignYLabel{nullptr};

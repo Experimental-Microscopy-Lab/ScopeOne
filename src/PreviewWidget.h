@@ -2,6 +2,7 @@
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
+#include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
 #include <QElapsedTimer>
@@ -15,6 +16,7 @@
 #include <QSize>
 #include <QTimer>
 #include <QVector>
+#include <QVector2D>
 #include <functional>
 #include <vector>
 #include "scopeone/ImageSceneModel.h"
@@ -38,6 +40,7 @@ namespace scopeone::ui
 
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
+        enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
 
         struct PreviewInteractionTarget
         {
@@ -85,6 +88,13 @@ namespace scopeone::ui
         bool isScaleBarVisible() const;
         void setClippingWarningEnabled(bool enabled);
         bool isClippingWarningEnabled() const;
+        void setViewDimensionMode(ViewDimensionMode mode);
+        ViewDimensionMode viewDimensionMode() const { return m_viewDimensionMode; }
+        void set3dZScale(float scale);
+        float get3dZScale() const { return m_zScale; }
+        void reset3dCamera();
+        void set3dWireframeEnabled(bool enabled);
+        bool is3dWireframeEnabled() const { return m_wireframe3d; }
         void setActiveLayerKey(const QString& key);
         QString activeLayerKey() const { return m_activeLayerKey; }
         void setPixelSizeCallback(std::function<double(const QString&)> callback);
@@ -108,6 +118,9 @@ signals:
         void fitToWindowChanged(bool enabled);
         void scaleBarVisibilityChanged(bool visible);
         void clippingWarningChanged(bool enabled);
+        void viewDimensionModeChanged(ViewDimensionMode mode);
+        void threeDimensionalZScaleChanged(float scale);
+        void threeDimensionalWireframeChanged(bool enabled);
         void stageStepRequested(double dxScale, double dyScale, bool big);
         void stageZStepRequested(double dzScale, bool big);
         void layerClicked(const QString& layerKey);
@@ -236,13 +249,30 @@ signals:
         QString m_placeholderText{QStringLiteral("No image loaded")};
 
         bool m_glInited{false};
+        QOpenGLFunctions_3_3_Core m_gl3dFunctions;
         QOpenGLVertexArrayObject m_vao;
         GLuint m_vbo{0};
         GLuint m_colormapTexture{0};
         QOpenGLShaderProgram m_prog;
+        QOpenGLShaderProgram m_prog3d;
+        QOpenGLVertexArrayObject m_gridVao;
+        GLuint m_gridVbo{0};
+        GLuint m_gridIbo{0};
+        int m_gridElementCount{0};
         GLint m_uTex{-1}, m_uMinNorm{-1}, m_uMaxNorm{-1}, m_uTexNormScale{-1}, m_uAlpha{-1};
         GLint m_uGamma{-1}, m_uColormap{-1}, m_uColormapLut{-1};
         GLint m_uUvScale{-1}, m_uUvOffset{-1}, m_uShowClipping{-1};
+        GLint m_u3dTex{-1}, m_u3dMvp{-1}, m_u3dMinNorm{-1}, m_u3dMaxNorm{-1};
+        GLint m_u3dTexNormScale{-1}, m_u3dZScale{-1}, m_u3dGamma{-1};
+        GLint m_u3dColormap{-1}, m_u3dColormapLut{-1}, m_u3dShowClipping{-1};
+        GLint m_u3dUvScale{-1}, m_u3dUvOffset{-1}, m_u3dLightDirection{-1};
+        ViewDimensionMode m_viewDimensionMode{ViewDimensionMode::TwoDimensional};
+        float m_cameraPitch{35.0f};
+        float m_cameraYaw{45.0f};
+        float m_cameraDistance{2.8f};
+        QVector2D m_cameraPan{0.0f, 0.0f};
+        float m_zScale{1.0f};
+        bool m_wireframe3d{false};
         bool m_scaleBarVisible{true};
         bool m_clippingWarning{false};
         QString m_activeLayerKey;
@@ -287,6 +317,12 @@ signals:
         QPoint m_panStartWidgetPos;
         QPoint m_panStartOffset;
         QString m_panLayerKey;
+        bool m_surfaceOrbiting{false};
+        bool m_surfacePanning{false};
+        QPoint m_surfaceDragStart;
+        float m_surfaceStartPitch{35.0f};
+        float m_surfaceStartYaw{45.0f};
+        QVector2D m_surfaceStartPan{0.0f, 0.0f};
         void updateImageDisplay();
         void updateLayerFps(const QString& layerKey, quint64 frameCount = 1);
         void updateFrameRates();
@@ -357,7 +393,11 @@ signals:
                                     MarkupEditMode& outEditMode) const;
         void clearSelectedMarkups();
         void drawRenderItem(const RenderItem& item);
+        void draw3dSurface(const RenderItem& item);
         void ensureGlPipeline();
+        GLuint ensureFrameTexture(const QString& textureKey,
+                                  const scopeone::core::ImageFrame& frame,
+                                  quint64 frameRevision);
         void drawFrameInRect(const QString& textureKey,
                              const scopeone::core::ImageFrame& frame,
                              quint64 frameRevision,

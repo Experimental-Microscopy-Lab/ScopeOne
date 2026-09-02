@@ -277,6 +277,7 @@ namespace
         std::priority_queue<Node> queue;
         queue.push({reliability.at<float>(seed.y, seed.x), seed.x, seed.y});
         unwrapped.at<float>(seed.y, seed.x) = wrapped.at<float>(seed.y, seed.x);
+        visited.at<uchar>(seed.y, seed.x) = 1;
 
         constexpr int dx[] = {1, -1, 0, 0};
         constexpr int dy[] = {0, 0, 1, -1};
@@ -289,11 +290,6 @@ namespace
 
             const Node node = queue.top();
             queue.pop();
-            if (visited.at<uchar>(node.y, node.x))
-            {
-                continue;
-            }
-            visited.at<uchar>(node.y, node.x) = 1;
 
             for (int direction = 0; direction < 4; ++direction)
             {
@@ -309,6 +305,7 @@ namespace
                 const float value = wrapped.at<float>(ny, nx);
                 unwrapped.at<float>(ny, nx)
                     = value + TwoPi * std::round((reference - value) / TwoPi);
+                visited.at<uchar>(ny, nx) = 1;
                 queue.push({reliability.at<float>(ny, nx), nx, ny});
             }
         }

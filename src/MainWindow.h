@@ -93,6 +93,7 @@ namespace scopeone::ui
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
         void schedulePreviewCursorStatusRefresh();
+        void updateDimensionViewActions();
         void showMeasurementLine(const QString& layerKey,
                                  const QPoint& start,
                                  const QPoint& end);
@@ -165,6 +166,8 @@ namespace scopeone::ui
         QAction* m_scaleBarAction{nullptr};
         QAction* m_clippingAction{nullptr};
         QAction* m_toggleLayoutAction{nullptr};
+        QAction* m_toggleDimensionAction{nullptr};
+        QAction* m_reset3dAction{nullptr};
         QAction* m_togglePreviewAction{nullptr};
         QAction* m_snapAction{nullptr};
         QAction* m_autoContrastAction{nullptr};

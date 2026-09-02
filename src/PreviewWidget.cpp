@@ -10,11 +10,14 @@
 #include <QPalette>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QMatrix4x4>
 #include <QOpenGLContext>
 #include <QSurfaceFormat>
+#include <QVector3D>
 #include <QtGlobal>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace scopeone::ui
@@ -970,6 +973,52 @@ namespace scopeone::ui
     bool PreviewWidget::isClippingWarningEnabled() const
     {
         return m_clippingWarning;
+    }
+
+    void PreviewWidget::setViewDimensionMode(ViewDimensionMode mode)
+    {
+        if (m_viewDimensionMode == mode)
+        {
+            return;
+        }
+        m_viewDimensionMode = mode;
+        m_surfaceOrbiting = false;
+        m_surfacePanning = false;
+        unsetCursor();
+        emit viewDimensionModeChanged(m_viewDimensionMode);
+        update();
+    }
+
+    void PreviewWidget::set3dZScale(float scale)
+    {
+        const float nextScale = qBound(0.1f, scale, 10.0f);
+        if (qFuzzyCompare(m_zScale, nextScale))
+        {
+            return;
+        }
+        m_zScale = nextScale;
+        emit threeDimensionalZScaleChanged(m_zScale);
+        update();
+    }
+
+    void PreviewWidget::reset3dCamera()
+    {
+        m_cameraPitch = 35.0f;
+        m_cameraYaw = 45.0f;
+        m_cameraDistance = 2.8f;
+        m_cameraPan = QVector2D(0.0f, 0.0f);
+        update();
+    }
+
+    void PreviewWidget::set3dWireframeEnabled(bool enabled)
+    {
+        if (m_wireframe3d == enabled)
+        {
+            return;
+        }
+        m_wireframe3d = enabled;
+        emit threeDimensionalWireframeChanged(m_wireframe3d);
+        update();
     }
 
     void PreviewWidget::setActiveLayerKey(const QString& key)
@@ -1993,6 +2042,75 @@ namespace scopeone::ui
         }
     }
 
+    // Draws the active image layer as a GPU-displaced surface
+    void PreviewWidget::draw3dSurface(const RenderItem& item)
+    {
+        const FrameSourceState& frameState = *item.info->frameState;
+        const ImageFrame& frame = item.processed ? frameState.processedFrame : frameState.rawFrame;
+        const quint64 revision = item.processed ? frameState.processedRevision : frameState.rawRevision;
+        const GLuint texture = ensureFrameTexture(item.layerKey, frame, revision);
+        const GLint internalFormat = frame.isMono16() ? GL_R16 : GL_R8;
+        const float sampleMax = internalFormat == GL_R16 ? 65535.0f : 255.0f;
+        const float bitMax = static_cast<float>(qMax(1, frame.maxValue()));
+        const float levelDomain = static_cast<float>(qMax(1, item.display.levelDomainMax));
+
+        QMatrix4x4 projection;
+        projection.perspective(45.0f,
+                               static_cast<float>(width()) / static_cast<float>(height()),
+                               0.1f,
+                               100.0f);
+        QMatrix4x4 view;
+        view.translate(m_cameraPan.x(), m_cameraPan.y(), -m_cameraDistance);
+        view.rotate(m_cameraPitch, 1.0f, 0.0f, 0.0f);
+        view.rotate(m_cameraYaw, 0.0f, 0.0f, 1.0f);
+
+        m_prog3d.bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        m_prog3d.setUniformValue(m_u3dTex, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_colormapTexture);
+        m_prog3d.setUniformValue(m_u3dColormapLut, 1);
+        glActiveTexture(GL_TEXTURE0);
+
+        m_prog3d.setUniformValue(m_u3dMvp, projection * view);
+        m_prog3d.setUniformValue(m_u3dMinNorm,
+                                 static_cast<float>(item.display.levelMin) / levelDomain);
+        m_prog3d.setUniformValue(m_u3dMaxNorm,
+                                 static_cast<float>(item.display.levelMax) / levelDomain);
+        m_prog3d.setUniformValue(m_u3dTexNormScale, sampleMax / bitMax);
+        m_prog3d.setUniformValue(m_u3dZScale, m_zScale);
+        m_prog3d.setUniformValue(m_u3dGamma, static_cast<float>(item.display.gamma));
+        m_prog3d.setUniformValue(m_u3dColormap, item.display.colormapIndex);
+        m_prog3d.setUniformValue(m_u3dShowClipping, m_clippingWarning ? 1 : 0);
+        m_prog3d.setUniformValue(m_u3dUvScale, frameState.flipX ? -1.0f : 1.0f,
+                                 frameState.flipY ? 1.0f : -1.0f);
+        m_prog3d.setUniformValue(m_u3dUvOffset, frameState.flipX ? 1.0f : 0.0f,
+                                 frameState.flipY ? 0.0f : 1.0f);
+        m_prog3d.setUniformValue(m_u3dLightDirection, QVector3D(-0.4f, 0.5f, 1.0f));
+
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        m_gridVao.bind();
+        if (m_wireframe3d)
+        {
+            m_gl3dFunctions.glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        }
+        glDrawElements(GL_TRIANGLES,
+                       m_gridElementCount,
+                       GL_UNSIGNED_INT,
+                       nullptr);
+        if (m_wireframe3d)
+        {
+            m_gl3dFunctions.glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
+        m_gridVao.release();
+        glDisable(GL_DEPTH_TEST);
+        m_prog3d.release();
+    }
+
     // Updates the layer info summary text
     void PreviewWidget::updateLayerInfoDisplay()
     {
@@ -2204,6 +2322,7 @@ namespace scopeone::ui
     void PreviewWidget::initializeGL()
     {
         initializeOpenGLFunctions();
+        m_gl3dFunctions.initializeOpenGLFunctions();
 
         const QSurfaceFormat format = context()->format();
         QString profile = QStringLiteral("No profile");
@@ -2395,7 +2514,8 @@ namespace scopeone::ui
         }
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         applyViewportForRect(rect());
-        glClear(GL_COLOR_BUFFER_BIT);
+        glDepthMask(GL_TRUE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         bool canGpu = m_glInited && m_prog.isLinked();
         QMap<QString, FrameSourceState> frameSources;
@@ -2417,6 +2537,51 @@ namespace scopeone::ui
             }
 
             m_placeholderLabel->hide();
+            if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+            {
+                const RenderItem* surfaceItem = &renderItems.back();
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.layerKey == m_activeLayerKey)
+                    {
+                        surfaceItem = &item;
+                        break;
+                    }
+                }
+
+                glDisable(GL_SCISSOR_TEST);
+                applyViewportForRect(rect());
+                draw3dSurface(*surfaceItem);
+
+                QPainter p(this);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                QFont font = p.font();
+                font.setBold(true);
+                p.setFont(font);
+                const QString title = tr("3D Surface: %1").arg(layerName(surfaceItem->layerKey));
+                const QString detail = tr("Z-Scale %1x%2").arg(m_zScale, 0, 'f', 1)
+                    .arg(m_wireframe3d ? tr(" | Wireframe") : QString());
+                const QRect panelRect(12, 12, 230, 52);
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(0, 0, 0, 170));
+                p.drawRoundedRect(panelRect, 5, 5);
+                p.setPen(Qt::white);
+                p.drawText(panelRect.adjusted(10, 7, -10, -26),
+                           Qt::AlignLeft | Qt::AlignVCenter,
+                           title);
+                font.setBold(false);
+                p.setFont(font);
+                p.drawText(panelRect.adjusted(10, 25, -10, -7),
+                           Qt::AlignLeft | Qt::AlignVCenter,
+                           detail);
+                p.setPen(QColor(220, 225, 230, 190));
+                p.drawText(QRect(12, height() - 28, width() - 24, 18),
+                           Qt::AlignRight | Qt::AlignVCenter,
+                           tr("Left drag: orbit   Right drag: pan   Wheel: zoom"));
+                return;
+            }
+
+            glDisable(GL_DEPTH_TEST);
             for (const auto& item : renderItems)
             {
                 drawRenderItem(item);
@@ -2555,6 +2720,152 @@ namespace scopeone::ui
         m_uUvOffset = m_prog.uniformLocation("uUvOffset");
         m_uShowClipping = m_prog.uniformLocation("uShowClipping");
 
+        const char* vs3d = R"(
+        #version 330 core
+        layout (location = 0) in vec2 aPos;
+        layout (location = 1) in vec2 aUV;
+        out vec2 vUV;
+        out float vHeight;
+        uniform sampler2D uTex;
+        uniform mat4 uMvp;
+        uniform float uMinNorm;
+        uniform float uMaxNorm;
+        uniform float uTexNormScale;
+        uniform float uGamma;
+        uniform float uZScale;
+        uniform vec2 uUvScale;
+        uniform vec2 uUvOffset;
+        float heightAt(vec2 uv) {
+            float value = texture(uTex, uv * uUvScale + uUvOffset).r * uTexNormScale;
+            float normalized = clamp((value - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
+            return pow(normalized, 1.0 / max(uGamma, 1e-3));
+        }
+        void main() {
+            vUV = aUV * uUvScale + uUvOffset;
+            vHeight = heightAt(aUV);
+            gl_Position = uMvp * vec4(aPos, vHeight * uZScale, 1.0);
+        }
+        )";
+        const char* fs3d = R"(
+        #version 330 core
+        in vec2 vUV;
+        in float vHeight;
+        out vec4 FragColor;
+        uniform sampler2D uTex;
+        uniform float uMinNorm;
+        uniform float uMaxNorm;
+        uniform float uTexNormScale;
+        uniform float uGamma;
+        uniform int uColormap;
+        uniform int uShowClipping;
+        uniform sampler2D uColormapLut;
+        uniform vec3 uLightDirection;
+        vec3 applyColormap(float t, int map) {
+            vec2 lutSize = vec2(textureSize(uColormapLut, 0));
+            float column = (t * (lutSize.x - 1.0) + 0.5) / lutSize.x;
+            float row = (float(map) + 0.5) / lutSize.y;
+            return texture(uColormapLut, vec2(column, row)).rgb;
+        }
+        void main() {
+            float value = texture(uTex, vUV).r * uTexNormScale;
+            if (uShowClipping == 1 && value >= 0.999) {
+                FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                return;
+            }
+            if (uShowClipping == 1 && value <= 0.0001) {
+                FragColor = vec4(0.0, 0.2, 1.0, 1.0);
+                return;
+            }
+            vec2 texel = 1.0 / vec2(textureSize(uTex, 0));
+            float dx = texture(uTex, clamp(vUV + vec2(texel.x, 0.0), 0.0, 1.0)).r
+                       - texture(uTex, clamp(vUV - vec2(texel.x, 0.0), 0.0, 1.0)).r;
+            float dy = texture(uTex, clamp(vUV + vec2(0.0, texel.y), 0.0, 1.0)).r
+                       - texture(uTex, clamp(vUV - vec2(0.0, texel.y), 0.0, 1.0)).r;
+            vec3 normal = normalize(vec3(-dx * 4.0, -dy * 4.0, 1.0));
+            float diffuse = max(dot(normal, normalize(uLightDirection)), 0.0);
+            float lighting = 0.28 + 0.72 * diffuse;
+            float normalized = clamp((value - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
+            normalized = pow(normalized, 1.0 / max(uGamma, 1e-3));
+            FragColor = vec4(applyColormap(normalized, uColormap) * lighting, 1.0);
+        }
+        )";
+        if (!m_prog3d.addShaderFromSourceCode(QOpenGLShader::Vertex, vs3d)
+            || !m_prog3d.addShaderFromSourceCode(QOpenGLShader::Fragment, fs3d)
+            || !m_prog3d.link())
+        {
+            qCritical() << "PreviewWidget: 3D shader setup FAILED" << m_prog3d.log();
+            return;
+        }
+
+        constexpr int gridSize = 256;
+        std::vector<float> gridVertices;
+        gridVertices.reserve(gridSize * gridSize * 4);
+        for (int y = 0; y < gridSize; ++y)
+        {
+            const float v = static_cast<float>(y) / static_cast<float>(gridSize - 1);
+            for (int x = 0; x < gridSize; ++x)
+            {
+                const float u = static_cast<float>(x) / static_cast<float>(gridSize - 1);
+                gridVertices.push_back(u * 2.0f - 1.0f);
+                gridVertices.push_back(v * 2.0f - 1.0f);
+                gridVertices.push_back(u);
+                gridVertices.push_back(1.0f - v);
+            }
+        }
+
+        std::vector<GLuint> gridIndices;
+        gridIndices.reserve((gridSize - 1) * (gridSize - 1) * 6);
+        for (int y = 0; y < gridSize - 1; ++y)
+        {
+            for (int x = 0; x < gridSize - 1; ++x)
+            {
+                const GLuint topLeft = static_cast<GLuint>(y * gridSize + x);
+                const GLuint topRight = topLeft + 1;
+                const GLuint bottomLeft = static_cast<GLuint>((y + 1) * gridSize + x);
+                const GLuint bottomRight = bottomLeft + 1;
+                gridIndices.insert(gridIndices.end(),
+                                   {topLeft, bottomLeft, topRight,
+                                    topRight, bottomLeft, bottomRight});
+            }
+        }
+
+        m_gridVao.create();
+        glGenBuffers(1, &m_gridVbo);
+        glGenBuffers(1, &m_gridIbo);
+        m_gridVao.bind();
+        glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(gridVertices.size() * sizeof(float)),
+                     gridVertices.data(),
+                     GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_gridIbo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(gridIndices.size() * sizeof(GLuint)),
+                     gridIndices.data(),
+                     GL_STATIC_DRAW);
+        m_prog3d.bind();
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        m_prog3d.release();
+        m_gridVao.release();
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        m_gridElementCount = static_cast<int>(gridIndices.size());
+        m_u3dTex = m_prog3d.uniformLocation("uTex");
+        m_u3dMvp = m_prog3d.uniformLocation("uMvp");
+        m_u3dMinNorm = m_prog3d.uniformLocation("uMinNorm");
+        m_u3dMaxNorm = m_prog3d.uniformLocation("uMaxNorm");
+        m_u3dTexNormScale = m_prog3d.uniformLocation("uTexNormScale");
+        m_u3dZScale = m_prog3d.uniformLocation("uZScale");
+        m_u3dGamma = m_prog3d.uniformLocation("uGamma");
+        m_u3dColormap = m_prog3d.uniformLocation("uColormap");
+        m_u3dColormapLut = m_prog3d.uniformLocation("uColormapLut");
+        m_u3dShowClipping = m_prog3d.uniformLocation("uShowClipping");
+        m_u3dUvScale = m_prog3d.uniformLocation("uUvScale");
+        m_u3dUvOffset = m_prog3d.uniformLocation("uUvOffset");
+        m_u3dLightDirection = m_prog3d.uniformLocation("uLightDirection");
+
         // Uploads all colormaps once for shader lookup
         glGenTextures(1, &m_colormapTexture);
         glActiveTexture(GL_TEXTURE1);
@@ -2587,6 +2898,50 @@ namespace scopeone::ui
         if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
     }
 
+    GLuint PreviewWidget::ensureFrameTexture(const QString& textureKey,
+                                             const ImageFrame& frame,
+                                             quint64 frameRevision)
+    {
+        GLenum uploadType = GL_UNSIGNED_BYTE;
+        GLint internalFormat = GL_R8;
+        int unpackAlign = 1;
+        if (frame.isMono16())
+        {
+            uploadType = GL_UNSIGNED_SHORT;
+            internalFormat = GL_R16;
+            unpackAlign = 2;
+        }
+
+        const GLuint texId = getOrCreateTexture(textureKey,
+                                                frame.width,
+                                                frame.height,
+                                                internalFormat);
+        CachedTexture& cachedTexture = m_textureCache[textureKey];
+        glBindTexture(GL_TEXTURE_2D, texId);
+        if (cachedTexture.uploadedRevision == frameRevision)
+        {
+            return texId;
+        }
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
+        const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
+        if (frame.stride > 0)
+        {
+            const int rowPixels = frame.stride / bytesPerPixel;
+            if (rowPixels != frame.width)
+            {
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
+            }
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                        frame.width, frame.height,
+                        GL_RED, uploadType, frame.bytes.constData());
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        cachedTexture.uploadedRevision = frameRevision;
+        return texId;
+    }
+
     // Uploads and draws one image frame into a target rectangle
     void PreviewWidget::drawFrameInRect(const QString& textureKey,
                                         const ImageFrame& frame,
@@ -2602,45 +2957,13 @@ namespace scopeone::ui
 
         ensureGlPipeline();
 
-        GLenum uploadType = GL_UNSIGNED_BYTE;
-        GLint internalFormat = GL_R8;
-        int unpackAlign = 1;
-
-        if (frame.isMono16())
-        {
-            uploadType = GL_UNSIGNED_SHORT;
-            internalFormat = GL_R16;
-            unpackAlign = 2;
-        }
-        else if (!frame.isMono8())
+        if (!frame.isMono8() && !frame.isMono16())
         {
             return;
         }
 
-        GLuint texId = getOrCreateTexture(textureKey, frame.width, frame.height, internalFormat);
-        CachedTexture& cachedTexture = m_textureCache[textureKey];
-
-        glBindTexture(GL_TEXTURE_2D, texId);
-
-        if (cachedTexture.uploadedRevision != frameRevision)
-        {
-            glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
-            const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
-            if (frame.stride > 0)
-            {
-                const int rowPixels = frame.stride / bytesPerPixel;
-                if (rowPixels != frame.width)
-                {
-                    glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
-                }
-            }
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                            frame.width, frame.height,
-                            GL_RED, uploadType, frame.bytes.constData());
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            cachedTexture.uploadedRevision = frameRevision;
-        }
+        const GLint internalFormat = frame.isMono16() ? GL_R16 : GL_R8;
+        const GLuint texId = ensureFrameTexture(textureKey, frame, frameRevision);
 
         m_prog.bind();
         glActiveTexture(GL_TEXTURE0);
@@ -2835,6 +3158,23 @@ namespace scopeone::ui
             glDeleteTextures(1, &m_colormapTexture);
             m_colormapTexture = 0;
         }
+        if (m_gridVbo != 0)
+        {
+            glDeleteBuffers(1, &m_gridVbo);
+            m_gridVbo = 0;
+        }
+        if (m_gridIbo != 0)
+        {
+            glDeleteBuffers(1, &m_gridIbo);
+            m_gridIbo = 0;
+        }
+        if (m_vbo != 0)
+        {
+            glDeleteBuffers(1, &m_vbo);
+            m_vbo = 0;
+        }
+        m_gridVao.destroy();
+        m_vao.destroy();
         doneCurrent();
     }
 
@@ -2946,6 +3286,30 @@ namespace scopeone::ui
     {
         emit activated();
         emit mousePositionChanged(event->pos());
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            if (event->button() == Qt::LeftButton)
+            {
+                m_surfaceOrbiting = true;
+                m_surfacePanning = false;
+                m_surfaceDragStart = event->pos();
+                m_surfaceStartPitch = m_cameraPitch;
+                m_surfaceStartYaw = m_cameraYaw;
+                setCursor(Qt::ClosedHandCursor);
+                event->accept();
+                return;
+            }
+            if (event->button() == Qt::RightButton)
+            {
+                m_surfacePanning = true;
+                m_surfaceOrbiting = false;
+                m_surfaceDragStart = event->pos();
+                m_surfaceStartPan = m_cameraPan;
+                setCursor(Qt::SizeAllCursor);
+                event->accept();
+                return;
+            }
+        }
         if (event->button() == Qt::MiddleButton)
         {
             PreviewInteractionTarget target;
@@ -3089,6 +3453,13 @@ namespace scopeone::ui
     // Toggles visibility of the layer under the double click
     void PreviewWidget::mouseDoubleClickEvent(QMouseEvent* event)
     {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+            && event->button() == Qt::LeftButton)
+        {
+            reset3dCamera();
+            event->accept();
+            return;
+        }
         if (event->button() == Qt::LeftButton)
         {
             PreviewInteractionTarget target;
@@ -3123,6 +3494,28 @@ namespace scopeone::ui
     {
         emit mousePositionChanged(event->pos());
         update();
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            if (m_surfaceOrbiting)
+            {
+                const QPoint delta = event->pos() - m_surfaceDragStart;
+                m_cameraYaw = m_surfaceStartYaw + static_cast<float>(delta.x()) * 0.5f;
+                m_cameraPitch = qBound(-85.0f,
+                                       m_surfaceStartPitch + static_cast<float>(delta.y()) * 0.5f,
+                                       85.0f);
+                update();
+                return;
+            }
+            if (m_surfacePanning)
+            {
+                const QPoint delta = event->pos() - m_surfaceDragStart;
+                m_cameraPan = m_surfaceStartPan
+                    + QVector2D(static_cast<float>(delta.x()) / static_cast<float>(width()),
+                                -static_cast<float>(delta.y()) / static_cast<float>(height()));
+                update();
+                return;
+            }
+        }
         if (m_measurementLineDrawingMode && m_measurementLineDragging)
         {
             m_measurementLineEnd = event->pos();
@@ -3242,6 +3635,23 @@ namespace scopeone::ui
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            if (m_surfaceOrbiting && event->button() == Qt::LeftButton)
+            {
+                m_surfaceOrbiting = false;
+                unsetCursor();
+                event->accept();
+                return;
+            }
+            if (m_surfacePanning && event->button() == Qt::RightButton)
+            {
+                m_surfacePanning = false;
+                unsetCursor();
+                event->accept();
+                return;
+            }
+        }
         if (m_viewPanning && event->button() == Qt::MiddleButton)
         {
             m_viewPanning = false;
@@ -3473,6 +3883,23 @@ namespace scopeone::ui
     // Handles control wheel zoom around the cursor anchor
     void PreviewWidget::wheelEvent(QWheelEvent* event)
     {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            const int deltaY = event->angleDelta().y();
+            if (deltaY != 0)
+            {
+                const int steps = (deltaY / 120 != 0)
+                    ? (deltaY / 120)
+                    : ((deltaY > 0) ? 1 : -1);
+                m_cameraDistance = qBound(0.8f,
+                                           m_cameraDistance * std::pow(0.88f,
+                                                                        static_cast<float>(steps)),
+                                           20.0f);
+            }
+            update();
+            event->accept();
+            return;
+        }
         if (!(event->modifiers() & Qt::ControlModifier))
         {
             QOpenGLWidget::wheelEvent(event);
@@ -3538,6 +3965,13 @@ namespace scopeone::ui
     // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+            && event->key() == Qt::Key_R)
+        {
+            reset3dCamera();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode && event->key() == Qt::Key_Escape)
         {
             cancelMeasurementLineDrawing();

@@ -98,6 +98,7 @@ namespace scopeone::ui
         void documentsChanged();
         void activeDocumentChanged(const QString& documentId);
         void activeViewerChanged();
+        void viewDimensionModeChanged();
         void activeLayerChanged(const QString& layerKey);
         void activeFrameChanged();
         void histogramReady(const QString& layerKey,
@@ -156,6 +157,8 @@ namespace scopeone::ui
         QAction* m_compareSeparator{nullptr};
         QAction* m_compareAction{nullptr};
         QAction* m_linkFramesAction{nullptr};
+        QAction* m_dimensionAction{nullptr};
+        QAction* m_reset3dAction{nullptr};
         QComboBox* m_layoutCombo{nullptr};
         QComboBox* m_zoomCombo{nullptr};
         QComboBox* m_compareDocumentCombo{nullptr};

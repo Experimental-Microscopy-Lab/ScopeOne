@@ -25,6 +25,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -582,6 +583,48 @@ namespace scopeone::ui
             connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged,
                     m_scaleBarCheckBox, &QCheckBox::setChecked);
         }
+        {
+            const QSignalBlocker blocker(m_viewDimensionCombo);
+            m_viewDimensionCombo->setCurrentIndex(
+                m_previewWidget->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional
+                    ? 1
+                    : 0);
+        }
+        {
+            const QSignalBlocker blocker(m_3dZScaleSlider);
+            m_3dZScaleSlider->setValue(qRound(m_previewWidget->get3dZScale() * 10.0f));
+        }
+        {
+            const QSignalBlocker blocker(m_3dZScaleSpinBox);
+            m_3dZScaleSpinBox->setValue(m_previewWidget->get3dZScale());
+        }
+        {
+            const QSignalBlocker blocker(m_3dWireframeCheckBox);
+            m_3dWireframeCheckBox->setChecked(m_previewWidget->is3dWireframeEnabled());
+        }
+        connect(m_previewWidget, &PreviewWidget::viewDimensionModeChanged,
+                this, [this](PreviewWidget::ViewDimensionMode mode)
+                {
+                    const QSignalBlocker blocker(m_viewDimensionCombo);
+                    m_viewDimensionCombo->setCurrentIndex(
+                        mode == PreviewWidget::ViewDimensionMode::ThreeDimensional ? 1 : 0);
+                });
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalZScaleChanged,
+                this, [this](float scale)
+                {
+                    {
+                        const QSignalBlocker sliderBlocker(m_3dZScaleSlider);
+                        m_3dZScaleSlider->setValue(qRound(scale * 10.0f));
+                    }
+                    const QSignalBlocker spinBlocker(m_3dZScaleSpinBox);
+                    m_3dZScaleSpinBox->setValue(scale);
+                });
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalWireframeChanged,
+                this, [this](bool enabled)
+                {
+                    const QSignalBlocker blocker(m_3dWireframeCheckBox);
+                    m_3dWireframeCheckBox->setChecked(enabled);
+                });
     }
 
     // Builds layer and alignment controls
@@ -731,10 +774,80 @@ namespace scopeone::ui
         m_alignXLabel->setMinimumWidth(20);
         m_alignYLabel->setMinimumWidth(20);
         m_alignZoomLabel->setMinimumWidth(60);
+
+        m_surfaceViewGroup = new QGroupBox(QStringLiteral("Surface View"), this);
+        auto* surfaceViewLayout = new QGridLayout(m_surfaceViewGroup);
+        surfaceViewLayout->setContentsMargins(6, 6, 6, 6);
+        surfaceViewLayout->setHorizontalSpacing(6);
+        surfaceViewLayout->setVerticalSpacing(4);
+
+        m_viewDimensionCombo = new QComboBox(m_surfaceViewGroup);
+        m_viewDimensionCombo->addItem(QStringLiteral("2D Flat Map"));
+        m_viewDimensionCombo->addItem(QStringLiteral("3D Surface"));
+        m_viewDimensionCombo->setToolTip(QStringLiteral("Switch between the flat image and a displaced surface"));
+
+        m_3dZScaleSlider = new QSlider(Qt::Horizontal, m_surfaceViewGroup);
+        m_3dZScaleSlider->setRange(1, 100);
+        m_3dZScaleSlider->setValue(10);
+        m_3dZScaleSlider->setToolTip(QStringLiteral("Height exaggeration from 0.1x to 10.0x"));
+
+        m_3dZScaleSpinBox = new QDoubleSpinBox(m_surfaceViewGroup);
+        m_3dZScaleSpinBox->setRange(0.1, 10.0);
+        m_3dZScaleSpinBox->setSingleStep(0.1);
+        m_3dZScaleSpinBox->setDecimals(1);
+        m_3dZScaleSpinBox->setSuffix(QStringLiteral("x"));
+        m_3dZScaleSpinBox->setValue(1.0);
+        m_3dZScaleSpinBox->setFixedWidth(64);
+        m_3dZScaleSpinBox->setKeyboardTracking(false);
+
+        m_3dWireframeCheckBox = new QCheckBox(QStringLiteral("Wireframe"), m_surfaceViewGroup);
+        m_3dResetButton = new QPushButton(QStringLiteral("Reset View"), m_surfaceViewGroup);
+        m_3dResetButton->setMaximumWidth(84);
+
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Mode:"), m_surfaceViewGroup), 0, 0);
+        surfaceViewLayout->addWidget(m_viewDimensionCombo, 0, 1, 1, 3);
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Z-Scale:"), m_surfaceViewGroup), 1, 0);
+        surfaceViewLayout->addWidget(m_3dZScaleSlider, 1, 1);
+        surfaceViewLayout->addWidget(m_3dZScaleSpinBox, 1, 2);
+        surfaceViewLayout->addWidget(m_3dWireframeCheckBox, 2, 0, 1, 2);
+        surfaceViewLayout->addWidget(m_3dResetButton, 2, 2, 1, 2, Qt::AlignLeft);
+
+        connect(m_viewDimensionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int index)
+                {
+                    m_previewWidget->setViewDimensionMode(
+                        index == 1 ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                                   : PreviewWidget::ViewDimensionMode::TwoDimensional);
+                });
+        connect(m_3dZScaleSlider, &QSlider::valueChanged, this,
+                [this](int value)
+                {
+                    const float scale = static_cast<float>(value) / 10.0f;
+                    {
+                        const QSignalBlocker blocker(m_3dZScaleSpinBox);
+                        m_3dZScaleSpinBox->setValue(scale);
+                    }
+                    m_previewWidget->set3dZScale(scale);
+                });
+        connect(m_3dZScaleSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this](double value)
+                {
+                    {
+                        const QSignalBlocker blocker(m_3dZScaleSlider);
+                        m_3dZScaleSlider->setValue(qRound(value * 10.0));
+                    }
+                    m_previewWidget->set3dZScale(static_cast<float>(value));
+                });
+        connect(m_3dWireframeCheckBox, &QCheckBox::toggled,
+                this, [this](bool enabled) { m_previewWidget->set3dWireframeEnabled(enabled); });
+        connect(m_3dResetButton, &QPushButton::clicked,
+                this, [this]() { m_previewWidget->reset3dCamera(); });
+
         controlLayout->addWidget(m_layerTable, 0, 0, 1, 6);
         controlLayout->addWidget(m_layerHistogramGroup, 1, 0, 1, 6);
         controlLayout->addWidget(m_layerSettingsGroup, 2, 0, 1, 6);
         controlLayout->addWidget(transformGroup, 3, 0, 1, 6);
+        controlLayout->addWidget(m_surfaceViewGroup, 4, 0, 1, 6);
 
         controlLayout->setColumnStretch(5, 1);
 
