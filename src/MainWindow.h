@@ -87,6 +87,8 @@ namespace scopeone::ui
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
+        void openImportImageDialog();
+        void importImages(const QStringList& filePaths);
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
         void setCursorStatus(const QString& text);
@@ -174,6 +176,7 @@ namespace scopeone::ui
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_saveImageAsAction{nullptr};
+        QAction* m_importImageAction{nullptr};
         QAction* m_settingsAction{nullptr};
         QAction* m_aboutAction{nullptr};
         QAction* m_aboutQtAction{nullptr};

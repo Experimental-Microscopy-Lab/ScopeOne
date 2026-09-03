@@ -581,6 +581,9 @@ namespace scopeone::core
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
+        ImageFrame importImageAsStaticLayer(const QString& filePath,
+                                            QString* outLayerKey = nullptr,
+                                            QString* errorMessage = nullptr);
         ImageFrame publishToolStreamFrame(const QString& sourceId,
                                           const ImageFrame& frame,
                                           const QString& displayName = QString());

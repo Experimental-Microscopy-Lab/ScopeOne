@@ -109,6 +109,7 @@ namespace scopeone::ui
         void onPreviewLayerMoveUpClicked();
         void onPreviewLayerMoveDownClicked();
         void onPreviewLayerRemoveClicked();
+        void onPreviewLayerImportClicked();
         void onLayerHistogramReady(const QString& layerKey,
                                    const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void refreshLayerHistogram();
@@ -141,6 +142,7 @@ namespace scopeone::ui
         QPushButton* m_layerMoveUpButton{nullptr};
         QPushButton* m_layerMoveDownButton{nullptr};
         QPushButton* m_layerRemoveButton{nullptr};
+        QPushButton* m_layerImportButton{nullptr};
         QSpinBox* m_layerOpacitySpinBox{nullptr};
         QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
         QComboBox* m_layerColormapComboBox{nullptr};

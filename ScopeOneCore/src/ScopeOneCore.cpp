@@ -35,7 +35,10 @@
 #include <QUuid>
 #include <QtConcurrent>
 #include <opencv2/core/version.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -2828,6 +2831,101 @@ namespace scopeone::core
         }
         emit staticFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
         return storedFrame;
+    }
+
+    // Import an external image file as a static frame layer
+    ImageFrame ScopeOneCore::importImageAsStaticLayer(const QString& filePath,
+                                                      QString* outLayerKey,
+                                                      QString* errorMessage)
+    {
+        const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
+        if (cleanedPath.isEmpty() || !QFileInfo::exists(cleanedPath))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("File does not exist: %1").arg(filePath);
+            }
+            return {};
+        }
+
+        const cv::Mat image = cv::imread(cleanedPath.toStdString(), cv::IMREAD_UNCHANGED);
+        if (image.empty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
+            }
+            return {};
+        }
+
+        ImageFrame frame;
+        frame.width = image.cols;
+        frame.height = image.rows;
+
+        cv::Mat gray;
+        if (image.channels() == 1)
+        {
+            gray = image;
+        }
+        else if (image.channels() == 4)
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
+        }
+        else
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+        }
+
+        frame.width = gray.cols;
+        frame.height = gray.rows;
+
+        if (gray.depth() == CV_8U)
+        {
+            frame.bitsPerSample = 8;
+            frame.pixelFormat = ImagePixelFormat::Mono8;
+            frame.stride = static_cast<int>(gray.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
+                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
+        }
+        else
+        {
+            cv::Mat gray16;
+            if (gray.depth() == CV_16U)
+            {
+                gray16 = gray;
+            }
+            else
+            {
+                gray.convertTo(gray16, CV_16U);
+            }
+            frame.bitsPerSample = 16;
+            frame.pixelFormat = ImagePixelFormat::Mono16;
+            frame.stride = static_cast<int>(gray16.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray16.data),
+                                     static_cast<qsizetype>(gray16.total() * gray16.elemSize()));
+        }
+
+        static std::atomic<quint64> s_importCounter{1};
+        const QFileInfo fileInfo(cleanedPath);
+        const QString sourceId = QStringLiteral("imported:%1_%2")
+                                     .arg(fileInfo.completeBaseName())
+                                     .arg(s_importCounter.fetch_add(1));
+        frame.cameraId = sourceId;
+
+        const ImageFrame published = publishStaticFrame(sourceId, frame, fileInfo.fileName());
+        if (published.isValid())
+        {
+            const QString layerKey = staticLayerKey(sourceId);
+            if (outLayerKey)
+            {
+                *outLayerKey = layerKey;
+            }
+            if (m_imageSceneModel)
+            {
+                m_imageSceneModel->setLayerVisible(layerKey, true);
+            }
+        }
+        return published;
     }
 
     // Publish the latest frame of a tool-owned realtime stream

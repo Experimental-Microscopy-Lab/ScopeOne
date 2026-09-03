@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QFileDialog>
 #include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -691,6 +692,8 @@ namespace scopeone::ui
         m_layerMoveDownButton = new QPushButton(QStringLiteral("Down"), m_layerSettingsGroup);
         m_layerRemoveButton = new QPushButton(QStringLiteral("Remove"), m_layerSettingsGroup);
         m_layerRemoveButton->setMaximumWidth(68);
+        m_layerImportButton = new QPushButton(QStringLiteral("Import..."), m_layerSettingsGroup);
+        m_layerImportButton->setMaximumWidth(68);
 
         m_layerOpacitySpinBox = new QSpinBox(m_layerSettingsGroup);
         m_layerOpacitySpinBox->setRange(0, 100);
@@ -718,6 +721,7 @@ namespace scopeone::ui
         layerSettingsLayout->addWidget(m_layerMoveUpButton, 1, 1, Qt::AlignLeft);
         layerSettingsLayout->addWidget(m_layerMoveDownButton, 1, 2, Qt::AlignLeft);
         layerSettingsLayout->addWidget(m_layerRemoveButton, 1, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_layerImportButton, 1, 4, Qt::AlignLeft);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 2, 0);
         layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 2, 1, Qt::AlignLeft);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 2, 2);
@@ -859,6 +863,8 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewLayerMoveDownClicked);
         connect(m_layerRemoveButton, &QPushButton::clicked,
                 this, &DeviceControlWidget::onPreviewLayerRemoveClicked);
+        connect(m_layerImportButton, &QPushButton::clicked,
+                this, &DeviceControlWidget::onPreviewLayerImportClicked);
         connect(m_layerOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, &DeviceControlWidget::onPreviewLayerOpacityChanged);
         connect(m_layerGammaSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -1248,6 +1254,25 @@ namespace scopeone::ui
     {
         m_scopeonecore->removeStaticFrame(
             scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
+    }
+
+    // Open file dialog and import image files as static layers
+    void DeviceControlWidget::onPreviewLayerImportClicked()
+    {
+        const QStringList filePaths = QFileDialog::getOpenFileNames(
+            this,
+            tr("Import Image as Layer"),
+            QString(),
+            tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
+        QString lastLayerKey;
+        for (const QString& filePath : filePaths)
+        {
+            m_scopeonecore->importImageAsStaticLayer(filePath, &lastLayerKey);
+        }
+        if (!lastLayerKey.isEmpty() && m_workspace)
+        {
+            m_workspace->setActiveLayerKey(lastLayerKey);
+        }
     }
 
     void DeviceControlWidget::onLayerHistogramReady(

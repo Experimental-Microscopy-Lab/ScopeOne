@@ -419,6 +419,8 @@ namespace scopeone::ui
                 this, &MainWindow::handlePreviewMousePosition);
         connect(m_previewWidget, &PreviewWidget::roiDrawn,
                 this, &MainWindow::handleRoiDrawn);
+        connect(m_previewWidget, &PreviewWidget::imageFilesDropped,
+                this, &MainWindow::importImages);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::rawFramesAcquired,
                 m_previewWidget, &PreviewWidget::trackRawFrameRate);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCompleted,
@@ -1046,6 +1048,9 @@ namespace scopeone::ui
         refreshRecentConfigurationsMenu();
         m_unloadConfigurationAction = m_fileMenu->addAction(tr("&Unload Configuration"));
         m_fileMenu->addSeparator();
+        m_importImageAction = m_fileMenu->addAction(tr("&Import Image as Layer..."));
+        m_importImageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
+        connect(m_importImageAction, &QAction::triggered, this, &MainWindow::openImportImageDialog);
         m_saveImageAsAction = m_fileMenu->addAction(tr("Save Image &As..."));
         m_saveImageAsAction->setEnabled(false);
         connect(m_saveImageAsAction, &QAction::triggered,
@@ -1712,6 +1717,44 @@ namespace scopeone::ui
         showStatusMessage(
             tr("Settings updated"),
             5000);
+    }
+
+    // Open file dialog and import image files as static layers
+    void MainWindow::openImportImageDialog()
+    {
+        const QStringList filePaths = QFileDialog::getOpenFileNames(
+            this,
+            tr("Import Image as Layer"),
+            QString(),
+            tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
+        importImages(filePaths);
+    }
+
+    // Import multiple image files as static layers into the workspace
+    void MainWindow::importImages(const QStringList& filePaths)
+    {
+        QString lastLayerKey;
+        for (const QString& filePath : filePaths)
+        {
+            QString layerKey;
+            QString error;
+            const scopeone::core::ImageFrame frame =
+                m_scopeonecore->importImageAsStaticLayer(filePath, &layerKey, &error);
+            if (frame.isValid())
+            {
+                lastLayerKey = layerKey;
+            }
+            else if (!error.isEmpty())
+            {
+                showStatusMessage(error, 5000);
+            }
+        }
+        if (!lastLayerKey.isEmpty())
+        {
+            m_imageWorkspace->setActiveLayerKey(lastLayerKey);
+            m_saveImageAsAction->setEnabled(true);
+            showStatusMessage(tr("Imported %1 image layer(s)").arg(filePaths.size()), 3000);
+        }
     }
 
     // Display image coordinates and pixel value under the cursor

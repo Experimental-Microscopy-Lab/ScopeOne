@@ -3,11 +3,12 @@
 #include "scopeone/ToolFrameStream.h"
 #include "scopeone/ToolPlugin.h"
 #include "scopeone/ToolTask.h"
+#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ImageSceneModel.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
-#include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -214,12 +215,15 @@ namespace
             layout->addLayout(controls);
 
             auto* actions = new QHBoxLayout();
-            m_loadButton = new QPushButton(QStringLiteral("Load hologram"), this);
+            auto* layerLabel = new QLabel(QStringLiteral("Input:"), this);
+            m_layerComboBox = new QComboBox(this);
+            m_layerComboBox->setMinimumWidth(140);
             m_autoDetectButton = new QPushButton(QStringLiteral("Auto detect +1"), this);
             m_reconstructButton = new QPushButton(QStringLiteral("Reconstruct once"), this);
             m_cancelButton = new QPushButton(QStringLiteral("Cancel"), this);
             m_cancelButton->setEnabled(false);
-            actions->addWidget(m_loadButton);
+            actions->addWidget(layerLabel);
+            actions->addWidget(m_layerComboBox);
             actions->addWidget(m_autoDetectButton);
             actions->addWidget(m_reconstructButton);
             actions->addWidget(m_cancelButton);
@@ -240,6 +244,23 @@ namespace
 
             m_stream = new scopeone::ui::ScopeOneToolFrameStream(m_context.core(), this);
 
+            refreshLayerComboBox();
+            connect(m_context.core().imageSceneModel(),
+                    &scopeone::core::ImageSceneModel::layersChanged,
+                    this,
+                    [this]() { refreshLayerComboBox(); });
+            connect(m_layerComboBox, &QComboBox::currentIndexChanged, this,
+                    [this]()
+                    {
+                        const QString layerKey = m_layerComboBox->currentData().toString();
+                        m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+                        m_stream->setSourceId(m_sourceId);
+                        if (!m_liveCheckBox->isChecked())
+                        {
+                            startReconstruction();
+                        }
+                    });
+
             m_spectrumView->setSelectionChanged([this](const QPoint& offset)
             {
                 setManualSideband(offset);
@@ -252,8 +273,6 @@ namespace
                     });
             connect(m_reconstructButton, &QPushButton::clicked, this,
                     [this]() { startReconstruction(); });
-            connect(m_loadButton, &QPushButton::clicked, this,
-                    [this]() { loadHologram(); });
             connect(m_cancelButton, &QPushButton::clicked, this,
                     [this]()
                     {
@@ -270,11 +289,13 @@ namespace
                                                      : QStringLiteral("Ready"));
                             return;
                         }
-                        m_fileInput = {};
-                        const ImageFrame frame = m_context.currentFrame();
+                        const QString layerKey = m_layerComboBox->currentData().toString();
+                        const ImageFrame frame = !layerKey.isEmpty()
+                                                     ? m_context.core().graphFrame(layerKey)
+                                                     : m_context.currentFrame();
                         if (frame.isValid())
                         {
-                            m_sourceId = frame.cameraId;
+                            m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
                             m_stream->setSourceId(m_sourceId);
                             queueFrame(frame);
                         }
@@ -415,40 +436,6 @@ namespace
             return preview;
         }
 
-        static ImageFrame imageFrame(const QString& source)
-        {
-            const cv::Mat image = cv::imread(source.toStdString(), cv::IMREAD_UNCHANGED);
-            cv::Mat gray;
-            if (image.channels() == 1)
-            {
-                gray = image;
-            }
-            else
-            {
-                cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-            }
-            if (gray.depth() == CV_8U)
-            {
-                gray.convertTo(gray, CV_16U, 257.0);
-            }
-            else if (gray.depth() != CV_16U)
-            {
-                gray.convertTo(gray, CV_16U);
-            }
-            gray = gray.clone();
-
-            ImageFrame frame;
-            frame.cameraId = source;
-            frame.width = gray.cols;
-            frame.height = gray.rows;
-            frame.stride = static_cast<int>(gray.step);
-            frame.bitsPerSample = 16;
-            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono16;
-            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
-                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
-            return frame;
-        }
-
         static void showPreview(QLabel* preview, const ImageFrame& frame)
         {
             const QImage image(reinterpret_cast<const uchar*>(frame.bytes.constData()),
@@ -475,34 +462,46 @@ namespace
             m_spectrumView->setSelection(offset, m_radius->value());
         }
 
-        void loadHologram()
+        void refreshLayerComboBox()
         {
-            const QString path = QFileDialog::getOpenFileName(
-                this,
-                QStringLiteral("Load hologram"),
-                QString(),
-                QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
-            if (path.isEmpty())
+            const QString currentSelection = m_layerComboBox->currentData().toString();
+            const QString activeKey = m_context.currentLayerKey();
+            const QSignalBlocker blocker(m_layerComboBox);
+            m_layerComboBox->clear();
+            const QStringList layerIds = m_context.core().imageSceneModel()->layerIds();
+            for (const QString& layerKey : layerIds)
             {
-                return;
+                QString name = layerKey;
+                scopeone::core::DocumentLayer layer;
+                if (m_context.core().imageSceneModel()->findLayer(layerKey, layer) && !layer.name.isEmpty())
+                {
+                    name = layer.name;
+                }
+                m_layerComboBox->addItem(name, layerKey);
             }
-            m_fileInput = imageFrame(path);
-            m_liveCheckBox->setChecked(false);
-            m_sourceId = path;
-            startReconstruction();
+            int index = m_layerComboBox->findData(currentSelection);
+            if (index < 0 && !activeKey.isEmpty())
+            {
+                index = m_layerComboBox->findData(activeKey);
+            }
+            if (index >= 0)
+            {
+                m_layerComboBox->setCurrentIndex(index);
+            }
         }
 
         void startReconstruction()
         {
-            const ImageFrame input = m_fileInput.isValid()
-                                          ? m_fileInput
+            const QString layerKey = m_layerComboBox->currentData().toString();
+            const ImageFrame input = !layerKey.isEmpty()
+                                          ? m_context.core().graphFrame(layerKey)
                                           : m_context.currentFrame();
             if (!input.isValid())
             {
-                m_status->setText(QStringLiteral("No hologram loaded"));
+                m_status->setText(QStringLiteral("No hologram layer available"));
                 return;
             }
-            m_sourceId = input.cameraId;
+            m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
             m_stream->setSourceId(m_sourceId);
             queueFrame(input);
         }
@@ -555,7 +554,7 @@ namespace
 
             m_reconstructButton->setEnabled(false);
             m_autoDetectButton->setEnabled(false);
-            m_loadButton->setEnabled(false);
+            m_layerComboBox->setEnabled(false);
             m_cancelButton->setEnabled(true);
             m_progress->setValue(0);
             m_status->setText(QStringLiteral("Reconstructing 0%"));
@@ -626,7 +625,7 @@ namespace
             m_status->setText(status);
             m_reconstructButton->setEnabled(true);
             m_autoDetectButton->setEnabled(true);
-            m_loadButton->setEnabled(true);
+            m_layerComboBox->setEnabled(true);
             m_cancelButton->setEnabled(false);
             if (m_task)
             {
@@ -658,7 +657,7 @@ namespace
         QCheckBox* m_unwrapCheckBox{nullptr};
         QCheckBox* m_tiltCheckBox{nullptr};
         QComboBox* m_outputMode{nullptr};
-        QPushButton* m_loadButton{nullptr};
+        QComboBox* m_layerComboBox{nullptr};
         QPushButton* m_autoDetectButton{nullptr};
         QPushButton* m_reconstructButton{nullptr};
         QPushButton* m_cancelButton{nullptr};
@@ -668,7 +667,6 @@ namespace
         scopeone::ui::ScopeOneToolTask* m_task{nullptr};
         scopeone::ui::ScopeOneToolFrameStream* m_stream{nullptr};
         QString m_sourceId;
-        ImageFrame m_fileInput;
     };
 
     class DhmToolPlugin final : public QObject,

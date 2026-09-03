@@ -31,7 +31,7 @@ if (WIN32)
 
     set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0/build")
 
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
     set(SCOPEONE_OPENCV_LIBRARIES opencv_world)
 
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
@@ -51,7 +51,7 @@ else ()
     # Linux/Unix: use system OpenCV and link the MMCore static libraries
     # built from the sibling micro-manager checkout (symlinked into
     # external/mmCoreAndDevices). No runtime DLLs to stage.
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
     set(SCOPEONE_OPENCV_LIBRARIES ${OpenCV_LIBS})
     set(MMCORE_BIN_DIR "")
 

@@ -22,6 +22,8 @@
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
+class QDragEnterEvent;
+class QDropEvent;
 class QEvent;
 class QKeyEvent;
 class QLabel;
@@ -138,6 +140,7 @@ signals:
                                       const QPoint& start,
                                       const QPoint& end);
         void measurementLineCleared();
+        void imageFilesDropped(const QStringList& filePaths);
 
     protected:
         void initializeGL() override;
@@ -150,6 +153,8 @@ signals:
         void leaveEvent(QEvent* event) override;
         void wheelEvent(QWheelEvent* event) override;
         void keyPressEvent(QKeyEvent* event) override;
+        void dragEnterEvent(QDragEnterEvent* event) override;
+        void dropEvent(QDropEvent* event) override;
 
     private:
         struct FpsState

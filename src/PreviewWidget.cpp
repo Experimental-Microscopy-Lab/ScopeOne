@@ -3,8 +3,11 @@
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QDebug>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QLabel>
+#include <QMimeData>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QPalette>
@@ -13,6 +16,7 @@
 #include <QMatrix4x4>
 #include <QOpenGLContext>
 #include <QSurfaceFormat>
+#include <QUrl>
 #include <QVector3D>
 #include <QtGlobal>
 #include <QtMath>
@@ -246,6 +250,7 @@ namespace scopeone::ui
         setMinimumSize(256, 256);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
+        setAcceptDrops(true);
 
         m_placeholderLabel = new QLabel(m_placeholderText, this);
         m_placeholderLabel->setAlignment(Qt::AlignCenter);
@@ -4000,6 +4005,8 @@ namespace scopeone::ui
             return;
         }
 
+
+
         if (event->key() == Qt::Key_Escape)
         {
             m_sceneModel->selectOnly(QString());
@@ -4046,5 +4053,33 @@ namespace scopeone::ui
         }
 
         QOpenGLWidget::keyPressEvent(event);
+    }
+
+    // Accept file drag operations containing image files
+    void PreviewWidget::dragEnterEvent(QDragEnterEvent* event)
+    {
+        if (event->mimeData()->hasUrls())
+        {
+            event->acceptProposedAction();
+        }
+    }
+
+    // Process dropped files and emit image paths
+    void PreviewWidget::dropEvent(QDropEvent* event)
+    {
+        const QList<QUrl> urls = event->mimeData()->urls();
+        QStringList filePaths;
+        for (const QUrl& url : urls)
+        {
+            if (url.isLocalFile())
+            {
+                filePaths.append(url.toLocalFile());
+            }
+        }
+        if (!filePaths.isEmpty())
+        {
+            emit imageFilesDropped(filePaths);
+            event->acceptProposedAction();
+        }
     }
 } // namespace scopeone::ui
