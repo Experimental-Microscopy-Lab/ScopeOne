@@ -16,6 +16,10 @@
 #include <QPluginLoader>
 #include <QSet>
 
+#ifdef Q_OS_WIN
+#    include <windows.h>
+#endif
+
 namespace scopeone::core::internal
 {
     namespace
@@ -252,6 +256,9 @@ namespace scopeone::core::internal
     {
         QStringList errors;
         const QDir directory(directoryPath);
+#ifdef Q_OS_WIN
+        SetDllDirectoryW(reinterpret_cast<LPCWSTR>(directoryPath.utf16()));
+#endif
         for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
         {
             if (!QLibrary::isLibrary(file.absoluteFilePath()))
@@ -260,10 +267,16 @@ namespace scopeone::core::internal
             }
 
             auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
+            const QJsonObject metadata = loader->metaData();
+            if (metadata.value(QStringLiteral("IID")).toString()
+                != QStringLiteral(ScopeOneProcessingPlugin_iid))
+            {
+                continue;
+            }
             PluginManifest manifest;
             QString manifestError;
             if (!parsePluginManifest(
-                    loader->metaData().value(QStringLiteral("MetaData")).toObject(),
+                    metadata.value(QStringLiteral("MetaData")).toObject(),
                     PluginKind::Processing,
                     manifest,
                     &manifestError))

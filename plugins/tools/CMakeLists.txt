@@ -1,0 +1,3 @@
+add_subdirectory(DhmTool)
+add_subdirectory(ScanningDaqTool)
+add_subdirectory(ExampleTool)

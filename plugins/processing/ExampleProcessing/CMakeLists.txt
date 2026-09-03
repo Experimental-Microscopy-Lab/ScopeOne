@@ -3,4 +3,4 @@ add_library(ScopeOneExampleProcessing MODULE
     plugin.json
 )
 target_link_libraries(ScopeOneExampleProcessing PRIVATE scopeone::PluginSDK Qt6::Core)
-scopeone_example_plugin(ScopeOneExampleProcessing processing)
+scopeone_add_plugin(ScopeOneExampleProcessing processing)

@@ -82,6 +82,10 @@ namespace scopeone::ui
                         plugin.path = file.absoluteFilePath();
                         const QJsonObject loaderMetadata = loader.metaData();
                         plugin.interfaceId = loaderMetadata.value(QStringLiteral("IID")).toString();
+                        if (plugin.interfaceId.isEmpty())
+                        {
+                            continue;
+                        }
                         plugin.metadata = loaderMetadata.value(QStringLiteral("MetaData")).toObject();
                         scopeone::core::parsePluginManifest(
                             plugin.metadata,
@@ -89,8 +93,7 @@ namespace scopeone::ui
                             plugin.manifest,
                             &plugin.error);
                         if (plugin.error.isEmpty()
-                            && !pluginInterfaceIds(kind).contains(
-                                loaderMetadata.value(QStringLiteral("IID")).toString()))
+                            && !pluginInterfaceIds(kind).contains(plugin.interfaceId))
                         {
                             plugin.error = QStringLiteral("plugin interface does not match its kind");
                         }

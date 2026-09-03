@@ -455,6 +455,9 @@ if ($target -in @("all", "plugins")) {
         if ($coreOpenCvDir) {
             $pluginConfigureArgs += "-DOpenCV_DIR=$coreOpenCvDir"
         }
+        if ($env:CUDA_PATH) {
+            $pluginConfigureArgs += @("-T", "cuda=$env:CUDA_PATH")
+        }
         Invoke-Step `
             -Label "Configuring ScopeOne plugins" `
             -FilePath $cmake `
