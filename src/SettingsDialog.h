@@ -15,16 +15,19 @@ namespace scopeone::ui
     public:
         explicit SettingsDialog(qint64 maxPendingWriteBytes,
                                  const QString& microManagerDirectory,
+                                 const QString& widgetStyle,
                                  const QString& colorScheme,
                                  QWidget* parent = nullptr);
 
         qint64 maxPendingWriteBytes() const;
         QString microManagerDirectory() const;
+        QString widgetStyle() const;
         QString colorScheme() const;
 
     private:
         QLineEdit* m_recordingBufferLimitEdit{nullptr};
         QLineEdit* m_microManagerDirectoryEdit{nullptr};
+        QComboBox* m_widgetStyleComboBox{nullptr};
         QComboBox* m_colorSchemeComboBox{nullptr};
     };
 }

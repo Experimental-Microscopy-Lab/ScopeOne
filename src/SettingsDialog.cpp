@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStyle>
+#include <QStyleFactory>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -24,6 +25,7 @@ namespace scopeone::ui
     // Create the application settings dialog
     SettingsDialog::SettingsDialog(qint64 maxPendingWriteBytes,
                                    const QString& microManagerDirectory,
+                                   const QString& widgetStyle,
                                    const QString& colorScheme,
                                    QWidget* parent)
         : QDialog(parent)
@@ -34,13 +36,24 @@ namespace scopeone::ui
         auto* layout = new QVBoxLayout(this);
 
         auto* formLayout = new QFormLayout();
+
+        m_widgetStyleComboBox = new QComboBox(this);
+        m_widgetStyleComboBox->addItem(QStringLiteral("Default"), QStringLiteral("default"));
+        for (const QString& styleKey : QStyleFactory::keys())
+        {
+            m_widgetStyleComboBox->addItem(styleKey, styleKey);
+        }
+        const int styleIndex = m_widgetStyleComboBox->findData(widgetStyle);
+        m_widgetStyleComboBox->setCurrentIndex(styleIndex >= 0 ? styleIndex : 0);
+        formLayout->addRow(QStringLiteral("Widget style"), m_widgetStyleComboBox);
+
         m_colorSchemeComboBox = new QComboBox(this);
         m_colorSchemeComboBox->addItem(QStringLiteral("System"), QStringLiteral("system"));
         m_colorSchemeComboBox->addItem(QStringLiteral("Light"), QStringLiteral("light"));
         m_colorSchemeComboBox->addItem(QStringLiteral("Dark"), QStringLiteral("dark"));
         const int colorSchemeIndex = m_colorSchemeComboBox->findData(colorScheme);
         m_colorSchemeComboBox->setCurrentIndex(colorSchemeIndex >= 0 ? colorSchemeIndex : 0);
-        formLayout->addRow(QStringLiteral("Theme"), m_colorSchemeComboBox);
+        formLayout->addRow(QStringLiteral("Color scheme"), m_colorSchemeComboBox);
 
         m_recordingBufferLimitEdit = new QLineEdit(this);
         auto* validator = new QDoubleValidator(m_recordingBufferLimitEdit);
@@ -128,6 +141,12 @@ namespace scopeone::ui
     {
         const QString directory = m_microManagerDirectoryEdit->text().trimmed();
         return directory.isEmpty() ? QString() : QDir::cleanPath(directory);
+    }
+
+    // Return the selected application widget style
+    QString SettingsDialog::widgetStyle() const
+    {
+        return m_widgetStyleComboBox->currentData().toString();
     }
 
     // Return the selected application color scheme

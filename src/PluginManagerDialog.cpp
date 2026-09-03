@@ -46,7 +46,6 @@ namespace scopeone::ui
             QString interfaceId;
             QJsonObject metadata;
             QString error;
-            QString loadError;
         };
 
         QStringList pluginInterfaceIds(scopeone::core::PluginKind kind);
@@ -94,17 +93,6 @@ namespace scopeone::ui
                                 loaderMetadata.value(QStringLiteral("IID")).toString()))
                         {
                             plugin.error = QStringLiteral("plugin interface does not match its kind");
-                        }
-                        if (plugin.error.isEmpty())
-                        {
-                            if (!loader.load())
-                            {
-                                plugin.loadError = loader.errorString();
-                            }
-                            else
-                            {
-                                loader.unload();
-                            }
                         }
                         plugins.append(std::move(plugin));
                     }
@@ -157,11 +145,10 @@ namespace scopeone::ui
             {
                 continue;
             }
-            if (!plugin.error.isEmpty() || !plugin.loadError.isEmpty())
+            if (!plugin.error.isEmpty())
             {
                 errors.append(QStringLiteral("%1: %2")
-                                  .arg(QFileInfo(plugin.path).fileName(),
-                                       plugin.error.isEmpty() ? plugin.loadError : plugin.error));
+                                  .arg(QFileInfo(plugin.path).fileName(), plugin.error));
                 continue;
             }
 
@@ -254,14 +241,12 @@ namespace scopeone::ui
             auto* enabled = new QTableWidgetItem();
             enabled->setData(kIdRole, plugin.manifest.id);
             enabled->setData(kKindRole, static_cast<int>(plugin.expectedKind));
-            const QString status = plugin.error.isEmpty()
-                                       ? (plugin.loadError.isEmpty() ? tr("Ready") : plugin.loadError)
-                                       : plugin.error;
+            const QString status = plugin.error.isEmpty() ? tr("Ready") : plugin.error;
             enabled->setData(kStatusRole, status);
             enabled->setData(
                 kMetadataRole,
                 QString::fromUtf8(QJsonDocument(plugin.metadata).toJson(QJsonDocument::Indented)));
-            if (hardware && plugin.error.isEmpty() && plugin.loadError.isEmpty())
+            if (hardware && plugin.error.isEmpty())
             {
                 enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable);
                 const QString key = settingsKey(plugin.manifest.id, QStringLiteral("enabled"));

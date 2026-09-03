@@ -42,6 +42,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QStyleFactory>
 #include <QStyleHints>
 #include <QStandardPaths>
 #include <QTimer>
@@ -117,6 +118,15 @@ namespace scopeone::ui
             }
 #endif
             return {};
+        }
+
+        // Apply the requested Qt widget style
+        void applyWidgetStyle(const QString& widgetStyle)
+        {
+            if (widgetStyle != QStringLiteral("default") && !widgetStyle.isEmpty())
+            {
+                QApplication::setStyle(QStyleFactory::create(widgetStyle));
+            }
         }
 
         // Apply the requested Qt color scheme
@@ -1481,6 +1491,9 @@ namespace scopeone::ui
     {
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        applyWidgetStyle(settings.value(
+            QStringLiteral("Appearance/Style"),
+            QStringLiteral("default")).toString());
         applyColorScheme(settings.value(
             QStringLiteral("Appearance/ColorScheme"),
             QStringLiteral("system")).toString());
@@ -1659,6 +1672,9 @@ namespace scopeone::ui
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         const qint64 currentValue = m_scopeonecore->recordingMaxPendingWriteBytes();
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QString widgetStyle = settings.value(
+            QStringLiteral("Appearance/Style"),
+            QStringLiteral("default")).toString();
         const QString colorScheme = settings.value(
             QStringLiteral("Appearance/ColorScheme"),
             QStringLiteral("system")).toString();
@@ -1666,6 +1682,7 @@ namespace scopeone::ui
         const QStringList adapterPaths = m_scopeonecore->additionalDeviceAdapterSearchPaths();
         SettingsDialog dialog(currentValue > 0 ? currentValue : kDefaultRecordedMaxBytes,
                               adapterPaths.value(0),
+                              widgetStyle,
                               colorScheme,
                               this);
         if (dialog.exec() != QDialog::Accepted)
@@ -1683,11 +1700,14 @@ namespace scopeone::ui
                                  tr("The device adapter directory could not be updated."));
             return;
         }
+        const QString selectedWidgetStyle = dialog.widgetStyle();
         const QString selectedColorScheme = dialog.colorScheme();
         settings.setValue(QStringLiteral("Recording/MaxPendingWriteBytes"), recordedMaxBytes);
         settings.setValue(QStringLiteral("Hardware/MicroManagerDirectory"), microManagerDirectory);
+        settings.setValue(QStringLiteral("Appearance/Style"), selectedWidgetStyle);
         settings.setValue(QStringLiteral("Appearance/ColorScheme"), selectedColorScheme);
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
+        applyWidgetStyle(selectedWidgetStyle);
         applyColorScheme(selectedColorScheme);
         showStatusMessage(
             tr("Settings updated"),
