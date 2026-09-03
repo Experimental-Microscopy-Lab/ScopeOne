@@ -1,11 +1,11 @@
 #include "CudaFrequencyFilterModule.h"
 
-#include "scopeone/gpu/CudaKernelLaunch.h"
+#include "scopeone/cuda/CudaKernelLaunch.h"
 
 namespace scopeone::cuda_plugin
 {
     CudaFrequencyFilterModule::CudaFrequencyFilterModule()
-        : CudaRealImageModule(scopeone::gpu::GpuMemoryLayout::Contiguous)
+        : CudaRealImageModule(scopeone::cuda::GpuMemoryLayout::Contiguous)
     {
     }
 
@@ -74,8 +74,8 @@ namespace scopeone::cuda_plugin
     }
 
     bool CudaFrequencyFilterModule::processDevice(
-        const scopeone::gpu::GpuRealFrame& input,
-        scopeone::gpu::GpuRealFrame& output,
+        const scopeone::cuda::GpuRealFrame& input,
+        scopeone::cuda::GpuRealFrame& output,
         int)
     {
         if (m_planWidth != input.width() || m_planHeight != input.height())
@@ -96,7 +96,7 @@ namespace scopeone::cuda_plugin
             m_planWidth = input.width();
             m_planHeight = input.height();
         }
-        return scopeone::gpu::detail::launchFrequencyFilter(input.data(),
+        return scopeone::cuda::detail::launchFrequencyFilter(input.data(),
                                                             output.data(),
                                                             m_spectrum.data(),
                                                             input.width(),

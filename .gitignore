@@ -5,6 +5,8 @@
 !/ScopeOneCore/**
 !/plugins/
 !/plugins/**
+!/ScopeOneCuda/
+!/ScopeOneCuda/**
 /ScopeOneCore/install/
 /ScopeOneCore/build/
 /ScopeOneCore/external/*

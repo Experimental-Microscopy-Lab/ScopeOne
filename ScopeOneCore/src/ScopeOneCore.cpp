@@ -27,6 +27,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMutex>
+#include <QLibrary>
 #include <QStringList>
 #include <QSysInfo>
 #include <QStandardPaths>
@@ -917,6 +918,7 @@ namespace scopeone::core
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
+        std::unique_ptr<QLibrary> cudaLibrary;
         StageMosaicManager* stageMosaicManager{nullptr};
         internal::DaqDeviceManager* daqDeviceManager{nullptr};
         internal::SignalSourceManager* signalSourceManager{nullptr};
@@ -1175,6 +1177,27 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
+        const QString cudaLibraryPath = QDir(QCoreApplication::applicationDirPath())
+                                            .filePath(QStringLiteral("ScopeOneCuda"));
+        {
+            auto cudaLibrary = std::make_unique<QLibrary>(cudaLibraryPath);
+            if (cudaLibrary->load())
+            {
+                using RegisterProcessingModules = void (*)(ScopeOneCore*);
+                const auto registerProcessingModules =
+                    reinterpret_cast<RegisterProcessingModules>(
+                        cudaLibrary->resolve("scopeone_register_processing_modules"));
+                if (registerProcessingModules)
+                {
+                    registerProcessingModules(this);
+                    m_managers->cudaLibrary = std::move(cudaLibrary);
+                }
+                else
+                {
+                    cudaLibrary->unload();
+                }
+            }
+        }
         const QStringList processingPluginErrors = m_managers->processingModuleRegistry->loadPlugins(
             QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins/processing")));
         QStringList allProcessingPluginErrors = processingPluginErrors;
@@ -4303,6 +4326,14 @@ namespace scopeone::core
     QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
     {
         return m_managers->processingModuleRegistry->descriptors();
+    }
+
+    bool ScopeOneCore::registerProcessingModule(
+        const ProcessingModuleDescriptor& descriptor,
+        std::function<std::unique_ptr<ProcessingModule>()> factory)
+    {
+        return m_managers->processingModuleRegistry->registerModule(descriptor,
+                                                                      std::move(factory));
     }
 
     std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(

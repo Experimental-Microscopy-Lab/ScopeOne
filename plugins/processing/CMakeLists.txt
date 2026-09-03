@@ -1,5 +1,4 @@
 add_subdirectory(ExampleProcessing)
-if (TARGET ScopeOneGpuCuda)
-    add_subdirectory(FrequencyFilter)
-    add_subdirectory(GaussianBlur)
+if (TARGET ScopeOneCuda)
+    add_subdirectory(ExampleCudaProcessing)
 endif ()

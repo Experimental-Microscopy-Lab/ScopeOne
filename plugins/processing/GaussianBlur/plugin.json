@@ -1,7 +1,0 @@
-{
-  "id": "scopeone.gaussian_blur",
-  "name": "Gaussian Blur",
-  "version": "1.0.0",
-  "scopeOneApi": 1,
-  "kind": "processing"
-}

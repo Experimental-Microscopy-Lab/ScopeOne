@@ -680,6 +680,9 @@ namespace scopeone::core
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleDescriptor> availableProcessingModules() const;
+        bool registerProcessingModule(
+            const ProcessingModuleDescriptor& descriptor,
+            std::function<std::unique_ptr<ProcessingModule>()> factory);
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
         std::unique_ptr<ProcessingPipeline> createProcessingPipeline() const;
         QList<ProcessingModuleInfo> processingModules() const;

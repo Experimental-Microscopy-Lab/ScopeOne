@@ -1,13 +1,13 @@
 #pragma once
 
-#include "scopeone/gpu/CudaRealImageModule.h"
-#include "scopeone/gpu/GpuComplexFrame.h"
+#include "scopeone/cuda/CudaRealImageModule.h"
+#include "scopeone/cuda/GpuComplexFrame.h"
 
 #include <cufft.h>
 
 namespace scopeone::cuda_plugin
 {
-    class CudaFrequencyFilterModule final : public scopeone::gpu::CudaRealImageModule
+    class CudaFrequencyFilterModule final : public scopeone::cuda::CudaRealImageModule
     {
     public:
         CudaFrequencyFilterModule();
@@ -21,14 +21,14 @@ namespace scopeone::cuda_plugin
         bool resetState() override;
 
     protected:
-        bool processDevice(const scopeone::gpu::GpuRealFrame& input,
-                           scopeone::gpu::GpuRealFrame& output,
+        bool processDevice(const scopeone::cuda::GpuRealFrame& input,
+                           scopeone::cuda::GpuRealFrame& output,
                            int bitDepth) override;
 
     private:
         void destroyPlans();
 
-        scopeone::gpu::GpuComplexFrame m_spectrum;
+        scopeone::cuda::GpuComplexFrame m_spectrum;
         cufftHandle m_forwardPlan{0};
         cufftHandle m_inversePlan{0};
         int m_planWidth{0};
