@@ -21,10 +21,12 @@ class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QPoint;
 class QScrollArea;
 class QSlider;
 class QSpinBox;
 class QTableWidget;
+class QTableWidgetItem;
 
 namespace scopeone::ui
 {
@@ -110,6 +112,9 @@ namespace scopeone::ui
         void onPreviewLayerMoveDownClicked();
         void onPreviewLayerRemoveClicked();
         void onPreviewLayerImportClicked();
+        void onPreviewLayerDuplicateClicked();
+        void onPreviewLayerTableItemChanged(QTableWidgetItem* item);
+        void showLayerContextMenu(const QPoint& pos);
         void onLayerHistogramReady(const QString& layerKey,
                                    const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void refreshLayerHistogram();

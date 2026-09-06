@@ -234,6 +234,14 @@ signals:
             bool firstVisibleInArea{false};
         };
 
+        struct Camera3dState
+        {
+            float pitch{35.0f};
+            float yaw{45.0f};
+            float distance{2.8f};
+            QVector2D pan{0.0f, 0.0f};
+        };
+
     private:
         QStringList m_availableCameraIds;
         QSet<QString> m_staticSourceIds;
@@ -272,10 +280,7 @@ signals:
         GLint m_u3dColormap{-1}, m_u3dColormapLut{-1}, m_u3dShowClipping{-1};
         GLint m_u3dUvScale{-1}, m_u3dUvOffset{-1}, m_u3dLightDirection{-1};
         ViewDimensionMode m_viewDimensionMode{ViewDimensionMode::TwoDimensional};
-        float m_cameraPitch{35.0f};
-        float m_cameraYaw{45.0f};
-        float m_cameraDistance{2.8f};
-        QVector2D m_cameraPan{0.0f, 0.0f};
+        QMap<QString, Camera3dState> m_layerCameras3d;
         float m_zScale{1.0f};
         bool m_wireframe3d{false};
         bool m_scaleBarVisible{true};
@@ -325,6 +330,7 @@ signals:
         bool m_surfaceOrbiting{false};
         bool m_surfacePanning{false};
         QPoint m_surfaceDragStart;
+        QString m_surfaceLayerKey;
         float m_surfaceStartPitch{35.0f};
         float m_surfaceStartYaw{45.0f};
         QVector2D m_surfaceStartPan{0.0f, 0.0f};
@@ -398,7 +404,9 @@ signals:
                                     MarkupEditMode& outEditMode) const;
         void clearSelectedMarkups();
         void drawRenderItem(const RenderItem& item);
-        void draw3dSurface(const RenderItem& item);
+        void draw3dSurface(const RenderItem& item,
+                           const Camera3dState& camera,
+                           const QRect& targetArea);
         void ensureGlPipeline();
         GLuint ensureFrameTexture(const QString& textureKey,
                                   const scopeone::core::ImageFrame& frame,
@@ -430,5 +438,8 @@ signals:
         void cancelROIDrawing();
         void cancelMeasurementLineDrawing();
         void cancelCrossSectionDrawing();
+        Camera3dState& cameraForLayer(const QString& layerKey);
+        const Camera3dState& cameraForLayer(const QString& layerKey) const;
+        QString layerKeyAt3dPosition(const QPoint& widgetPos) const;
     };
 }

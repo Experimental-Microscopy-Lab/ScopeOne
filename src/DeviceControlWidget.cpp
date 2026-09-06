@@ -5,6 +5,7 @@
 #include "PreviewWidget.h"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
@@ -19,6 +20,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
 #include <QPainter>
 #include <QPalette>
 #include <QPaintEvent>
@@ -650,7 +652,9 @@ namespace scopeone::ui
         m_layerTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_layerTable->setSelectionMode(QAbstractItemView::SingleSelection);
         m_layerTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-        m_layerTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_layerTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                      | QAbstractItemView::EditKeyPressed);
+        m_layerTable->setContextMenuPolicy(Qt::CustomContextMenu);
         m_layerTable->setShowGrid(false);
         m_layerTable->setMinimumHeight(94);
         m_layerTable->setMaximumHeight(150);
@@ -857,6 +861,10 @@ namespace scopeone::ui
 
         connect(m_layerTable, &QTableWidget::currentCellChanged,
                 this, &DeviceControlWidget::onPreviewLayerSelectionChanged);
+        connect(m_layerTable, &QTableWidget::itemChanged,
+                this, &DeviceControlWidget::onPreviewLayerTableItemChanged);
+        connect(m_layerTable, &QTableWidget::customContextMenuRequested,
+                this, &DeviceControlWidget::showLayerContextMenu);
         connect(m_layerMoveUpButton, &QPushButton::clicked,
                 this, &DeviceControlWidget::onPreviewLayerMoveUpClicked);
         connect(m_layerMoveDownButton, &QPushButton::clicked,
@@ -951,7 +959,7 @@ namespace scopeone::ui
             m_layerTable->setCellWidget(row, 0, visibleCheckBox);
 
             QTableWidgetItem* nameItem = new QTableWidgetItem(m_previewWidget->layerName(layerKey));
-            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
             nameItem->setData(Qt::UserRole, layerKey);
             m_layerTable->setItem(row, 1, nameItem);
 
@@ -1254,6 +1262,77 @@ namespace scopeone::ui
     {
         m_scopeonecore->removeStaticFrame(
             scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
+    }
+
+    void DeviceControlWidget::onPreviewLayerDuplicateClicked()
+    {
+        const QString sourceLayerKey = currentLayerKey();
+        const scopeone::core::ImageFrame sourceFrame = m_scopeonecore->graphFrame(sourceLayerKey);
+        scopeone::core::DocumentLayer sourceLayer;
+        m_sceneModel->findLayer(sourceLayerKey, sourceLayer);
+
+        const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(sourceLayerKey);
+        int copyIndex = 1;
+        QString duplicateSourceId;
+        do
+        {
+            duplicateSourceId = QStringLiteral("copy:%1_%2").arg(sourceId).arg(copyIndex++);
+        }
+        while (m_sceneModel->hasSource(duplicateSourceId));
+
+        scopeone::core::ImageFrame duplicateFrame = sourceFrame;
+        duplicateFrame.cameraId = duplicateSourceId;
+        const QString duplicateName = QStringLiteral("%1 (Copy)")
+                                          .arg(sourceLayer.name.isEmpty()
+                                                   ? m_previewWidget->layerName(sourceLayerKey)
+                                                   : sourceLayer.name);
+        const scopeone::core::ImageFrame published = m_scopeonecore->publishStaticFrame(
+            duplicateSourceId, duplicateFrame, duplicateName);
+        const QString duplicateLayerKey =
+            scopeone::core::ScopeOneCore::staticLayerKey(published.cameraId);
+
+        m_sceneModel->setLayerVisible(duplicateLayerKey, sourceLayer.display.visible);
+        m_sceneModel->setLayerOpacityPercent(
+            duplicateLayerKey, sourceLayer.display.opacityPercent);
+        m_sceneModel->setLayerGamma(duplicateLayerKey, sourceLayer.display.gamma);
+        m_sceneModel->setLayerColormap(duplicateLayerKey, sourceLayer.display.colormap);
+        m_sceneModel->setLayerBlending(duplicateLayerKey, sourceLayer.display.blending);
+        m_sceneModel->setLayerDisplayLevels(duplicateLayerKey,
+                                            sourceLayer.display.levelMin,
+                                            sourceLayer.display.levelMax,
+                                            sourceLayer.display.levelDomainMax);
+        m_workspace->setActiveLayerKey(duplicateLayerKey);
+    }
+
+    void DeviceControlWidget::onPreviewLayerTableItemChanged(QTableWidgetItem* item)
+    {
+        if (item->column() == 1)
+        {
+            m_sceneModel->setLayerName(item->data(Qt::UserRole).toString(), item->text());
+        }
+    }
+
+    void DeviceControlWidget::showLayerContextMenu(const QPoint& pos)
+    {
+        const int row = m_layerTable->rowAt(pos.y());
+        if (row < 0)
+        {
+            return;
+        }
+
+        m_layerTable->setCurrentCell(row, 1);
+        QMenu menu(this);
+        QAction* renameAction = menu.addAction(QStringLiteral("Rename"));
+        QAction* duplicateAction = menu.addAction(QStringLiteral("Duplicate Layer"));
+        QAction* selectedAction = menu.exec(m_layerTable->viewport()->mapToGlobal(pos));
+        if (selectedAction == renameAction)
+        {
+            m_layerTable->editItem(m_layerTable->item(row, 1));
+        }
+        else if (selectedAction == duplicateAction)
+        {
+            onPreviewLayerDuplicateClicked();
+        }
     }
 
     // Open file dialog and import image files as static layers

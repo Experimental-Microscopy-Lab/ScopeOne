@@ -989,6 +989,7 @@ namespace scopeone::ui
         m_viewDimensionMode = mode;
         m_surfaceOrbiting = false;
         m_surfacePanning = false;
+        m_surfaceLayerKey.clear();
         unsetCursor();
         emit viewDimensionModeChanged(m_viewDimensionMode);
         update();
@@ -1008,11 +1009,47 @@ namespace scopeone::ui
 
     void PreviewWidget::reset3dCamera()
     {
-        m_cameraPitch = 35.0f;
-        m_cameraYaw = 45.0f;
-        m_cameraDistance = 2.8f;
-        m_cameraPan = QVector2D(0.0f, 0.0f);
+        if (m_activeLayerKey.isEmpty())
+        {
+            return;
+        }
+        Camera3dState& camera = cameraForLayer(m_activeLayerKey);
+        camera = Camera3dState{};
         update();
+    }
+
+    PreviewWidget::Camera3dState& PreviewWidget::cameraForLayer(const QString& layerKey)
+    {
+        return m_layerCameras3d[layerKey];
+    }
+
+    const PreviewWidget::Camera3dState& PreviewWidget::cameraForLayer(
+        const QString& layerKey) const
+    {
+        return m_layerCameras3d.constFind(layerKey).value();
+    }
+
+    QString PreviewWidget::layerKeyAt3dPosition(const QPoint& widgetPos) const
+    {
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.layerKey == m_activeLayerKey && item.area.contains(widgetPos))
+            {
+                return item.layerKey;
+            }
+        }
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.area.contains(widgetPos))
+            {
+                return item.layerKey;
+            }
+        }
+        return {};
     }
 
     void PreviewWidget::set3dWireframeEnabled(bool enabled)
@@ -2047,8 +2084,10 @@ namespace scopeone::ui
         }
     }
 
-    // Draws the active image layer as a GPU-displaced surface
-    void PreviewWidget::draw3dSurface(const RenderItem& item)
+    // Draws one image layer as a GPU-displaced surface
+    void PreviewWidget::draw3dSurface(const RenderItem& item,
+                                      const Camera3dState& camera,
+                                      const QRect& targetArea)
     {
         const FrameSourceState& frameState = *item.info->frameState;
         const ImageFrame& frame = item.processed ? frameState.processedFrame : frameState.rawFrame;
@@ -2061,13 +2100,14 @@ namespace scopeone::ui
 
         QMatrix4x4 projection;
         projection.perspective(45.0f,
-                               static_cast<float>(width()) / static_cast<float>(height()),
+                               static_cast<float>(targetArea.width())
+                                   / static_cast<float>(targetArea.height()),
                                0.1f,
                                100.0f);
         QMatrix4x4 view;
-        view.translate(m_cameraPan.x(), m_cameraPan.y(), -m_cameraDistance);
-        view.rotate(m_cameraPitch, 1.0f, 0.0f, 0.0f);
-        view.rotate(m_cameraYaw, 0.0f, 0.0f, 1.0f);
+        view.translate(camera.pan.x(), camera.pan.y(), -camera.distance);
+        view.rotate(camera.pitch, 1.0f, 0.0f, 0.0f);
+        view.rotate(camera.yaw, 0.0f, 0.0f, 1.0f);
 
         m_prog3d.bind();
         glActiveTexture(GL_TEXTURE0);
@@ -2518,6 +2558,7 @@ namespace scopeone::ui
             return;
         }
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glDisable(GL_SCISSOR_TEST);
         applyViewportForRect(rect());
         glDepthMask(GL_TRUE);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2544,6 +2585,54 @@ namespace scopeone::ui
             m_placeholderLabel->hide();
             if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
             {
+                if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
+                {
+                    glEnable(GL_SCISSOR_TEST);
+                    for (const RenderItem& item : renderItems)
+                    {
+                        applyScissorForRect(item.area);
+                        applyViewportForRect(item.area);
+                        glClear(GL_DEPTH_BUFFER_BIT);
+                        draw3dSurface(item,
+                                      cameraForLayer(item.layerKey),
+                                      item.area);
+                    }
+                    glDisable(GL_SCISSOR_TEST);
+                    applyViewportForRect(rect());
+
+                    QPainter p(this);
+                    p.setRenderHint(QPainter::Antialiasing, true);
+                    for (const RenderItem& item : renderItems)
+                    {
+                        const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
+                            .intersected(QRect(item.area.x() + 8,
+                                               item.area.y() + 8,
+                                               qMax(0, item.area.width() - 16),
+                                               42));
+                        p.setPen(Qt::NoPen);
+                        p.setBrush(QColor(0, 0, 0, 170));
+                        p.drawRoundedRect(panelRect, 5, 5);
+                        p.setPen(Qt::white);
+                        QFont font = p.font();
+                        font.setBold(true);
+                        p.setFont(font);
+                        p.drawText(panelRect.adjusted(8, 4, -8, -4),
+                                   Qt::AlignLeft | Qt::AlignVCenter,
+                                   layerName(item.layerKey));
+                        p.setPen(item.layerKey == m_activeLayerKey
+                                     ? QColor(255, 220, 80)
+                                     : QColor(220, 225, 230, 190));
+                        p.setBrush(Qt::NoBrush);
+                        p.setPen(QPen(p.pen().color(), item.layerKey == m_activeLayerKey ? 2 : 1));
+                        p.drawRect(item.area.adjusted(1, 1, -2, -2));
+                    }
+                    p.setPen(QColor(220, 225, 230, 190));
+                    p.drawText(QRect(12, height() - 28, width() - 24, 18),
+                               Qt::AlignRight | Qt::AlignVCenter,
+                               tr("Left drag: orbit   Right drag: pan   Wheel: zoom"));
+                    return;
+                }
+
                 const RenderItem* surfaceItem = &renderItems.back();
                 for (const RenderItem& item : renderItems)
                 {
@@ -2556,7 +2645,9 @@ namespace scopeone::ui
 
                 glDisable(GL_SCISSOR_TEST);
                 applyViewportForRect(rect());
-                draw3dSurface(*surfaceItem);
+                draw3dSurface(*surfaceItem,
+                              cameraForLayer(surfaceItem->layerKey),
+                              rect());
 
                 QPainter p(this);
                 p.setRenderHint(QPainter::Antialiasing, true);
@@ -3293,13 +3384,26 @@ namespace scopeone::ui
         emit mousePositionChanged(event->pos());
         if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
         {
+            const QString layerKey = layerKeyAt3dPosition(event->pos());
+            if (layerKey.isEmpty())
+            {
+                event->accept();
+                return;
+            }
+            if (m_activeLayerKey != layerKey)
+            {
+                setActiveLayerKey(layerKey);
+                emit layerClicked(layerKey);
+            }
+            m_surfaceLayerKey = layerKey;
+            Camera3dState& camera = cameraForLayer(layerKey);
             if (event->button() == Qt::LeftButton)
             {
                 m_surfaceOrbiting = true;
                 m_surfacePanning = false;
                 m_surfaceDragStart = event->pos();
-                m_surfaceStartPitch = m_cameraPitch;
-                m_surfaceStartYaw = m_cameraYaw;
+                m_surfaceStartPitch = camera.pitch;
+                m_surfaceStartYaw = camera.yaw;
                 setCursor(Qt::ClosedHandCursor);
                 event->accept();
                 return;
@@ -3309,7 +3413,7 @@ namespace scopeone::ui
                 m_surfacePanning = true;
                 m_surfaceOrbiting = false;
                 m_surfaceDragStart = event->pos();
-                m_surfaceStartPan = m_cameraPan;
+                m_surfaceStartPan = camera.pan;
                 setCursor(Qt::SizeAllCursor);
                 event->accept();
                 return;
@@ -3461,7 +3565,16 @@ namespace scopeone::ui
         if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
             && event->button() == Qt::LeftButton)
         {
-            reset3dCamera();
+            const QString layerKey = layerKeyAt3dPosition(event->pos());
+            if (!layerKey.isEmpty())
+            {
+                if (m_activeLayerKey != layerKey)
+                {
+                    setActiveLayerKey(layerKey);
+                    emit layerClicked(layerKey);
+                }
+                reset3dCamera();
+            }
             event->accept();
             return;
         }
@@ -3503,20 +3616,35 @@ namespace scopeone::ui
         {
             if (m_surfaceOrbiting)
             {
+                Camera3dState& camera = cameraForLayer(m_surfaceLayerKey);
                 const QPoint delta = event->pos() - m_surfaceDragStart;
-                m_cameraYaw = m_surfaceStartYaw + static_cast<float>(delta.x()) * 0.5f;
-                m_cameraPitch = qBound(-85.0f,
-                                       m_surfaceStartPitch + static_cast<float>(delta.y()) * 0.5f,
-                                       85.0f);
+                camera.yaw = m_surfaceStartYaw + static_cast<float>(delta.x()) * 0.5f;
+                camera.pitch = qBound(-85.0f,
+                                      m_surfaceStartPitch + static_cast<float>(delta.y()) * 0.5f,
+                                      85.0f);
                 update();
                 return;
             }
             if (m_surfacePanning)
             {
+                Camera3dState& camera = cameraForLayer(m_surfaceLayerKey);
                 const QPoint delta = event->pos() - m_surfaceDragStart;
-                m_cameraPan = m_surfaceStartPan
-                    + QVector2D(static_cast<float>(delta.x()) / static_cast<float>(width()),
-                                -static_cast<float>(delta.y()) / static_cast<float>(height()));
+                QMap<QString, FrameSourceState> frameSources;
+                std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+                std::vector<RenderItem> renderItems;
+                buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+                QRect area = rect();
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.layerKey == m_surfaceLayerKey)
+                    {
+                        area = item.area;
+                        break;
+                    }
+                }
+                camera.pan = m_surfaceStartPan
+                    + QVector2D(static_cast<float>(delta.x()) / static_cast<float>(area.width()),
+                                -static_cast<float>(delta.y()) / static_cast<float>(area.height()));
                 update();
                 return;
             }
@@ -3645,6 +3773,7 @@ namespace scopeone::ui
             if (m_surfaceOrbiting && event->button() == Qt::LeftButton)
             {
                 m_surfaceOrbiting = false;
+                m_surfaceLayerKey.clear();
                 unsetCursor();
                 event->accept();
                 return;
@@ -3652,6 +3781,7 @@ namespace scopeone::ui
             if (m_surfacePanning && event->button() == Qt::RightButton)
             {
                 m_surfacePanning = false;
+                m_surfaceLayerKey.clear();
                 unsetCursor();
                 event->accept();
                 return;
@@ -3890,16 +4020,29 @@ namespace scopeone::ui
     {
         if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
         {
+            const QPoint widgetPos = event->position().toPoint();
+            const QString layerKey = layerKeyAt3dPosition(widgetPos);
+            if (layerKey.isEmpty())
+            {
+                event->accept();
+                return;
+            }
+            if (m_activeLayerKey != layerKey)
+            {
+                setActiveLayerKey(layerKey);
+                emit layerClicked(layerKey);
+            }
+            Camera3dState& camera = cameraForLayer(layerKey);
             const int deltaY = event->angleDelta().y();
             if (deltaY != 0)
             {
                 const int steps = (deltaY / 120 != 0)
                     ? (deltaY / 120)
                     : ((deltaY > 0) ? 1 : -1);
-                m_cameraDistance = qBound(0.8f,
-                                           m_cameraDistance * std::pow(0.88f,
-                                                                        static_cast<float>(steps)),
-                                           20.0f);
+                camera.distance = qBound(0.8f,
+                                          camera.distance * std::pow(0.88f,
+                                                                      static_cast<float>(steps)),
+                                          20.0f);
             }
             update();
             event->accept();
