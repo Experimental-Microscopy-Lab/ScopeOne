@@ -701,6 +701,7 @@ namespace scopeone::core
                                        const QString& sourceId = QString());
         quint64 requestRecordingSessionStackProcessing(const QString& sessionId,
                                                        const QString& cameraId);
+        quint64 requestLayerStackProcessing(const QString& layerKey);
         bool cancelProcessingRequest(quint64 requestId);
 
 
@@ -816,6 +817,10 @@ namespace scopeone::core
         void stackProcessingFinished(
             quint64 requestId,
             const std::shared_ptr<RecordingSessionData>& session,
+            const QString& errorMessage);
+        void layerStackProcessingFinished(
+            quint64 requestId,
+            const QString& outputLayerKey,
             const QString& errorMessage);
 
         void recordingProgressChanged(int phase,

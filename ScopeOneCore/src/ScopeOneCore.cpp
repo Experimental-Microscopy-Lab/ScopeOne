@@ -4849,6 +4849,121 @@ namespace scopeone::core
         return requestId;
     }
 
+    // Process a static layer image stack with an isolated runtime
+    quint64 ScopeOneCore::requestLayerStackProcessing(const QString& layerKey)
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey);
+        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules().isEmpty())
+        {
+            return 0;
+        }
+
+        const auto inputSlices = m_layerStacks.value(sourceId);
+        const qsizetype frameCount = static_cast<qsizetype>(inputSlices.size());
+        if (frameCount <= 0)
+        {
+            return 0;
+        }
+
+        QString cleanSourceId = sourceId;
+        if (cleanSourceId.startsWith(QStringLiteral("processed:")))
+        {
+            cleanSourceId = cleanSourceId.mid(10);
+        }
+        const QString outputSourceId = QStringLiteral("processed:%1").arg(cleanSourceId);
+        const QString outputLayerKey = staticLayerKey(outputSourceId);
+
+        DocumentLayer layer;
+        QString baseName;
+        if (m_imageSceneModel->findLayer(layerKey, layer) && !layer.name.isEmpty())
+        {
+            baseName = layer.name;
+        }
+        else
+        {
+            baseName = sourceId;
+        }
+        const QString displayName = baseName.startsWith(QStringLiteral("Processed: "))
+                                        ? baseName
+                                        : QStringLiteral("Processed: %1").arg(baseName);
+
+        const quint64 requestId = ++m_nextProcessingRequestId;
+        auto cancelToken = std::make_shared<std::atomic_bool>(false);
+        m_processingRequestCancelTokens.insert(requestId, cancelToken);
+        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        const int bitDepth = static_cast<int>(processingBitDepth());
+
+        struct LayerStackProcessingResult
+        {
+            std::vector<ImageFrame> frames;
+            QString errorMessage;
+            bool canceled{false};
+        };
+
+        auto* watcher = new QFutureWatcher<LayerStackProcessingResult>(this);
+        connect(watcher, &QFutureWatcher<LayerStackProcessingResult>::finished,
+                this, [this, watcher, requestId, outputSourceId, outputLayerKey, displayName, cancelToken]()
+                {
+                    LayerStackProcessingResult result = watcher->result();
+                    m_processingRequestCancelTokens.remove(requestId);
+                    result.canceled = result.canceled || cancelToken->load();
+                    if (!result.canceled && result.errorMessage.isEmpty() && !result.frames.empty())
+                    {
+                        m_layerStacks.insert(outputSourceId, std::move(result.frames));
+                        publishStaticFrame(outputSourceId, m_layerStacks[outputSourceId].front(), displayName);
+                    }
+                    if (result.canceled)
+                    {
+                        result.errorMessage = QStringLiteral("Processing canceled");
+                    }
+                    emit layerStackProcessingFinished(requestId, outputLayerKey, result.errorMessage);
+                    watcher->deleteLater();
+                });
+
+        watcher->setFuture(QtConcurrent::run(
+            m_offlineProcessingThreadPool.get(),
+            [this, requestId, inputSlices, outputSourceId, frameCount, bitDepth, pipeline = std::move(pipeline), cancelToken]()
+            {
+                LayerStackProcessingResult result;
+                result.frames.reserve(static_cast<size_t>(frameCount));
+                QElapsedTimer progressTimer;
+                progressTimer.start();
+                for (qsizetype index = 0; index < frameCount; ++index)
+                {
+                    if (cancelToken->load())
+                    {
+                        result.canceled = true;
+                        break;
+                    }
+                    const ImageFrame& frame = inputSlices[static_cast<size_t>(index)];
+                    if (!frame.isValid())
+                    {
+                        result.errorMessage = QStringLiteral("Failed to read stack frame %1").arg(index + 1);
+                        break;
+                    }
+                    ProcessingResult processed = pipeline->process(frame, bitDepth);
+                    if (!processed.succeeded())
+                    {
+                        result.errorMessage = processed.error;
+                        break;
+                    }
+                    processed.frame.cameraId = outputSourceId;
+                    result.frames.push_back(std::move(processed.frame));
+                    if (progressTimer.elapsed() >= 100 || index + 1 == frameCount)
+                    {
+                        const qint64 completed = index + 1;
+                        QMetaObject::invokeMethod(this, [this, requestId, completed, frameCount]()
+                        {
+                            emit stackProcessingProgress(requestId, completed, frameCount);
+                        });
+                        progressTimer.restart();
+                    }
+                }
+                return result;
+            }));
+        return requestId;
+    }
+
     bool ScopeOneCore::cancelProcessingRequest(quint64 requestId)
     {
         const auto token = m_processingRequestCancelTokens.value(requestId);

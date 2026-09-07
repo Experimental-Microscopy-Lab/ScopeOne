@@ -490,6 +490,25 @@ namespace scopeone::ui
                     emit processedStackReady(session);
                     refreshSources();
                 });
+        connect(core, &scopeone::core::ScopeOneCore::layerStackProcessingFinished,
+                this, [this](quint64 requestId,
+                             const QString& outputLayerKey,
+                             const QString& error)
+                {
+                    if (requestId != m_offlineProcessingRequestId
+                        || !m_directProcessingRequest)
+                    {
+                        return;
+                    }
+                    finishOfflineProcessing();
+                    if (!error.isEmpty() || outputLayerKey.isEmpty())
+                    {
+                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                        return;
+                    }
+                    emit processedLayerReady(outputLayerKey);
+                    refreshSources();
+                });
         connect(workspace, &ImageWorkspace::activeDocumentChanged,
                 this, [this]()
                 {
@@ -780,8 +799,12 @@ namespace scopeone::ui
         const bool canProcessImage = sourceType == QStringLiteral("layer")
                                       || sourceType == QStringLiteral("document")
                                       || sourceType == QStringLiteral("document_stack");
+        const int sliceCount = (sourceType == QStringLiteral("layer"))
+                                   ? m_scopeonecore->layerSliceCount(sourceId)
+                                   : 0;
         const bool canProcessStack = sourceType == QStringLiteral("stack")
-                                      || sourceType == QStringLiteral("document_stack");
+                                      || sourceType == QStringLiteral("document_stack")
+                                      || sliceCount > 1;
         if (!canProcessStack && m_offlineScopeCombo->currentData().toBool())
         {
             const QSignalBlocker blocker(m_offlineScopeCombo);
@@ -905,8 +928,10 @@ namespace scopeone::ui
             scopeone::core::DocumentLayer layer;
             if (m_scopeonecore->imageSceneModel()->findLayer(layerKey, layer))
             {
-                m_sourceCombo->addItem(layer.name.isEmpty() ? layerKey : layer.name,
-                                       QStringLiteral("layer"));
+                const int slices = m_scopeonecore->layerSliceCount(layerKey);
+                const QString name = layer.name.isEmpty() ? layerKey : layer.name;
+                const QString title = slices > 1 ? tr("%1 (%2 slices)").arg(name).arg(slices) : name;
+                m_sourceCombo->addItem(title, QStringLiteral("layer"));
                 const int index = m_sourceCombo->count() - 1;
                 m_sourceCombo->setItemData(index, layerKey, Qt::UserRole + 1);
             }
@@ -954,16 +979,30 @@ namespace scopeone::ui
         const bool entireStack = m_offlineScopeCombo->currentData().toBool();
         m_directProcessingRequest = sourceType == QStringLiteral("layer")
                                     || sourceType == QStringLiteral("stack");
-        m_offlineProcessingRequestId = entireStack
-                                           ? (m_directProcessingRequest
-                                                  ? m_scopeonecore->requestRecordingSessionStackProcessing(
-                                                        m_sourceCombo->currentData(Qt::UserRole + 1).toString(),
-                                                        m_sourceCombo->currentData(Qt::UserRole + 2).toString())
-                                                  : m_workspace->processDocument(sourceId, true))
-                                           : (m_directProcessingRequest
-                                                  ? m_scopeonecore->requestImageProcessing(
-                                                        m_scopeonecore->graphFrame(sourceId), sourceId)
-                                                  : m_workspace->processDocument(sourceId, false));
+        if (entireStack)
+        {
+            if (sourceType == QStringLiteral("layer"))
+            {
+                m_offlineProcessingRequestId = m_scopeonecore->requestLayerStackProcessing(sourceId);
+            }
+            else if (m_directProcessingRequest)
+            {
+                m_offlineProcessingRequestId = m_scopeonecore->requestRecordingSessionStackProcessing(
+                    m_sourceCombo->currentData(Qt::UserRole + 1).toString(),
+                    m_sourceCombo->currentData(Qt::UserRole + 2).toString());
+            }
+            else
+            {
+                m_offlineProcessingRequestId = m_workspace->processDocument(sourceId, true);
+            }
+        }
+        else
+        {
+            m_offlineProcessingRequestId = m_directProcessingRequest
+                                               ? m_scopeonecore->requestImageProcessing(
+                                                     m_scopeonecore->graphFrame(sourceId), sourceId)
+                                               : m_workspace->processDocument(sourceId, false);
+        }
         if (m_offlineProcessingRequestId == 0)
         {
             finishOfflineProcessing();

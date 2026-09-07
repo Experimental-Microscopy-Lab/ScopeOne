@@ -695,6 +695,7 @@ namespace scopeone::ui
         connect(m_imageProcessingWidget, &ImageProcessingWidget::processedLayerReady,
                 this, [this](const QString& layerKey)
                 {
+                    m_imageWorkspace->setActiveLayerKey(layerKey);
                     showLayers({layerKey});
                     showStatusMessage(tr("Processed image added to preview"), 5000);
                 });
