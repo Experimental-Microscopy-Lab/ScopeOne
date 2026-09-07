@@ -1,4 +1,5 @@
 add_subdirectory(ExampleProcessing)
+add_subdirectory(IscatProcessing)
 if (TARGET ScopeOneCuda)
     add_subdirectory(ExampleCudaProcessing)
 endif ()

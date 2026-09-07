@@ -26,6 +26,7 @@
 #include <QFutureWatcher>
 #include <QJsonObject>
 #include <QList>
+#include <QMetaObject>
 #include <QMutex>
 #include <QLibrary>
 #include <QStringList>
@@ -50,6 +51,67 @@
 
 namespace
 {
+    std::atomic<quint64> s_importCounter{1};
+
+    struct StaticImageImportTask
+    {
+        QString filePath;
+        QString displayName;
+        QString sourceId;
+        std::vector<scopeone::core::ImageFrame> slices;
+        QString errorMessage;
+    };
+
+    scopeone::core::ImageFrame convertImportedImage(
+        const cv::Mat& image,
+        const QString& sourceId)
+    {
+        scopeone::core::ImageFrame frame;
+        cv::Mat gray;
+        if (image.channels() == 1)
+        {
+            gray = image;
+        }
+        else if (image.channels() == 4)
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
+        }
+        else
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+        }
+
+        if (gray.depth() == CV_8U)
+        {
+            frame.bitsPerSample = 8;
+            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono8;
+            frame.stride = static_cast<int>(gray.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
+                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
+        }
+        else
+        {
+            cv::Mat gray16;
+            if (gray.depth() == CV_16U)
+            {
+                gray16 = gray;
+            }
+            else
+            {
+                gray.convertTo(gray16, CV_16U);
+            }
+            frame.bitsPerSample = 16;
+            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono16;
+            frame.stride = static_cast<int>(gray16.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray16.data),
+                                     static_cast<qsizetype>(gray16.total() * gray16.elemSize()));
+        }
+        frame.cameraId = sourceId;
+        frame.width = gray.cols;
+        frame.height = gray.rows;
+        return frame;
+    }
+
     // Histogram bins are fixed to keep UI cost stable
     constexpr int kHistogramBinCount = 256;
     // Auto stretch ignores a small tail on each side
@@ -2856,6 +2918,24 @@ namespace scopeone::core
         return storedFrame;
     }
 
+    int ScopeOneCore::layerSliceCount(const QString& layerKey) const
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey.trimmed());
+        return static_cast<int>(m_layerStacks.value(sourceId).size());
+    }
+
+    bool ScopeOneCore::setLayerSliceIndex(const QString& layerKey, int sliceIndex)
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey.trimmed());
+        const auto stackIt = m_layerStacks.constFind(sourceId);
+        const std::vector<ImageFrame>& slices = stackIt.value();
+        const ImageFrame& frame = slices.at(static_cast<size_t>(sliceIndex));
+        DocumentLayer layer;
+        m_imageSceneModel->findLayer(staticLayerKey(sourceId), layer);
+        publishStaticFrame(sourceId, frame, layer.name);
+        return true;
+    }
+
     // Import an external image file as a static frame layer
     ImageFrame ScopeOneCore::importImageAsStaticLayer(const QString& filePath,
                                                       QString* outLayerKey,
@@ -2871,8 +2951,8 @@ namespace scopeone::core
             return {};
         }
 
-        const cv::Mat image = cv::imread(cleanedPath.toStdString(), cv::IMREAD_UNCHANGED);
-        if (image.empty())
+        std::vector<cv::Mat> images;
+        if (!cv::imreadmulti(cleanedPath.toStdString(), images, cv::IMREAD_UNCHANGED))
         {
             if (errorMessage)
             {
@@ -2881,59 +2961,20 @@ namespace scopeone::core
             return {};
         }
 
-        ImageFrame frame;
-        frame.width = image.cols;
-        frame.height = image.rows;
-
-        cv::Mat gray;
-        if (image.channels() == 1)
-        {
-            gray = image;
-        }
-        else if (image.channels() == 4)
-        {
-            cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
-        }
-        else
-        {
-            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-        }
-
-        frame.width = gray.cols;
-        frame.height = gray.rows;
-
-        if (gray.depth() == CV_8U)
-        {
-            frame.bitsPerSample = 8;
-            frame.pixelFormat = ImagePixelFormat::Mono8;
-            frame.stride = static_cast<int>(gray.step);
-            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
-                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
-        }
-        else
-        {
-            cv::Mat gray16;
-            if (gray.depth() == CV_16U)
-            {
-                gray16 = gray;
-            }
-            else
-            {
-                gray.convertTo(gray16, CV_16U);
-            }
-            frame.bitsPerSample = 16;
-            frame.pixelFormat = ImagePixelFormat::Mono16;
-            frame.stride = static_cast<int>(gray16.step);
-            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray16.data),
-                                     static_cast<qsizetype>(gray16.total() * gray16.elemSize()));
-        }
-
-        static std::atomic<quint64> s_importCounter{1};
         const QFileInfo fileInfo(cleanedPath);
         const QString sourceId = QStringLiteral("imported:%1_%2")
                                      .arg(fileInfo.completeBaseName())
                                      .arg(s_importCounter.fetch_add(1));
-        frame.cameraId = sourceId;
+
+        std::vector<ImageFrame> slices;
+        slices.reserve(images.size());
+        for (const cv::Mat& image : images)
+        {
+            slices.push_back(convertImportedImage(image, sourceId));
+        }
+
+        m_layerStacks.insert(sourceId, std::move(slices));
+        const ImageFrame& frame = m_layerStacks[sourceId].front();
 
         const ImageFrame published = publishStaticFrame(sourceId, frame, fileInfo.fileName());
         if (published.isValid())
@@ -2949,6 +2990,175 @@ namespace scopeone::core
             }
         }
         return published;
+    }
+
+    void ScopeOneCore::importImageAsStaticLayerAsync(const QString& filePath)
+    {
+        const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
+        const QFileInfo fileInfo(cleanedPath);
+        if (cleanedPath.isEmpty() || !fileInfo.isFile())
+        {
+            emit staticImageImportFinished(
+                filePath,
+                {},
+                false,
+                QStringLiteral("File does not exist: %1").arg(filePath));
+            return;
+        }
+
+        emit staticImageImportProgress(
+            filePath,
+            0,
+            QStringLiteral("Reading %1...").arg(fileInfo.fileName()));
+
+        auto* watcher = new QFutureWatcher<StaticImageImportTask>(this);
+        connect(watcher, &QFutureWatcher<StaticImageImportTask>::finished,
+                this, [this, watcher]()
+                {
+                    StaticImageImportTask task = watcher->result();
+                    if (!task.errorMessage.isEmpty())
+                    {
+                        emit staticImageImportFinished(
+                            task.filePath,
+                            {},
+                            false,
+                            task.errorMessage);
+                        watcher->deleteLater();
+                        return;
+                    }
+
+                    m_layerStacks.insert(task.sourceId, std::move(task.slices));
+                    const ImageFrame& frame = m_layerStacks[task.sourceId].front();
+                    const ImageFrame published = publishStaticFrame(
+                        task.sourceId,
+                        frame,
+                        task.displayName);
+                    const QString layerKey = staticLayerKey(task.sourceId);
+                    emit staticImageImportFinished(
+                        task.filePath,
+                        layerKey,
+                        published.isValid(),
+                        published.isValid()
+                            ? QString()
+                            : QStringLiteral("Failed to publish image layer"));
+                    watcher->deleteLater();
+                });
+
+        watcher->setFuture(QtConcurrent::run(
+            m_hardwareThreadPool.get(),
+            [this, cleanedPath, filePath]()
+            {
+                StaticImageImportTask task;
+                task.filePath = filePath;
+                const QFileInfo fileInfo(cleanedPath);
+                task.displayName = fileInfo.fileName();
+                task.sourceId = QStringLiteral("imported:%1_%2")
+                                    .arg(fileInfo.completeBaseName())
+                                    .arg(s_importCounter.fetch_add(1));
+
+                auto reportProgress = [this, filePath](int percent, const QString& statusText)
+                {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, filePath, percent, statusText]()
+                        {
+                            emit staticImageImportProgress(filePath, percent, statusText);
+                        },
+                        Qt::QueuedConnection);
+                };
+
+                std::vector<cv::Mat> images;
+                if (!cv::imreadmulti(cleanedPath.toStdString(),
+                                     images,
+                                     cv::IMREAD_UNCHANGED))
+                {
+                    task.errorMessage = QStringLiteral("Failed to read image file: %1")
+                                            .arg(filePath);
+                    return task;
+                }
+
+                task.slices.reserve(images.size());
+                for (size_t index = 0; index < images.size(); ++index)
+                {
+                    task.slices.push_back(convertImportedImage(images[index], task.sourceId));
+                    const int percent = static_cast<int>(
+                        ((index + 1) * 100) / images.size());
+                    reportProgress(
+                        percent,
+                        QStringLiteral("Converting slice %1 / %2")
+                            .arg(static_cast<qulonglong>(index + 1))
+                            .arg(static_cast<qulonglong>(images.size())));
+                }
+                return task;
+            }));
+    }
+
+    // Imports a gallery recording session as a static layer
+    QString ScopeOneCore::importSessionAsStaticLayer(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        if (!session || !session->hasRecordedOutput())
+        {
+            return {};
+        }
+
+        const QString expId = session->capturePlan().experimentId.trimmed().isEmpty()
+                                  ? QString::number(s_importCounter.fetch_add(1))
+                                  : session->capturePlan().experimentId.trimmed();
+        const QStringList cameras = session->recordedCameraIds();
+        QString lastLayerKey;
+
+        for (const QString& camera : cameras)
+        {
+            const qint64 count = session->recordedFrameCount(camera);
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
+            const QString layerKey = staticLayerKey(sourceId);
+
+            DocumentLayer existingLayer;
+            if (m_imageSceneModel->findLayer(layerKey, existingLayer))
+            {
+                m_imageSceneModel->setLayerVisible(layerKey, true);
+                lastLayerKey = layerKey;
+                continue;
+            }
+
+            std::vector<ImageFrame> slices;
+            slices.reserve(static_cast<size_t>(count));
+            for (int i = 0; i < count; ++i)
+            {
+                ImageFrame frame = session->imageFrameAt(camera, i);
+                if (frame.isValid())
+                {
+                    frame.cameraId = sourceId;
+                    slices.push_back(std::move(frame));
+                }
+            }
+            if (slices.empty())
+            {
+                continue;
+            }
+
+            const QString baseName = session->capturePlan().baseName.trimmed().isEmpty()
+                                         ? QStringLiteral("snapshot")
+                                         : session->capturePlan().baseName.trimmed();
+            const QString displayName = cameras.size() > 1
+                                            ? QStringLiteral("%1 - %2").arg(baseName, camera)
+                                            : baseName;
+
+            m_layerStacks.insert(sourceId, std::move(slices));
+            const ImageFrame& frame = m_layerStacks[sourceId].front();
+            const ImageFrame published = publishStaticFrame(sourceId, frame, displayName);
+            if (published.isValid())
+            {
+                lastLayerKey = layerKey;
+            }
+        }
+        return lastLayerKey;
     }
 
     // Publish the latest frame of a tool-owned realtime stream
@@ -2999,6 +3209,7 @@ namespace scopeone::core
 
         const QString layerKey = staticLayerKey(trimmedSourceId);
         m_frameGraph.remove(FrameGraphStream::Static, trimmedSourceId);
+        m_layerStacks.remove(trimmedSourceId);
         m_imageSceneModel->removeLayer(layerKey);
         clearLayerAnalysis(layerKey);
         if (m_activeLineProfile.active
@@ -3014,6 +3225,7 @@ namespace scopeone::core
     void ScopeOneCore::clearStaticFrames()
     {
         m_frameGraph.clear(FrameGraphStream::Static);
+        m_layerStacks.clear();
         for (const QString& layerId : m_imageSceneModel->layerIds())
         {
             DocumentLayer layer;

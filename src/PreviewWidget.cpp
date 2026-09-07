@@ -6,9 +6,13 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMimeData>
 #include <QPainter>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QKeyEvent>
@@ -266,6 +270,56 @@ namespace scopeone::ui
         m_placeholderLabel->setFont(placeholderFont);
         m_placeholderLabel->setGeometry(rect());
 
+        m_sliceBar = new QWidget(this);
+        m_sliceBar->setStyleSheet(QStringLiteral(
+            "QWidget { background: rgba(20, 24, 28, 220); border-radius: 5px; }"
+            "QLabel { color: white; }"
+            "QPushButton { color: white; padding: 2px 6px; }"));
+        auto* sliceLayout = new QHBoxLayout(m_sliceBar);
+        sliceLayout->setContentsMargins(6, 2, 6, 2);
+        sliceLayout->setSpacing(4);
+        m_sliceLabel = new QLabel(m_sliceBar);
+        m_sliceSlider = new QSlider(Qt::Horizontal, m_sliceBar);
+        m_sliceSlider->setMinimumWidth(30);
+        m_slicePlayButton = new QPushButton(QStringLiteral("Play"), m_sliceBar);
+        m_slicePlayButton->setCheckable(true);
+        sliceLayout->addWidget(m_sliceLabel);
+        sliceLayout->addWidget(m_sliceSlider, 1);
+        sliceLayout->addWidget(m_slicePlayButton);
+        connect(m_sliceSlider, &QSlider::valueChanged,
+                this, [this](int index)
+                {
+                    m_layerSliceIndices[m_activeLayerKey] = index;
+                    const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+                    const bool compact = m_sliceBar->width() < 260;
+                    m_sliceLabel->setText(
+                        compact ? tr("%1/%2").arg(index + 1).arg(sliceCount)
+                                : tr("Slice %1 / %2").arg(index + 1).arg(sliceCount));
+                    emit layerSliceIndexRequested(m_activeLayerKey, index);
+                });
+        connect(m_slicePlayButton, &QPushButton::toggled,
+                this, [this](bool enabled)
+                {
+                    m_slicePlayButton->setText(enabled ? QStringLiteral("Stop")
+                                                       : QStringLiteral("Play"));
+                    if (enabled)
+                    {
+                        m_sliceTimer.start();
+                    }
+                    else
+                    {
+                        m_sliceTimer.stop();
+                    }
+                });
+        m_sliceTimer.setInterval(120);
+        connect(&m_sliceTimer, &QTimer::timeout,
+                this, [this]()
+                {
+                    m_sliceSlider->setValue(
+                        (m_sliceSlider->value() + 1) % (m_sliceSlider->maximum() + 1));
+                });
+        m_sliceBar->hide();
+
         m_fpsUpdateTimer.setInterval(3000);
         connect(&m_fpsUpdateTimer, &QTimer::timeout, this, &PreviewWidget::updateFrameRates);
         m_fpsUpdateTimer.start();
@@ -440,6 +494,7 @@ namespace scopeone::ui
             return;
         }
         m_layerLayoutMode = mode;
+        updateSliceBar();
         updateImageDisplay();
         emit layerLayoutModeChanged(m_layerLayoutMode);
     }
@@ -494,6 +549,16 @@ namespace scopeone::ui
         return layerKey;
     }
 
+    void PreviewWidget::setLayerSliceCount(const QString& layerKey, int sliceCount)
+    {
+        m_layerSliceCounts.insert(layerKey, sliceCount);
+        m_layerSliceIndices.insert(layerKey,
+                                   qBound(0,
+                                          m_layerSliceIndices.value(layerKey),
+                                          sliceCount - 1));
+        updateSliceBar();
+    }
+
     // Adds or updates one realtime tool layer
     QString PreviewWidget::setGraphToolLayerFrame(const QString& layerId,
                                                    const ImageFrame& frame)
@@ -540,6 +605,7 @@ namespace scopeone::ui
         updateLayerInfoDisplay();
         emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
+        updateSliceBar();
         updateImageDisplay();
         return true;
     }
@@ -566,6 +632,7 @@ namespace scopeone::ui
         updateLayerInfoDisplay();
         emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
+        updateSliceBar();
         updateImageDisplay();
     }
 
@@ -844,6 +911,8 @@ namespace scopeone::ui
     {
         const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
         m_staticSourceIds.remove(sourceId);
+        m_layerSliceCounts.remove(layerKey);
+        m_layerSliceIndices.remove(layerKey);
         m_layerFps.remove(layerKey);
         m_fpsStates.remove(layerKey);
 
@@ -1070,6 +1139,7 @@ namespace scopeone::ui
             return;
         }
         m_activeLayerKey = key;
+        updateSliceBar();
         update();
     }
 
@@ -1102,6 +1172,7 @@ namespace scopeone::ui
         {
             m_placeholderText = QStringLiteral("No layer visible");
         }
+        updateSliceBarGeometry();
         update();
     }
 
@@ -2407,6 +2478,77 @@ namespace scopeone::ui
     {
         applyViewportForRect(rect());
         m_placeholderLabel->setGeometry(rect());
+        updateSliceBarGeometry();
+    }
+
+    void PreviewWidget::updateSliceBar()
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1)
+        {
+            m_sliceBar->hide();
+            m_sliceTimer.stop();
+            m_slicePlayButton->setChecked(false);
+            return;
+        }
+
+        m_sliceSlider->setRange(0, sliceCount - 1);
+        {
+            const QSignalBlocker blocker(m_sliceSlider);
+            m_sliceSlider->setValue(m_layerSliceIndices.value(m_activeLayerKey));
+        }
+        updateSliceBarGeometry();
+    }
+
+    void PreviewWidget::updateSliceBarGeometry()
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1)
+        {
+            m_sliceBar->hide();
+            return;
+        }
+
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        QRect cell;
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.layerKey == m_activeLayerKey)
+            {
+                cell = item.area;
+                break;
+            }
+        }
+
+        if (cell.isEmpty() || cell.width() < 80)
+        {
+            m_sliceBar->hide();
+            return;
+        }
+
+        const int margin = 8;
+        const int barHeight = 28;
+        const int maxBarWidth = cell.width() - 2 * margin;
+
+        const bool compact = maxBarWidth < 260;
+        const bool ultraCompact = maxBarWidth < 160;
+
+        m_slicePlayButton->setVisible(!ultraCompact);
+        const int currentSlice = m_sliceSlider->value() + 1;
+        m_sliceLabel->setText(compact ? tr("%1/%2").arg(currentSlice).arg(sliceCount)
+                                      : tr("Slice %1 / %2").arg(currentSlice).arg(sliceCount));
+
+        m_sliceBar->setMaximumSize(maxBarWidth, barHeight);
+        m_sliceBar->setGeometry(cell.x() + margin,
+                                cell.y() + cell.height() - barHeight - margin,
+                                maxBarWidth,
+                                barHeight);
+        m_sliceBar->show();
+        m_sliceBar->raise();
     }
 
     // Computes tiled preview rectangles for visible layers
@@ -3553,6 +3695,22 @@ namespace scopeone::ui
             {
                 setActiveLayerKey(target.layerKey);
                 emit layerClicked(target.layerKey);
+            }
+            else if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
+            {
+                QMap<QString, FrameSourceState> frameSources;
+                std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+                std::vector<RenderItem> renderItems;
+                buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.area.contains(event->pos()))
+                    {
+                        setActiveLayerKey(item.layerKey);
+                        emit layerClicked(item.layerKey);
+                        break;
+                    }
+                }
             }
         }
 

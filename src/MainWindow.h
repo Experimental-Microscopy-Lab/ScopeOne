@@ -15,6 +15,7 @@ class QCloseEvent;
 class QDockWidget;
 class QLabel;
 class QMenu;
+class QProgressBar;
 class QProgressDialog;
 class QTimer;
 
@@ -189,6 +190,7 @@ namespace scopeone::ui
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
         QLabel* m_statusRecordingLabel{nullptr};
+        QProgressBar* m_staticImportProgress{nullptr};
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};

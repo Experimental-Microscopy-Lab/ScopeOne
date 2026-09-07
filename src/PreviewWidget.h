@@ -30,7 +30,10 @@ class QLabel;
 class QMouseEvent;
 class QPainter;
 class QPointF;
+class QPushButton;
+class QSlider;
 class QWheelEvent;
+class QWidget;
 
 namespace scopeone::ui
 {
@@ -68,6 +71,7 @@ namespace scopeone::ui
         void setAvailableCameraIds(const QStringList& cameraIds);
         QString setGraphStaticLayerFrame(const QString& layerId,
                                          const scopeone::core::ImageFrame& frame);
+        void setLayerSliceCount(const QString& layerKey, int sliceCount);
         QString setGraphToolLayerFrame(const QString& layerId,
                                        const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
@@ -126,6 +130,7 @@ signals:
         void stageStepRequested(double dxScale, double dyScale, bool big);
         void stageZStepRequested(double dzScale, bool big);
         void layerClicked(const QString& layerKey);
+        void layerSliceIndexRequested(const QString& layerKey, int sliceIndex);
         void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
@@ -251,8 +256,13 @@ signals:
         QString m_layerInfoText{QStringLiteral("No image loaded")};
         QMap<QString, FpsState> m_fpsStates;
         QTimer m_fpsUpdateTimer;
+        QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
+        QWidget* m_sliceBar{nullptr};
+        QSlider* m_sliceSlider{nullptr};
+        QLabel* m_sliceLabel{nullptr};
+        QPushButton* m_slicePlayButton{nullptr};
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
@@ -281,6 +291,8 @@ signals:
         GLint m_u3dUvScale{-1}, m_u3dUvOffset{-1}, m_u3dLightDirection{-1};
         ViewDimensionMode m_viewDimensionMode{ViewDimensionMode::TwoDimensional};
         QMap<QString, Camera3dState> m_layerCameras3d;
+        QMap<QString, int> m_layerSliceCounts;
+        QMap<QString, int> m_layerSliceIndices;
         float m_zScale{1.0f};
         bool m_wireframe3d{false};
         bool m_scaleBarVisible{true};
@@ -438,6 +450,8 @@ signals:
         void cancelROIDrawing();
         void cancelMeasurementLineDrawing();
         void cancelCrossSectionDrawing();
+        void updateSliceBar();
+        void updateSliceBarGeometry();
         Camera3dState& cameraForLayer(const QString& layerKey);
         const Camera3dState& cameraForLayer(const QString& layerKey) const;
         QString layerKeyAt3dPosition(const QPoint& widgetPos) const;

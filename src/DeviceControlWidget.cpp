@@ -1343,14 +1343,9 @@ namespace scopeone::ui
             tr("Import Image as Layer"),
             QString(),
             tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
-        QString lastLayerKey;
         for (const QString& filePath : filePaths)
         {
-            m_scopeonecore->importImageAsStaticLayer(filePath, &lastLayerKey);
-        }
-        if (!lastLayerKey.isEmpty() && m_workspace)
-        {
-            m_workspace->setActiveLayerKey(lastLayerKey);
+            m_scopeonecore->importImageAsStaticLayerAsync(filePath);
         }
     }
 

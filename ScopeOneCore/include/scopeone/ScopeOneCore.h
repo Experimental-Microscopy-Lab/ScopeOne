@@ -584,6 +584,11 @@ namespace scopeone::core
         ImageFrame importImageAsStaticLayer(const QString& filePath,
                                             QString* outLayerKey = nullptr,
                                             QString* errorMessage = nullptr);
+        void importImageAsStaticLayerAsync(const QString& filePath);
+        QString importSessionAsStaticLayer(
+            const std::shared_ptr<RecordingSessionData>& session);
+        int layerSliceCount(const QString& layerKey) const;
+        bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         ImageFrame publishToolStreamFrame(const QString& sourceId,
                                           const ImageFrame& frame,
                                           const QString& displayName = QString());
@@ -847,6 +852,8 @@ namespace scopeone::core
             const QString& cameraId,
             int index,
             const ImageFrame& frame);
+        void staticImageImportProgress(const QString& filePath, int percent, const QString& statusText);
+        void staticImageImportFinished(const QString& filePath, const QString& layerKey, bool success, const QString& errorMessage);
 
     private:
         struct Managers;
@@ -1006,6 +1013,7 @@ namespace scopeone::core
         QString m_realTimeProcessingSource;
         QHash<quint64, std::shared_ptr<std::atomic_bool>> m_processingRequestCancelTokens;
         quint64 m_nextProcessingRequestId{0};
+        QHash<QString, std::vector<ImageFrame>> m_layerStacks;
     };
 }
 
