@@ -368,6 +368,22 @@ namespace scopeone::plugins
                 {
                     qCritical().noquote() << message;
                 });
+        connect(m_core, &scopeone::core::ScopeOneCore::staticFramePublished,
+                this,
+                [this](const QString& sourceId,
+                       const QString&,
+                       const scopeone::core::ImageFrame&)
+                {
+                    if (!m_scanImageCheck->isChecked()
+                        || m_scanLayerShown
+                        || sourceId != QStringLiteral("scan:%1").arg(m_activeSourceId))
+                    {
+                        return;
+                    }
+                    m_scanLayerShown = true;
+                    m_context.showLayers({
+                        scopeone::core::ScopeOneCore::staticLayerKey(sourceId)});
+                });
         connect(m_core, &scopeone::core::ScopeOneCore::scanImageSessionReady,
                 this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
@@ -569,6 +585,7 @@ namespace scopeone::plugins
             return;
         }
         m_activeSourceId = descriptor.id;
+        m_scanLayerShown = false;
     }
 
     void SignalMonitorWidget::handleTimeSeries(

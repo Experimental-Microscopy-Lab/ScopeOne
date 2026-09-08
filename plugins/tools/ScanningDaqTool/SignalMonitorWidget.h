@@ -67,5 +67,6 @@ namespace scopeone::plugins
         QLabel* m_statusLabel{nullptr};
         SignalTracePlot* m_plot{nullptr};
         QString m_activeSourceId;
+        bool m_scanLayerShown{false};
     };
 }
