@@ -248,17 +248,22 @@ namespace
             connect(m_context.core().imageSceneModel(),
                     &scopeone::core::ImageSceneModel::layersChanged,
                     this,
-                    [this]() { refreshLayerComboBox(); });
+                    [this]()
+                    {
+                        const QString previousSelection = m_layerComboBox->currentData().toString();
+                        refreshLayerComboBox();
+                        if (previousSelection != m_layerComboBox->currentData().toString())
+                        {
+                            startReconstruction();
+                        }
+                    });
             connect(m_layerComboBox, &QComboBox::currentIndexChanged, this,
                     [this]()
                     {
                         const QString layerKey = m_layerComboBox->currentData().toString();
                         m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
                         m_stream->setSourceId(m_sourceId);
-                        if (!m_liveCheckBox->isChecked())
-                        {
-                            startReconstruction();
-                        }
+                        startReconstruction();
                     });
 
             m_spectrumView->setSelectionChanged([this](const QPoint& offset)
@@ -442,7 +447,8 @@ namespace
                                frame.width,
                                frame.height,
                                frame.stride,
-                               QImage::Format_Grayscale16);
+                               frame.isMono16() ? QImage::Format_Grayscale16
+                                                : QImage::Format_Grayscale8);
             preview->setPixmap(QPixmap::fromImage(image).scaled(
                 preview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
