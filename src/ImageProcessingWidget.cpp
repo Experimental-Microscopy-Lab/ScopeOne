@@ -571,36 +571,36 @@ namespace scopeone::ui
         contentLayout->setContentsMargins(5, 5, 5, 5);
         QWidget* pipelineGroup = setupModuleList();
         QWidget* parametersGroup = setupModuleConfig();
-        setupExecutionControls();
-        setupInputControls();
-        contentLayout->addWidget(m_inputControlsWidget);
+        QWidget* executionGroup = setupExecutionControls();
+        QWidget* inputGroup = setupInputControls();
+        contentLayout->addWidget(inputGroup);
         contentLayout->addWidget(pipelineGroup);
         contentLayout->addWidget(parametersGroup, 1);
-        contentLayout->addWidget(m_executionControlsWidget);
+        contentLayout->addWidget(executionGroup);
         scrollArea->setWidget(content);
         mainLayout->addWidget(scrollArea);
     }
 
-    void ImageProcessingWidget::setupInputControls()
+    QWidget* ImageProcessingWidget::setupInputControls()
     {
-        m_inputControlsWidget = new QGroupBox(tr("Pipeline Input"), this);
-        auto* layout = new QGridLayout(m_inputControlsWidget);
-        m_liveModeRadio = new QRadioButton(tr("Live Stream"), m_inputControlsWidget);
-        m_staticModeRadio = new QRadioButton(tr("Image / Stack"), m_inputControlsWidget);
+        auto* inputControlsGroup = new QGroupBox(tr("Pipeline Input"), this);
+        auto* layout = new QGridLayout(inputControlsGroup);
+        m_liveModeRadio = new QRadioButton(tr("Live Stream"), inputControlsGroup);
+        m_staticModeRadio = new QRadioButton(tr("Image / Stack"), inputControlsGroup);
         m_liveModeRadio->setChecked(true);
         layout->addWidget(m_liveModeRadio, 0, 0);
         layout->addWidget(m_staticModeRadio, 0, 1);
-        m_sourceLabel = new QLabel(m_inputControlsWidget);
+        m_sourceLabel = new QLabel(inputControlsGroup);
         layout->addWidget(m_sourceLabel, 1, 0);
-        m_liveSourceCombo = new QComboBox(m_inputControlsWidget);
+        m_liveSourceCombo = new QComboBox(inputControlsGroup);
         m_liveSourceCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         layout->addWidget(m_liveSourceCombo, 1, 1, 1, 2);
-        m_sourceCombo = new QComboBox(m_inputControlsWidget);
+        m_sourceCombo = new QComboBox(inputControlsGroup);
         m_sourceCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         layout->addWidget(m_sourceCombo, 1, 1, 1, 2);
-        m_rangeLabel = new QLabel(tr("Range"), m_inputControlsWidget);
+        m_rangeLabel = new QLabel(tr("Range"), inputControlsGroup);
         layout->addWidget(m_rangeLabel, 2, 0);
-        m_offlineScopeCombo = new QComboBox(m_inputControlsWidget);
+        m_offlineScopeCombo = new QComboBox(inputControlsGroup);
         m_offlineScopeCombo->addItem(tr("Current frame"), false);
         m_offlineScopeCombo->addItem(tr("Entire stack"), true);
         layout->addWidget(m_offlineScopeCombo, 2, 1, 1, 2);
@@ -621,14 +621,15 @@ namespace scopeone::ui
         connect(m_offlineScopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this]() { updateRunButtons(); });
         onInputModeChanged();
+        return inputControlsGroup;
     }
 
-    void ImageProcessingWidget::setupExecutionControls()
+    QWidget* ImageProcessingWidget::setupExecutionControls()
     {
-        m_executionControlsWidget = new QGroupBox(tr("Pipeline Output & Execution"), this);
-        auto* layout = new QGridLayout(m_executionControlsWidget);
-        layout->addWidget(new QLabel(tr("Bit depth"), m_executionControlsWidget), 0, 0);
-        m_processingBitDepthCombo = new QComboBox(m_executionControlsWidget);
+        auto* executionControlsGroup = new QGroupBox(tr("Pipeline Output & Execution"), this);
+        auto* layout = new QGridLayout(executionControlsGroup);
+        layout->addWidget(new QLabel(tr("Bit depth"), executionControlsGroup), 0, 0);
+        m_processingBitDepthCombo = new QComboBox(executionControlsGroup);
         m_processingBitDepthCombo->addItem(
             tr("8-bit"), static_cast<int>(scopeone::core::ProcessingBitDepth::Bit8));
         m_processingBitDepthCombo->addItem(
@@ -636,8 +637,8 @@ namespace scopeone::ui
         connect(m_processingBitDepthCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &ImageProcessingWidget::onProcessingBitDepthChanged);
         layout->addWidget(m_processingBitDepthCombo, 0, 1);
-        m_executeButton = new QPushButton(m_executionControlsWidget);
-        m_cancelProcessingButton = new QPushButton(tr("Cancel"), m_executionControlsWidget);
+        m_executeButton = new QPushButton(executionControlsGroup);
+        m_cancelProcessingButton = new QPushButton(tr("Cancel"), executionControlsGroup);
         m_cancelProcessingButton->setEnabled(false);
         connect(m_executeButton, &QPushButton::clicked,
                 this, [this]()
@@ -655,9 +656,10 @@ namespace scopeone::ui
                 this, &ImageProcessingWidget::onCancelProcessing);
         layout->addWidget(m_executeButton, 1, 0, 1, 2);
         layout->addWidget(m_cancelProcessingButton, 1, 2);
-        m_processingProgress = new QProgressBar(m_executionControlsWidget);
+        m_processingProgress = new QProgressBar(executionControlsGroup);
         m_processingProgress->setVisible(false);
         layout->addWidget(m_processingProgress, 2, 0, 1, 3);
+        return executionControlsGroup;
     }
 
     void ImageProcessingWidget::onInputModeChanged()

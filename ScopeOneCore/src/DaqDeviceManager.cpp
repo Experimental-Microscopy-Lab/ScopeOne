@@ -89,7 +89,6 @@ namespace scopeone::core::internal
     DaqDeviceManager::DaqDeviceManager(QObject* parent)
         : QObject(parent)
     {
-        loadPlugins();
     }
 
     DaqDeviceManager::~DaqDeviceManager()
@@ -104,6 +103,10 @@ namespace scopeone::core::internal
 
     QList<DaqDeviceDescriptor> DaqDeviceManager::devices() const
     {
+        if (!m_pluginsLoaded)
+        {
+            const_cast<DaqDeviceManager*>(this)->loadPlugins();
+        }
         QList<DaqDeviceDescriptor> result = m_descriptors.values();
         std::sort(result.begin(), result.end(),
                   [](const DaqDeviceDescriptor& left,
@@ -117,6 +120,10 @@ namespace scopeone::core::internal
     bool DaqDeviceManager::start(const DaqSessionConfig& config,
                                  QString* errorMessage)
     {
+        if (!m_pluginsLoaded)
+        {
+            loadPlugins();
+        }
         const QString deviceId = config.deviceId.trimmed();
         if (!m_descriptors.contains(deviceId))
         {
@@ -162,6 +169,7 @@ namespace scopeone::core::internal
 
     void DaqDeviceManager::loadPlugins()
     {
+        m_pluginsLoaded = true;
         const QStringList directories = {
             QDir(QCoreApplication::applicationDirPath())
                 .filePath(QStringLiteral("plugins/hardware")),
@@ -199,7 +207,6 @@ namespace scopeone::core::internal
                                .arg(file.fileName(), loader->errorString());
                     continue;
                 }
-
                 for (const DaqDeviceDescriptor& descriptor : plugin->devices())
                 {
                     const QString deviceId = descriptor.id.trimmed();

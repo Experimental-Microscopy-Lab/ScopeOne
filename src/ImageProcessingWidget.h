@@ -50,8 +50,8 @@ namespace scopeone::ui
         void onCancelProcessing();
 
         void setupUI();
-        void setupInputControls();
-        void setupExecutionControls();
+        QWidget* setupInputControls();
+        QWidget* setupExecutionControls();
         QWidget* setupModuleList();
         QWidget* setupModuleConfig();
         void updateProcessingSettings();
@@ -65,8 +65,6 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         ImageWorkspace* m_workspace{nullptr};
         bool m_processingRunning{false};
-        QWidget* m_inputControlsWidget{nullptr};
-        QWidget* m_executionControlsWidget{nullptr};
         QComboBox* m_sourceCombo{nullptr};
         QRadioButton* m_liveModeRadio{nullptr};
         QRadioButton* m_staticModeRadio{nullptr};

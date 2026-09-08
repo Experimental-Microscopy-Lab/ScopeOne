@@ -153,34 +153,14 @@ namespace scopeone::ui
         QDockWidget* m_consoleDockWidget{nullptr};
         InspectWidget* m_inspectWidget{nullptr};
 
-        QMenu* m_fileMenu{nullptr};
         QMenu* m_recentConfigurationsMenu{nullptr};
-        QMenu* m_viewMenu{nullptr};
-        QMenu* m_toolsMenu{nullptr};
-        QMenu* m_helpMenu{nullptr};
         QMenu* m_dockWidgetsMenu{nullptr};
 
-        QAction* m_exitAction{nullptr};
-        QAction* m_fullScreenAction{nullptr};
-        QAction* m_fitToWindowAction{nullptr};
-        QAction* m_actualSizeAction{nullptr};
-        QAction* m_zoomInAction{nullptr};
-        QAction* m_zoomOutAction{nullptr};
-        QAction* m_scaleBarAction{nullptr};
-        QAction* m_clippingAction{nullptr};
-        QAction* m_toggleLayoutAction{nullptr};
         QAction* m_toggleDimensionAction{nullptr};
         QAction* m_reset3dAction{nullptr};
-        QAction* m_togglePreviewAction{nullptr};
-        QAction* m_snapAction{nullptr};
-        QAction* m_autoContrastAction{nullptr};
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
         QAction* m_saveImageAsAction{nullptr};
-        QAction* m_importImageAction{nullptr};
-        QAction* m_settingsAction{nullptr};
-        QAction* m_aboutAction{nullptr};
-        QAction* m_aboutQtAction{nullptr};
 
         QPointer<QProgressDialog> m_loadConfigProgress;
         QPointer<QProgressDialog> m_closeSaveProgress;

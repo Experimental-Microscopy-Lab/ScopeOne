@@ -18,8 +18,6 @@ namespace scopeone::ui
 
     private:
         void setupUI();
-        void setContent();
-
-        QTextBrowser* m_contentBrowser{nullptr};
+        void setContent(QTextBrowser* browser);
     };
 }

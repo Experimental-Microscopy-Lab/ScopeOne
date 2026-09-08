@@ -67,7 +67,6 @@ namespace scopeone::ui
         QPushButton* m_startButton{nullptr};
         QPushButton* m_stopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
-        QString m_activeCameraId;
     };
 
     class ParticleDetectionDialog : public QDialog

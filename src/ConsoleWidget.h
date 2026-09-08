@@ -12,7 +12,6 @@ class QTextEdit;
 class QEvent;
 class QPoint;
 class QLineEdit;
-class QPushButton;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -54,9 +53,6 @@ namespace scopeone::ui
         void setApiDispatcher(ApiDispatcher dispatcher);
 
     private:
-        void onClearClicked();
-        void onShowTimestampsToggled(bool show);
-        void onAutoScrollToggled(bool autoScroll);
         void onFilterChanged();
 
         struct ConsoleMessage
@@ -80,9 +76,6 @@ namespace scopeone::ui
         bool eventFilter(QObject* object, QEvent* event) override;
 
         QTextEdit* m_consoleTextEdit{nullptr};
-
-        QPushButton* m_clearButton{nullptr};
-        QPushButton* m_runButton{nullptr};
         QCheckBox* m_showTimestampsCheckBox{nullptr};
         QCheckBox* m_autoScrollCheckBox{nullptr};
         QComboBox* m_filterComboBox{nullptr};

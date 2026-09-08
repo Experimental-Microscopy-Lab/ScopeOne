@@ -114,7 +114,6 @@ namespace scopeone::ui
         QPushButton* m_clearMeasurementLinesButton{nullptr};
         QLabel* m_measurementInfoLabel{nullptr};
         InspectCrossSectionWidget* m_crossSectionWidget{nullptr};
-        QGroupBox* m_crossSectionGroup{nullptr};
         QPushButton* m_drawCrossSectionButton{nullptr};
         QPushButton* m_clearCrossSectionButton{nullptr};
         bool m_cameraInitialized{false};

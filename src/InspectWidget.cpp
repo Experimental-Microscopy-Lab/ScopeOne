@@ -602,18 +602,18 @@ namespace scopeone::ui
         annotationLayout->addWidget(m_measurementInfoLabel);
         contentLayout->addWidget(annotationGroup);
 
-        m_crossSectionGroup = new QGroupBox(QStringLiteral("Cross Section"), contentContainer);
-        auto* crossSectionLayout = new QVBoxLayout(m_crossSectionGroup);
+        auto* crossSectionGroup = new QGroupBox(QStringLiteral("Cross Section"), contentContainer);
+        auto* crossSectionLayout = new QVBoxLayout(crossSectionGroup);
         auto* crossSectionButtons = new QHBoxLayout();
-        m_drawCrossSectionButton = new QPushButton(QStringLiteral("Intensity Profile"), m_crossSectionGroup);
-        m_clearCrossSectionButton = new QPushButton(QStringLiteral("Clear Profile"), m_crossSectionGroup);
+        m_drawCrossSectionButton = new QPushButton(QStringLiteral("Intensity Profile"), crossSectionGroup);
+        m_clearCrossSectionButton = new QPushButton(QStringLiteral("Clear Profile"), crossSectionGroup);
         crossSectionButtons->addWidget(m_drawCrossSectionButton);
         crossSectionButtons->addWidget(m_clearCrossSectionButton);
         crossSectionButtons->addStretch();
         crossSectionLayout->addLayout(crossSectionButtons);
-        m_crossSectionWidget = new InspectCrossSectionWidget(m_crossSectionGroup);
+        m_crossSectionWidget = new InspectCrossSectionWidget(crossSectionGroup);
         crossSectionLayout->addWidget(m_crossSectionWidget);
-        contentLayout->addWidget(m_crossSectionGroup);
+        contentLayout->addWidget(crossSectionGroup);
 
         contentLayout->addStretch();
 

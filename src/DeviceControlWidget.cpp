@@ -570,22 +570,17 @@ namespace scopeone::ui
         applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
         onPreviewLayerInfoTextChanged(m_previewWidget->layerInfoSummaryText());
 
-        if (m_clippingCheckBox)
-        {
-            m_clippingCheckBox->setChecked(m_previewWidget->isClippingWarningEnabled());
-            connect(m_clippingCheckBox, &QCheckBox::toggled,
-                    m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
-            connect(m_previewWidget, &PreviewWidget::clippingWarningChanged,
-                    m_clippingCheckBox, &QCheckBox::setChecked);
-        }
-        if (m_scaleBarCheckBox)
-        {
-            m_scaleBarCheckBox->setChecked(m_previewWidget->isScaleBarVisible());
-            connect(m_scaleBarCheckBox, &QCheckBox::toggled,
-                    m_previewWidget, &PreviewWidget::setScaleBarVisible);
-            connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged,
-                    m_scaleBarCheckBox, &QCheckBox::setChecked);
-        }
+        m_clippingCheckBox->setChecked(m_previewWidget->isClippingWarningEnabled());
+        connect(m_clippingCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
+        connect(m_previewWidget, &PreviewWidget::clippingWarningChanged,
+                m_clippingCheckBox, &QCheckBox::setChecked);
+
+        m_scaleBarCheckBox->setChecked(m_previewWidget->isScaleBarVisible());
+        connect(m_scaleBarCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setScaleBarVisible);
+        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged,
+                m_scaleBarCheckBox, &QCheckBox::setChecked);
         {
             const QSignalBlocker blocker(m_viewDimensionCombo);
             m_viewDimensionCombo->setCurrentIndex(
@@ -633,8 +628,8 @@ namespace scopeone::ui
     // Builds layer and alignment controls
     QWidget* DeviceControlWidget::createPreviewControlsGroup()
     {
-        m_previewControlsGroup = new QGroupBox("Layers", this);
-        QGridLayout* controlLayout = new QGridLayout(m_previewControlsGroup);
+        auto* previewControlsGroup = new QGroupBox("Layers", this);
+        QGridLayout* controlLayout = new QGridLayout(previewControlsGroup);
         controlLayout->setHorizontalSpacing(6);
         controlLayout->setVerticalSpacing(4);
         controlLayout->setContentsMargins(6, 6, 6, 6);
@@ -659,28 +654,28 @@ namespace scopeone::ui
         m_layerTable->setMinimumHeight(94);
         m_layerTable->setMaximumHeight(150);
 
-        m_layerHistogramGroup = new QGroupBox(QStringLiteral("Histogram"), m_previewControlsGroup);
-        auto* histogramLayout = new QVBoxLayout(m_layerHistogramGroup);
+        auto* layerHistogramGroup = new QGroupBox(QStringLiteral("Histogram"), previewControlsGroup);
+        auto* histogramLayout = new QVBoxLayout(layerHistogramGroup);
         histogramLayout->setContentsMargins(6, 6, 6, 6);
-        m_layerHistogramWidget = new LayerHistogramWidget(m_layerHistogramGroup);
+        m_layerHistogramWidget = new LayerHistogramWidget(layerHistogramGroup);
         histogramLayout->addWidget(m_layerHistogramWidget);
         auto* histogramLevelsLayout = new QHBoxLayout;
-        m_layerAutoButton = new QPushButton(QStringLiteral("Auto"), m_layerHistogramGroup);
+        m_layerAutoButton = new QPushButton(QStringLiteral("Auto"), layerHistogramGroup);
         m_layerAutoButton->setToolTip(QStringLiteral("Set display levels from the current image"));
-        m_layerFullRangeButton = new QPushButton(QStringLiteral("Full Range"), m_layerHistogramGroup);
+        m_layerFullRangeButton = new QPushButton(QStringLiteral("Full Range"), layerHistogramGroup);
         m_layerFullRangeButton->setToolTip(QStringLiteral("Show the complete intensity range"));
         histogramLevelsLayout->addWidget(m_layerAutoButton);
         histogramLevelsLayout->addWidget(m_layerFullRangeButton);
         histogramLayout->addLayout(histogramLevelsLayout);
 
-        m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), m_layerHistogramGroup);
+        m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), layerHistogramGroup);
         m_layerAutoStretchCheckBox->setToolTip(
             QStringLiteral("Update display levels continuously as images arrive"));
 
-        m_layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), m_layerHistogramGroup);
+        auto* layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), layerHistogramGroup);
         histogramLayout->addWidget(m_layerAutoStretchCheckBox);
-        histogramLayout->addWidget(m_layerHistogramLogCheckBox);
-        connect(m_layerHistogramLogCheckBox, &QCheckBox::toggled,
+        histogramLayout->addWidget(layerHistogramLogCheckBox);
+        connect(layerHistogramLogCheckBox, &QCheckBox::toggled,
                 m_layerHistogramWidget, &LayerHistogramWidget::setLogScale);
 
         m_layerSettingsGroup = new QGroupBox("Layer Settings", this);
@@ -696,8 +691,8 @@ namespace scopeone::ui
         m_layerMoveDownButton = new QPushButton(QStringLiteral("Down"), m_layerSettingsGroup);
         m_layerRemoveButton = new QPushButton(QStringLiteral("Remove"), m_layerSettingsGroup);
         m_layerRemoveButton->setMaximumWidth(68);
-        m_layerImportButton = new QPushButton(QStringLiteral("Import..."), m_layerSettingsGroup);
-        m_layerImportButton->setMaximumWidth(68);
+        auto* layerImportButton = new QPushButton(QStringLiteral("Import..."), m_layerSettingsGroup);
+        layerImportButton->setMaximumWidth(68);
 
         m_layerOpacitySpinBox = new QSpinBox(m_layerSettingsGroup);
         m_layerOpacitySpinBox->setRange(0, 100);
@@ -725,7 +720,7 @@ namespace scopeone::ui
         layerSettingsLayout->addWidget(m_layerMoveUpButton, 1, 1, Qt::AlignLeft);
         layerSettingsLayout->addWidget(m_layerMoveDownButton, 1, 2, Qt::AlignLeft);
         layerSettingsLayout->addWidget(m_layerRemoveButton, 1, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerImportButton, 1, 4, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(layerImportButton, 1, 4, Qt::AlignLeft);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 2, 0);
         layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 2, 1, Qt::AlignLeft);
         layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 2, 2);
@@ -740,21 +735,21 @@ namespace scopeone::ui
         auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
         auto* transformLayout = new QGridLayout(transformGroup);
         transformLayout->setContentsMargins(6, 6, 6, 6);
-        m_alignXLabel = new QLabel("X offset:", transformGroup);
+        auto* alignXLabel = new QLabel("X offset:", transformGroup);
         m_alignXSpinBox = new QSpinBox(transformGroup);
         m_alignXSpinBox->setRange(-1000, 1000);
         m_alignXSpinBox->setValue(0);
         m_alignXSpinBox->setFixedWidth(64);
         m_alignXSpinBox->setKeyboardTracking(false);
 
-        m_alignYLabel = new QLabel("Y offset:", transformGroup);
+        auto* alignYLabel = new QLabel("Y offset:", transformGroup);
         m_alignYSpinBox = new QSpinBox(transformGroup);
         m_alignYSpinBox->setRange(-1000, 1000);
         m_alignYSpinBox->setValue(0);
         m_alignYSpinBox->setFixedWidth(64);
         m_alignYSpinBox->setKeyboardTracking(false);
 
-        m_alignZoomLabel = new QLabel("Scale:", transformGroup);
+        auto* alignZoomLabel = new QLabel("Scale:", transformGroup);
         m_alignZoomSpinBox = new QSpinBox(transformGroup);
         m_alignZoomSpinBox->setRange(10, 500);
         m_alignZoomSpinBox->setValue(100);
@@ -764,42 +759,42 @@ namespace scopeone::ui
 
         m_alignFlipXCheckBox = new QCheckBox("Flip X", transformGroup);
         m_alignFlipYCheckBox = new QCheckBox("Flip Y", transformGroup);
-        m_alignResetButton = new QPushButton("Reset", transformGroup);
-        m_alignResetButton->setMaximumWidth(50);
-        m_alignResetButton->setToolTip("Reset offset and flip");
+        auto* alignResetButton = new QPushButton("Reset", transformGroup);
+        alignResetButton->setMaximumWidth(50);
+        alignResetButton->setToolTip("Reset offset and flip");
 
-        transformLayout->addWidget(m_alignXLabel, 0, 0);
+        transformLayout->addWidget(alignXLabel, 0, 0);
         transformLayout->addWidget(m_alignXSpinBox, 0, 1, Qt::AlignLeft);
-        transformLayout->addWidget(m_alignYLabel, 0, 2);
+        transformLayout->addWidget(alignYLabel, 0, 2);
         transformLayout->addWidget(m_alignYSpinBox, 0, 3, Qt::AlignLeft);
-        transformLayout->addWidget(m_alignZoomLabel, 1, 0);
+        transformLayout->addWidget(alignZoomLabel, 1, 0);
         transformLayout->addWidget(m_alignZoomSpinBox, 1, 1, Qt::AlignLeft);
         transformLayout->addWidget(m_alignFlipXCheckBox, 1, 2, Qt::AlignLeft);
         transformLayout->addWidget(m_alignFlipYCheckBox, 1, 3, Qt::AlignLeft);
-        transformLayout->addWidget(m_alignResetButton, 1, 4, Qt::AlignLeft);
+        transformLayout->addWidget(alignResetButton, 1, 4, Qt::AlignLeft);
         transformLayout->setColumnStretch(5, 1);
 
-        m_alignXLabel->setMinimumWidth(20);
-        m_alignYLabel->setMinimumWidth(20);
-        m_alignZoomLabel->setMinimumWidth(60);
+        alignXLabel->setMinimumWidth(20);
+        alignYLabel->setMinimumWidth(20);
+        alignZoomLabel->setMinimumWidth(60);
 
-        m_surfaceViewGroup = new QGroupBox(QStringLiteral("Surface View"), this);
-        auto* surfaceViewLayout = new QGridLayout(m_surfaceViewGroup);
+        auto* surfaceViewGroup = new QGroupBox(QStringLiteral("Surface View"), this);
+        auto* surfaceViewLayout = new QGridLayout(surfaceViewGroup);
         surfaceViewLayout->setContentsMargins(6, 6, 6, 6);
         surfaceViewLayout->setHorizontalSpacing(6);
         surfaceViewLayout->setVerticalSpacing(4);
 
-        m_viewDimensionCombo = new QComboBox(m_surfaceViewGroup);
+        m_viewDimensionCombo = new QComboBox(surfaceViewGroup);
         m_viewDimensionCombo->addItem(QStringLiteral("2D Flat Map"));
         m_viewDimensionCombo->addItem(QStringLiteral("3D Surface"));
         m_viewDimensionCombo->setToolTip(QStringLiteral("Switch between the flat image and a displaced surface"));
 
-        m_3dZScaleSlider = new QSlider(Qt::Horizontal, m_surfaceViewGroup);
+        m_3dZScaleSlider = new QSlider(Qt::Horizontal, surfaceViewGroup);
         m_3dZScaleSlider->setRange(1, 100);
         m_3dZScaleSlider->setValue(10);
         m_3dZScaleSlider->setToolTip(QStringLiteral("Height exaggeration from 0.1x to 10.0x"));
 
-        m_3dZScaleSpinBox = new QDoubleSpinBox(m_surfaceViewGroup);
+        m_3dZScaleSpinBox = new QDoubleSpinBox(surfaceViewGroup);
         m_3dZScaleSpinBox->setRange(0.1, 10.0);
         m_3dZScaleSpinBox->setSingleStep(0.1);
         m_3dZScaleSpinBox->setDecimals(1);
@@ -808,17 +803,17 @@ namespace scopeone::ui
         m_3dZScaleSpinBox->setFixedWidth(64);
         m_3dZScaleSpinBox->setKeyboardTracking(false);
 
-        m_3dWireframeCheckBox = new QCheckBox(QStringLiteral("Wireframe"), m_surfaceViewGroup);
-        m_3dResetButton = new QPushButton(QStringLiteral("Reset View"), m_surfaceViewGroup);
-        m_3dResetButton->setMaximumWidth(84);
+        m_3dWireframeCheckBox = new QCheckBox(QStringLiteral("Wireframe"), surfaceViewGroup);
+        auto* reset3dButton = new QPushButton(QStringLiteral("Reset View"), surfaceViewGroup);
+        reset3dButton->setMaximumWidth(84);
 
-        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Mode:"), m_surfaceViewGroup), 0, 0);
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Mode:"), surfaceViewGroup), 0, 0);
         surfaceViewLayout->addWidget(m_viewDimensionCombo, 0, 1, 1, 3);
-        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Z-Scale:"), m_surfaceViewGroup), 1, 0);
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Z-Scale:"), surfaceViewGroup), 1, 0);
         surfaceViewLayout->addWidget(m_3dZScaleSlider, 1, 1);
         surfaceViewLayout->addWidget(m_3dZScaleSpinBox, 1, 2);
         surfaceViewLayout->addWidget(m_3dWireframeCheckBox, 2, 0, 1, 2);
-        surfaceViewLayout->addWidget(m_3dResetButton, 2, 2, 1, 2, Qt::AlignLeft);
+        surfaceViewLayout->addWidget(reset3dButton, 2, 2, 1, 2, Qt::AlignLeft);
 
         connect(m_viewDimensionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int index)
@@ -848,14 +843,14 @@ namespace scopeone::ui
                 });
         connect(m_3dWireframeCheckBox, &QCheckBox::toggled,
                 this, [this](bool enabled) { m_previewWidget->set3dWireframeEnabled(enabled); });
-        connect(m_3dResetButton, &QPushButton::clicked,
+        connect(reset3dButton, &QPushButton::clicked,
                 this, [this]() { m_previewWidget->reset3dCamera(); });
 
         controlLayout->addWidget(m_layerTable, 0, 0, 1, 6);
-        controlLayout->addWidget(m_layerHistogramGroup, 1, 0, 1, 6);
+        controlLayout->addWidget(layerHistogramGroup, 1, 0, 1, 6);
         controlLayout->addWidget(m_layerSettingsGroup, 2, 0, 1, 6);
         controlLayout->addWidget(transformGroup, 3, 0, 1, 6);
-        controlLayout->addWidget(m_surfaceViewGroup, 4, 0, 1, 6);
+        controlLayout->addWidget(surfaceViewGroup, 4, 0, 1, 6);
 
         controlLayout->setColumnStretch(5, 1);
 
@@ -866,12 +861,16 @@ namespace scopeone::ui
         connect(m_layerTable, &QTableWidget::customContextMenuRequested,
                 this, &DeviceControlWidget::showLayerContextMenu);
         connect(m_layerMoveUpButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerMoveUpClicked);
+                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), -1); });
         connect(m_layerMoveDownButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerMoveDownClicked);
+                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), 1); });
         connect(m_layerRemoveButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerRemoveClicked);
-        connect(m_layerImportButton, &QPushButton::clicked,
+                this, [this]()
+                {
+                    m_scopeonecore->removeStaticFrame(
+                        scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
+                });
+        connect(layerImportButton, &QPushButton::clicked,
                 this, &DeviceControlWidget::onPreviewLayerImportClicked);
         connect(m_layerOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, &DeviceControlWidget::onPreviewLayerOpacityChanged);
@@ -882,9 +881,9 @@ namespace scopeone::ui
         connect(m_layerBlendingComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &DeviceControlWidget::onPreviewLayerBlendingChanged);
         connect(m_layerAutoButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerAutoClicked);
+                this, [this]() { m_workspace->autoLayerLevels(currentLayerKey()); });
         connect(m_layerFullRangeButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerFullRangeClicked);
+                this, [this]() { m_workspace->fullLayerLevels(currentLayerKey()); });
         connect(m_layerAutoStretchCheckBox, &QCheckBox::toggled,
                 this, &DeviceControlWidget::onPreviewLayerAutoStretchToggled);
         m_layerHistogramWidget->setOnLevelsChanged([this](int minLevel, int maxLevel)
@@ -895,17 +894,14 @@ namespace scopeone::ui
             if (m_sceneModel->findLayer(layerKey, layer))
             {
                 const int domainMax = layer.display.levelDomainMax > 0 ? layer.display.levelDomainMax : 255;
-                if (m_workspace)
-                {
-                    m_workspace->setLayerAutoStretchEnabled(layerKey, false);
-                }
+                m_workspace->setLayerAutoStretchEnabled(layerKey, false);
                 m_layerAutoStretchCheckBox->setChecked(false);
                 m_sceneModel->setLayerDisplayLevels(layerKey, minLevel, maxLevel, domainMax);
             }
         });
         m_layerHistogramWidget->setOnAutoLevelsRequested([this]()
         {
-            onPreviewLayerAutoClicked();
+            m_workspace->autoLayerLevels(currentLayerKey());
         });
         const auto applySourceTransform = [this]()
         {
@@ -932,14 +928,14 @@ namespace scopeone::ui
                 this, [applySourceTransform](bool) { applySourceTransform(); });
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
                 this, [applySourceTransform](bool) { applySourceTransform(); });
-        connect(m_alignResetButton, &QPushButton::clicked,
+        connect(alignResetButton, &QPushButton::clicked,
                 this, [this]()
                 {
                     resetSelectedLayerTransform();
                 });
 
         refreshPreviewLayerSettings();
-        return m_previewControlsGroup;
+        return previewControlsGroup;
     }
 
     // Rebuilds the preview layer table
@@ -1042,10 +1038,7 @@ namespace scopeone::ui
                 {
                     QSignalBlocker tableBlocker(m_layerTable);
                     m_layerTable->setCurrentCell(row, 1);
-                    if (m_workspace)
-                    {
-                        m_workspace->setActiveLayerKey(nextLayerKey);
-                    }
+                    m_workspace->setActiveLayerKey(nextLayerKey);
                     break;
                 }
             }
@@ -1220,16 +1213,6 @@ namespace scopeone::ui
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
     }
 
-    void DeviceControlWidget::onPreviewLayerAutoClicked()
-    {
-        m_workspace->autoLayerLevels(currentLayerKey());
-    }
-
-    void DeviceControlWidget::onPreviewLayerFullRangeClicked()
-    {
-        m_workspace->fullLayerLevels(currentLayerKey());
-    }
-
     void DeviceControlWidget::onPreviewLayerAutoStretchToggled(bool enabled)
     {
         m_workspace->setLayerAutoStretchEnabled(currentLayerKey(), enabled);
@@ -1239,29 +1222,10 @@ namespace scopeone::ui
     {
         QTableWidgetItem* item = m_layerTable->item(currentRow, 1);
         const QString layerKey = item ? item->data(Qt::UserRole).toString() : QString();
-        if (m_workspace)
-        {
-            m_workspace->setActiveLayerKey(layerKey);
-        }
+        m_workspace->setActiveLayerKey(layerKey);
         refreshPreviewLayerSettings();
         refreshLayerHistogram();
         updateControlsState();
-    }
-
-    void DeviceControlWidget::onPreviewLayerMoveUpClicked()
-    {
-        m_sceneModel->moveLayer(currentLayerKey(), -1);
-    }
-
-    void DeviceControlWidget::onPreviewLayerMoveDownClicked()
-    {
-        m_sceneModel->moveLayer(currentLayerKey(), 1);
-    }
-
-    void DeviceControlWidget::onPreviewLayerRemoveClicked()
-    {
-        m_scopeonecore->removeStaticFrame(
-            scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
     }
 
     void DeviceControlWidget::onPreviewLayerDuplicateClicked()

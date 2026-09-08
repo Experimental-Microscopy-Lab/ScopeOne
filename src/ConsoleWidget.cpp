@@ -111,9 +111,8 @@ namespace scopeone::ui
           , m_autoScroll(true)
     {
         setupUI();
-        connect(m_clearButton, &QPushButton::clicked, this, &ConsoleWidget::onClearClicked);
-        connect(m_showTimestampsCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::onShowTimestampsToggled);
-        connect(m_autoScrollCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::onAutoScrollToggled);
+        connect(m_showTimestampsCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::setShowTimestamps);
+        connect(m_autoScrollCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::setAutoScroll);
         connect(m_filterComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &ConsoleWidget::onFilterChanged);
         connect(m_searchInput, &QLineEdit::textChanged, this,
@@ -122,8 +121,6 @@ namespace scopeone::ui
                     m_searchKeyword = text.trimmed();
                     updateDisplay();
                 });
-        connect(m_runButton, &QPushButton::clicked, this,
-                [this]() { executeCommand(m_commandInput->text()); });
         m_consoleTextEdit->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(m_consoleTextEdit, &QTextEdit::customContextMenuRequested,
                 this, &ConsoleWidget::showContextMenu);
@@ -189,12 +186,13 @@ namespace scopeone::ui
                                     QStringLiteral("ERROR")});
         m_filterComboBox->setFixedWidth(80);
 
-        m_clearButton = new QPushButton(tr("Clear"), this);
-        m_clearButton->setFixedWidth(50);
+        auto* clearButton = new QPushButton(tr("Clear"), this);
+        clearButton->setFixedWidth(50);
+        connect(clearButton, &QPushButton::clicked, this, &ConsoleWidget::clearMessages);
 
         row1Layout->addWidget(m_searchInput, 1);
         row1Layout->addWidget(m_filterComboBox);
-        row1Layout->addWidget(m_clearButton);
+        row1Layout->addWidget(clearButton);
 
         auto* row2Layout = new QHBoxLayout();
         row2Layout->setSpacing(8);
@@ -231,12 +229,14 @@ namespace scopeone::ui
             QStringLiteral("QLineEdit { background: #1e1e1e; color: #f8f9fa; "
                            "border: 1px solid #495057; padding: 3px 6px; }"));
 
-        m_runButton = new QPushButton(tr("Run"), this);
-        m_runButton->setFixedWidth(64);
+        auto* runButton = new QPushButton(tr("Run"), this);
+        runButton->setFixedWidth(64);
+        connect(runButton, &QPushButton::clicked, this,
+                [this]() { executeCommand(m_commandInput->text()); });
 
         commandLayout->addWidget(promptLabel);
         commandLayout->addWidget(m_commandInput, 1);
-        commandLayout->addWidget(m_runButton);
+        commandLayout->addWidget(runButton);
         mainLayout->addLayout(commandLayout, 0);
     }
 
@@ -418,20 +418,6 @@ namespace scopeone::ui
         scrollBar->setValue(scrollBar->maximum());
     }
 
-    void ConsoleWidget::onClearClicked()
-    {
-        clearMessages();
-    }
-
-    void ConsoleWidget::onShowTimestampsToggled(bool show)
-    {
-        setShowTimestamps(show);
-    }
-
-    void ConsoleWidget::onAutoScrollToggled(bool autoScroll)
-    {
-        setAutoScroll(autoScroll);
-    }
 
     // Apply the selected message type filter
     void ConsoleWidget::onFilterChanged()

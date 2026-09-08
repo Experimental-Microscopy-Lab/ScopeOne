@@ -273,13 +273,13 @@ namespace scopeone::ui
     // Start a grid mosaic from the current stage position
     void StageMosaicDialog::startMosaic()
     {
-        m_activeCameraId = selectedCameraId();
+        const QString activeCameraId = selectedCameraId();
         ScopeOneCore::StageMosaicPlan plan;
-        plan.cameraId = m_activeCameraId;
+        plan.cameraId = activeCameraId;
         plan.xyStageId = selectedStageId();
         plan.rows = m_rowsSpinBox->value();
         plan.columns = m_columnsSpinBox->value();
-        plan.pixelSizeUm = m_core->cameraPixelSizeUm(m_activeCameraId);
+        plan.pixelSizeUm = m_core->cameraPixelSizeUm(activeCameraId);
         plan.stepXUm = m_stepXSpinBox->value();
         plan.stepYUm = m_stepYSpinBox->value();
         plan.settleMs = m_settleMsSpinBox->value();
@@ -304,7 +304,7 @@ namespace scopeone::ui
         }
         setMosaicRunning(true);
         m_statusLabel->setText(tr("Starting mosaic capture"));
-        m_context.showLayers({scopeone::core::ScopeOneCore::rawLayerKey(m_activeCameraId)});
+        m_context.showLayers({scopeone::core::ScopeOneCore::rawLayerKey(activeCameraId)});
     }
 
     // Request cancellation after the current stage move

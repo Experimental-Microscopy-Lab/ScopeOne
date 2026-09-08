@@ -90,12 +90,6 @@ namespace scopeone::ui
             return session.capturePlan().cameraIds.size();
         }
 
-        // Count buffered frames or streamed frames written to disk
-        qint64 sessionFrameCount(const RecordingSessionData& session)
-        {
-            return session.recordedFrameCount();
-        }
-
         // Build a square grayscale thumbnail from a stored camera frame
         QIcon frameThumbnail(const scopeone::core::ImageFrame& frame)
         {
@@ -518,7 +512,7 @@ namespace scopeone::ui
         {
             details.append(sourceName);
         }
-        details.append(QStringLiteral("%1 frame(s)").arg(sessionFrameCount(session)));
+        details.append(QStringLiteral("%1 frame(s)").arg(session.recordedFrameCount()));
         details.append(QStringLiteral("%1 camera(s)").arg(sessionCameraCount(session)));
         details.append(saveState);
         return details.join(QStringLiteral(", "));

@@ -101,16 +101,11 @@ namespace scopeone::ui
         void onPreviewLayerGammaChanged(double value);
         void onPreviewLayerColormapChanged(int index);
         void onPreviewLayerBlendingChanged(int index);
-        void onPreviewLayerAutoClicked();
-        void onPreviewLayerFullRangeClicked();
         void onPreviewLayerAutoStretchToggled(bool enabled);
         void onPreviewLayerSelectionChanged(int currentRow,
                                             int currentColumn,
                                             int previousRow,
                                             int previousColumn);
-        void onPreviewLayerMoveUpClicked();
-        void onPreviewLayerMoveDownClicked();
-        void onPreviewLayerRemoveClicked();
         void onPreviewLayerImportClicked();
         void onPreviewLayerDuplicateClicked();
         void onPreviewLayerTableItemChanged(QTableWidgetItem* item);
@@ -137,7 +132,6 @@ namespace scopeone::ui
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QScrollArea* m_imageControlsWidget{nullptr};
         QScrollArea* m_hardwareControlsWidget{nullptr};
-        QGroupBox* m_previewControlsGroup{nullptr};
         QGroupBox* m_cameraControlsGroup{nullptr};
         QGroupBox* m_stageControlsGroup{nullptr};
         QTableWidget* m_layerTable{nullptr};
@@ -147,7 +141,6 @@ namespace scopeone::ui
         QPushButton* m_layerMoveUpButton{nullptr};
         QPushButton* m_layerMoveDownButton{nullptr};
         QPushButton* m_layerRemoveButton{nullptr};
-        QPushButton* m_layerImportButton{nullptr};
         QSpinBox* m_layerOpacitySpinBox{nullptr};
         QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
         QComboBox* m_layerColormapComboBox{nullptr};
@@ -158,23 +151,15 @@ namespace scopeone::ui
         QCheckBox* m_clippingCheckBox{nullptr};
         QCheckBox* m_scaleBarCheckBox{nullptr};
         LayerHistogramWidget* m_layerHistogramWidget{nullptr};
-        QCheckBox* m_layerHistogramLogCheckBox{nullptr};
-        QGroupBox* m_layerHistogramGroup{nullptr};
-        QGroupBox* m_surfaceViewGroup{nullptr};
         QComboBox* m_viewDimensionCombo{nullptr};
         QSlider* m_3dZScaleSlider{nullptr};
         QDoubleSpinBox* m_3dZScaleSpinBox{nullptr};
         QCheckBox* m_3dWireframeCheckBox{nullptr};
-        QPushButton* m_3dResetButton{nullptr};
-        QLabel* m_alignXLabel{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
-        QLabel* m_alignYLabel{nullptr};
         QSpinBox* m_alignYSpinBox{nullptr};
-        QLabel* m_alignZoomLabel{nullptr};
         QSpinBox* m_alignZoomSpinBox{nullptr};
         QCheckBox* m_alignFlipXCheckBox{nullptr};
         QCheckBox* m_alignFlipYCheckBox{nullptr};
-        QPushButton* m_alignResetButton{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
 
         QLineEdit* m_exposureLineEdit{nullptr};

@@ -41,6 +41,7 @@ namespace scopeone::core::internal
                                   QString* errorMessage);
 
         std::vector<std::unique_ptr<QPluginLoader>> m_loaders;
+        mutable bool m_pluginsLoaded{false};
         QHash<QString, DaqDevicePlugin*> m_plugins;
         QHash<QString, DaqDeviceDescriptor> m_descriptors;
         QHash<QString, QPointer<DaqController>> m_controllers;

@@ -195,6 +195,15 @@ namespace scopeone::ui
                 if (type == QStringLiteral("set_fit_to_window"))
                 {
                     PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+                    if (!preview)
+                    {
+                        QJsonObject response;
+                        response.insert(QStringLiteral("type"), type);
+                        response.insert(QStringLiteral("ok"), false);
+                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
+                        callback(response);
+                        return;
+                    }
                     preview->setFitToWindow(
                         routedRequest.value(QStringLiteral("enabled")).toBool());
                     QJsonObject response;
@@ -209,6 +218,15 @@ namespace scopeone::ui
                 if (type == QStringLiteral("set_zoom"))
                 {
                     PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+                    if (!preview)
+                    {
+                        QJsonObject response;
+                        response.insert(QStringLiteral("type"), type);
+                        response.insert(QStringLiteral("ok"), false);
+                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
+                        callback(response);
+                        return;
+                    }
                     preview->setFitToWindow(false);
                     preview->setZoomPercent(
                         routedRequest.value(QStringLiteral("zoomPercent")).toInt());
@@ -241,7 +259,17 @@ namespace scopeone::ui
 
                 if (type == QStringLiteral("draw_roi"))
                 {
-                    m_imageWorkspace->activePreviewWidget()->startROIDrawing(
+                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+                    if (!preview)
+                    {
+                        QJsonObject response;
+                        response.insert(QStringLiteral("type"), type);
+                        response.insert(QStringLiteral("ok"), false);
+                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
+                        callback(response);
+                        return;
+                    }
+                    preview->startROIDrawing(
                         routedRequest.value(QStringLiteral("camera")).toString());
                     QJsonObject response;
                     response.insert(QStringLiteral("type"), type);
@@ -617,41 +645,55 @@ namespace scopeone::ui
         connect(m_inspectWidget, &InspectWidget::requestDrawCrossSectionLayer,
                 this, [this](const QString& layerKey)
                 {
-                    m_imageWorkspace->activePreviewWidget()->startCrossSectionDrawingForLayer(layerKey);
-                    showStatusMessage(tr("Drag a line on the preview"), 5000);
+                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
+                    {
+                        preview->startCrossSectionDrawingForLayer(layerKey);
+                        showStatusMessage(tr("Drag a line on the preview"), 5000);
+                    }
                 });
 
         connect(m_inspectWidget, &InspectWidget::requestClearCrossSection,
                 this, [this]()
                 {
-                    m_imageWorkspace->activePreviewWidget()->clearCrossSection();
+                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
+                    {
+                        preview->clearCrossSection();
+                    }
                 });
 
         connect(m_inspectWidget, &InspectWidget::requestDrawMeasurementLine,
                 this, [this](const QString& layerKey)
                 {
-                    m_imageWorkspace->activePreviewWidget()->startMeasurementLineDrawingForLayer(layerKey);
-                    showStatusMessage(tr("Drag a line on the preview"), 5000);
+                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
+                    {
+                        preview->startMeasurementLineDrawingForLayer(layerKey);
+                        showStatusMessage(tr("Drag a line on the preview"), 5000);
+                    }
                 });
         connect(m_inspectWidget, &InspectWidget::requestClearMeasurementLines,
                 this, [this](const QString& layerKey)
                 {
-                    m_imageWorkspace->activeSceneModel()->clearRole(
-                        ImageSceneModel::MarkupRole::Measurement, layerKey);
+                    if (auto* sceneModel = m_imageWorkspace->activeSceneModel())
+                    {
+                        sceneModel->clearRole(
+                            ImageSceneModel::MarkupRole::Measurement, layerKey);
+                    }
                     m_inspectWidget->clearMeasurementLine();
                 });
         connect(m_imageWorkspace, &ImageWorkspace::measurementLineDrawn,
                 this, [this](const QString& layerKey, const QPoint& start, const QPoint& end)
                 {
-                    ImageSceneModel* sceneModel = m_imageWorkspace->activeSceneModel();
-                    const QString markupId = sceneModel->createLine(
-                        layerKey,
-                        start,
-                        end,
-                        QString(),
-                        ImageSceneModel::MarkupRole::Measurement);
-                    sceneModel->selectOnly(markupId);
-                    showMeasurementLine(layerKey, start, end);
+                    if (auto* sceneModel = m_imageWorkspace->activeSceneModel())
+                    {
+                        const QString markupId = sceneModel->createLine(
+                            layerKey,
+                            start,
+                            end,
+                            QString(),
+                            ImageSceneModel::MarkupRole::Measurement);
+                        sceneModel->selectOnly(markupId);
+                        showMeasurementLine(layerKey, start, end);
+                    }
                 });
         connect(m_imageWorkspace, &ImageWorkspace::measurementLineInspected,
                 this, [this](const QString& layerKey,
@@ -729,19 +771,6 @@ namespace scopeone::ui
                 {
                     showStatusMessage(message, success ? 5000 : 8000);
                 });
-
-        connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
-        connect(m_fullScreenAction, &QAction::toggled,
-                this, &MainWindow::setFullScreenEnabled);
-        connect(m_aboutAction, &QAction::triggered,
-                this, [this]() { AboutDialog::showAbout(this); });
-        connect(m_aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
-        connect(m_loadConfigurationAction, &QAction::triggered,
-                this, &MainWindow::loadConfigurationFromDialog);
-        connect(m_unloadConfigurationAction, &QAction::triggered,
-                this, &MainWindow::unloadConfigurationWithConfirmation);
-        connect(m_settingsAction, &QAction::triggered,
-                this, &MainWindow::openSettingsDialog);
 
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
@@ -1115,79 +1144,86 @@ namespace scopeone::ui
     // Create application menus and persistent actions
     void MainWindow::setupMenuBar()
     {
-        m_fileMenu = menuBar()->addMenu(tr("&File"));
-        m_loadConfigurationAction = m_fileMenu->addAction(tr("&Load Configuration..."));
-        m_recentConfigurationsMenu = m_fileMenu->addMenu(tr("&Recent Configurations"));
+        auto* fileMenu = menuBar()->addMenu(tr("&File"));
+        m_loadConfigurationAction = fileMenu->addAction(tr("&Load Configuration..."));
+        connect(m_loadConfigurationAction, &QAction::triggered,
+                this, &MainWindow::loadConfigurationFromDialog);
+        m_recentConfigurationsMenu = fileMenu->addMenu(tr("&Recent Configurations"));
         connect(m_recentConfigurationsMenu, &QMenu::aboutToShow,
                 this, &MainWindow::refreshRecentConfigurationsMenu);
         refreshRecentConfigurationsMenu();
-        m_unloadConfigurationAction = m_fileMenu->addAction(tr("&Unload Configuration"));
-        m_fileMenu->addSeparator();
-        m_importImageAction = m_fileMenu->addAction(tr("&Import Image as Layer..."));
-        m_importImageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
-        connect(m_importImageAction, &QAction::triggered, this, &MainWindow::openImportImageDialog);
-        m_saveImageAsAction = m_fileMenu->addAction(tr("Save Image &As..."));
+        m_unloadConfigurationAction = fileMenu->addAction(tr("&Unload Configuration"));
+        connect(m_unloadConfigurationAction, &QAction::triggered,
+                this, &MainWindow::unloadConfigurationWithConfirmation);
+        fileMenu->addSeparator();
+        auto* importImageAction = fileMenu->addAction(tr("&Import Image as Layer..."));
+        importImageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
+        connect(importImageAction, &QAction::triggered, this, &MainWindow::openImportImageDialog);
+        m_saveImageAsAction = fileMenu->addAction(tr("Save Image &As..."));
         m_saveImageAsAction->setEnabled(false);
         connect(m_saveImageAsAction, &QAction::triggered,
                 m_imageWorkspace, [this]() { m_imageWorkspace->saveDocumentAs(); });
-        m_fileMenu->addSeparator();
-        m_exitAction = m_fileMenu->addAction(tr("E&xit"));
+        fileMenu->addSeparator();
+        auto* exitAction = fileMenu->addAction(tr("E&xit"));
+        connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
-        m_viewMenu = menuBar()->addMenu(tr("&View"));
-        m_fullScreenAction = m_viewMenu->addAction(tr("&Full Screen"));
-        m_fullScreenAction->setCheckable(true);
-        m_fullScreenAction->setShortcut(QKeySequence::FullScreen);
+        auto* viewMenu = menuBar()->addMenu(tr("&View"));
+        auto* fullScreenAction = viewMenu->addAction(tr("&Full Screen"));
+        fullScreenAction->setCheckable(true);
+        fullScreenAction->setShortcut(QKeySequence::FullScreen);
+        connect(fullScreenAction, &QAction::toggled,
+                this, &MainWindow::setFullScreenEnabled);
 
-        m_fitToWindowAction = m_viewMenu->addAction(tr("Fit to &Window"));
-        m_fitToWindowAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
-        connect(m_fitToWindowAction, &QAction::triggered, this, [this]()
+        auto* fitToWindowAction = viewMenu->addAction(tr("Fit to &Window"));
+        fitToWindowAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+        connect(fitToWindowAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(true);
         });
 
-        m_actualSizeAction = m_viewMenu->addAction(tr("&Actual Size (100%)"));
-        m_actualSizeAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
-        connect(m_actualSizeAction, &QAction::triggered, this, [this]()
+        auto* actualSizeAction = viewMenu->addAction(tr("&Actual Size (100%)"));
+        actualSizeAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
+        connect(actualSizeAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(false);
             m_previewWidget->setZoomPercent(100);
         });
 
-        m_zoomInAction = m_viewMenu->addAction(tr("Zoom &In"));
-        m_zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++"))});
-        connect(m_zoomInAction, &QAction::triggered, this, [this]()
+        auto* zoomInAction = viewMenu->addAction(tr("Zoom &In"));
+        zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++"))});
+        connect(zoomInAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(false);
             m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() + 20);
         });
 
-        m_zoomOutAction = m_viewMenu->addAction(tr("Zoom &Out"));
-        m_zoomOutAction->setShortcut(QKeySequence::ZoomOut);
-        connect(m_zoomOutAction, &QAction::triggered, this, [this]()
+        auto* zoomOutAction = viewMenu->addAction(tr("Zoom &Out"));
+        zoomOutAction->setShortcut(QKeySequence::ZoomOut);
+        connect(zoomOutAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(false);
             m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() - 20);
         });
 
-        m_viewMenu->addSeparator();
+        viewMenu->addSeparator();
 
-        m_scaleBarAction = m_viewMenu->addAction(tr("Show &Scale Bar"));
-        m_scaleBarAction->setCheckable(true);
-        m_scaleBarAction->setChecked(m_previewWidget->isScaleBarVisible());
-        connect(m_scaleBarAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setScaleBarVisible);
-        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged, m_scaleBarAction, &QAction::setChecked);
+        auto* scaleBarAction = viewMenu->addAction(tr("Show &Scale Bar"));
+        scaleBarAction->setCheckable(true);
+        scaleBarAction->setChecked(m_previewWidget->isScaleBarVisible());
+        connect(scaleBarAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setScaleBarVisible);
+        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged, scaleBarAction, &QAction::setChecked);
 
-        m_clippingAction = m_viewMenu->addAction(tr("Show &Saturation Warning (Hi-Lo)"));
-        m_clippingAction->setCheckable(true);
-        m_clippingAction->setShortcut(QKeySequence(Qt::Key_C));
-        m_clippingAction->setChecked(m_previewWidget->isClippingWarningEnabled());
-        connect(m_clippingAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
-        connect(m_previewWidget, &PreviewWidget::clippingWarningChanged, m_clippingAction, &QAction::setChecked);
+        auto* clippingAction = viewMenu->addAction(tr("Show &Saturation Warning (Hi-Lo)"));
+        clippingAction->setCheckable(true);
+        clippingAction->setShortcut(QKeySequence(Qt::Key_C));
+        clippingAction->setChecked(m_previewWidget->isClippingWarningEnabled());
+        connect(clippingAction, &QAction::toggled, m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
+        connect(m_previewWidget, &PreviewWidget::clippingWarningChanged, clippingAction, &QAction::setChecked);
 
-        m_toggleLayoutAction = m_viewMenu->addAction(tr("Toggle &Grid / Overlay Layout"));
-        m_toggleLayoutAction->setShortcut(QKeySequence(Qt::Key_G));
-        m_toggleLayoutAction->setShortcutContext(Qt::ApplicationShortcut);
-        connect(m_toggleLayoutAction, &QAction::triggered, this, [this]()
+        auto* toggleLayoutAction = viewMenu->addAction(tr("Toggle &Grid / Overlay Layout"));
+        toggleLayoutAction->setShortcut(QKeySequence(Qt::Key_G));
+        toggleLayoutAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(toggleLayoutAction, &QAction::triggered, this, [this]()
         {
             QWidget* focus = focusWidget();
             if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
@@ -1205,33 +1241,41 @@ namespace scopeone::ui
                 showStatusMessage(tr("Layout: Grid Split View"), 2000);
             }
         });
-        addAction(m_toggleLayoutAction);
+        addAction(toggleLayoutAction);
 
-        m_toggleDimensionAction = m_viewMenu->addAction(tr("3D Surface View"));
+        m_toggleDimensionAction = viewMenu->addAction(tr("3D Surface View"));
         m_toggleDimensionAction->setCheckable(true);
         m_toggleDimensionAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+3")),
                                                QKeySequence(Qt::Key_D)});
         m_toggleDimensionAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(m_toggleDimensionAction, &QAction::toggled, this, [this](bool enabled)
         {
-            m_imageWorkspace->activePreviewWidget()->setViewDimensionMode(
-                enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
-                        : PreviewWidget::ViewDimensionMode::TwoDimensional);
+            if (auto* preview = m_imageWorkspace->activePreviewWidget())
+            {
+                preview->setViewDimensionMode(
+                    enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                            : PreviewWidget::ViewDimensionMode::TwoDimensional);
+            }
         });
         addAction(m_toggleDimensionAction);
 
-        m_reset3dAction = m_viewMenu->addAction(tr("Reset 3D Camera"));
+        m_reset3dAction = viewMenu->addAction(tr("Reset 3D Camera"));
         connect(m_reset3dAction, &QAction::triggered, this,
-                [this]() { m_imageWorkspace->activePreviewWidget()->reset3dCamera(); });
+                [this]() {
+                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
+                    {
+                        preview->reset3dCamera();
+                    }
+                });
         m_reset3dAction->setEnabled(false);
 
-        m_viewMenu->addSeparator();
-        m_dockWidgetsMenu = m_viewMenu->addMenu(tr("&Dock Widgets"));
+        viewMenu->addSeparator();
+        m_dockWidgetsMenu = viewMenu->addMenu(tr("&Dock Widgets"));
 
-        m_togglePreviewAction = new QAction(tr("Toggle Live Preview"), this);
-        m_togglePreviewAction->setShortcut(QKeySequence(Qt::Key_Space));
-        m_togglePreviewAction->setShortcutContext(Qt::ApplicationShortcut);
-        connect(m_togglePreviewAction, &QAction::triggered, this, [this]()
+        auto* togglePreviewAction = new QAction(tr("Toggle Live Preview"), this);
+        togglePreviewAction->setShortcut(QKeySequence(Qt::Key_Space));
+        togglePreviewAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(togglePreviewAction, &QAction::triggered, this, [this]()
         {
             QWidget* focus = focusWidget();
             if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
@@ -1247,21 +1291,21 @@ namespace scopeone::ui
                 m_scopeonecore->startPreview(m_currentControlTarget);
             }
         });
-        addAction(m_togglePreviewAction);
+        addAction(togglePreviewAction);
 
-        m_snapAction = new QAction(tr("Snap"), this);
-        m_snapAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)});
-        m_snapAction->setShortcutContext(Qt::ApplicationShortcut);
-        connect(m_snapAction, &QAction::triggered, this, [this]()
+        auto* snapAction = new QAction(tr("Snap"), this);
+        snapAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)});
+        snapAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(snapAction, &QAction::triggered, this, [this]()
         {
             m_recordingWidget->snapToGallery(m_currentControlTarget);
         });
-        addAction(m_snapAction);
+        addAction(snapAction);
 
-        m_autoContrastAction = new QAction(tr("Auto Contrast"), this);
-        m_autoContrastAction->setShortcut(QKeySequence(Qt::Key_A));
-        m_autoContrastAction->setShortcutContext(Qt::ApplicationShortcut);
-        connect(m_autoContrastAction, &QAction::triggered, this, [this]()
+        auto* autoContrastAction = new QAction(tr("Auto Contrast"), this);
+        autoContrastAction->setShortcut(QKeySequence(Qt::Key_A));
+        autoContrastAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(autoContrastAction, &QAction::triggered, this, [this]()
         {
             QWidget* focus = focusWidget();
             if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
@@ -1274,27 +1318,32 @@ namespace scopeone::ui
                 m_imageWorkspace->autoLayerLevels(activeLayer);
             }
         });
-        addAction(m_autoContrastAction);
+        addAction(autoContrastAction);
 
-        m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
-        m_toolRegistry->populateMenu(m_toolsMenu, this);
-        m_toolsMenu->addSeparator();
-        auto* pluginManagerAction = m_toolsMenu->addAction(tr("Plugin &Manager..."));
+        auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
+        m_toolRegistry->populateMenu(toolsMenu, this);
+        toolsMenu->addSeparator();
+        auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
         connect(pluginManagerAction, &QAction::triggered, this, [this]()
         {
             PluginManagerDialog(this).exec();
         });
-        m_settingsAction = m_toolsMenu->addAction(tr("&Settings..."));
+        auto* settingsAction = toolsMenu->addAction(tr("&Settings..."));
+        connect(settingsAction, &QAction::triggered,
+                this, &MainWindow::openSettingsDialog);
 
-        m_helpMenu = menuBar()->addMenu(tr("&Help"));
-        auto* reportProblemAction = m_helpMenu->addAction(tr("Report a &Problem..."));
+        auto* helpMenu = menuBar()->addMenu(tr("&Help"));
+        auto* reportProblemAction = helpMenu->addAction(tr("Report a &Problem..."));
         connect(reportProblemAction, &QAction::triggered, this, []() {
             QDesktopServices::openUrl(QUrl(QStringLiteral(
                 "https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues")));
         });
-        m_helpMenu->addSeparator();
-        m_aboutQtAction = m_helpMenu->addAction(tr("About &Qt"));
-        m_aboutAction = m_helpMenu->addAction(tr("&About ScopeOne"));
+        helpMenu->addSeparator();
+        auto* aboutQtAction = helpMenu->addAction(tr("About &Qt"));
+        connect(aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
+        auto* aboutAction = helpMenu->addAction(tr("&About ScopeOne"));
+        connect(aboutAction, &QAction::triggered,
+                this, [this]() { AboutDialog::showAbout(this); });
     }
 
     // Create the camera control dock

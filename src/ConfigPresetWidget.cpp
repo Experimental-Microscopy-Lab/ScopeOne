@@ -57,7 +57,7 @@ namespace scopeone::ui
         auto* controlLayout = new QHBoxLayout();
         auto* refreshButton = new QPushButton("Refresh", this);
         refreshButton->setMaximumWidth(60);
-        connect(refreshButton, &QPushButton::clicked, this, &ConfigPresetWidget::onRefreshClicked);
+        connect(refreshButton, &QPushButton::clicked, this, &ConfigPresetWidget::refresh);
 
         auto* autoRefreshCheckBox = new QCheckBox("Auto Refresh", this);
         autoRefreshCheckBox->setChecked(m_autoRefresh);
@@ -162,11 +162,6 @@ namespace scopeone::ui
         }
     }
 
-    // Refresh config presets on demand
-    void ConfigPresetWidget::onRefreshClicked()
-    {
-        refresh();
-    }
 
     // Toggle periodic config preset refresh
     void ConfigPresetWidget::onAutoRefreshToggled(bool enabled)

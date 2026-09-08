@@ -487,6 +487,10 @@ namespace scopeone::ui
         auto applyZoomText = [this]()
         {
             PreviewWidget* preview = activePreviewWidget();
+            if (!preview)
+            {
+                return;
+            }
             const QString text = m_zoomCombo->currentText().trimmed();
             if (text.compare(QStringLiteral("Fit"), Qt::CaseInsensitive) == 0)
             {
