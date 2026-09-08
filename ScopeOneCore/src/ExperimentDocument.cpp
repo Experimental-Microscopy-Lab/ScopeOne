@@ -589,7 +589,8 @@ namespace scopeone::core
                 }
             };
 
-            if (moduleId == QStringLiteral("frequency_domain_filter"))
+            if (moduleId == QStringLiteral("frequency_domain_filter")
+                || moduleId == QStringLiteral("cuda.frequency_filter"))
             {
                 normalizeDouble(QStringLiteral("min_feature_size"));
                 normalizeDouble(QStringLiteral("max_feature_size"));
@@ -611,7 +612,8 @@ namespace scopeone::core
                 normalizeInt(QStringLiteral("spatial_mode"));
                 normalizeInt(QStringLiteral("temporal_mode"));
             }
-            else if (moduleId == QStringLiteral("gaussian_blur"))
+            else if (moduleId == QStringLiteral("gaussian_blur")
+                     || moduleId == QStringLiteral("cuda.gaussian_blur"))
             {
                 normalizeInt(QStringLiteral("kernel_size"));
                 normalizeDouble(QStringLiteral("sigma"));

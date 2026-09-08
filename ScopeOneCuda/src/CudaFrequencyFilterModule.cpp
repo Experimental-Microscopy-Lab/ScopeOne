@@ -2,6 +2,9 @@
 
 #include "scopeone/cuda/CudaKernelLaunch.h"
 
+#include <algorithm>
+#include <cuda_runtime.h>
+
 namespace scopeone::cuda_plugin
 {
     CudaFrequencyFilterModule::CudaFrequencyFilterModule()
@@ -12,6 +15,7 @@ namespace scopeone::cuda_plugin
     CudaFrequencyFilterModule::~CudaFrequencyFilterModule()
     {
         destroyPlans();
+        releaseScratch();
     }
 
     QString CudaFrequencyFilterModule::id() const
@@ -26,20 +30,30 @@ namespace scopeone::cuda_plugin
 
     QVariantMap CudaFrequencyFilterModule::parameters() const
     {
-        return {{QStringLiteral("low_cutoff"), m_lowCutoff},
-                {QStringLiteral("high_cutoff"), m_highCutoff}};
+        return {{QStringLiteral("min_feature_size"), m_minFeatureSize},
+                {QStringLiteral("max_feature_size"), m_maxFeatureSize},
+                {QStringLiteral("filter_kind"), m_filterKind},
+                {QStringLiteral("output_mode"), m_outputMode}};
     }
 
     void CudaFrequencyFilterModule::setParameters(const QVariantMap& parameters)
     {
-        if (parameters.contains(QStringLiteral("low_cutoff")))
+        if (parameters.contains(QStringLiteral("min_feature_size")))
         {
-            m_lowCutoff = parameters.value(QStringLiteral("low_cutoff")).toFloat();
+            m_minFeatureSize = qMax(0.0f,
+                                     parameters.value(QStringLiteral("min_feature_size")).toFloat());
         }
-        if (parameters.contains(QStringLiteral("high_cutoff")))
+        if (parameters.contains(QStringLiteral("max_feature_size")))
         {
-            m_highCutoff = parameters.value(QStringLiteral("high_cutoff")).toFloat();
+            m_maxFeatureSize = qMax(0.0f,
+                                     parameters.value(QStringLiteral("max_feature_size")).toFloat());
         }
+        if (m_minFeatureSize > m_maxFeatureSize)
+        {
+            std::swap(m_minFeatureSize, m_maxFeatureSize);
+        }
+        m_filterKind = qBound(0, parameters.value(QStringLiteral("filter_kind"), m_filterKind).toInt(), 1);
+        m_outputMode = qBound(0, parameters.value(QStringLiteral("output_mode"), m_outputMode).toInt(), 2);
     }
 
     std::unique_ptr<scopeone::core::ProcessingModule>
@@ -54,6 +68,7 @@ namespace scopeone::cuda_plugin
     {
         destroyPlans();
         m_spectrum.release();
+        releaseScratch();
         return true;
     }
 
@@ -73,10 +88,19 @@ namespace scopeone::cuda_plugin
         m_planHeight = 0;
     }
 
+    void CudaFrequencyFilterModule::releaseScratch()
+    {
+        if (m_minMaxScratch)
+        {
+            cudaFree(m_minMaxScratch);
+            m_minMaxScratch = nullptr;
+        }
+    }
+
     bool CudaFrequencyFilterModule::processDevice(
         const scopeone::cuda::GpuRealFrame& input,
         scopeone::cuda::GpuRealFrame& output,
-        int)
+        int bitDepth)
     {
         if (m_planWidth != input.width() || m_planHeight != input.height())
         {
@@ -85,25 +109,38 @@ namespace scopeone::cuda_plugin
                 || cufftPlan2d(&m_forwardPlan,
                                input.height(),
                                input.width(),
-                               CUFFT_R2C) != CUFFT_SUCCESS
-                || cufftPlan2d(&m_inversePlan,
-                               input.height(),
-                               input.width(),
-                               CUFFT_C2R) != CUFFT_SUCCESS)
+                               CUFFT_R2C) != CUFFT_SUCCESS)
             {
                 return false;
             }
             m_planWidth = input.width();
             m_planHeight = input.height();
         }
+        if (m_outputMode == 2 && m_inversePlan == 0
+            && cufftPlan2d(&m_inversePlan,
+                           input.height(),
+                           input.width(),
+                           CUFFT_C2R) != CUFFT_SUCCESS)
+        {
+            return false;
+        }
+        if (!m_minMaxScratch
+            && cudaMalloc(&m_minMaxScratch, 2 * sizeof(unsigned int)) != cudaSuccess)
+        {
+            return false;
+        }
         return scopeone::cuda::detail::launchFrequencyFilter(input.data(),
                                                             output.data(),
                                                             m_spectrum.data(),
                                                             input.width(),
                                                             input.height(),
-                                                            m_lowCutoff,
-                                                            m_highCutoff,
+                                                            m_minFeatureSize,
+                                                            m_maxFeatureSize,
+                                                            m_filterKind,
+                                                            m_outputMode,
                                                             m_forwardPlan,
-                                                            m_inversePlan);
+                                                            m_inversePlan,
+                                                            m_minMaxScratch,
+                                                            bitDepth >= 16 ? 65535.0f : 255.0f);
     }
 }

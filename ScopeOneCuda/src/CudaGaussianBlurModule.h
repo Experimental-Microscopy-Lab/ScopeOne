@@ -21,6 +21,7 @@ namespace scopeone::cuda_plugin
                            int bitDepth) override;
 
     private:
-        float m_sigma{1.5f};
+        int m_kernelSize{3};
+        float m_sigma{0.0f};
     };
 }

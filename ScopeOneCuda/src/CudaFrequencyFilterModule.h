@@ -27,13 +27,17 @@ namespace scopeone::cuda_plugin
 
     private:
         void destroyPlans();
+        void releaseScratch();
 
         scopeone::cuda::GpuComplexFrame m_spectrum;
         cufftHandle m_forwardPlan{0};
         cufftHandle m_inversePlan{0};
         int m_planWidth{0};
         int m_planHeight{0};
-        float m_lowCutoff{0.01f};
-        float m_highCutoff{0.25f};
+        void* m_minMaxScratch{nullptr};
+        float m_minFeatureSize{2.0f};
+        float m_maxFeatureSize{10.0f};
+        int m_filterKind{0};
+        int m_outputMode{2};
     };
 }

@@ -28,6 +28,7 @@ namespace scopeone::cuda::detail
                                              std::size_t outputPitchBytes,
                                              int width,
                                              int height,
+                                             int kernelSize,
                                              float sigma);
 
     SCOPEONE_CUDA_EXPORT bool launchFrequencyFilter(const void* input,
@@ -35,8 +36,12 @@ namespace scopeone::cuda::detail
                                                     void* spectrum,
                                                     int width,
                                                     int height,
-                                                    float lowCutoff,
-                                                    float highCutoff,
+                                                    float minFeatureSize,
+                                                    float maxFeatureSize,
+                                                    int filterKind,
+                                                    int outputMode,
                                                     int forwardPlan,
-                                                    int inversePlan);
+                                                    int inversePlan,
+                                                    void* minMaxScratch,
+                                                    float maxValue);
 }

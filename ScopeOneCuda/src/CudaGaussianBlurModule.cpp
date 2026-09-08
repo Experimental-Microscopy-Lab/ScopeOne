@@ -21,14 +21,23 @@ namespace scopeone::cuda_plugin
 
     QVariantMap CudaGaussianBlurModule::parameters() const
     {
-        return {{QStringLiteral("sigma"), m_sigma}};
+        return {{QStringLiteral("kernel_size"), m_kernelSize},
+                {QStringLiteral("sigma"), m_sigma}};
     }
 
     void CudaGaussianBlurModule::setParameters(const QVariantMap& parameters)
     {
+        if (parameters.contains(QStringLiteral("kernel_size")))
+        {
+            m_kernelSize = qMax(1, parameters.value(QStringLiteral("kernel_size")).toInt());
+            if ((m_kernelSize % 2) == 0)
+            {
+                ++m_kernelSize;
+            }
+        }
         if (parameters.contains(QStringLiteral("sigma")))
         {
-            m_sigma = parameters.value(QStringLiteral("sigma")).toFloat();
+            m_sigma = qMax(0.0f, parameters.value(QStringLiteral("sigma")).toFloat());
         }
     }
 
@@ -51,6 +60,7 @@ namespace scopeone::cuda_plugin
                                                      output.pitchBytes(),
                                                      input.width(),
                                                      input.height(),
+                                                     m_kernelSize,
                                                      m_sigma);
     }
 }
