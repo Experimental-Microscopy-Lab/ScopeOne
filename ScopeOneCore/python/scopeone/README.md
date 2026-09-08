@@ -2,6 +2,36 @@
 
 Python client for ScopeOne's language-neutral Local API. It controls a running ScopeOne app and can be used by scripts, notebooks, or Python-based agent tool adapters.
 
+## Installation
+
+Requires Python 3.10 or later and a running ScopeOne desktop application.
+
+Create and activate an isolated Conda environment:
+
+```powershell
+conda create -n scopeone python=3.13
+conda activate scopeone
+```
+
+Install from this source checkout:
+
+```powershell
+cd ScopeOneCore\python\scopeone
+python -m pip install -e .
+```
+
+For a regular, non-editable installation, use:
+
+```powershell
+python -m pip install .
+```
+
+`pip` installs the required `numpy` and `pywin32` dependencies automatically on Windows. Verify the connection after ScopeOne is running:
+
+```powershell
+python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
+```
+
 ## Project layout
 
 - Python package project root: `ScopeOneCore/python/scopeone`
