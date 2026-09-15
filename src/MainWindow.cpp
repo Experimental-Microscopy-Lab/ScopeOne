@@ -490,10 +490,8 @@ namespace scopeone::ui
                 this, &MainWindow::handleRoiDrawn);
         connect(m_previewWidget, &PreviewWidget::imageFilesDropped,
                 this, &MainWindow::importImages);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::rawFramesAcquired,
-                m_previewWidget, &PreviewWidget::trackRawFrameRate);
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::processedFramesCompleted,
-                m_previewWidget, &PreviewWidget::trackProcessedFrameRate);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerFrameRatesUpdated,
+                m_previewWidget, &PreviewWidget::setLayerFrameRates);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady,
                 this, [this](const scopeone::core::ImageFrame& frame)
                 {
@@ -1050,6 +1048,16 @@ namespace scopeone::ui
         return m_scopeonecore->graphFrame(currentLayerKey());
     }
 
+    double MainWindow::layerFrameRate(const QString& layerKey) const
+    {
+        return m_scopeonecore->layerFrameRate(layerKey);
+    }
+
+    QMap<QString, double> MainWindow::layerFrameRates() const
+    {
+        return m_scopeonecore->layerFrameRates();
+    }
+
     scopeone::core::ImageFrame MainWindow::publishToolStreamFrame(
         const QString& sourceId,
         const scopeone::core::ImageFrame& frame,
@@ -1268,6 +1276,20 @@ namespace scopeone::ui
                     }
                 });
         m_reset3dAction->setEnabled(false);
+
+        m_toggle3dColorbarAction = viewMenu->addAction(tr("3D Colorbar"));
+        m_toggle3dColorbarAction->setCheckable(true);
+        m_toggle3dColorbarAction->setChecked(m_previewWidget->isThreeDimensionalColorbarVisible());
+        connect(m_toggle3dColorbarAction, &QAction::toggled,
+                this, [this](bool visible)
+                {
+                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
+                    {
+                        preview->setThreeDimensionalColorbarVisible(visible);
+                    }
+                });
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalColorbarVisibilityChanged,
+                m_toggle3dColorbarAction, &QAction::setChecked);
 
         viewMenu->addSeparator();
         m_dockWidgetsMenu = viewMenu->addMenu(tr("&Dock Widgets"));
@@ -1677,6 +1699,7 @@ namespace scopeone::ui
         }
         m_toggleDimensionAction->setEnabled(true);
         m_reset3dAction->setEnabled(threeDimensional);
+        m_toggle3dColorbarAction->setEnabled(threeDimensional);
     }
 
     // Show one transient status message without disturbing persistent fields

@@ -155,6 +155,7 @@ namespace scopeone::ui
         QSlider* m_3dZScaleSlider{nullptr};
         QDoubleSpinBox* m_3dZScaleSpinBox{nullptr};
         QCheckBox* m_3dWireframeCheckBox{nullptr};
+        QCheckBox* m_3dColorbarCheckBox{nullptr};
         QSpinBox* m_alignXSpinBox{nullptr};
         QSpinBox* m_alignYSpinBox{nullptr};
         QSpinBox* m_alignZoomSpinBox{nullptr};

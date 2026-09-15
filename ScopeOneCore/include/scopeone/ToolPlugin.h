@@ -3,6 +3,7 @@
 #include "scopeone/ScopeOneCore.h"
 
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QtPlugin>
@@ -35,6 +36,8 @@ namespace scopeone::ui
         virtual scopeone::core::ScopeOneCore& core() const = 0;
         virtual QString currentLayerKey() const = 0;
         virtual scopeone::core::ImageFrame currentFrame() const = 0;
+        virtual double layerFrameRate(const QString& layerKey) const = 0;
+        virtual QMap<QString, double> layerFrameRates() const = 0;
         virtual scopeone::core::ImageFrame publishToolStreamFrame(
             const QString& sourceId,
             const scopeone::core::ImageFrame& frame,

@@ -13,6 +13,7 @@ class QLineEdit;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QWidget;
 
 namespace scopeone::core
 {
@@ -49,6 +50,7 @@ namespace scopeone::plugins
         QLabel* m_productLabel{nullptr};
         QLabel* m_resourcesLabel{nullptr};
         QGroupBox* m_rasterGroup{nullptr};
+        QWidget* m_rasterContents{nullptr};
         QComboBox* m_lineClockCombo{nullptr};
         QDoubleSpinBox* m_lineRateSpin{nullptr};
         QSpinBox* m_activeLinesSpin{nullptr};

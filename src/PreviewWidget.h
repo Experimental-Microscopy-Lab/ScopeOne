@@ -25,6 +25,7 @@
 class QDragEnterEvent;
 class QDropEvent;
 class QEvent;
+class QImage;
 class QKeyEvent;
 class QLabel;
 class QMouseEvent;
@@ -63,9 +64,8 @@ namespace scopeone::ui
 
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
-        void trackProcessedFrameRate(const QString& cameraId, quint64 frameCount);
-        void trackRawFrameRate(const QString& cameraId, quint64 frameCount);
         void resetLiveFrameRates();
+        void setLayerFrameRates(const QMap<QString, double>& frameRates);
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
@@ -101,6 +101,8 @@ namespace scopeone::ui
         void reset3dCamera();
         void set3dWireframeEnabled(bool enabled);
         bool is3dWireframeEnabled() const { return m_wireframe3d; }
+        void setThreeDimensionalColorbarVisible(bool visible);
+        bool isThreeDimensionalColorbarVisible() const { return m_threeDimensionalColorbarVisible; }
         void setActiveLayerKey(const QString& key);
         QString activeLayerKey() const { return m_activeLayerKey; }
         void setPixelSizeCallback(std::function<double(const QString&)> callback);
@@ -127,6 +129,7 @@ signals:
         void viewDimensionModeChanged(ViewDimensionMode mode);
         void threeDimensionalZScaleChanged(float scale);
         void threeDimensionalWireframeChanged(bool enabled);
+        void threeDimensionalColorbarVisibilityChanged(bool visible);
         void stageStepRequested(double dxScale, double dyScale, bool big);
         void stageZStepRequested(double dzScale, bool big);
         void layerClicked(const QString& layerKey);
@@ -162,12 +165,6 @@ signals:
         void dropEvent(QDropEvent* event) override;
 
     private:
-        struct FpsState
-        {
-            QElapsedTimer intervalTimer;
-            quint64 framesSinceUpdate{0};
-        };
-
         enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
         enum class FrameRole { Raw, Processed };
         enum class MarkupEditMode
@@ -254,8 +251,6 @@ signals:
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
         QMap<QString, double> m_layerFps;
         QString m_layerInfoText{QStringLiteral("No image loaded")};
-        QMap<QString, FpsState> m_fpsStates;
-        QTimer m_fpsUpdateTimer;
         QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
@@ -295,6 +290,7 @@ signals:
         QMap<QString, int> m_layerSliceIndices;
         float m_zScale{1.0f};
         bool m_wireframe3d{false};
+        bool m_threeDimensionalColorbarVisible{true};
         bool m_scaleBarVisible{true};
         bool m_clippingWarning{false};
         QString m_activeLayerKey;
@@ -347,8 +343,6 @@ signals:
         float m_surfaceStartYaw{45.0f};
         QVector2D m_surfaceStartPan{0.0f, 0.0f};
         void updateImageDisplay();
-        void updateLayerFps(const QString& layerKey, quint64 frameCount = 1);
-        void updateFrameRates();
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
                               const scopeone::core::ImageFrame& frame,
@@ -419,6 +413,10 @@ signals:
         void draw3dSurface(const RenderItem& item,
                            const Camera3dState& camera,
                            const QRect& targetArea);
+        void draw3dColorbar(QPainter& painter,
+                            const RenderItem& item,
+                            const QRect& viewportRect) const;
+        QImage colormapStripImage(int colormapIndex, int height) const;
         void ensureGlPipeline();
         GLuint ensureFrameTexture(const QString& textureKey,
                                   const scopeone::core::ImageFrame& frame,

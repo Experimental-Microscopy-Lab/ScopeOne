@@ -623,6 +623,15 @@ namespace scopeone::ui
                     const QSignalBlocker blocker(m_3dWireframeCheckBox);
                     m_3dWireframeCheckBox->setChecked(enabled);
                 });
+        m_3dColorbarCheckBox->setChecked(m_previewWidget->isThreeDimensionalColorbarVisible());
+        connect(m_3dColorbarCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setThreeDimensionalColorbarVisible);
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalColorbarVisibilityChanged,
+                this, [this](bool visible)
+                {
+                    const QSignalBlocker blocker(m_3dColorbarCheckBox);
+                    m_3dColorbarCheckBox->setChecked(visible);
+                });
     }
 
     // Builds layer and alignment controls
@@ -804,6 +813,8 @@ namespace scopeone::ui
         m_3dZScaleSpinBox->setKeyboardTracking(false);
 
         m_3dWireframeCheckBox = new QCheckBox(QStringLiteral("Wireframe"), surfaceViewGroup);
+        m_3dColorbarCheckBox = new QCheckBox(QStringLiteral("Colorbar"), surfaceViewGroup);
+        m_3dColorbarCheckBox->setChecked(true);
         auto* reset3dButton = new QPushButton(QStringLiteral("Reset View"), surfaceViewGroup);
         reset3dButton->setMaximumWidth(84);
 
@@ -813,7 +824,8 @@ namespace scopeone::ui
         surfaceViewLayout->addWidget(m_3dZScaleSlider, 1, 1);
         surfaceViewLayout->addWidget(m_3dZScaleSpinBox, 1, 2);
         surfaceViewLayout->addWidget(m_3dWireframeCheckBox, 2, 0, 1, 2);
-        surfaceViewLayout->addWidget(reset3dButton, 2, 2, 1, 2, Qt::AlignLeft);
+        surfaceViewLayout->addWidget(m_3dColorbarCheckBox, 2, 2);
+        surfaceViewLayout->addWidget(reset3dButton, 2, 3, 1, 1, Qt::AlignLeft);
 
         connect(m_viewDimensionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int index)

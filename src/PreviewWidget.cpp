@@ -7,6 +7,7 @@
 #include <QDropEvent>
 #include <QFile>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QMimeData>
 #include <QPainter>
@@ -320,9 +321,6 @@ namespace scopeone::ui
                 });
         m_sliceBar->hide();
 
-        m_fpsUpdateTimer.setInterval(3000);
-        connect(&m_fpsUpdateTimer, &QTimer::timeout, this, &PreviewWidget::updateFrameRates);
-        m_fpsUpdateTimer.start();
     }
 
     // Releases cached OpenGL textures
@@ -390,17 +388,6 @@ namespace scopeone::ui
         }
     }
 
-    // Counts one frame in a live layer throughput window
-    void PreviewWidget::updateLayerFps(const QString& layerKey, quint64 frameCount)
-    {
-        FpsState& state = m_fpsStates[layerKey];
-        if (!state.intervalTimer.isValid())
-        {
-            state.intervalTimer.start();
-        }
-        state.framesSinceUpdate += frameCount;
-    }
-
     // Stores one graph processed frame and updates layer statistics
     void PreviewWidget::setGraphProcessedFrame(const ImageFrame& frame)
     {
@@ -446,44 +433,23 @@ namespace scopeone::ui
         update();
     }
 
-    // Tracks completed processing throughput from aggregated frame counts
-    void PreviewWidget::trackProcessedFrameRate(const QString& cameraId, quint64 frameCount)
-    {
-        const QString sourceId = normalizedSourceId(cameraId);
-        if (!sourceId.isEmpty() && frameCount > 0)
-        {
-            updateLayerFps(previewLayerKey(sourceId, true), frameCount);
-        }
-    }
-
-    // Tracks acquired raw throughput from backend frame counts
-    void PreviewWidget::trackRawFrameRate(const QString& cameraId, quint64 frameCount)
-    {
-        const QString sourceId = normalizedSourceId(cameraId);
-        if (!sourceId.isEmpty() && frameCount > 0)
-        {
-            updateLayerFps(previewLayerKey(sourceId, false), frameCount);
-        }
-    }
-
     // Clears live throughput windows when preview stops
     void PreviewWidget::resetLiveFrameRates()
     {
-        bool changed = false;
         for (auto it = m_layerFps.begin(); it != m_layerFps.end(); ++it)
         {
-            if ((ScopeOneCore::isRawLayerKey(it.key()) || ScopeOneCore::isProcessedLayerKey(it.key()))
-                && !qFuzzyIsNull(it.value()))
+            if (ScopeOneCore::isRawLayerKey(it.key()) || ScopeOneCore::isProcessedLayerKey(it.key()))
             {
                 it.value() = 0.0;
-                changed = true;
             }
         }
-        m_fpsStates.clear();
-        if (changed)
-        {
-            updateLayerInfoDisplay();
-        }
+        updateLayerInfoDisplay();
+    }
+
+    void PreviewWidget::setLayerFrameRates(const QMap<QString, double>& frameRates)
+    {
+        m_layerFps = frameRates;
+        updateLayerInfoDisplay();
     }
 
     // Changes how multiple preview layers are laid out
@@ -581,7 +547,6 @@ namespace scopeone::ui
             return {};
         }
         initializeLayerInfo(layerKey);
-        updateLayerFps(layerKey, 1);
         updateLayerInfoDisplay();
         updateImageDisplay();
         if (newLayer)
@@ -782,8 +747,6 @@ namespace scopeone::ui
         const QString normalizedId = normalizedSourceId(sourceId);
         m_layerFps.remove(previewLayerKey(normalizedId, false));
         m_layerFps.remove(previewLayerKey(normalizedId, true));
-        m_fpsStates.remove(previewLayerKey(normalizedId, false));
-        m_fpsStates.remove(previewLayerKey(normalizedId, true));
         updateLayerInfoDisplay();
 
         QMutexLocker lock(&m_mutex);
@@ -817,7 +780,6 @@ namespace scopeone::ui
         for (const QString& cameraId : m_availableCameraIds)
         {
             m_layerFps.remove(previewLayerKey(cameraId, true));
-            m_fpsStates.remove(previewLayerKey(cameraId, true));
         }
         updateLayerInfoDisplay();
 
@@ -914,7 +876,6 @@ namespace scopeone::ui
         m_layerSliceCounts.remove(layerKey);
         m_layerSliceIndices.remove(layerKey);
         m_layerFps.remove(layerKey);
-        m_fpsStates.remove(layerKey);
 
         {
             QMutexLocker lock(&m_mutex);
@@ -1132,6 +1093,17 @@ namespace scopeone::ui
         update();
     }
 
+    void PreviewWidget::setThreeDimensionalColorbarVisible(bool visible)
+    {
+        if (m_threeDimensionalColorbarVisible == visible)
+        {
+            return;
+        }
+        m_threeDimensionalColorbarVisible = visible;
+        emit threeDimensionalColorbarVisibilityChanged(visible);
+        update();
+    }
+
     void PreviewWidget::setActiveLayerKey(const QString& key)
     {
         if (m_activeLayerKey == key)
@@ -1174,38 +1146,6 @@ namespace scopeone::ui
         }
         updateSliceBarGeometry();
         update();
-    }
-
-    // Publishes raw and processed throughput over one shared time window
-    void PreviewWidget::updateFrameRates()
-    {
-        if (m_fpsStates.isEmpty())
-        {
-            return;
-        }
-
-        bool changed = false;
-        for (auto it = m_fpsStates.begin(); it != m_fpsStates.end(); ++it)
-        {
-            FpsState& state = it.value();
-            const qint64 elapsedNs = state.intervalTimer.nsecsElapsed();
-            const double fps = elapsedNs > 0
-                                   ? (static_cast<double>(state.framesSinceUpdate) * 1000000000.0)
-                                       / static_cast<double>(elapsedNs)
-                                   : 0.0;
-            state.framesSinceUpdate = 0;
-            state.intervalTimer.restart();
-            double& currentFps = m_layerFps[it.key()];
-            if (!qFuzzyCompare(currentFps + 1.0, fps + 1.0))
-            {
-                currentFps = fps;
-                changed = true;
-            }
-        }
-        if (changed)
-        {
-            updateLayerInfoDisplay();
-        }
     }
 
     // Checks whether a frame source has raw data
@@ -2227,6 +2167,72 @@ namespace scopeone::ui
         m_prog3d.release();
     }
 
+    QImage PreviewWidget::colormapStripImage(int colormapIndex, int height) const
+    {
+        const QStringList names = ImageSceneModel::supportedColormaps();
+        const QByteArray lut = loadImageJLut(names[colormapIndex]);
+        QImage strip(16, height, QImage::Format_RGB888);
+        for (int y = 0; y < height; ++y)
+        {
+            const int lutIndex = 255 - (y * 255 / (height - 1));
+            uchar* line = strip.scanLine(y);
+            for (int x = 0; x < strip.width(); ++x)
+            {
+                line[3 * x] = static_cast<uchar>(lut[3 * lutIndex]);
+                line[3 * x + 1] = static_cast<uchar>(lut[3 * lutIndex + 1]);
+                line[3 * x + 2] = static_cast<uchar>(lut[3 * lutIndex + 2]);
+            }
+        }
+        return strip;
+    }
+
+    void PreviewWidget::draw3dColorbar(QPainter& painter,
+                                       const RenderItem& item,
+                                       const QRect& viewportRect) const
+    {
+        const int panelWidth = 100;
+        const int panelHeight = 220;
+        const QRect panel(viewportRect.right() - panelWidth - 16,
+                          viewportRect.center().y() - panelHeight / 2,
+                          panelWidth,
+                          panelHeight);
+        const QRect strip(panel.x() + 10, panel.y() + 32, 16, 174);
+        const QStringList names = ImageSceneModel::supportedColormaps();
+
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 160));
+        painter.drawRoundedRect(panel, 5, 5);
+        painter.drawImage(strip, colormapStripImage(item.display.colormapIndex, strip.height()));
+
+        QFont font = painter.font();
+        font.setPointSize(8);
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(panel.x() + 4, panel.y() + 7, panel.width() - 8, 18),
+                         Qt::AlignCenter,
+                         names[item.display.colormapIndex]);
+
+        const QFontMetrics metrics(font);
+        for (int tick = 0; tick < 5; ++tick)
+        {
+            const double fraction = static_cast<double>(tick) / 4.0;
+            const int y = strip.top() + qRound(fraction * (strip.height() - 1));
+            const double value = item.display.levelMax
+                + (item.display.levelMin - item.display.levelMax) * fraction;
+            painter.setPen(QPen(Qt::white, 1));
+            painter.drawLine(strip.right() + 2, y, strip.right() + 7, y);
+            painter.drawText(QRect(strip.right() + 10,
+                                   y - metrics.height() / 2,
+                                   panel.right() - strip.right() - 14,
+                                   metrics.height()),
+                             Qt::AlignLeft | Qt::AlignVCenter,
+                             QString::number(value, 'f', 0));
+        }
+        painter.restore();
+    }
+
     // Updates the layer info summary text
     void PreviewWidget::updateLayerInfoDisplay()
     {
@@ -2768,6 +2774,19 @@ namespace scopeone::ui
                         p.setPen(QPen(p.pen().color(), item.layerKey == m_activeLayerKey ? 2 : 1));
                         p.drawRect(item.area.adjusted(1, 1, -2, -2));
                     }
+                    if (m_threeDimensionalColorbarVisible)
+                    {
+                        const RenderItem* activeItem = &renderItems.front();
+                        for (const RenderItem& item : renderItems)
+                        {
+                            if (item.layerKey == m_activeLayerKey)
+                            {
+                                activeItem = &item;
+                                break;
+                            }
+                        }
+                        draw3dColorbar(p, *activeItem, activeItem->area);
+                    }
                     p.setPen(QColor(220, 225, 230, 190));
                     p.drawText(QRect(12, height() - 28, width() - 24, 18),
                                Qt::AlignRight | Qt::AlignVCenter,
@@ -2812,6 +2831,10 @@ namespace scopeone::ui
                 p.drawText(panelRect.adjusted(10, 25, -10, -7),
                            Qt::AlignLeft | Qt::AlignVCenter,
                            detail);
+                if (m_threeDimensionalColorbarVisible)
+                {
+                    draw3dColorbar(p, *surfaceItem, rect());
+                }
                 p.setPen(QColor(220, 225, 230, 190));
                 p.drawText(QRect(12, height() - 28, width() - 24, 18),
                            Qt::AlignRight | Qt::AlignVCenter,

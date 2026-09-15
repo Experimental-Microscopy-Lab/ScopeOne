@@ -49,6 +49,8 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore& core() const override;
         QString currentLayerKey() const override;
         scopeone::core::ImageFrame currentFrame() const override;
+        double layerFrameRate(const QString& layerKey) const override;
+        QMap<QString, double> layerFrameRates() const override;
         scopeone::core::ImageFrame publishToolStreamFrame(
             const QString& sourceId,
             const scopeone::core::ImageFrame& frame,
@@ -157,6 +159,7 @@ namespace scopeone::ui
         QMenu* m_dockWidgetsMenu{nullptr};
 
         QAction* m_toggleDimensionAction{nullptr};
+        QAction* m_toggle3dColorbarAction{nullptr};
         QAction* m_reset3dAction{nullptr};
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};

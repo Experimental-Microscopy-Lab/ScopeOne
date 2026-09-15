@@ -90,34 +90,39 @@ namespace scopeone::plugins
         m_rasterGroup = new QGroupBox(tr("Raster scan timing"), this);
         m_rasterGroup->setCheckable(true);
         m_rasterGroup->setChecked(false);
-        auto* rasterForm = new QFormLayout(m_rasterGroup);
-        m_lineClockCombo = editableCombo({}, m_rasterGroup);
+        m_rasterContents = new QWidget(m_rasterGroup);
+        auto* rasterLayout = new QVBoxLayout(m_rasterGroup);
+        rasterLayout->setContentsMargins(0, 0, 0, 0);
+        rasterLayout->addWidget(m_rasterContents);
+        auto* rasterForm = new QFormLayout(m_rasterContents);
+        m_lineClockCombo = editableCombo({}, m_rasterContents);
         rasterForm->addRow(tr("Line clock input"), m_lineClockCombo);
         m_lineRateSpin = realSpin(0.001, 100000000.0, 1000.0, 3,
-                                  tr(" Hz"), m_rasterGroup);
+                                  tr(" Hz"), m_rasterContents);
         rasterForm->addRow(tr("Nominal line rate"), m_lineRateSpin);
-        m_activeLinesSpin = new QSpinBox(m_rasterGroup);
+        m_activeLinesSpin = new QSpinBox(m_rasterContents);
         m_activeLinesSpin->setRange(2, 1000000);
         m_activeLinesSpin->setValue(512);
         rasterForm->addRow(tr("Active lines"), m_activeLinesSpin);
-        m_flybackLinesSpin = new QSpinBox(m_rasterGroup);
+        m_flybackLinesSpin = new QSpinBox(m_rasterContents);
         m_flybackLinesSpin->setRange(2, 1000000);
         m_flybackLinesSpin->setValue(16);
         rasterForm->addRow(tr("Flyback lines"), m_flybackLinesSpin);
-        m_yChannelCombo = new QComboBox(m_rasterGroup);
+        m_yChannelCombo = new QComboBox(m_rasterContents);
         rasterForm->addRow(tr("Y analog output"), m_yChannelCombo);
         m_yStartSpin = realSpin(-1000.0, 1000.0, -1.0, 6,
-                                tr(" V"), m_rasterGroup);
+                                tr(" V"), m_rasterContents);
         rasterForm->addRow(tr("Y start"), m_yStartSpin);
         m_yEndSpin = realSpin(-1000.0, 1000.0, 1.0, 6,
-                              tr(" V"), m_rasterGroup);
+                              tr(" V"), m_rasterContents);
         rasterForm->addRow(tr("Y end"), m_yEndSpin);
-        m_frameCounterCombo = new QComboBox(m_rasterGroup);
+        m_frameCounterCombo = new QComboBox(m_rasterContents);
         rasterForm->addRow(tr("Frame counter"), m_frameCounterCombo);
-        m_lineOutputCombo = editableCombo({}, m_rasterGroup);
+        m_lineOutputCombo = editableCombo({}, m_rasterContents);
         rasterForm->addRow(tr("Line output"), m_lineOutputCombo);
-        m_frameOutputCombo = editableCombo({}, m_rasterGroup);
+        m_frameOutputCombo = editableCombo({}, m_rasterContents);
         rasterForm->addRow(tr("Frame output"), m_frameOutputCombo);
+        m_rasterContents->setVisible(false);
         layout->addWidget(m_rasterGroup);
 
         layout->addWidget(new QLabel(tr("Counter pulse tasks"), this));
@@ -204,6 +209,8 @@ namespace scopeone::plugins
 
         connect(m_deviceCombo, &QComboBox::currentIndexChanged,
                 this, &DaqControlWidget::refreshDevice);
+        connect(m_rasterGroup, &QGroupBox::toggled,
+                m_rasterContents, &QWidget::setVisible);
         connect(m_addPulseButton, &QPushButton::clicked,
                 this, &DaqControlWidget::addPulseRow);
         connect(m_removePulseButton, &QPushButton::clicked, this, [this]()

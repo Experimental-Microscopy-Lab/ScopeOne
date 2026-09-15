@@ -1285,6 +1285,12 @@ namespace scopeone::core
         m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
         connect(m_previewFlushTimer, &QTimer::timeout,
                 this, &ScopeOneCore::flushPreviewFrames);
+        m_layerFrameRateTimer = new QTimer(this);
+        m_layerFrameRateTimer->setInterval(3000);
+        connect(m_layerFrameRateTimer, &QTimer::timeout,
+                this, &ScopeOneCore::updateLayerFrameRates);
+        m_layerFrameRateElapsed.start();
+        m_layerFrameRateTimer->start();
         if constexpr (kFrameRateDiagnosticsEnabled)
         {
             auto* frameRateDiagnosticTimer = new QTimer(this);
@@ -2637,6 +2643,7 @@ namespace scopeone::core
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
         const QString layerKey = rawLayerKey(cameraId);
+        recordLayerFrame(layerKey);
         m_imageSceneModel->updateLayerFrame(layerKey, normalizedFrame);
         m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
@@ -2686,6 +2693,7 @@ namespace scopeone::core
         }
 
         bool queueFlush = false;
+        recordLayerFrame(processedLayerKey(frame.cameraId));
         {
             QMutexLocker locker(&m_managers->processedDeliveryMutex);
             if (!m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
@@ -2832,6 +2840,18 @@ namespace scopeone::core
         return frames;
     }
 
+    double ScopeOneCore::layerFrameRate(const QString& layerKey) const
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        return m_layerFrameRates.value(layerKey.trimmed(), 0.0);
+    }
+
+    QMap<QString, double> ScopeOneCore::layerFrameRates() const
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        return m_layerFrameRates;
+    }
+
     // Read one pixel from a named frame graph layer
     bool ScopeOneCore::graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const
     {
@@ -2922,6 +2942,37 @@ namespace scopeone::core
     {
         const QString sourceId = sourceIdFromLayerKey(layerKey.trimmed());
         return static_cast<int>(m_layerStacks.value(sourceId).size());
+    }
+
+    void ScopeOneCore::recordLayerFrame(const QString& layerKey, quint64 count)
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        m_layerFrameCounts[layerKey] += count;
+    }
+
+    void ScopeOneCore::updateLayerFrameRates()
+    {
+        const double elapsedSeconds = static_cast<double>(m_layerFrameRateElapsed.restart()) / 1000.0;
+        QMap<QString, double> frameRates;
+        {
+            QMutexLocker locker(&m_layerFrameRateMutex);
+            frameRates = m_layerFrameRates;
+            for (auto it = frameRates.begin(); it != frameRates.end(); ++it)
+            {
+                it.value() = 0.0;
+            }
+            for (auto it = m_layerFrameCounts.cbegin(); it != m_layerFrameCounts.cend(); ++it)
+            {
+                frameRates[it.key()] = static_cast<double>(it.value()) / elapsedSeconds;
+            }
+            m_layerFrameCounts.clear();
+            m_layerFrameRates = frameRates;
+        }
+        for (auto it = frameRates.cbegin(); it != frameRates.cend(); ++it)
+        {
+            emit layerFrameRateChanged(it.key(), it.value());
+        }
+        emit layerFrameRatesUpdated(frameRates);
     }
 
     bool ScopeOneCore::setLayerSliceIndex(const QString& layerKey, int sliceIndex)
@@ -3170,6 +3221,7 @@ namespace scopeone::core
         {
             return {};
         }
+        recordLayerFrame(toolLayerKey(sourceId));
         const ImageFrame storedFrame = graphFrame(toolLayerKey(sourceId));
         const QString layerKey = toolLayerKey(storedFrame.cameraId);
         ensureSceneLayer(layerKey,
@@ -3195,6 +3247,7 @@ namespace scopeone::core
         {
             return {};
         }
+        recordLayerFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
         return graphFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
     }
 

@@ -7,6 +7,8 @@
 #include <QHash>
 #include <QList>
 #include <QMetaType>
+#include <QMap>
+#include <QMutex>
 #include <QPoint>
 #include <QPointF>
 #include <QRect>
@@ -574,6 +576,8 @@ namespace scopeone::core
         QString daqStateMessage(const QString& deviceId) const;
         ImageFrame graphFrame(const QString& layerKey) const;
         QList<ImageFrame> graphFrames(const QStringList& layerKeys) const;
+        double layerFrameRate(const QString& layerKey) const;
+        QMap<QString, double> layerFrameRates() const;
         bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
         std::shared_ptr<RecordingSessionData> createFrameSession(
             const QList<ImageFrame>& frames,
@@ -859,6 +863,8 @@ namespace scopeone::core
             const ImageFrame& frame);
         void staticImageImportProgress(const QString& filePath, int percent, const QString& statusText);
         void staticImageImportFinished(const QString& filePath, const QString& layerKey, bool success, const QString& errorMessage);
+        void layerFrameRateChanged(const QString& layerKey, double fps);
+        void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);
 
     private:
         struct Managers;
@@ -933,6 +939,8 @@ namespace scopeone::core
                                     const QString& message);
         void submitProcessingFrame(const ImageFrame& frame, quint64 processingToken = 0);
         void handleProcessedFrame(const ImageFrame& frame);
+        void recordLayerFrame(const QString& layerKey, quint64 count = 1);
+        void updateLayerFrameRates();
         void flushProcessedFrames();
         void queuePreviewRawFrame(const ImageFrame& frame);
         void schedulePreviewFlush();
@@ -997,6 +1005,11 @@ namespace scopeone::core
         QElapsedTimer m_lineProfileUpdateTimer;
         QElapsedTimer m_previewPublishTimer;
         QTimer* m_previewFlushTimer{nullptr};
+        QTimer* m_layerFrameRateTimer{nullptr};
+        mutable QMutex m_layerFrameRateMutex;
+        QElapsedTimer m_layerFrameRateElapsed;
+        QHash<QString, quint64> m_layerFrameCounts;
+        QMap<QString, double> m_layerFrameRates;
         QSet<const RecordingSessionData*> m_sessionsSaving;
         QSet<QString> m_pendingProviderRegistrations;
         enum class ConfigurationState
