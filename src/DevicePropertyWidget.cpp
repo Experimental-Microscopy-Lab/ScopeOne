@@ -106,7 +106,7 @@ namespace scopeone::ui
 
         auto* refreshButton = new QPushButton("Refresh", this);
         refreshButton->setMaximumWidth(60);
-        connect(refreshButton, &QPushButton::clicked, this, &DevicePropertyWidget::onRefreshClicked);
+        connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(false); });
 
         auto* optionsButton = new QToolButton(this);
         optionsButton->setText("Options");
@@ -600,11 +600,6 @@ namespace scopeone::ui
         }
     }
 
-    // Refresh all property values from hardware
-    void DevicePropertyWidget::onRefreshClicked()
-    {
-        refresh(false);
-    }
 
     // Toggle read only property visibility
     void DevicePropertyWidget::onShowReadOnlyToggled(bool show)

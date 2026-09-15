@@ -1,7 +1,10 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
+#include "scopeone/CameraProvider.h"
+#include "scopeone/HardwareCapabilities.h"
 #include "internal/MDAManager.h"
+#include "internal/CameraRuntimeControl.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QStringList>
@@ -11,8 +14,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-
-class CMMCore;
 
 namespace scopeone::core::internal
 {
@@ -25,8 +26,6 @@ namespace scopeone::core::internal
     using RecordingWriterPhase = scopeone::core::ScopeOneCore::RecordingWriterPhase;
     using RecordingWriterStatus = scopeone::core::ScopeOneCore::RecordingWriterStatus;
 
-    class CameraManager;
-
     class RecordingManager : public QObject
     {
         Q_OBJECT
@@ -35,9 +34,12 @@ namespace scopeone::core::internal
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
-        void setCameraManager(CameraManager* cameraManager) { m_cameraManager = cameraManager; }
-        void setMMCore(const std::shared_ptr<CMMCore>& core) { m_mmcore = core; }
-
+        void setCameraProvider(CameraProvider* cameraProvider) { m_cameraProvider = cameraProvider; }
+        void setStageProvider(StageProvider* stageProvider) { m_stageProvider = stageProvider; }
+        void setCameraRuntimeControl(CameraRuntimeControl* cameraRuntimeControl)
+        {
+            m_cameraRuntimeControl = cameraRuntimeControl;
+        }
         void setLatestFrameFetcher(std::function<bool(const QString&, ImageFrame&)> fetcher)
         {
             m_latestFrameFetcher = std::move(fetcher);
@@ -63,7 +65,9 @@ namespace scopeone::core::internal
         void onRawFramesReady(const QList<ImageFrame>& frames);
         void onFrameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
 
-        static QString saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session);
+        static QString saveSessionToDisk(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const std::shared_ptr<RecordingSessionData>& sourceSession = {});
 
     signals:
         void mdaRawFrameReady(const scopeone::core::ImageFrame& frame);
@@ -203,8 +207,9 @@ namespace scopeone::core::internal
         bool allCamerasReachedTarget() const;
         void advanceBurstStateIfNeeded();
 
-        CameraManager* m_cameraManager{nullptr};
-        std::shared_ptr<CMMCore> m_mmcore;
+        CameraProvider* m_cameraProvider{nullptr};
+        StageProvider* m_stageProvider{nullptr};
+        CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;
 

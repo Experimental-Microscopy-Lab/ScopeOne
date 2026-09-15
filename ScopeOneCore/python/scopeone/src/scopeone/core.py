@@ -54,6 +54,48 @@ class ScopeOne:
     def stop_preview(self, camera: str = "All"):
         return self._client.stop_preview(camera)
 
+    def image_windows(self):
+        return self._client.image_windows()
+
+    def open_image_window(
+        self,
+        session_id: str,
+        title: str | None = None,
+        camera_id: str | None = None,
+    ):
+        return self._client.open_image_window(session_id, title, camera_id)
+
+    def activate_image_window(self, document_id: str):
+        return self._client.activate_image_window(document_id)
+
+    def close_image_window(self, document_id: str | None = None):
+        self._client.close_image_window(document_id)
+
+    def process_image_window(
+        self,
+        document_id: str | None = None,
+        complete_stack: bool = False,
+    ):
+        return self._client.process_image_window(document_id, complete_stack)
+
+    def save_image_window(
+        self,
+        save_dir: str,
+        base_name: str,
+        document_id: str | None = None,
+        format: str = "ome-tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+    ):
+        return self._client.save_image_window(
+            save_dir,
+            base_name,
+            document_id,
+            format,
+            compression,
+            compression_level,
+        )
+
     def list_layers(self):
         return self._client.list_layers()
 
@@ -318,16 +360,16 @@ class ScopeOne:
     def set_processing_bit_depth(self, bit_depth: int):
         self._client.set_processing_bit_depth(bit_depth)
 
-    def set_realtime_processing(self, enabled: bool):
-        return self._client.set_realtime_processing(enabled)
+    def set_realtime_processing(self, enabled: bool, camera_id: str | None = None):
+        return self._client.set_realtime_processing(enabled, camera_id)
 
-    def start_processing(self):
-        self.set_realtime_processing(True)
+    def start_processing(self, camera_id: str | None = None):
+        self.set_realtime_processing(True, camera_id)
 
     def stop_processing(self):
         self.set_realtime_processing(False)
 
-    def add_processing_module(self, kind: str | int, parameters: dict | None = None):
+    def add_processing_module(self, kind: str, parameters: dict | None = None):
         return self._client.add_processing_module(kind, parameters)
 
     def remove_processing_module(self, index: int):

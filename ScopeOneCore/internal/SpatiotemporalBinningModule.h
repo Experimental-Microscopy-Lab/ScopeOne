@@ -19,7 +19,7 @@ namespace scopeone::core::internal
             Skip = 4
         };
 
-        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::SpatiotemporalBinning; }
+        QString id() const override { return QStringLiteral("spatiotemporal_binning"); }
         QString name() const override { return "Spatiotemporal Binning"; }
         QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;

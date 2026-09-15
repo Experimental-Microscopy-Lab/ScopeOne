@@ -1,60 +1,90 @@
 #pragma once
 
+#include "scopeone/ScopeOneCore.h"
+
 #include <QWidget>
+#include <memory>
 
 class QListWidget;
+class QListWidgetItem;
+class QCheckBox;
 class QComboBox;
+class QLabel;
 class QPushButton;
+class QProgressBar;
+class QRadioButton;
 class QStackedWidget;
-
-namespace scopeone::core
-{
-    class ScopeOneCore;
-}
 
 namespace scopeone::ui
 {
+    class ImageWorkspace;
+
     class ImageProcessingWidget : public QWidget
     {
         Q_OBJECT
 
     public:
-        explicit ImageProcessingWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
+        explicit ImageProcessingWidget(scopeone::core::ScopeOneCore* core,
+                                       ImageWorkspace* workspace,
+                                       QWidget* parent = nullptr);
         ~ImageProcessingWidget() override = default;
 
     signals:
         void processingStarted();
         void processingStopped();
+        void processedLayerReady(const QString& layerKey);
+        void processedStackReady(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
 
     private:
         void onAddModuleClicked();
         void onRemoveModuleClicked();
+        void onMoveModuleUpClicked();
+        void onMoveModuleDownClicked();
+        void onModuleItemChanged(QListWidgetItem* item);
         void onModuleSelectionChanged();
         void onProcessingBitDepthChanged();
-        void onStartProcessing();
-        void onStopProcessing();
+        void onInputModeChanged();
+        void onLiveProcessingToggled(bool enabled);
+        void onRunOfflineProcessing();
+        void onCancelProcessing();
 
         void setupUI();
-        void setupRunControls();
-        void setupModuleList();
-        void setupModuleConfig();
+        QWidget* setupInputControls();
+        QWidget* setupExecutionControls();
+        QWidget* setupModuleList();
+        QWidget* setupModuleConfig();
         void updateProcessingSettings();
         void updateModuleList();
         void updateConfigWidget();
         void updateRunButtons();
         void syncProcessingState();
+        void refreshSources();
+        void finishOfflineProcessing();
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        ImageWorkspace* m_workspace{nullptr};
         bool m_processingRunning{false};
-        QWidget* m_runControlsWidget{nullptr};
-        QPushButton* m_startButton{nullptr};
-        QPushButton* m_stopButton{nullptr};
+        QComboBox* m_sourceCombo{nullptr};
+        QRadioButton* m_liveModeRadio{nullptr};
+        QRadioButton* m_staticModeRadio{nullptr};
+        QLabel* m_sourceLabel{nullptr};
+        QLabel* m_rangeLabel{nullptr};
+        QPushButton* m_executeButton{nullptr};
+        QPushButton* m_cancelProcessingButton{nullptr};
+        QProgressBar* m_processingProgress{nullptr};
         QComboBox* m_processingBitDepthCombo{nullptr};
+        QComboBox* m_liveSourceCombo{nullptr};
+        QComboBox* m_offlineScopeCombo{nullptr};
         QListWidget* m_moduleList{nullptr};
         QPushButton* m_addModuleButton{nullptr};
         QPushButton* m_removeModuleButton{nullptr};
+        QPushButton* m_moveModuleUpButton{nullptr};
+        QPushButton* m_moveModuleDownButton{nullptr};
         QComboBox* m_moduleTypeCombo{nullptr};
         QStackedWidget* m_configStack{nullptr};
         QWidget* m_emptyConfigWidget{nullptr};
+        quint64 m_offlineProcessingRequestId{0};
+        bool m_directProcessingRequest{false};
     };
 }

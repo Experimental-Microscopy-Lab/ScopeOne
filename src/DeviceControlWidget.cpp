@@ -1,14 +1,18 @@
 #include "DeviceControlWidget.h"
+#include "ImageWorkspace.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include "PreviewWidget.h"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QFileDialog>
+#include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -16,6 +20,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
+#include <QPainter>
+#include <QPalette>
+#include <QPaintEvent>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -24,28 +32,16 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace scopeone::ui
 {
     namespace
     {
-        // Converts a preview layout mode to combo index
-        int layerLayoutComboIndex(PreviewWidget::LayerLayoutMode mode)
-        {
-            return mode == PreviewWidget::LayerLayoutMode::Overlay ? 1 : 0;
-        }
-
-        // Converts a combo index to preview layout mode
-        PreviewWidget::LayerLayoutMode layerLayoutModeFromComboIndex(int index)
-        {
-            return index == 1
-                       ? PreviewWidget::LayerLayoutMode::Overlay
-                       : PreviewWidget::LayerLayoutMode::SideBySide;
-        }
-
         // Formats exposure with compact decimal precision
         QString formatExposureMs(double exposureMs)
         {
@@ -61,6 +57,313 @@ namespace scopeone::ui
             return text;
         }
     } // namespace
+
+    class LayerHistogramWidget : public QWidget
+    {
+    public:
+        using LevelsCallback = std::function<void(int minLevel, int maxLevel)>;
+        using AutoLevelsCallback = std::function<void()>;
+
+        explicit LayerHistogramWidget(QWidget* parent = nullptr)
+            : QWidget(parent)
+        {
+            setMinimumHeight(150);
+            setMouseTracking(true);
+        }
+
+        void setStats(const scopeone::core::ScopeOneCore::HistogramStats& stats)
+        {
+            m_stats = stats;
+            update();
+        }
+
+        void setLevels(int minLevel, int maxLevel, int domainMax)
+        {
+            m_minLevel = minLevel;
+            m_maxLevel = maxLevel;
+            m_domainMax = qMax(1, domainMax);
+            update();
+        }
+
+        void clear()
+        {
+            m_stats = {};
+            update();
+        }
+
+        void setLogScale(bool enabled)
+        {
+            m_logScale = enabled;
+            update();
+        }
+
+        void setOnLevelsChanged(LevelsCallback callback)
+        {
+            m_levelsCallback = std::move(callback);
+        }
+
+        void setOnAutoLevelsRequested(AutoLevelsCallback callback)
+        {
+            m_autoLevelsCallback = std::move(callback);
+        }
+
+        QRect plotRect() const
+        {
+            const QFontMetrics metrics = fontMetrics();
+            const int labelHeight = metrics.height() + 4;
+            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
+            const int yLabelWidth = qMax(40, metrics.horizontalAdvance(QStringLiteral("999.9M")) + 8);
+            return rect().adjusted(
+                yLabelWidth + 6,
+                labelHeight + 2,
+                -(xLabelWidth / 2 + 4),
+                -(2 * labelHeight + 8));
+        }
+
+    protected:
+        void paintEvent(QPaintEvent*) override
+        {
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing);
+            const QPalette& colors = palette();
+            const QFontMetrics metrics = painter.fontMetrics();
+            const int labelHeight = metrics.height() + 4;
+            const int xLabelWidth = qMax(50, metrics.horizontalAdvance(QStringLiteral("65535")) + 12);
+            const QRect plot = plotRect();
+
+            painter.fillRect(plot, colors.brush(QPalette::Base));
+            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            painter.drawRect(plot);
+
+            if (!m_stats.hasData() || m_stats.histogram.empty())
+            {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
+                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
+                return;
+            }
+
+            int maxCount = 0;
+            for (const int count : m_stats.histogram)
+            {
+                maxCount = qMax(maxCount, count);
+            }
+            if (maxCount == 0)
+            {
+                painter.setPen(colors.color(QPalette::PlaceholderText));
+                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No Histogram Data"));
+                return;
+            }
+
+            painter.setPen(QPen(colors.color(QPalette::Highlight), 1));
+            const int histogramSize = static_cast<int>(m_stats.histogram.size());
+            for (int i = 0; i < histogramSize; ++i)
+            {
+                const int count = m_stats.histogram[static_cast<size_t>(i)];
+                const double normalized = m_logScale && count > 0
+                                              ? log10(count + 1.0) / log10(maxCount + 1.0)
+                                              : static_cast<double>(count) / maxCount;
+                const int x = plot.left() + (i * plot.width()) / histogramSize;
+                const int height = static_cast<int>(normalized * plot.height());
+                painter.drawLine(x, plot.bottom(), x, plot.bottom() - height);
+            }
+
+            const int domain = qMax(1, m_domainMax);
+            const int xMin = qBound(plot.left(), plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain), plot.right());
+            const int xMax = qBound(plot.left(), plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain), plot.right());
+
+            if (xMin > plot.left())
+            {
+                painter.fillRect(QRect(plot.left(), plot.top(), xMin - plot.left(), plot.height()), QColor(0, 0, 0, 70));
+            }
+            if (xMax < plot.right())
+            {
+                painter.fillRect(QRect(xMax, plot.top(), plot.right() - xMax, plot.height()), QColor(0, 0, 0, 70));
+            }
+
+            painter.setPen(QPen(QColor(0, 200, 255), 2));
+            painter.drawLine(xMin, plot.top(), xMin, plot.bottom());
+            QPolygon minHandle;
+            minHandle << QPoint(xMin - 4, plot.top()) << QPoint(xMin + 4, plot.top()) << QPoint(xMin, plot.top() + 6);
+            painter.setBrush(QColor(0, 200, 255));
+            painter.drawPolygon(minHandle);
+
+            painter.setPen(QPen(QColor(255, 180, 0), 2));
+            painter.drawLine(xMax, plot.top(), xMax, plot.bottom());
+            QPolygon maxHandle;
+            maxHandle << QPoint(xMax - 4, plot.top()) << QPoint(xMax + 4, plot.top()) << QPoint(xMax, plot.top() + 6);
+            painter.setBrush(QColor(255, 180, 0));
+            painter.drawPolygon(maxHandle);
+
+            painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            painter.drawLine(plot.left(), plot.top(), plot.left(), plot.bottom());
+            painter.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom());
+
+            const int maxValue = qMax(1, m_stats.maxValue);
+            for (int i = 0; i <= 4; ++i)
+            {
+                const int x = plot.left() + (i * plot.width()) / 4;
+                const int value = (i * maxValue) / 4;
+                painter.drawLine(x, plot.bottom(), x, plot.bottom() + 5);
+                painter.setPen(colors.color(QPalette::Text));
+                painter.drawText(QRect(x - xLabelWidth / 2,
+                                       plot.bottom() + 5,
+                                       xLabelWidth,
+                                       labelHeight),
+                                 Qt::AlignCenter,
+                                 QString::number(value));
+                painter.setPen(QPen(colors.color(QPalette::Mid), 1));
+            }
+
+            painter.setPen(colors.color(QPalette::Text));
+            painter.drawText(QRect(plot.left(),
+                                   plot.bottom() + labelHeight + 5,
+                                   plot.width(),
+                                   labelHeight),
+                             Qt::AlignCenter,
+                             QStringLiteral("Intensity"));
+            painter.drawText(QRect(0,
+                                   plot.top() - labelHeight,
+                                   plot.left() - 8,
+                                   labelHeight),
+                             Qt::AlignRight | Qt::AlignVCenter,
+                             QStringLiteral("Count"));
+
+            const QString readout = QStringLiteral("Min: %1  Max: %2").arg(m_minLevel).arg(m_maxLevel);
+            painter.drawText(QRect(plot.left(), 0, plot.width(), labelHeight), Qt::AlignRight | Qt::AlignVCenter, readout);
+        }
+
+        void mousePressEvent(QMouseEvent* event) override
+        {
+            if (event->button() != Qt::LeftButton)
+            {
+                QWidget::mousePressEvent(event);
+                return;
+            }
+            const QRect plot = plotRect();
+            if (plot.width() <= 0) return;
+            const int domain = qMax(1, m_domainMax);
+            const int xMin = plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain);
+            const int xMax = plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain);
+            const int mx = event->pos().x();
+            if (std::abs(mx - xMin) <= 8)
+            {
+                m_dragMode = DragMode::MinLevel;
+            }
+            else if (std::abs(mx - xMax) <= 8)
+            {
+                m_dragMode = DragMode::MaxLevel;
+            }
+            else if (std::abs(mx - xMin) < std::abs(mx - xMax))
+            {
+                m_dragMode = DragMode::MinLevel;
+                updateLevelFromMouse(mx);
+            }
+            else
+            {
+                m_dragMode = DragMode::MaxLevel;
+                updateLevelFromMouse(mx);
+            }
+            event->accept();
+        }
+
+        void mouseMoveEvent(QMouseEvent* event) override
+        {
+            const QRect plot = plotRect();
+            if (m_dragMode != DragMode::None)
+            {
+                updateLevelFromMouse(event->pos().x());
+                event->accept();
+                return;
+            }
+            if (plot.width() > 0)
+            {
+                const int domain = qMax(1, m_domainMax);
+                const int xMin = plot.left() + static_cast<int>(static_cast<qint64>(m_minLevel) * plot.width() / domain);
+                const int xMax = plot.left() + static_cast<int>(static_cast<qint64>(m_maxLevel) * plot.width() / domain);
+                const int mx = event->pos().x();
+                if (std::abs(mx - xMin) <= 8 || std::abs(mx - xMax) <= 8)
+                {
+                    setCursor(Qt::SizeHorCursor);
+                }
+                else
+                {
+                    setCursor(Qt::ArrowCursor);
+                }
+            }
+            QWidget::mouseMoveEvent(event);
+        }
+
+        void mouseReleaseEvent(QMouseEvent* event) override
+        {
+            if (m_dragMode != DragMode::None)
+            {
+                m_dragMode = DragMode::None;
+                event->accept();
+                return;
+            }
+            QWidget::mouseReleaseEvent(event);
+        }
+
+        void mouseDoubleClickEvent(QMouseEvent* event) override
+        {
+            if (event->button() == Qt::LeftButton)
+            {
+                if (m_autoLevelsCallback)
+                {
+                    m_autoLevelsCallback();
+                }
+                event->accept();
+                return;
+            }
+            QWidget::mouseDoubleClickEvent(event);
+        }
+
+    private:
+        enum class DragMode { None, MinLevel, MaxLevel };
+
+        void updateLevelFromMouse(int mouseX)
+        {
+            const QRect plot = plotRect();
+            if (plot.width() <= 0) return;
+            const int domain = qMax(1, m_domainMax);
+            const int rawVal = static_cast<int>(static_cast<qint64>(mouseX - plot.left()) * domain / plot.width());
+            if (m_dragMode == DragMode::MinLevel)
+            {
+                const int newMin = qBound(0, rawVal, m_maxLevel - 1);
+                if (newMin != m_minLevel)
+                {
+                    m_minLevel = newMin;
+                    if (m_levelsCallback)
+                    {
+                        m_levelsCallback(m_minLevel, m_maxLevel);
+                    }
+                    update();
+                }
+            }
+            else if (m_dragMode == DragMode::MaxLevel)
+            {
+                const int newMax = qBound(m_minLevel + 1, rawVal, domain);
+                if (newMax != m_maxLevel)
+                {
+                    m_maxLevel = newMax;
+                    if (m_levelsCallback)
+                    {
+                        m_levelsCallback(m_minLevel, m_maxLevel);
+                    }
+                    update();
+                }
+            }
+        }
+
+        scopeone::core::ScopeOneCore::HistogramStats m_stats;
+        bool m_logScale{false};
+        int m_minLevel{0};
+        int m_maxLevel{255};
+        int m_domainMax{255};
+        DragMode m_dragMode{DragMode::None};
+        LevelsCallback m_levelsCallback;
+        AutoLevelsCallback m_autoLevelsCallback;
+    };
 
     // Creates the device control widget and initializes controls
     DeviceControlWidget::DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent)
@@ -87,6 +390,16 @@ namespace scopeone::ui
                     }
                 },
                 Qt::QueuedConnection);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerHistogramReady,
+                this, &DeviceControlWidget::onLayerHistogramReady);
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerAnalysisCleared,
+                this, [this](const QString& layerKey)
+                {
+                    if (layerKey == currentLayerKey())
+                    {
+                        m_layerHistogramWidget->clear();
+                    }
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::stagePositionChanged,
                 this, [this]()
                 {
@@ -120,40 +433,89 @@ namespace scopeone::ui
     // Builds the device control layout
     void DeviceControlWidget::setupUI()
     {
-        QVBoxLayout* mainLayout = new QVBoxLayout(this);
-        mainLayout->setSpacing(0);
-        mainLayout->setContentsMargins(0, 0, 0, 0);
+        m_imageControlsWidget = new QScrollArea(this);
+        m_imageControlsWidget->setWidgetResizable(true);
+        m_imageControlsWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_imageControlsWidget->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        m_imageControlsWidget->setFrameShape(QFrame::NoFrame);
+        auto* imageContainer = new QWidget(m_imageControlsWidget);
+        auto* imageLayout = new QVBoxLayout(imageContainer);
+        imageLayout->setSpacing(5);
+        imageLayout->setContentsMargins(5, 5, 5, 5);
+        imageLayout->addWidget(createPreviewControlsGroup());
+        imageLayout->addStretch();
+        m_imageControlsWidget->setWidget(imageContainer);
 
-        QScrollArea* scrollArea = new QScrollArea();
-        scrollArea->setWidgetResizable(true);
-        scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        scrollArea->setFrameShape(QFrame::NoFrame);
+        m_hardwareControlsWidget = new QScrollArea(this);
+        m_hardwareControlsWidget->setWidgetResizable(true);
+        m_hardwareControlsWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_hardwareControlsWidget->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        m_hardwareControlsWidget->setFrameShape(QFrame::NoFrame);
+        auto* hardwareContainer = new QWidget(m_hardwareControlsWidget);
+        auto* hardwareLayout = new QVBoxLayout(hardwareContainer);
+        hardwareLayout->setSpacing(5);
+        hardwareLayout->setContentsMargins(5, 5, 5, 5);
+        hardwareLayout->addWidget(createControlGroup());
+        auto* stageGroup = createStageGroup();
+        hardwareLayout->addWidget(stageGroup);
+        hardwareLayout->addStretch();
+        m_hardwareControlsWidget->setWidget(hardwareContainer);
+    }
 
-        QWidget* contentContainer = new QWidget();
-        QVBoxLayout* contentLayout = new QVBoxLayout(contentContainer);
-        contentLayout->setSpacing(5);
-        contentLayout->setContentsMargins(5, 5, 5, 5);
+    void DeviceControlWidget::setImageWorkspace(ImageWorkspace* workspace)
+    {
+        m_workspace = workspace;
+        connect(m_workspace, &ImageWorkspace::activeLayerChanged,
+                this, [this](const QString&)
+                {
+                    syncLayerSelection();
+                    refreshPreviewLayerSettings();
+                    refreshLayerHistogram();
+                    updateControlsState();
+                    if (m_liveViewerContext)
+                    {
+                        syncControlTargetToSelectedRawLayer();
+                    }
+                });
+        connect(m_workspace, &ImageWorkspace::activeFrameChanged,
+                this, &DeviceControlWidget::refreshLayerHistogram);
+        connect(m_workspace, &ImageWorkspace::activeViewerChanged,
+                this, &DeviceControlWidget::refreshLayerHistogram);
+        connect(m_workspace, &ImageWorkspace::histogramReady,
+                this, &DeviceControlWidget::onLayerHistogramReady);
+        syncLayerSelection();
+        refreshLayerHistogram();
+    }
 
-        contentLayout->addWidget(createPreviewControlsGroup());
+    QWidget* DeviceControlWidget::imageControlsWidget() const
+    {
+        return m_imageControlsWidget;
+    }
 
-        contentLayout->addWidget(createControlGroup());
-        contentLayout->addWidget(createStageGroup());
+    QWidget* DeviceControlWidget::hardwareControlsWidget() const
+    {
+        return m_hardwareControlsWidget;
+    }
 
-        contentLayout->addStretch();
-
-        scrollArea->setWidget(contentContainer);
-        mainLayout->addWidget(scrollArea);
+    void DeviceControlWidget::setControlsEnabled(bool enabled)
+    {
+        m_imageControlsWidget->setEnabled(enabled);
+        m_hardwareControlsWidget->setEnabled(enabled);
     }
 
     // Connects the preview widget to control panel state
     void DeviceControlWidget::setPreviewWidget(PreviewWidget* preview)
     {
-        if (!preview)
+        if (m_previewWidget)
         {
-            qFatal("DeviceControlWidget requires PreviewWidget");
+            disconnect(m_previewWidget, nullptr, this, nullptr);
+        }
+        if (m_sceneModel)
+        {
+            disconnect(m_sceneModel, nullptr, this, nullptr);
         }
         m_previewWidget = preview;
+        m_sceneModel = preview->sceneModel();
 
         {
             QSignalBlocker blocker(m_layerColormapComboBox);
@@ -175,35 +537,25 @@ namespace scopeone::ui
                 {
                     applyPreviewVisibility(layerKeys, false);
                 });
-        connect(m_previewWidget, &PreviewWidget::layerLayoutModeChanged,
-                this, [this](PreviewWidget::LayerLayoutMode mode)
-                {
-                    syncPreviewLayerLayoutCombo(layerLayoutComboIndex(mode));
-                });
         connect(m_previewWidget, &PreviewWidget::layerInfoTextChanged,
                 this, &DeviceControlWidget::onPreviewLayerInfoTextChanged);
-        connect(m_previewWidget, &PreviewWidget::zoomLevelChanged, this,
-                [this](int value)
-                {
-                    const QSignalBlocker blocker(m_zoomSpinBox);
-                    m_zoomSpinBox->setValue(value);
-                });
-        connect(m_previewWidget, &PreviewWidget::fitToWindowChanged, this,
-                [this](bool enabled)
-                {
-                    const QSignalBlocker blocker(m_fitToWindowCheckBox);
-                    m_fitToWindowCheckBox->setChecked(enabled);
-                    updatePreviewZoomControls();
-                });
-        connect(m_scopeonecore->imageSceneModel(), &scopeone::core::ImageSceneModel::layerDisplayChanged,
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::layerDisplayChanged,
                 this, [this](const QString& layerKey)
                 {
-                    if (layerKey == m_selectedLayerKey)
+                    if (layerKey == currentLayerKey())
                     {
                         refreshPreviewLayerSettings();
                     }
                 });
-        connect(m_scopeonecore->imageSceneModel(),
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::layerAutoStretchChanged,
+                this, [this](const QString& layerKey, bool)
+                {
+                    if (layerKey == currentLayerKey())
+                    {
+                        refreshPreviewLayerSettings();
+                    }
+                });
+        connect(m_sceneModel,
                 &scopeone::core::ImageSceneModel::sourceDisplayTransformChanged,
                 this, [this](const QString& sourceId)
                 {
@@ -216,39 +568,80 @@ namespace scopeone::ui
         onPreviewAvailableCameraIdsChanged(m_previewWidget->availableCameraIds());
         onPreviewAvailableLayerKeysChanged(m_previewWidget->availableLayerKeys());
         applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
-        syncPreviewLayerLayoutCombo(layerLayoutComboIndex(m_previewWidget->layerLayoutMode()));
         onPreviewLayerInfoTextChanged(m_previewWidget->layerInfoSummaryText());
 
-        QSignalBlocker zoomBlocker(m_zoomSpinBox);
-        m_zoomSpinBox->setValue(m_previewWidget->zoomPercent());
-        QSignalBlocker fitBlocker(m_fitToWindowCheckBox);
-        m_fitToWindowCheckBox->setChecked(m_previewWidget->isFitToWindow());
-        updatePreviewZoomControls();
+        m_clippingCheckBox->setChecked(m_previewWidget->isClippingWarningEnabled());
+        connect(m_clippingCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setClippingWarningEnabled);
+        connect(m_previewWidget, &PreviewWidget::clippingWarningChanged,
+                m_clippingCheckBox, &QCheckBox::setChecked);
+
+        m_scaleBarCheckBox->setChecked(m_previewWidget->isScaleBarVisible());
+        connect(m_scaleBarCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setScaleBarVisible);
+        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged,
+                m_scaleBarCheckBox, &QCheckBox::setChecked);
+        {
+            const QSignalBlocker blocker(m_viewDimensionCombo);
+            m_viewDimensionCombo->setCurrentIndex(
+                m_previewWidget->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional
+                    ? 1
+                    : 0);
+        }
+        {
+            const QSignalBlocker blocker(m_3dZScaleSlider);
+            m_3dZScaleSlider->setValue(qRound(m_previewWidget->get3dZScale() * 10.0f));
+        }
+        {
+            const QSignalBlocker blocker(m_3dZScaleSpinBox);
+            m_3dZScaleSpinBox->setValue(m_previewWidget->get3dZScale());
+        }
+        {
+            const QSignalBlocker blocker(m_3dWireframeCheckBox);
+            m_3dWireframeCheckBox->setChecked(m_previewWidget->is3dWireframeEnabled());
+        }
+        connect(m_previewWidget, &PreviewWidget::viewDimensionModeChanged,
+                this, [this](PreviewWidget::ViewDimensionMode mode)
+                {
+                    const QSignalBlocker blocker(m_viewDimensionCombo);
+                    m_viewDimensionCombo->setCurrentIndex(
+                        mode == PreviewWidget::ViewDimensionMode::ThreeDimensional ? 1 : 0);
+                });
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalZScaleChanged,
+                this, [this](float scale)
+                {
+                    {
+                        const QSignalBlocker sliderBlocker(m_3dZScaleSlider);
+                        m_3dZScaleSlider->setValue(qRound(scale * 10.0f));
+                    }
+                    const QSignalBlocker spinBlocker(m_3dZScaleSpinBox);
+                    m_3dZScaleSpinBox->setValue(scale);
+                });
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalWireframeChanged,
+                this, [this](bool enabled)
+                {
+                    const QSignalBlocker blocker(m_3dWireframeCheckBox);
+                    m_3dWireframeCheckBox->setChecked(enabled);
+                });
+        m_3dColorbarCheckBox->setChecked(m_previewWidget->isThreeDimensionalColorbarVisible());
+        connect(m_3dColorbarCheckBox, &QCheckBox::toggled,
+                m_previewWidget, &PreviewWidget::setThreeDimensionalColorbarVisible);
+        connect(m_previewWidget, &PreviewWidget::threeDimensionalColorbarVisibilityChanged,
+                this, [this](bool visible)
+                {
+                    const QSignalBlocker blocker(m_3dColorbarCheckBox);
+                    m_3dColorbarCheckBox->setChecked(visible);
+                });
     }
 
-    // Builds preview zoom layer and alignment controls
+    // Builds layer and alignment controls
     QWidget* DeviceControlWidget::createPreviewControlsGroup()
     {
-        m_previewControlsGroup = new QGroupBox("Preview Controls", this);
-        QGridLayout* controlLayout = new QGridLayout(m_previewControlsGroup);
+        auto* previewControlsGroup = new QGroupBox("Layers", this);
+        QGridLayout* controlLayout = new QGridLayout(previewControlsGroup);
         controlLayout->setHorizontalSpacing(6);
         controlLayout->setVerticalSpacing(4);
         controlLayout->setContentsMargins(6, 6, 6, 6);
-
-        m_zoomLabel = new QLabel("View Zoom:", this);
-        m_zoomSpinBox = new QSpinBox(this);
-        m_zoomSpinBox->setRange(10, 500);
-        m_zoomSpinBox->setValue(100);
-        m_zoomSpinBox->setSuffix("%");
-        m_zoomSpinBox->setFixedWidth(58);
-        m_zoomSpinBox->setKeyboardTracking(false);
-
-        m_fitToWindowCheckBox = new QCheckBox("Fit to Window", this);
-        m_fitToWindowCheckBox->setChecked(true);
-
-        m_layerLayoutCombo = new QComboBox(this);
-        m_layerLayoutCombo->addItem("Side-by-side");
-        m_layerLayoutCombo->addItem("Overlay");
 
         m_layerTable = new QTableWidget(this);
         m_layerTable->setColumnCount(3);
@@ -263,10 +656,36 @@ namespace scopeone::ui
         m_layerTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_layerTable->setSelectionMode(QAbstractItemView::SingleSelection);
         m_layerTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-        m_layerTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_layerTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                      | QAbstractItemView::EditKeyPressed);
+        m_layerTable->setContextMenuPolicy(Qt::CustomContextMenu);
         m_layerTable->setShowGrid(false);
         m_layerTable->setMinimumHeight(94);
         m_layerTable->setMaximumHeight(150);
+
+        auto* layerHistogramGroup = new QGroupBox(QStringLiteral("Histogram"), previewControlsGroup);
+        auto* histogramLayout = new QVBoxLayout(layerHistogramGroup);
+        histogramLayout->setContentsMargins(6, 6, 6, 6);
+        m_layerHistogramWidget = new LayerHistogramWidget(layerHistogramGroup);
+        histogramLayout->addWidget(m_layerHistogramWidget);
+        auto* histogramLevelsLayout = new QHBoxLayout;
+        m_layerAutoButton = new QPushButton(QStringLiteral("Auto"), layerHistogramGroup);
+        m_layerAutoButton->setToolTip(QStringLiteral("Set display levels from the current image"));
+        m_layerFullRangeButton = new QPushButton(QStringLiteral("Full Range"), layerHistogramGroup);
+        m_layerFullRangeButton->setToolTip(QStringLiteral("Show the complete intensity range"));
+        histogramLevelsLayout->addWidget(m_layerAutoButton);
+        histogramLevelsLayout->addWidget(m_layerFullRangeButton);
+        histogramLayout->addLayout(histogramLevelsLayout);
+
+        m_layerAutoStretchCheckBox = new QCheckBox(QStringLiteral("Continuous Auto"), layerHistogramGroup);
+        m_layerAutoStretchCheckBox->setToolTip(
+            QStringLiteral("Update display levels continuously as images arrive"));
+
+        auto* layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), layerHistogramGroup);
+        histogramLayout->addWidget(m_layerAutoStretchCheckBox);
+        histogramLayout->addWidget(layerHistogramLogCheckBox);
+        connect(layerHistogramLogCheckBox, &QCheckBox::toggled,
+                m_layerHistogramWidget, &LayerHistogramWidget::setLogScale);
 
         m_layerSettingsGroup = new QGroupBox("Layer Settings", this);
         QGridLayout* layerSettingsLayout = new QGridLayout(m_layerSettingsGroup);
@@ -281,6 +700,8 @@ namespace scopeone::ui
         m_layerMoveDownButton = new QPushButton(QStringLiteral("Down"), m_layerSettingsGroup);
         m_layerRemoveButton = new QPushButton(QStringLiteral("Remove"), m_layerSettingsGroup);
         m_layerRemoveButton->setMaximumWidth(68);
+        auto* layerImportButton = new QPushButton(QStringLiteral("Import..."), m_layerSettingsGroup);
+        layerImportButton->setMaximumWidth(68);
 
         m_layerOpacitySpinBox = new QSpinBox(m_layerSettingsGroup);
         m_layerOpacitySpinBox->setRange(0, 100);
@@ -297,107 +718,172 @@ namespace scopeone::ui
 
         m_layerColormapComboBox = new QComboBox(m_layerSettingsGroup);
         m_layerBlendingComboBox = new QComboBox(m_layerSettingsGroup);
-
-        m_layerFrameLabel = new QLabel(QStringLiteral("Frame:"), m_layerSettingsGroup);
-        m_layerFrameSlider = new QSlider(Qt::Horizontal, m_layerSettingsGroup);
-        m_layerFrameSlider->setRange(0, 0);
-        m_layerFrameValueLabel = new QLabel(QStringLiteral("1 / 1"), m_layerSettingsGroup);
-        m_layerFrameValueLabel->setMinimumWidth(46);
-        m_layerFrameValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_clippingCheckBox = new QCheckBox(QStringLiteral("Hi-Lo Warn"), m_layerSettingsGroup);
+        m_clippingCheckBox->setToolTip(QStringLiteral("Highlight saturated pixels in red and zero pixels in blue (Hotkey: C)"));
+        m_scaleBarCheckBox = new QCheckBox(QStringLiteral("Scale Bar"), m_layerSettingsGroup);
+        m_scaleBarCheckBox->setToolTip(QStringLiteral("Display calibrated scale bar in viewport"));
+        m_scaleBarCheckBox->setChecked(true);
 
         layerSettingsLayout->addWidget(m_selectedLayerLabel, 0, 0, 1, 6);
-        layerSettingsLayout->addWidget(m_layerFrameLabel, 1, 0);
-        layerSettingsLayout->addWidget(m_layerFrameSlider, 1, 1, 1, 4);
-        layerSettingsLayout->addWidget(m_layerFrameValueLabel, 1, 5);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 2, 0);
-        layerSettingsLayout->addWidget(m_layerMoveUpButton, 2, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerMoveDownButton, 2, 2, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerRemoveButton, 2, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 3, 0);
-        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 3, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 3, 2);
-        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 3, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 4, 0);
-        layerSettingsLayout->addWidget(m_layerColormapComboBox, 4, 1);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 4, 2);
-        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 4, 3, 1, 3);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 1, 0);
+        layerSettingsLayout->addWidget(m_layerMoveUpButton, 1, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_layerMoveDownButton, 1, 2, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(m_layerRemoveButton, 1, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(layerImportButton, 1, 4, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 2, 0);
+        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 2, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 2, 2);
+        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 2, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 3, 0);
+        layerSettingsLayout->addWidget(m_layerColormapComboBox, 3, 1);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 3, 2);
+        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 3, 3, 1, 3);
+        layerSettingsLayout->addWidget(m_clippingCheckBox, 4, 0, 1, 3);
+        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 4, 3, 1, 3);
 
-        m_alignXLabel = new QLabel("X offset:", m_layerSettingsGroup);
-        m_alignXSpinBox = new QSpinBox(m_layerSettingsGroup);
+        auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
+        auto* transformLayout = new QGridLayout(transformGroup);
+        transformLayout->setContentsMargins(6, 6, 6, 6);
+        auto* alignXLabel = new QLabel("X offset:", transformGroup);
+        m_alignXSpinBox = new QSpinBox(transformGroup);
         m_alignXSpinBox->setRange(-1000, 1000);
         m_alignXSpinBox->setValue(0);
         m_alignXSpinBox->setFixedWidth(64);
         m_alignXSpinBox->setKeyboardTracking(false);
 
-        m_alignYLabel = new QLabel("Y offset:", m_layerSettingsGroup);
-        m_alignYSpinBox = new QSpinBox(m_layerSettingsGroup);
+        auto* alignYLabel = new QLabel("Y offset:", transformGroup);
+        m_alignYSpinBox = new QSpinBox(transformGroup);
         m_alignYSpinBox->setRange(-1000, 1000);
         m_alignYSpinBox->setValue(0);
         m_alignYSpinBox->setFixedWidth(64);
         m_alignYSpinBox->setKeyboardTracking(false);
 
-        m_alignZoomLabel = new QLabel("Scale:", m_layerSettingsGroup);
-        m_alignZoomSpinBox = new QSpinBox(m_layerSettingsGroup);
+        auto* alignZoomLabel = new QLabel("Scale:", transformGroup);
+        m_alignZoomSpinBox = new QSpinBox(transformGroup);
         m_alignZoomSpinBox->setRange(10, 500);
         m_alignZoomSpinBox->setValue(100);
         m_alignZoomSpinBox->setFixedWidth(58);
         m_alignZoomSpinBox->setToolTip("Source camera display scale percent");
         m_alignZoomSpinBox->setKeyboardTracking(false);
 
-        m_alignFlipXCheckBox = new QCheckBox("Flip X", m_layerSettingsGroup);
-        m_alignFlipYCheckBox = new QCheckBox("Flip Y", m_layerSettingsGroup);
-        m_alignResetButton = new QPushButton("Reset", m_layerSettingsGroup);
-        m_alignResetButton->setMaximumWidth(50);
-        m_alignResetButton->setToolTip("Reset offset and flip");
+        m_alignFlipXCheckBox = new QCheckBox("Flip X", transformGroup);
+        m_alignFlipYCheckBox = new QCheckBox("Flip Y", transformGroup);
+        auto* alignResetButton = new QPushButton("Reset", transformGroup);
+        alignResetButton->setMaximumWidth(50);
+        alignResetButton->setToolTip("Reset offset and flip");
 
-        // Display transforms are edited from the selected layer but stored per source camera for now
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Transform:"), m_layerSettingsGroup), 5, 0, 1, 6);
-        layerSettingsLayout->addWidget(m_alignXLabel, 6, 0);
-        layerSettingsLayout->addWidget(m_alignXSpinBox, 6, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignYLabel, 6, 2);
-        layerSettingsLayout->addWidget(m_alignYSpinBox, 6, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignZoomLabel, 7, 0);
-        layerSettingsLayout->addWidget(m_alignZoomSpinBox, 7, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignFlipXCheckBox, 7, 2, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignFlipYCheckBox, 7, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_alignResetButton, 7, 4, Qt::AlignLeft);
-        layerSettingsLayout->setColumnStretch(5, 1);
+        transformLayout->addWidget(alignXLabel, 0, 0);
+        transformLayout->addWidget(m_alignXSpinBox, 0, 1, Qt::AlignLeft);
+        transformLayout->addWidget(alignYLabel, 0, 2);
+        transformLayout->addWidget(m_alignYSpinBox, 0, 3, Qt::AlignLeft);
+        transformLayout->addWidget(alignZoomLabel, 1, 0);
+        transformLayout->addWidget(m_alignZoomSpinBox, 1, 1, Qt::AlignLeft);
+        transformLayout->addWidget(m_alignFlipXCheckBox, 1, 2, Qt::AlignLeft);
+        transformLayout->addWidget(m_alignFlipYCheckBox, 1, 3, Qt::AlignLeft);
+        transformLayout->addWidget(alignResetButton, 1, 4, Qt::AlignLeft);
+        transformLayout->setColumnStretch(5, 1);
 
-        m_zoomLabel->setMinimumWidth(60);
-        m_alignXLabel->setMinimumWidth(20);
-        m_alignYLabel->setMinimumWidth(20);
-        m_alignZoomLabel->setMinimumWidth(60);
+        alignXLabel->setMinimumWidth(20);
+        alignYLabel->setMinimumWidth(20);
+        alignZoomLabel->setMinimumWidth(60);
 
-        QLabel* layoutLabel = new QLabel("Layout:", this);
-        layoutLabel->setMinimumWidth(60);
+        auto* surfaceViewGroup = new QGroupBox(QStringLiteral("Surface View"), this);
+        auto* surfaceViewLayout = new QGridLayout(surfaceViewGroup);
+        surfaceViewLayout->setContentsMargins(6, 6, 6, 6);
+        surfaceViewLayout->setHorizontalSpacing(6);
+        surfaceViewLayout->setVerticalSpacing(4);
 
-        controlLayout->addWidget(m_zoomLabel, 0, 0);
-        controlLayout->addWidget(m_zoomSpinBox, 0, 1, Qt::AlignLeft);
-        controlLayout->addWidget(m_fitToWindowCheckBox, 0, 2, 1, 2);
-        controlLayout->addWidget(layoutLabel, 0, 4);
-        controlLayout->addWidget(m_layerLayoutCombo, 0, 5);
+        m_viewDimensionCombo = new QComboBox(surfaceViewGroup);
+        m_viewDimensionCombo->addItem(QStringLiteral("2D Flat Map"));
+        m_viewDimensionCombo->addItem(QStringLiteral("3D Surface"));
+        m_viewDimensionCombo->setToolTip(QStringLiteral("Switch between the flat image and a displaced surface"));
 
-        controlLayout->addWidget(m_layerTable, 1, 0, 1, 6);
+        m_3dZScaleSlider = new QSlider(Qt::Horizontal, surfaceViewGroup);
+        m_3dZScaleSlider->setRange(1, 100);
+        m_3dZScaleSlider->setValue(10);
+        m_3dZScaleSlider->setToolTip(QStringLiteral("Height exaggeration from 0.1x to 10.0x"));
+
+        m_3dZScaleSpinBox = new QDoubleSpinBox(surfaceViewGroup);
+        m_3dZScaleSpinBox->setRange(0.1, 10.0);
+        m_3dZScaleSpinBox->setSingleStep(0.1);
+        m_3dZScaleSpinBox->setDecimals(1);
+        m_3dZScaleSpinBox->setSuffix(QStringLiteral("x"));
+        m_3dZScaleSpinBox->setValue(1.0);
+        m_3dZScaleSpinBox->setFixedWidth(64);
+        m_3dZScaleSpinBox->setKeyboardTracking(false);
+
+        m_3dWireframeCheckBox = new QCheckBox(QStringLiteral("Wireframe"), surfaceViewGroup);
+        m_3dColorbarCheckBox = new QCheckBox(QStringLiteral("Colorbar"), surfaceViewGroup);
+        m_3dColorbarCheckBox->setChecked(true);
+        auto* reset3dButton = new QPushButton(QStringLiteral("Reset View"), surfaceViewGroup);
+        reset3dButton->setMaximumWidth(84);
+
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Mode:"), surfaceViewGroup), 0, 0);
+        surfaceViewLayout->addWidget(m_viewDimensionCombo, 0, 1, 1, 3);
+        surfaceViewLayout->addWidget(new QLabel(QStringLiteral("Z-Scale:"), surfaceViewGroup), 1, 0);
+        surfaceViewLayout->addWidget(m_3dZScaleSlider, 1, 1);
+        surfaceViewLayout->addWidget(m_3dZScaleSpinBox, 1, 2);
+        surfaceViewLayout->addWidget(m_3dWireframeCheckBox, 2, 0, 1, 2);
+        surfaceViewLayout->addWidget(m_3dColorbarCheckBox, 2, 2);
+        surfaceViewLayout->addWidget(reset3dButton, 2, 3, 1, 1, Qt::AlignLeft);
+
+        connect(m_viewDimensionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int index)
+                {
+                    m_previewWidget->setViewDimensionMode(
+                        index == 1 ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                                   : PreviewWidget::ViewDimensionMode::TwoDimensional);
+                });
+        connect(m_3dZScaleSlider, &QSlider::valueChanged, this,
+                [this](int value)
+                {
+                    const float scale = static_cast<float>(value) / 10.0f;
+                    {
+                        const QSignalBlocker blocker(m_3dZScaleSpinBox);
+                        m_3dZScaleSpinBox->setValue(scale);
+                    }
+                    m_previewWidget->set3dZScale(scale);
+                });
+        connect(m_3dZScaleSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this](double value)
+                {
+                    {
+                        const QSignalBlocker blocker(m_3dZScaleSlider);
+                        m_3dZScaleSlider->setValue(qRound(value * 10.0));
+                    }
+                    m_previewWidget->set3dZScale(static_cast<float>(value));
+                });
+        connect(m_3dWireframeCheckBox, &QCheckBox::toggled,
+                this, [this](bool enabled) { m_previewWidget->set3dWireframeEnabled(enabled); });
+        connect(reset3dButton, &QPushButton::clicked,
+                this, [this]() { m_previewWidget->reset3dCamera(); });
+
+        controlLayout->addWidget(m_layerTable, 0, 0, 1, 6);
+        controlLayout->addWidget(layerHistogramGroup, 1, 0, 1, 6);
         controlLayout->addWidget(m_layerSettingsGroup, 2, 0, 1, 6);
+        controlLayout->addWidget(transformGroup, 3, 0, 1, 6);
+        controlLayout->addWidget(surfaceViewGroup, 4, 0, 1, 6);
 
-        controlLayout->setColumnStretch(1, 1);
-        controlLayout->setColumnStretch(3, 1);
         controlLayout->setColumnStretch(5, 1);
 
-        connect(m_zoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, &DeviceControlWidget::onPreviewZoomSpinBoxChanged);
-        connect(m_fitToWindowCheckBox, &QCheckBox::toggled,
-                this, &DeviceControlWidget::onPreviewFitToWindowToggled);
-        connect(m_layerLayoutCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                this, &DeviceControlWidget::onPreviewLayerLayoutComboChanged);
         connect(m_layerTable, &QTableWidget::currentCellChanged,
                 this, &DeviceControlWidget::onPreviewLayerSelectionChanged);
+        connect(m_layerTable, &QTableWidget::itemChanged,
+                this, &DeviceControlWidget::onPreviewLayerTableItemChanged);
+        connect(m_layerTable, &QTableWidget::customContextMenuRequested,
+                this, &DeviceControlWidget::showLayerContextMenu);
         connect(m_layerMoveUpButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerMoveUpClicked);
+                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), -1); });
         connect(m_layerMoveDownButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerMoveDownClicked);
+                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), 1); });
         connect(m_layerRemoveButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onPreviewLayerRemoveClicked);
+                this, [this]()
+                {
+                    m_scopeonecore->removeStaticFrame(
+                        scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
+                });
+        connect(layerImportButton, &QPushButton::clicked,
+                this, &DeviceControlWidget::onPreviewLayerImportClicked);
         connect(m_layerOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, &DeviceControlWidget::onPreviewLayerOpacityChanged);
         connect(m_layerGammaSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -406,9 +892,29 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewLayerColormapChanged);
         connect(m_layerBlendingComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &DeviceControlWidget::onPreviewLayerBlendingChanged);
-        connect(m_layerFrameSlider, &QSlider::valueChanged,
-                this, &DeviceControlWidget::onPreviewLayerFrameSliderChanged);
-
+        connect(m_layerAutoButton, &QPushButton::clicked,
+                this, [this]() { m_workspace->autoLayerLevels(currentLayerKey()); });
+        connect(m_layerFullRangeButton, &QPushButton::clicked,
+                this, [this]() { m_workspace->fullLayerLevels(currentLayerKey()); });
+        connect(m_layerAutoStretchCheckBox, &QCheckBox::toggled,
+                this, &DeviceControlWidget::onPreviewLayerAutoStretchToggled);
+        m_layerHistogramWidget->setOnLevelsChanged([this](int minLevel, int maxLevel)
+        {
+            const QString layerKey = currentLayerKey();
+            if (layerKey.isEmpty() || !m_sceneModel) return;
+            scopeone::core::DocumentLayer layer;
+            if (m_sceneModel->findLayer(layerKey, layer))
+            {
+                const int domainMax = layer.display.levelDomainMax > 0 ? layer.display.levelDomainMax : 255;
+                m_workspace->setLayerAutoStretchEnabled(layerKey, false);
+                m_layerAutoStretchCheckBox->setChecked(false);
+                m_sceneModel->setLayerDisplayLevels(layerKey, minLevel, maxLevel, domainMax);
+            }
+        });
+        m_layerHistogramWidget->setOnAutoLevelsRequested([this]()
+        {
+            m_workspace->autoLayerLevels(currentLayerKey());
+        });
         const auto applySourceTransform = [this]()
         {
             const QString sourceId = selectedLayerSourceId();
@@ -422,7 +928,7 @@ namespace scopeone::ui
             transform.zoomPercent = m_alignZoomSpinBox->value();
             transform.flipX = m_alignFlipXCheckBox->isChecked();
             transform.flipY = m_alignFlipYCheckBox->isChecked();
-            m_scopeonecore->imageSceneModel()->setSourceDisplayTransform(sourceId, transform);
+            m_sceneModel->setSourceDisplayTransform(sourceId, transform);
         };
         connect(m_alignXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [applySourceTransform](int) { applySourceTransform(); });
@@ -434,39 +940,23 @@ namespace scopeone::ui
                 this, [applySourceTransform](bool) { applySourceTransform(); });
         connect(m_alignFlipYCheckBox, &QCheckBox::toggled,
                 this, [applySourceTransform](bool) { applySourceTransform(); });
-        connect(m_alignResetButton, &QPushButton::clicked,
+        connect(alignResetButton, &QPushButton::clicked,
                 this, [this]()
                 {
                     resetSelectedLayerTransform();
                 });
 
-        updatePreviewZoomControls();
         refreshPreviewLayerSettings();
-        return m_previewControlsGroup;
-    }
-
-    // Updates zoom controls from fit to window state
-    void DeviceControlWidget::updatePreviewZoomControls()
-    {
-        m_zoomSpinBox->setEnabled(!m_fitToWindowCheckBox->isChecked());
+        return previewControlsGroup;
     }
 
     // Rebuilds the preview layer table
     void DeviceControlWidget::rebuildPreviewLayerTable(const QStringList& layerKeys)
     {
-        const QString previousLayerKey = m_selectedLayerKey;
+        const QString previousLayerKey = currentLayerKey();
         QSignalBlocker tableBlocker(m_layerTable);
         m_layerRows.clear();
         m_layerTable->setRowCount(layerKeys.size());
-        for (const QString& layerKey : m_layerFrameCounts.keys())
-        {
-            if (!layerKeys.contains(layerKey))
-            {
-                m_layerFrameCounts.remove(layerKey);
-                m_layerFrameIndices.remove(layerKey);
-            }
-        }
-
         int row = 0;
         const auto addLayerRow = [&](const QString& layerKey)
         {
@@ -477,7 +967,7 @@ namespace scopeone::ui
             m_layerTable->setCellWidget(row, 0, visibleCheckBox);
 
             QTableWidgetItem* nameItem = new QTableWidgetItem(m_previewWidget->layerName(layerKey));
-            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
             nameItem->setData(Qt::UserRole, layerKey);
             m_layerTable->setItem(row, 1, nameItem);
 
@@ -505,19 +995,17 @@ namespace scopeone::ui
         if (selectedRow >= 0)
         {
             m_layerTable->setCurrentCell(selectedRow, 1);
-            m_selectedLayerKey = layerKeys.at(selectedRow);
-        }
-        else
-        {
-            m_selectedLayerKey.clear();
         }
 
-        refreshPreviewLayerSettings();
-        if (m_selectedLayerKey != previousLayerKey)
+        const QString selectedLayerKey = selectedRow >= 0
+                                             ? layerKeys.at(selectedRow)
+                                             : QString{};
+        if (m_workspace && selectedLayerKey != previousLayerKey)
         {
-            emit currentLayerChanged(m_selectedLayerKey);
-            syncControlTargetToSelectedRawLayer();
+            m_workspace->setActiveLayerKey(selectedLayerKey);
         }
+        refreshPreviewLayerSettings();
+        syncControlTargetToSelectedRawLayer();
     }
 
     // Refreshes per layer size and frame rate text in the layer table
@@ -548,11 +1036,11 @@ namespace scopeone::ui
 
         if (notifyPreview)
         {
-            m_scopeonecore->imageSceneModel()->setVisibleLayers(layerKeys);
+            m_sceneModel->setVisibleLayers(layerKeys);
         }
 
-        const QString previousLayerKey = m_selectedLayerKey;
-        if (!layerKeys.isEmpty() && !visibleLayerKeySet.contains(m_selectedLayerKey))
+        const QString selectedLayerKey = currentLayerKey();
+        if (!layerKeys.isEmpty() && !visibleLayerKeySet.contains(selectedLayerKey))
         {
             const QString nextLayerKey = layerKeys.first();
             for (int row = 0; row < m_layerTable->rowCount(); ++row)
@@ -562,37 +1050,34 @@ namespace scopeone::ui
                 {
                     QSignalBlocker tableBlocker(m_layerTable);
                     m_layerTable->setCurrentCell(row, 1);
-                    m_selectedLayerKey = nextLayerKey;
+                    m_workspace->setActiveLayerKey(nextLayerKey);
                     break;
                 }
             }
         }
 
         refreshPreviewLayerSettings();
-        if (m_selectedLayerKey != previousLayerKey)
-        {
-            emit currentLayerChanged(m_selectedLayerKey);
-        }
     }
 
     // Updates the settings editor for the selected preview layer
     void DeviceControlWidget::refreshPreviewLayerSettings()
     {
-        const bool hasLayer = !m_selectedLayerKey.isEmpty()
-                              && m_layerRows.contains(m_selectedLayerKey);
+        const QString layerKey = currentLayerKey();
+        const bool hasLayer = !layerKey.isEmpty() && m_layerRows.contains(layerKey);
         m_layerSettingsGroup->setEnabled(hasLayer);
+        m_layerAutoButton->setEnabled(hasLayer);
+        m_layerFullRangeButton->setEnabled(hasLayer);
+        m_layerAutoStretchCheckBox->setEnabled(hasLayer);
         if (!hasLayer)
         {
             m_selectedLayerLabel->setText(QStringLiteral("No layer selected"));
-            refreshLayerFrameControl();
             return;
         }
 
-        m_selectedLayerLabel->setText(m_previewWidget->layerName(m_selectedLayerKey));
-        refreshLayerFrameControl();
+        m_selectedLayerLabel->setText(m_previewWidget->layerName(layerKey));
 
         scopeone::core::DocumentLayer layer;
-        m_scopeonecore->imageSceneModel()->findLayer(m_selectedLayerKey, layer);
+        m_sceneModel->findLayer(layerKey, layer);
         {
             QSignalBlocker blocker(m_layerOpacitySpinBox);
             m_layerOpacitySpinBox->setValue(layer.display.opacityPercent);
@@ -611,16 +1096,26 @@ namespace scopeone::ui
             const int index = m_layerBlendingComboBox->findText(layer.display.blending);
             m_layerBlendingComboBox->setCurrentIndex(index);
         }
+        {
+            QSignalBlocker blocker(m_layerAutoStretchCheckBox);
+            m_layerAutoStretchCheckBox->setChecked(
+                m_workspace->layerAutoStretchEnabled(layerKey));
+        }
+
+        m_layerHistogramWidget->setLevels(
+            layer.display.levelMin, layer.display.levelMax, layer.display.levelDomainMax);
 
         const int row = m_layerTable->currentRow();
         m_layerMoveUpButton->setEnabled(row > 0);
         m_layerMoveDownButton->setEnabled(row < m_layerTable->rowCount() - 1);
-        m_layerRemoveButton->setEnabled(scopeone::core::ScopeOneCore::isStaticLayerKey(m_selectedLayerKey));
+        m_layerRemoveButton->setEnabled(
+            m_sceneModel == m_scopeonecore->imageSceneModel()
+            && scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey));
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
 
         const QString sourceId = selectedLayerSourceId();
         const scopeone::core::ImageSceneModel::SourceDisplayTransform transform =
-            m_scopeonecore->imageSceneModel()->sourceDisplayTransform(sourceId);
+            m_sceneModel->sourceDisplayTransform(sourceId);
         {
             QSignalBlocker blocker(m_alignXSpinBox);
             m_alignXSpinBox->setValue(transform.offsetX);
@@ -643,27 +1138,33 @@ namespace scopeone::ui
         }
     }
 
-    // Updates the frame slider for stack backed gallery layers
-    void DeviceControlWidget::refreshLayerFrameControl()
-    {
-        const int frameCount = m_layerFrameCounts.value(m_selectedLayerKey, 1);
-        const int frameIndex = qBound(0, m_layerFrameIndices.value(m_selectedLayerKey, 0), qMax(0, frameCount - 1));
-        const bool visible = frameCount > 1;
-
-        m_layerFrameLabel->setVisible(visible);
-        m_layerFrameSlider->setVisible(visible);
-        m_layerFrameValueLabel->setVisible(visible);
-        m_layerFrameSlider->setEnabled(visible);
-
-        QSignalBlocker blocker(m_layerFrameSlider);
-        m_layerFrameSlider->setRange(0, qMax(0, frameCount - 1));
-        m_layerFrameSlider->setValue(frameIndex);
-        m_layerFrameValueLabel->setText(QStringLiteral("%1 / %2").arg(frameIndex + 1).arg(qMax(1, frameCount)));
-    }
-
     QString DeviceControlWidget::selectedLayerSourceId() const
     {
-        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_selectedLayerKey);
+        return scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey());
+    }
+
+    QString DeviceControlWidget::currentLayerKey() const
+    {
+        return m_workspace ? m_workspace->activeLayerKey() : QString{};
+    }
+
+    void DeviceControlWidget::syncLayerSelection()
+    {
+        const QString layerKey = currentLayerKey();
+        for (int row = 0; row < m_layerTable->rowCount(); ++row)
+        {
+            QTableWidgetItem* item = m_layerTable->item(row, 1);
+            if (item && item->data(Qt::UserRole).toString() == layerKey)
+            {
+                const QSignalBlocker blocker(m_layerTable);
+                m_layerTable->setCurrentCell(row, 1);
+                refreshPreviewLayerSettings();
+                return;
+            }
+        }
+        const QSignalBlocker blocker(m_layerTable);
+        m_layerTable->clearSelection();
+        refreshPreviewLayerSettings();
     }
 
     // Refreshes selected layer transform values when live cameras change
@@ -676,34 +1177,13 @@ namespace scopeone::ui
     {
         rebuildPreviewLayerTable(layerKeys);
         applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
+        refreshLayerHistogram();
         updateControlsState();
-    }
-
-    void DeviceControlWidget::syncPreviewLayerLayoutCombo(int index)
-    {
-        QSignalBlocker blocker(m_layerLayoutCombo);
-        m_layerLayoutCombo->setCurrentIndex(index);
     }
 
     void DeviceControlWidget::onPreviewLayerInfoTextChanged(const QString&)
     {
         refreshPreviewLayerInfoText();
-    }
-
-    void DeviceControlWidget::onPreviewZoomSpinBoxChanged(int value)
-    {
-        m_previewWidget->setZoomPercent(value);
-    }
-
-    void DeviceControlWidget::onPreviewFitToWindowToggled(bool enabled)
-    {
-        m_previewWidget->setFitToWindow(enabled);
-        updatePreviewZoomControls();
-    }
-
-    void DeviceControlWidget::onPreviewLayerLayoutComboChanged(int index)
-    {
-        m_previewWidget->setLayerLayoutMode(layerLayoutModeFromComboIndex(index));
     }
 
     void DeviceControlWidget::onPreviewLayerVisibleToggled(bool)
@@ -719,84 +1199,175 @@ namespace scopeone::ui
                 break;
             }
         }
-        m_scopeonecore->imageSceneModel()->setLayerVisible(layerKey, checkBox->isChecked());
+        m_sceneModel->setLayerVisible(layerKey, checkBox->isChecked());
     }
 
     void DeviceControlWidget::onPreviewLayerOpacityChanged(int value)
     {
-        m_scopeonecore->imageSceneModel()->setLayerOpacityPercent(m_selectedLayerKey, value);
+        m_sceneModel->setLayerOpacityPercent(currentLayerKey(), value);
     }
 
     void DeviceControlWidget::onPreviewLayerGammaChanged(double value)
     {
-        m_scopeonecore->imageSceneModel()->setLayerGamma(m_selectedLayerKey, value);
+        m_sceneModel->setLayerGamma(currentLayerKey(), value);
     }
 
     void DeviceControlWidget::onPreviewLayerColormapChanged(int)
     {
-        m_scopeonecore->imageSceneModel()->setLayerColormap(
-            m_selectedLayerKey, m_layerColormapComboBox->currentText());
+        m_sceneModel->setLayerColormap(
+            currentLayerKey(), m_layerColormapComboBox->currentText());
     }
 
     void DeviceControlWidget::onPreviewLayerBlendingChanged(int)
     {
-        m_scopeonecore->imageSceneModel()->setLayerBlending(
-            m_selectedLayerKey, m_layerBlendingComboBox->currentText());
+        m_sceneModel->setLayerBlending(
+            currentLayerKey(), m_layerBlendingComboBox->currentText());
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
     }
 
-    void DeviceControlWidget::onPreviewLayerFrameSliderChanged(int value)
+    void DeviceControlWidget::onPreviewLayerAutoStretchToggled(bool enabled)
     {
-        const int frameCount = m_layerFrameCounts.value(m_selectedLayerKey, 1);
-        if (m_selectedLayerKey.isEmpty() || frameCount <= 1)
-        {
-            return;
-        }
-
-        const int frameIndex = qBound(0, value, frameCount - 1);
-        if (m_layerFrameIndices.value(m_selectedLayerKey, 0) == frameIndex)
-        {
-            return;
-        }
-
-        m_layerFrameIndices.insert(m_selectedLayerKey, frameIndex);
-        m_layerFrameValueLabel->setText(QStringLiteral("%1 / %2").arg(frameIndex + 1).arg(frameCount));
-        emit previewLayerFrameRequested(m_selectedLayerKey, frameIndex);
+        m_workspace->setLayerAutoStretchEnabled(currentLayerKey(), enabled);
     }
 
     void DeviceControlWidget::onPreviewLayerSelectionChanged(int currentRow, int, int, int)
     {
         QTableWidgetItem* item = m_layerTable->item(currentRow, 1);
-        const QString previousLayerKey = m_selectedLayerKey;
-        m_selectedLayerKey = item ? item->data(Qt::UserRole).toString() : QString();
+        const QString layerKey = item ? item->data(Qt::UserRole).toString() : QString();
+        m_workspace->setActiveLayerKey(layerKey);
         refreshPreviewLayerSettings();
+        refreshLayerHistogram();
         updateControlsState();
-        if (m_selectedLayerKey != previousLayerKey)
+    }
+
+    void DeviceControlWidget::onPreviewLayerDuplicateClicked()
+    {
+        const QString sourceLayerKey = currentLayerKey();
+        const scopeone::core::ImageFrame sourceFrame = m_scopeonecore->graphFrame(sourceLayerKey);
+        scopeone::core::DocumentLayer sourceLayer;
+        m_sceneModel->findLayer(sourceLayerKey, sourceLayer);
+
+        const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(sourceLayerKey);
+        int copyIndex = 1;
+        QString duplicateSourceId;
+        do
         {
-            emit currentLayerChanged(m_selectedLayerKey);
+            duplicateSourceId = QStringLiteral("copy:%1_%2").arg(sourceId).arg(copyIndex++);
+        }
+        while (m_sceneModel->hasSource(duplicateSourceId));
+
+        scopeone::core::ImageFrame duplicateFrame = sourceFrame;
+        duplicateFrame.cameraId = duplicateSourceId;
+        const QString duplicateName = QStringLiteral("%1 (Copy)")
+                                          .arg(sourceLayer.name.isEmpty()
+                                                   ? m_previewWidget->layerName(sourceLayerKey)
+                                                   : sourceLayer.name);
+        const scopeone::core::ImageFrame published = m_scopeonecore->publishStaticFrame(
+            duplicateSourceId, duplicateFrame, duplicateName);
+        const QString duplicateLayerKey =
+            scopeone::core::ScopeOneCore::staticLayerKey(published.cameraId);
+
+        m_sceneModel->setLayerVisible(duplicateLayerKey, sourceLayer.display.visible);
+        m_sceneModel->setLayerOpacityPercent(
+            duplicateLayerKey, sourceLayer.display.opacityPercent);
+        m_sceneModel->setLayerGamma(duplicateLayerKey, sourceLayer.display.gamma);
+        m_sceneModel->setLayerColormap(duplicateLayerKey, sourceLayer.display.colormap);
+        m_sceneModel->setLayerBlending(duplicateLayerKey, sourceLayer.display.blending);
+        m_sceneModel->setLayerDisplayLevels(duplicateLayerKey,
+                                            sourceLayer.display.levelMin,
+                                            sourceLayer.display.levelMax,
+                                            sourceLayer.display.levelDomainMax);
+        m_workspace->setActiveLayerKey(duplicateLayerKey);
+    }
+
+    void DeviceControlWidget::onPreviewLayerTableItemChanged(QTableWidgetItem* item)
+    {
+        if (item->column() == 1)
+        {
+            m_sceneModel->setLayerName(item->data(Qt::UserRole).toString(), item->text());
         }
     }
 
-    void DeviceControlWidget::onPreviewLayerMoveUpClicked()
+    void DeviceControlWidget::showLayerContextMenu(const QPoint& pos)
     {
-        m_scopeonecore->imageSceneModel()->moveLayer(m_selectedLayerKey, -1);
+        const int row = m_layerTable->rowAt(pos.y());
+        if (row < 0)
+        {
+            return;
+        }
+
+        m_layerTable->setCurrentCell(row, 1);
+        QMenu menu(this);
+        QAction* renameAction = menu.addAction(QStringLiteral("Rename"));
+        QAction* duplicateAction = menu.addAction(QStringLiteral("Duplicate Layer"));
+        QAction* selectedAction = menu.exec(m_layerTable->viewport()->mapToGlobal(pos));
+        if (selectedAction == renameAction)
+        {
+            m_layerTable->editItem(m_layerTable->item(row, 1));
+        }
+        else if (selectedAction == duplicateAction)
+        {
+            onPreviewLayerDuplicateClicked();
+        }
     }
 
-    void DeviceControlWidget::onPreviewLayerMoveDownClicked()
+    // Open file dialog and import image files as static layers
+    void DeviceControlWidget::onPreviewLayerImportClicked()
     {
-        m_scopeonecore->imageSceneModel()->moveLayer(m_selectedLayerKey, 1);
+        const QStringList filePaths = QFileDialog::getOpenFileNames(
+            this,
+            tr("Import Image as Layer"),
+            QString(),
+            tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
+        for (const QString& filePath : filePaths)
+        {
+            m_scopeonecore->importImageAsStaticLayerAsync(filePath);
+        }
     }
 
-    void DeviceControlWidget::onPreviewLayerRemoveClicked()
+    void DeviceControlWidget::onLayerHistogramReady(
+        const QString& layerKey,
+        const scopeone::core::ScopeOneCore::HistogramStats& stats)
     {
-        m_scopeonecore->removeStaticFrame(
-            scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_selectedLayerKey));
+        if (layerKey == currentLayerKey())
+        {
+            m_layerHistogramWidget->setStats(stats);
+        }
+    }
+
+    void DeviceControlWidget::refreshLayerHistogram()
+    {
+        const QString layerKey = currentLayerKey();
+        if (layerKey.isEmpty())
+        {
+            m_layerHistogramWidget->clear();
+            return;
+        }
+
+        if (m_workspace->isLiveViewerActive())
+        {
+            scopeone::core::ScopeOneCore::HistogramStats stats;
+            if (m_scopeonecore->getLayerHistogram(layerKey, stats))
+            {
+                m_layerHistogramWidget->setStats(stats);
+            }
+            else
+            {
+                m_layerHistogramWidget->clear();
+            }
+            m_scopeonecore->setActiveHistogramLayer(layerKey);
+            return;
+        }
+
+        m_layerHistogramWidget->clear();
+        m_workspace->requestHistogram(layerKey);
     }
 
     // Use the selected raw camera layer as the hardware control target
     void DeviceControlWidget::syncControlTargetToSelectedRawLayer()
     {
-        if (!scopeone::core::ScopeOneCore::isRawLayerKey(m_selectedLayerKey))
+        if (isAllTarget(m_currentTarget)
+            || !scopeone::core::ScopeOneCore::isRawLayerKey(currentLayerKey()))
         {
             return;
         }
@@ -829,13 +1400,14 @@ namespace scopeone::ui
         const QString sourceId = selectedLayerSourceId();
         if (!sourceId.isEmpty())
         {
-            m_scopeonecore->imageSceneModel()->resetSourceDisplayTransform(sourceId);
+            m_sceneModel->resetSourceDisplayTransform(sourceId);
         }
     }
 
     QWidget* DeviceControlWidget::createControlGroup()
     {
         QGroupBox* group = new QGroupBox("Camera Controls");
+        m_cameraControlsGroup = group;
         QGridLayout* layout = new QGridLayout(group);
 
         int row = 0;
@@ -848,7 +1420,8 @@ namespace scopeone::ui
         layout->addWidget(m_cameraSelectCombo, row, 1);
         row++;
 
-        layout->addWidget(new QLabel("Exposure (ms):"), row, 0);
+        m_exposureLabel = new QLabel("Exposure (ms):", group);
+        layout->addWidget(m_exposureLabel, row, 0);
         m_exposureLineEdit = new QLineEdit();
         auto* exposureValidator = new QDoubleValidator(0.1, 10000.0, 16, m_exposureLineEdit);
         exposureValidator->setLocale(QLocale::c());
@@ -861,11 +1434,17 @@ namespace scopeone::ui
         row++;
 
         m_previewToggleButton = new QPushButton("Start Preview");
-        m_previewToggleButton->setMinimumWidth(140);
         m_previewToggleButton->setMinimumHeight(30);
         connect(m_previewToggleButton, &QPushButton::clicked, this, &DeviceControlWidget::onPreviewToggleClicked);
-
-        layout->addWidget(m_previewToggleButton, row, 0, 1, 2);
+        m_snapButton = new QPushButton("Snap", group);
+        m_snapButton->setMinimumHeight(30);
+        m_snapButton->setToolTip(tr("Capture the latest frame from the selected target"));
+        connect(m_snapButton, &QPushButton::clicked, this, [this]()
+        {
+            emit snapRequested(m_currentTarget);
+        });
+        layout->addWidget(m_previewToggleButton, row, 0);
+        layout->addWidget(m_snapButton, row, 1);
 
         QHBoxLayout* roiLayout = new QHBoxLayout();
         m_drawROIButton = new QPushButton("Draw ROI", group);
@@ -885,6 +1464,7 @@ namespace scopeone::ui
     QWidget* DeviceControlWidget::createStageGroup()
     {
         QGroupBox* group = new QGroupBox("Stage Controls");
+        m_stageControlsGroup = group;
         QHBoxLayout* mainLayout = new QHBoxLayout(group);
         QVBoxLayout* xyColumn = new QVBoxLayout();
         QVBoxLayout* zColumn = new QVBoxLayout();
@@ -1162,11 +1742,11 @@ namespace scopeone::ui
     // Updates enabled state for stage controls
     void DeviceControlWidget::updateStageControlsEnabled()
     {
-        const bool hasXY = !selectedXYStageLabel().isEmpty();
-        const bool hasZ = !selectedZStageLabel().isEmpty();
+        const bool hasXY = m_liveViewerContext && !selectedXYStageLabel().isEmpty();
+        const bool hasZ = m_liveViewerContext && !selectedZStageLabel().isEmpty();
 
-        m_xyStageCombo->setEnabled(m_xyStageCombo->count() > 0);
-        m_zStageCombo->setEnabled(m_zStageCombo->count() > 0);
+        m_xyStageCombo->setEnabled(m_liveViewerContext && m_xyStageCombo->count() > 0);
+        m_zStageCombo->setEnabled(m_liveViewerContext && m_zStageCombo->count() > 0);
         m_xyStepLineEdit->setEnabled(hasXY);
         m_xyBigStepLineEdit->setEnabled(hasXY);
         m_zStepLineEdit->setEnabled(hasZ);
@@ -1273,6 +1853,26 @@ namespace scopeone::ui
         emit stageMoveFailed(tr("Failed to queue Z stage move: %1").arg(zLabel));
     }
 
+    // Moves XY stage with step factor
+    void DeviceControlWidget::moveXYStep(double dxScale, double dyScale, bool big)
+    {
+        const double stepValue = (big ? m_xyBigStepLineEdit : m_xyStepLineEdit)->text().toDouble();
+        if (stepValue > 0.0)
+        {
+            moveXYStage(dxScale * stepValue, dyScale * stepValue);
+        }
+    }
+
+    // Moves Z stage with step factor
+    void DeviceControlWidget::moveZStep(double dzScale, bool big)
+    {
+        const double stepValue = (big ? m_zBigStepLineEdit : m_zStepLineEdit)->text().toDouble();
+        if (stepValue > 0.0)
+        {
+            moveZStage(dzScale * stepValue);
+        }
+    }
+
     // Updates control state when cameras initialize
     void DeviceControlWidget::onCameraInitialized(bool initialized)
     {
@@ -1312,15 +1912,22 @@ namespace scopeone::ui
     // Keeps device control buttons in sync
     void DeviceControlWidget::updateControlsState()
     {
-        m_exposureLineEdit->setEnabled(m_cameraInitialized);
-        m_previewToggleButton->setEnabled(m_cameraInitialized);
+        const bool canControlHardware = m_cameraInitialized && m_liveViewerContext;
+        m_cameraControlsGroup->setVisible(true);
+        m_stageControlsGroup->setVisible(true);
+        m_cameraControlsGroup->setEnabled(canControlHardware);
+        m_stageControlsGroup->setEnabled(m_liveViewerContext);
+        m_cameraSelectCombo->setEnabled(canControlHardware && m_controlTargetEnabled);
+        m_exposureLineEdit->setEnabled(canControlHardware);
+        m_previewToggleButton->setEnabled(canControlHardware);
+        m_snapButton->setEnabled(canControlHardware);
         m_previewToggleButton->setText(m_previewRunning
                                            ? QStringLiteral("Stop Preview")
                                            : QStringLiteral("Start Preview"));
         const bool hasRoiTarget = !roiCameraTarget().isEmpty();
-        m_drawROIButton->setEnabled(m_cameraInitialized && hasRoiTarget);
-        m_halfROIButton->setEnabled(m_cameraInitialized && hasRoiTarget);
-        m_clearROIButton->setEnabled(m_cameraInitialized);
+        m_drawROIButton->setEnabled(canControlHardware && hasRoiTarget);
+        m_halfROIButton->setEnabled(canControlHardware && hasRoiTarget);
+        m_clearROIButton->setEnabled(canControlHardware && hasRoiTarget);
 
         updateStageControlsEnabled();
     }
@@ -1358,6 +1965,7 @@ namespace scopeone::ui
                 m_minExposureMs = lower;
                 m_maxExposureMs = upper;
             }
+            m_exposureLabel->setText(tr("Exposure (ms):"));
             return;
         }
 
@@ -1394,6 +2002,7 @@ namespace scopeone::ui
             m_minExposureMs = commonLower;
             m_maxExposureMs = commonUpper;
         }
+        m_exposureLabel->setText(tr("Exposure (ms):"));
     }
 
     // Updates preview running state for the control button
@@ -1403,43 +2012,7 @@ namespace scopeone::ui
         updateControlsState();
     }
 
-    // Returns the preview layer currently selected in the layer table
-    QString DeviceControlWidget::currentLayerKey() const
-    {
-        return m_selectedLayerKey;
-    }
-
-    // Sets stack frame metadata for one preview layer
-    void DeviceControlWidget::setLayerFrameControl(const QString& layerKey, int frameCount, int frameIndex)
-    {
-        const QString trimmedLayerKey = layerKey.trimmed();
-        if (trimmedLayerKey.isEmpty() || frameCount <= 1)
-        {
-            removeLayerFrameControl(trimmedLayerKey);
-            return;
-        }
-
-        const int clampedCount = qMax(1, frameCount);
-        m_layerFrameCounts.insert(trimmedLayerKey, clampedCount);
-        m_layerFrameIndices.insert(trimmedLayerKey, qBound(0, frameIndex, clampedCount - 1));
-        if (trimmedLayerKey == m_selectedLayerKey)
-        {
-            refreshLayerFrameControl();
-        }
-    }
-
-    // Removes stack frame metadata for one preview layer
-    void DeviceControlWidget::removeLayerFrameControl(const QString& layerKey)
-    {
-        const QString trimmedLayerKey = layerKey.trimmed();
-        m_layerFrameCounts.remove(trimmedLayerKey);
-        m_layerFrameIndices.remove(trimmedLayerKey);
-        if (trimmedLayerKey.isEmpty() || trimmedLayerKey == m_selectedLayerKey)
-        {
-            refreshLayerFrameControl();
-        }
-    }
-
+    // Checks whether a control operation targets every camera
     bool DeviceControlWidget::isAllTarget(const QString& target) const
     {
         return target.compare("All", Qt::CaseInsensitive) == 0;
@@ -1459,8 +2032,6 @@ namespace scopeone::ui
     // Rebuilds available camera control targets
     void DeviceControlWidget::setControlTargets(const QStringList& cameraIds)
     {
-        QString current = m_cameraSelectCombo->currentText();
-
         {
             QSignalBlocker blocker(m_cameraSelectCombo);
             m_cameraSelectCombo->clear();
@@ -1470,26 +2041,13 @@ namespace scopeone::ui
                 m_cameraSelectCombo->addItem(id);
             }
 
-            int idx = m_cameraSelectCombo->findText(current);
-            const bool currentIsAll = isAllTarget(current);
-            if (!cameraIds.isEmpty())
+            if (cameraIds.size() > 1)
             {
-                if (currentIsAll && cameraIds.size() > 1)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(0);
-                }
-                else if (currentIsAll)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(1);
-                }
-                else if (idx >= 0)
-                {
-                    m_cameraSelectCombo->setCurrentIndex(idx);
-                }
-                else
-                {
-                    m_cameraSelectCombo->setCurrentIndex(1);
-                }
+                m_cameraSelectCombo->setCurrentIndex(0);
+            }
+            else if (cameraIds.size() == 1)
+            {
+                m_cameraSelectCombo->setCurrentIndex(1);
             }
             else
             {
@@ -1516,7 +2074,14 @@ namespace scopeone::ui
     // Enables or disables the camera target selector
     void DeviceControlWidget::setControlTargetEnabled(bool enabled)
     {
-        m_cameraSelectCombo->setEnabled(enabled);
+        m_controlTargetEnabled = enabled;
+        updateControlsState();
+    }
+
+    void DeviceControlWidget::setViewerContext(bool liveViewer)
+    {
+        m_liveViewerContext = liveViewer;
+        updateControlsState();
     }
 
     // Applies a new camera control target
@@ -1536,12 +2101,6 @@ namespace scopeone::ui
     // Starts ROI drawing for the selected camera
     void DeviceControlWidget::onDrawROIClicked()
     {
-        if (isAllTarget(m_currentTarget))
-        {
-            emit requestDrawROI(QString());
-            return;
-        }
-
         const QString cameraId = roiCameraTarget();
         if (cameraId.isEmpty())
         {
@@ -1566,6 +2125,10 @@ namespace scopeone::ui
     // Requests ROI clearing for the selected target
     void DeviceControlWidget::onClearROIClicked()
     {
-        emit requestClearROI(m_currentTarget);
+        const QString cameraId = roiCameraTarget();
+        if (!cameraId.isEmpty())
+        {
+            emit requestClearROI(cameraId);
+        }
     }
 } // namespace scopeone::ui

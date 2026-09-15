@@ -2,6 +2,36 @@
 
 Python client for ScopeOne's language-neutral Local API. It controls a running ScopeOne app and can be used by scripts, notebooks, or Python-based agent tool adapters.
 
+## Installation
+
+Requires Python 3.10 or later and a running ScopeOne desktop application.
+
+Create and activate an isolated Conda environment:
+
+```powershell
+conda create -n scopeone python=3.13
+conda activate scopeone
+```
+
+Install from this source checkout:
+
+```powershell
+cd ScopeOneCore\python\scopeone
+python -m pip install -e .
+```
+
+For a regular, non-editable installation, use:
+
+```powershell
+python -m pip install .
+```
+
+`pip` installs the required `numpy` and `pywin32` dependencies automatically on Windows. Verify the connection after ScopeOne is running:
+
+```powershell
+python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
+```
+
 ## Project layout
 
 - Python package project root: `ScopeOneCore/python/scopeone`
@@ -109,6 +139,12 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.loaded_devices()`
 - `ScopeOne.start_preview(camera="All")`
 - `ScopeOne.stop_preview(camera="All")`
+- `ScopeOne.image_windows()`
+- `ScopeOne.open_image_window(session_id, title=None, camera_id=None)`
+- `ScopeOne.activate_image_window(document_id)`
+- `ScopeOne.close_image_window(document_id=None)`
+- `ScopeOne.process_image_window(document_id=None, complete_stack=False)`
+- `ScopeOne.save_image_window(save_dir, base_name, document_id=None, format="ome-tiff", compression=False, compression_level=6)`
 - `ScopeOne.list_layers()`
 - `ScopeOne.get_layer_histogram(layer_key)`
 - `ScopeOne.get_pixel_value(layer_key, x, y)`
@@ -163,8 +199,8 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.processing_state()`
 - `ScopeOne.processing_modules()`
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
-- `ScopeOne.set_realtime_processing(enabled)`
-- `ScopeOne.start_processing()`
+- `ScopeOne.set_realtime_processing(enabled, camera_id=None)`
+- `ScopeOne.start_processing(camera_id=None)`
 - `ScopeOne.stop_processing()`
 - `ScopeOne.add_processing_module(kind, parameters=None)`
 - `ScopeOne.remove_processing_module(index)`
@@ -235,11 +271,17 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `loaded_devices`: response `devices`.
 - `start_preview`: fields `camera`, accepts a camera id or `"All"`.
 - `stop_preview`: fields `camera`, accepts a camera id or `"All"`.
-- `list_layers`: response `layers`.
+- `image_windows`: response `activeDocumentId` and `documents`; each document contains its ID, title, session, camera, current frame, frame count, readiness, and active state.
+- `open_image_window`: fields `sessionId`, optional `title` and `cameraId`; opens matching retained session data, waits for the first frame, and returns `documentIds` and `activeDocumentId`.
+- `activate_image_window`: field `documentId`; activates the window and returns `document`.
+- `close_image_window`: optional field `documentId`; closes the selected or active window.
+- `process_image_window`: optional fields `documentId` and `completeStack`; asynchronously processes the selected or active window and returns the new `document`.
+- `save_image_window`: fields `saveDir`, `baseName`, `format` (`ome-tiff`, `ome-zarr`, `tiff` or `binary`), `compression`, and `compressionLevel`, plus optional `documentId`; asynchronously saves the selected or active window and returns `documentId` and `message`.
+- `list_layers`: response `layers`; layer display, histogram, pixel, profile, and markup operations target the active image viewer.
 - `get_layer_histogram`: fields `layerKey`; response `histogram` with summary statistics and 256 `bins`.
 - `get_pixel_value`: fields `layerKey`, `x`, `y`; response `value`.
 - `get_line_profile`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`; response `values`.
-- `detect_particles`: fields `layerKey`, `threshold`, `minArea`, `maxArea`, optional `maxParticles`, `exportMask`, and `publishMask`; response `particleCount`, effective thresholds, truncation state, particle measurements, optional shared-memory `mask` metadata, and optional `maskLayerKey`.
+- `detect_particles`: fields `layerKey`, `threshold`, `minArea`, `maxArea`, optional `maxParticles`, `exportMask`, and `publishMask`; response `particleCount`, effective thresholds, truncation state, particle measurements, optional shared-memory `mask` metadata, and either `maskLayerKey` for Live or `maskDocumentId` for a static image window.
 - `layer_options`: response `layouts`, `colormaps`, `blendingModes`.
 - `set_layer_layout`: fields `layout`, accepts `side_by_side` or `overlay`.
 - `set_visible_layers`: fields `layerKeys`; response `visibleLayers`.
@@ -286,9 +328,9 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
-- `processing_modules`: response `bitDepth`, `realTime`, and `modules`.
+- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`.
 - `set_processing_bit_depth`: fields `bitDepth`, accepts `8` or `16`.
-- `set_realtime_processing`: fields `enabled`.
+- `set_realtime_processing`: fields `enabled` and optional `cameraId`; an empty camera ID selects all cameras.
 - `add_processing_module`: fields `kind`, optional `parameters`; response `index`.
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
@@ -332,7 +374,7 @@ For timed MDA with more than one time point, `order` must begin with `time` so e
 
 The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
 
-Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. `add_processing_module` accepts `fft`, `background_calibration`, `spatiotemporal_binning`, `gaussian_blur`, and `differential_rolling`.
+Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes modules supplied by installed processing plugins.
 
 ### Frame transfer
 

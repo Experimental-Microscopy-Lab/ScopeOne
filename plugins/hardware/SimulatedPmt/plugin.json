@@ -1,0 +1,8 @@
+{
+  "id": "pmt.simulator",
+  "name": "Simulated PMT",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "hardware",
+  "providerId": "pmt.simulator"
+}

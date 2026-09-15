@@ -1,10 +1,7 @@
 #include "internal/FFTModule.h"
+
 #include "internal/FrameBufferUtils.h"
 
-#include <cmath>
-#include <cstring>
-#include <numbers>
-#include <utility>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -12,286 +9,142 @@ namespace scopeone::core::internal
 {
     namespace
     {
-        // Converts a mono frame into a float matrix for OpenCV DFT
-        bool frameToGrayFloat(const ImageFrame& frame, cv::Mat& output)
+        bool frameToFloat(const ImageFrame& frame, cv::Mat& output)
         {
             if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
             {
                 return false;
             }
-
-            const int cvType = frame.isMono16() ? CV_16UC1 : CV_8UC1;
-            cv::Mat input(frame.height,
-                          frame.width,
-                          cvType,
-                          const_cast<char*>(frame.bytes.constData()),
-                          frame.stride);
+            const int type = frame.isMono16() ? CV_16UC1 : CV_8UC1;
+            const cv::Mat input(frame.height,
+                                frame.width,
+                                type,
+                                const_cast<char*>(frame.bytes.constData()),
+                                frame.stride);
             input.convertTo(output, CV_32F);
             return true;
         }
 
-        // Normalizes an OpenCV matrix into an output image frame
-        ImageFrame matToOutputFrame(const cv::Mat& input,
-                                    const ImageFrame& reference)
+        void fftShift(const cv::Mat& input, cv::Mat& output)
         {
-            const int targetType = reference.isMono16() ? CV_16U : CV_8U;
-            const double targetMax = static_cast<double>(reference.maxValue());
-            QByteArray bytes = reference.isMono16()
-                                   ? allocatePixelBytes<quint16>(input.cols, input.rows)
-                                   : allocatePixelBytes<uchar>(input.cols, input.rows);
-            if (bytes.isEmpty())
-            {
-                return {};
-            }
-            cv::Mat normalized(input.rows,
-                               input.cols,
-                               targetType,
-                               bytes.data(),
-                               input.cols * reference.bytesPerPixel());
-            cv::normalize(input, normalized, 0.0, targetMax, cv::NORM_MINMAX, targetType);
-            return makeFrameLike(reference, normalized.cols, normalized.rows, std::move(bytes));
-        }
-
-        // Moves the zero frequency component to the image center
-        void fftShift(const cv::Mat& image, cv::Mat& shifted)
-        {
-            shifted.create(image.size(), image.type());
-            const int xOffset = image.cols / 2;
-            const int yOffset = image.rows / 2;
-            const size_t tailBytes = static_cast<size_t>(image.cols - xOffset)
-                                     * sizeof(float);
-            const size_t headBytes = static_cast<size_t>(xOffset) * sizeof(float);
-            parallelForImageRows(image.cols, image.rows, [&](int firstRow, int lastRow)
+            output.create(input.size(), input.type());
+            const int xOffset = (input.cols + 1) / 2;
+            const int yOffset = (input.rows + 1) / 2;
+            parallelForImageRows(input.cols, input.rows, [&](int firstRow, int lastRow)
             {
                 for (int y = firstRow; y < lastRow; ++y)
                 {
-                    const float* srcRow = image.ptr<float>((y + yOffset) % image.rows);
-                    float* dstRow = shifted.ptr<float>(y);
-                    std::memcpy(dstRow, srcRow + xOffset, tailBytes);
-                    std::memcpy(dstRow + image.cols - xOffset, srcRow, headBytes);
+                    const float* source = input.ptr<float>((y + yOffset) % input.rows);
+                    float* destination = output.ptr<float>(y);
+                    for (int x = 0; x < input.cols; ++x)
+                    {
+                        destination[x] = source[(x + xOffset) % input.cols];
+                    }
                 }
             });
         }
 
-        // Computes a log magnitude spectrum from complex DFT planes
-        void magnitudeSpectrum(const cv::Mat* planes, cv::Mat& magnitude, cv::Mat& shifted)
+        ImageFrame spectrumFrame(const cv::Mat* planes,
+                                 cv::Mat& magnitude,
+                                 cv::Mat& shifted,
+                                 const ImageFrame& reference)
         {
             cv::magnitude(planes[0], planes[1], magnitude);
             magnitude += cv::Scalar::all(1.0);
             cv::log(magnitude, magnitude);
             fftShift(magnitude, shifted);
-        }
 
-        // Crops the center region of a matrix to a target size
-        cv::Mat cropCenter(const cv::Mat& image, const cv::Size& size)
-        {
-            const int x = (image.cols - size.width) / 2;
-            const int y = (image.rows - size.height) / 2;
-            return image(cv::Rect(x, y, size.width, size.height));
-        }
-
-        // Builds the frequency domain bandpass mask
-        cv::Mat buildMask(const cv::Size& size,
-                          double minFeatureSize,
-                          double maxFeatureSize,
-                          FFTModule::FilterKind filterKind)
-        {
-            constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
-            cv::Mat centered(size, CV_32F);
-            for (int y = 0; y < size.height; ++y)
+            cv::Mat visible = shifted;
+            if (visible.cols != reference.width || visible.rows != reference.height)
             {
-                const double fy = (static_cast<double>(y) - size.height / 2.0) / static_cast<double>(size.height);
-                float* row = centered.ptr<float>(y);
-                for (int x = 0; x < size.width; ++x)
-                {
-                    const double fx = (static_cast<double>(x) - size.width / 2.0) / static_cast<double>(size.width);
-                    const double rsq = (kTwoPi * fx) * (kTwoPi * fx) + (kTwoPi * fy) * (kTwoPi * fy);
-                    if (filterKind == FFTModule::FilterKind::Hard)
-                    {
-                        row[x] = (rsq * maxFeatureSize * maxFeatureSize > 1.0
-                                     && rsq * minFeatureSize * minFeatureSize < 1.0)
-                                     ? 1.0f
-                                     : 0.0f;
-                    }
-                    else
-                    {
-                        row[x] = static_cast<float>(
-                            std::exp(-rsq * minFeatureSize * minFeatureSize / 2.0)
-                            - std::exp(-rsq * maxFeatureSize * maxFeatureSize / 2.0));
-                    }
-                }
+                const int x = (visible.cols - reference.width) / 2;
+                const int y = (visible.rows - reference.height) / 2;
+                visible = visible(cv::Rect(x, y, reference.width, reference.height));
             }
-
-            cv::Mat mask;
-            fftShift(centered, mask);
-            return mask;
+            cv::Mat preview;
+            cv::normalize(visible, preview, 0.0, 255.0, cv::NORM_MINMAX, CV_8U);
+            ImageFrame frame = makeMono8Frame(reference.cameraId,
+                                              preview.cols,
+                                              preview.rows,
+                                              copyMatBytes(preview));
+            copyFrameMetadata(reference, frame);
+            return frame;
         }
     }
 
-    // Creates an independent FFT runtime
     std::unique_ptr<ProcessingModule> FFTModule::createRuntime() const
     {
-        auto module = std::make_unique<FFTModule>();
-        module->setParameters(parameters());
-        return module;
+        return std::make_unique<FFTModule>();
     }
 
-    // Returns a cached mask for the current FFT parameters
-    const cv::Mat& FFTModule::maskForSize(const cv::Size& size)
-    {
-        if (m_mask.empty()
-            || m_maskSize != size
-            || m_maskMinFeatureSize != m_minFeatureSize
-            || m_maskMaxFeatureSize != m_maxFeatureSize
-            || m_maskFilterKind != m_filterKind)
-        {
-            m_mask = buildMask(size, m_minFeatureSize, m_maxFeatureSize, m_filterKind);
-            m_maskSize = size;
-            m_maskMinFeatureSize = m_minFeatureSize;
-            m_maskMaxFeatureSize = m_maxFeatureSize;
-            m_maskFilterKind = m_filterKind;
-        }
-        return m_mask;
-    }
-
-    // Clears the cached FFT mask
-    void FFTModule::invalidateMask()
-    {
-        m_mask.release();
-        m_maskSize = {};
-    }
-
-    // Runs FFT spectrum or bandpass processing on one frame
     ProcessingResult FFTModule::process(const ImageFrame& frame, int processingBitDepth)
     {
-        if (!frame.isValid())
+        return processValue(ProcessingValue{frame}, processingBitDepth);
+    }
+
+    ProcessingResult FFTModule::processValue(const ProcessingValue& input,
+                                             int processingBitDepth)
+    {
+        if (!std::holds_alternative<ImageFrame>(input))
         {
-            return {{}, QStringLiteral("Invalid input")};
+            return ProcessingResult(ImageFrame{}, QStringLiteral("FFT requires an image"));
+        }
+
+        const ImageFrame& frame = std::get<ImageFrame>(input);
+        ImageFrame workingFrame;
+        if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth)
+            || !frameToFloat(workingFrame, m_grayFloat))
+        {
+            return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported FFT input"));
         }
 
         try
         {
-            ImageFrame workingFrame;
-            if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
-            {
-                return {{}, QStringLiteral("Unsupported input frame")};
-            }
-
-            if (!frameToGrayFloat(workingFrame, m_grayFloat))
-            {
-                return {{}, QStringLiteral("Failed to convert frame to grayscale")};
-            }
-
-            int optRows = cv::getOptimalDFTSize(m_grayFloat.rows);
-            int optCols = cv::getOptimalDFTSize(m_grayFloat.cols);
+            const int rows = cv::getOptimalDFTSize(m_grayFloat.rows);
+            const int columns = cv::getOptimalDFTSize(m_grayFloat.cols);
             cv::copyMakeBorder(m_grayFloat,
                                m_padded,
                                0,
-                               optRows - m_grayFloat.rows,
+                               rows - m_grayFloat.rows,
                                0,
-                               optCols - m_grayFloat.cols,
+                               columns - m_grayFloat.cols,
                                cv::BORDER_CONSTANT,
                                0);
-
             cv::dft(m_padded, m_complex, cv::DFT_COMPLEX_OUTPUT);
             cv::split(m_complex, m_planes);
 
-            if (m_outputMode == OutputMode::Spectrum || m_outputMode == OutputMode::BandpassSpectrum)
-            {
-                if (m_outputMode == OutputMode::BandpassSpectrum)
-                {
-                    const cv::Mat& mask = maskForSize(m_padded.size());
-                    cv::multiply(m_planes[0], mask, m_planes[0]);
-                    cv::multiply(m_planes[1], mask, m_planes[1]);
-                }
+            ComplexFrame output;
+            output.sourceId = frame.cameraId;
+            output.width = columns;
+            output.height = rows;
+            output.stride = columns;
+            output.sourceWidth = frame.width;
+            output.sourceHeight = frame.height;
+            output.frameIndex = frame.frameIndex;
+            output.timestampNs = frame.timestampNs;
+            output.real = copyMatBytes(m_planes[0]);
+            output.imaginary = copyMatBytes(m_planes[1]);
 
-                magnitudeSpectrum(m_planes, m_spectrumMagnitude, m_shiftedSpectrum);
-                cv::Mat spectrum = m_shiftedSpectrum;
-                if (spectrum.size() != m_grayFloat.size())
-                {
-                    spectrum = cropCenter(spectrum, m_grayFloat.size());
-                }
-                return {matToOutputFrame(spectrum, workingFrame), {}};
-            }
-
-            const cv::Mat& mask = maskForSize(m_padded.size());
-            cv::multiply(m_planes[0], mask, m_planes[0]);
-            cv::multiply(m_planes[1], mask, m_planes[1]);
-
-            cv::merge(m_planes, 2, m_filteredComplex);
-            cv::dft(m_filteredComplex, m_filtered, cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
-
-            const cv::Mat cropped = m_filtered(cv::Rect(0, 0, m_grayFloat.cols, m_grayFloat.rows));
-            return {matToOutputFrame(cropped, workingFrame), {}};
+            ProcessingResult result(ProcessingValue{std::move(output)});
+            result.frame = spectrumFrame(m_planes,
+                                         m_spectrumMagnitude,
+                                         m_shiftedSpectrum,
+                                         workingFrame);
+            return result;
         }
-        catch (const std::exception& e)
+        catch (const std::exception& error)
         {
-            return {{}, QString("FFT processing failed: %1").arg(e.what())};
+            return ProcessingResult(ImageFrame{},
+                                    QString("FFT failed: %1").arg(error.what()));
         }
     }
 
-    // Returns the current FFT module parameters
     QVariantMap FFTModule::parameters() const
     {
-        QVariantMap params;
-        params["min_feature_size"] = m_minFeatureSize;
-        params["max_feature_size"] = m_maxFeatureSize;
-        params["filter_kind"] = static_cast<int>(m_filterKind);
-        params["output_mode"] = static_cast<int>(m_outputMode);
-        return params;
+        return {};
     }
 
-    // Updates FFT module parameters and invalidates cached masks
-    void FFTModule::setParameters(const QVariantMap& params)
+    void FFTModule::setParameters(const QVariantMap&)
     {
-        bool maskChanged = false;
-        if (params.contains("min_feature_size"))
-        {
-            const double oldValue = m_minFeatureSize;
-            m_minFeatureSize = qMax(0.0, params.value("min_feature_size").toDouble());
-            if (m_minFeatureSize != oldValue)
-            {
-                maskChanged = true;
-            }
-        }
-        if (params.contains("max_feature_size"))
-        {
-            const double oldValue = m_maxFeatureSize;
-            m_maxFeatureSize = qMax(0.0, params.value("max_feature_size").toDouble());
-            if (m_maxFeatureSize != oldValue)
-            {
-                maskChanged = true;
-            }
-        }
-        if (m_minFeatureSize > m_maxFeatureSize)
-        {
-            std::swap(m_minFeatureSize, m_maxFeatureSize);
-            maskChanged = true;
-        }
-        if (params.contains("filter_kind"))
-        {
-            const int filterKind = params.value("filter_kind").toInt();
-            if (filterKind == 0 || filterKind == 1)
-            {
-                const auto newFilterKind = static_cast<FilterKind>(filterKind);
-                if (m_filterKind != newFilterKind)
-                {
-                    maskChanged = true;
-                }
-                m_filterKind = newFilterKind;
-            }
-        }
-        if (params.contains("output_mode"))
-        {
-            const int outputMode = params.value("output_mode").toInt();
-            if (outputMode >= 0 && outputMode <= 2)
-            {
-                m_outputMode = static_cast<OutputMode>(outputMode);
-            }
-        }
-        if (maskChanged)
-        {
-            invalidateMask();
-        }
     }
 } // namespace scopeone::core::internal

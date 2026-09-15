@@ -1,8 +1,8 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
+#include "ScopeOneToolPlugin.h"
 
-#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 #include <QPoint>
@@ -15,6 +15,7 @@ class QCloseEvent;
 class QDockWidget;
 class QLabel;
 class QMenu;
+class QProgressBar;
 class QProgressDialog;
 class QTimer;
 
@@ -29,22 +30,36 @@ namespace scopeone::ui
     class DevicePropertyWidget;
     class ConfigPresetWidget;
     class ImageGalleryWidget;
+    class ImageWorkspace;
     class ImageProcessingWidget;
     class InspectWidget;
     class PreviewWidget;
     class ConsoleWidget;
     class DeviceControlWidget;
     class RecordingWidget;
-    class StageMosaicDialog;
-    class ParticleDetectionDialog;
-
-    class MainWindow : public QMainWindow
+    class ScopeOneLocalApiServer;
+    class MainWindow : public QMainWindow, public ScopeOneToolContext
     {
         Q_OBJECT
 
     public:
         explicit MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~MainWindow() override = default;
+
+        scopeone::core::ScopeOneCore& core() const override;
+        QString currentLayerKey() const override;
+        scopeone::core::ImageFrame currentFrame() const override;
+        double layerFrameRate(const QString& layerKey) const override;
+        QMap<QString, double> layerFrameRates() const override;
+        scopeone::core::ImageFrame publishToolStreamFrame(
+            const QString& sourceId,
+            const scopeone::core::ImageFrame& frame,
+            const QString& displayName = QString()) override;
+        void showLayers(const QStringList& layerKeys, bool sideBySide = false) override;
+        void showToolStatus(const QString& message, int timeoutMs = 5000) override;
+        void presentSession(
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            const QString& title) override;
 
     protected:
         void closeEvent(QCloseEvent* event) override;
@@ -53,6 +68,7 @@ namespace scopeone::ui
         void setupUI();
         void setupSignalWiring();
         void setupStatusBar();
+        void setupTools();
 
         void setupMenuBar();
         void setupDeviceControl();
@@ -67,38 +83,25 @@ namespace scopeone::ui
         void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
+        void syncCameraState();
         void applyLoadedCameraState(const QStringList& cameraIds);
         void applyNoCameraState();
         void refreshDevicePanels(bool fromCache = false);
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
-        void openScaleDialog();
-        void openStageMosaicTool();
-        void openParticleDetectionTool();
+        void openImportImageDialog();
+        void importImages(const QStringList& filePaths);
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
         void schedulePreviewCursorStatusRefresh();
+        void updateDimensionViewActions();
         void showMeasurementLine(const QString& layerKey,
                                  const QPoint& start,
                                  const QPoint& end);
-        void registerGallerySessionFrameControls(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            int frameIndex);
-        void removeGallerySessionFrameControls(
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
-        void updateGalleryLayerFrame(const QString& layerKey, int frameIndex);
-        void requestLatestGalleryFrame(const QString& layerKey);
-        void handleGalleryFrameReady(
-            quint64 requestId,
-            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
-            const QString& cameraId,
-            int frameIndex,
-            const scopeone::core::ImageFrame& frame);
-
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
                             int x,
@@ -127,10 +130,11 @@ namespace scopeone::ui
 
         scopeone::core::ImageSceneModel* m_imageSceneModel{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
-        QDockWidget* m_consoleDockWidget{nullptr};
         ConsoleWidget* m_consoleWidget{nullptr};
+        ScopeOneLocalApiServer* m_localApiServer{nullptr};
 
         QDockWidget* m_propertyDockWidget{nullptr};
+        QDockWidget* m_configPresetDockWidget{nullptr};
         DevicePropertyWidget* m_propertyBrowser{nullptr};
         ConfigPresetWidget* m_configPresetWidget{nullptr};
 
@@ -138,56 +142,38 @@ namespace scopeone::ui
         RecordingWidget* m_recordingWidget{nullptr};
         QDockWidget* m_imageGalleryDockWidget{nullptr};
         ImageGalleryWidget* m_imageGalleryWidget{nullptr};
+        ImageWorkspace* m_imageWorkspace{nullptr};
 
-        struct GalleryLayerFrameControl
-        {
-            std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> session;
-            QString cameraId;
-        };
-        QHash<QString, GalleryLayerFrameControl> m_galleryLayerFrameControls;
-        struct GalleryFrameRequestState
-        {
-            quint64 requestId{0};
-            int latestFrameIndex{0};
-        };
-        QHash<QString, GalleryFrameRequestState> m_galleryFrameRequests;
-
-        QDockWidget* m_deviceControlDockWidget{nullptr};
         DeviceControlWidget* m_deviceControlWidget{nullptr};
 
-        QDockWidget* m_imageProcessingDockWidget{nullptr};
         ImageProcessingWidget* m_imageProcessingWidget{nullptr};
 
-        QDockWidget* m_inspectDockWidget{nullptr};
+        QDockWidget* m_controlDockWidget{nullptr};
+        QDockWidget* m_viewDockWidget{nullptr};
+        QDockWidget* m_analyzeDockWidget{nullptr};
+        QDockWidget* m_processDockWidget{nullptr};
+        QDockWidget* m_consoleDockWidget{nullptr};
         InspectWidget* m_inspectWidget{nullptr};
 
-        QMenu* m_fileMenu{nullptr};
         QMenu* m_recentConfigurationsMenu{nullptr};
-        QMenu* m_viewMenu{nullptr};
-        QMenu* m_toolsMenu{nullptr};
-        QMenu* m_helpMenu{nullptr};
         QMenu* m_dockWidgetsMenu{nullptr};
 
-        QAction* m_exitAction{nullptr};
-        QAction* m_fullScreenAction{nullptr};
+        QAction* m_toggleDimensionAction{nullptr};
+        QAction* m_toggle3dColorbarAction{nullptr};
+        QAction* m_reset3dAction{nullptr};
         QAction* m_loadConfigurationAction{nullptr};
         QAction* m_unloadConfigurationAction{nullptr};
-        QAction* m_settingsAction{nullptr};
-        QAction* m_scaleAction{nullptr};
-        QAction* m_stageMosaicAction{nullptr};
-        QAction* m_particleDetectionAction{nullptr};
-        QAction* m_aboutAction{nullptr};
-        QAction* m_aboutQtAction{nullptr};
+        QAction* m_saveImageAsAction{nullptr};
 
         QPointer<QProgressDialog> m_loadConfigProgress;
         QPointer<QProgressDialog> m_closeSaveProgress;
-        QPointer<StageMosaicDialog> m_stageMosaicDialog;
-        QPointer<ParticleDetectionDialog> m_particleDetectionDialog;
+        std::unique_ptr<ToolRegistry> m_toolRegistry;
         QLabel* m_statusMessageLabel{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
         QLabel* m_statusRecordingLabel{nullptr};
+        QProgressBar* m_staticImportProgress{nullptr};
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
@@ -196,5 +182,7 @@ namespace scopeone::ui
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;
         int m_closeSaveTotal{0};
         bool m_closeSaveInProgress{false};
+        bool m_closeAfterSave{false};
+        bool m_previewRunning{false};
     };
 }

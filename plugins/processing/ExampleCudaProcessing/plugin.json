@@ -1,0 +1,7 @@
+{
+  "id": "example.cuda_processing",
+  "name": "Example CUDA Processing",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "processing"
+}

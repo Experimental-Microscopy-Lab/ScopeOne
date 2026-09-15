@@ -7,11 +7,11 @@
   <!-- <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a> -->
 </p>
 
-ScopeOne is an open-source microscopy control software for multi-camera imaging, originally developed for in-house lab use. Built with C++ and Qt, it uses a native [MMCore](https://github.com/micro-manager/mmCoreAndDevices) backend for single-camera operation and one isolated camera agent per device for simultaneous multi-camera preview and acquisition.
-It retains full compatibility with the [Micro-Manager](https://micro-manager.org/) device ecosystem and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
+ScopeOne is open-source microscopy control software built with C++ and Qt. Hardware is accessed through provider-independent device contracts; [Micro-Manager](https://micro-manager.org/) is the built-in provider, and isolated devices run through ScopeOne DriverHost processes.
+It retains compatibility with the Micro-Manager device ecosystem while allowing native vendor providers and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
 
 <p align="center">
-  <img src="resources/MainWindow.png" width="720"><br>
+  <img src="resources/Screenshot 2026-09-01 140040.png" width="720"><br>
   <sub> Graphical User Interface of ScopeOne</sub>
 </p>
 
@@ -63,6 +63,7 @@ The expected layout is:
 ```text
 ScopeOne/
   ScopeOneCore/
+    include/scopeone/      Core API and external plugin contracts
     external/
       mmCoreAndDevices/
       opencv-4.12.0/
@@ -70,6 +71,21 @@ ScopeOne/
 ```
 
 ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zstd and crc32c under its own `third_party` directory. It builds these dependencies from source without downloading packages during CMake configuration.
+
+### Plugin layout
+
+ScopeOne loads external plugins from these directories beside the application:
+
+- `plugins/processing` adds processing modules to the shared pipeline
+- `plugins/tools` adds optional workflow windows to the Tools menu
+- `plugins/hardware` adds isolated hardware providers hosted by `ScopeOne_DriverHost`
+- `plugins/hardware` also contains DAQ devices and signal source plugins
+
+All plugins use the installed `scopeone::PluginSDK` CMake target and the public contracts in `ScopeOneCore/include/scopeone`. The Core package owns the stable plugin-facing headers for image frames, hardware providers, DAQ devices, signal sources, processing modules, tool plugins, shared frames and manifests. A common manifest contains `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Reference plugins are organized under `plugins/hardware`, `plugins/processing`, and `plugins/tools`.
+
+Micro-Manager remains the built-in camera provider and continues to load its Device Adapters from `.cfg` files. Native camera devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. DAQ and signal acquisition are separate plugin contracts and are not linked into `ScopeOne.exe`.
+
+The Image Processing panel can process all live cameras or one selected camera. Recorded images and stacks open in independent windows, and the active image viewer becomes the target for Layers, Inspect, Image Processing, and Save As. Processing the current image or complete stack runs in the background and opens the result in a new window; stack results also remain available in Gallery. Temporal module state is preserved across each stack without changing live pipeline state.
 
 **Windows Build Steps:**
 
@@ -230,7 +246,7 @@ To use it:
 
 Use `scopeone` as the server name, `stdio` as the transport, the absolute path to `ScopeOneMcpServer.exe` as the command, and no command-line arguments. The exact configuration syntax depends on the agent host.
 
-The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
+The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, independent image windows, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can list, open, activate, process, save, and close independent image windows, read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
 
 Configuration loading and unloading report an explicit lifecycle state through the Local API and MCP. A configuration with non-camera initialization warnings is reported as `partially_loaded` with failed device labels; camera backend startup failures are cleaned up and reported as errors. During `loading` or `unloading`, hardware mutations are rejected until the operation finishes.
 

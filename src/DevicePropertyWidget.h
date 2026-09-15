@@ -25,7 +25,6 @@ namespace scopeone::ui
         void errorOccurred(const QString& message);
 
     private:
-        void onRefreshClicked();
         void onShowReadOnlyToggled(bool show);
         void onShowPreInitToggled(bool show);
         void onAutoRefreshToggled(bool enabled);

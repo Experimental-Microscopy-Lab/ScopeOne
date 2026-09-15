@@ -1,13 +1,17 @@
 #pragma once
 
 #include <QDateTime>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+#include <functional>
 
 class QTextEdit;
-class QPushButton;
+class QEvent;
+class QPoint;
+class QLineEdit;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -19,6 +23,9 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
+        using ApiDispatcher = std::function<void(
+            const QJsonObject&, std::function<void(const QJsonObject&)>)>;
+
         explicit ConsoleWidget(QWidget* parent = nullptr);
         ~ConsoleWidget() override;
 
@@ -43,10 +50,9 @@ namespace scopeone::ui
 
         QStringList getMessageFilter() const;
 
+        void setApiDispatcher(ApiDispatcher dispatcher);
+
     private:
-        void onClearClicked();
-        void onShowTimestampsToggled(bool show);
-        void onAutoScrollToggled(bool autoScroll);
         void onFilterChanged();
 
         struct ConsoleMessage
@@ -60,19 +66,30 @@ namespace scopeone::ui
         void updateDisplay();
         QString formatMessage(const ConsoleMessage& msg) const;
         QString getTypeColor(const QString& type) const;
+        bool messageMatchesCurrentFilter(const ConsoleMessage& msg) const;
         void scrollToBottom();
+        void executeCommand(const QString& commandText);
+        void showHelp();
+        void exportLogsToFile();
+        void showContextMenu(const QPoint& position);
+        void showCommandResponse(const QJsonObject& response);
+        bool eventFilter(QObject* object, QEvent* event) override;
 
-        QTextEdit* m_consoleTextEdit;
+        QTextEdit* m_consoleTextEdit{nullptr};
+        QCheckBox* m_showTimestampsCheckBox{nullptr};
+        QCheckBox* m_autoScrollCheckBox{nullptr};
+        QComboBox* m_filterComboBox{nullptr};
+        QLabel* m_messageCountLabel{nullptr};
+        QLineEdit* m_searchInput{nullptr};
+        QLineEdit* m_commandInput{nullptr};
 
-        QPushButton* m_clearButton;
-        QCheckBox* m_showTimestampsCheckBox;
-        QCheckBox* m_autoScrollCheckBox;
-        QComboBox* m_filterComboBox;
-        QLabel* m_messageCountLabel;
-
-        bool m_showTimestamps;
-        bool m_autoScroll;
+        bool m_showTimestamps{true};
+        bool m_autoScroll{true};
         QStringList m_messageFilter;
         QList<ConsoleMessage> m_messages;
+        QString m_searchKeyword;
+        QStringList m_commandHistory;
+        int m_historyIndex{-1};
+        ApiDispatcher m_apiDispatcher;
     };
 }

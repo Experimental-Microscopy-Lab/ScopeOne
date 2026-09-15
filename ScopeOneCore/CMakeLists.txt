@@ -31,7 +31,7 @@ if (WIN32)
 
     set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0/build")
 
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
     set(SCOPEONE_OPENCV_LIBRARIES opencv_world)
 
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
@@ -51,7 +51,7 @@ else ()
     # Linux/Unix: use system OpenCV and link the MMCore static libraries
     # built from the sibling micro-manager checkout (symlinked into
     # external/mmCoreAndDevices). No runtime DLLs to stage.
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
     set(SCOPEONE_OPENCV_LIBRARIES ${OpenCV_LIBS})
     set(MMCORE_BIN_DIR "")
 
@@ -77,15 +77,30 @@ endfunction()
 
 set(CORE_SOURCES
         src/ExperimentDocument.cpp
+        src/AcquisitionEngine.cpp
+        src/DriverHostProviderProxy.cpp
+        src/DaqDeviceManager.cpp
+        src/HardwareProvider.cpp
+        src/PluginManifest.cpp
+        src/HardwareRuntime.cpp
+        src/MicroManagerProvider.cpp
+        src/SimulatorProvider.cpp
         src/ImageSceneModel.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
         src/ParticleAnalysis.cpp
         src/StageMosaicManager.cpp
         src/ImageProcessingFramework.cpp
+        src/ProcessingPipeline.cpp
+        src/ToolTask.cpp
+        src/ToolFrameStream.cpp
+        src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
         src/FFTModule.cpp
+        src/FrequencyDomainFilterModule.cpp
+        src/MaskModule.cpp
+        src/IFFTModule.cpp
         src/BackgroundCalibrationModule.cpp
         src/DifferentialRollingModule.cpp
         src/MDAManager.cpp
@@ -93,37 +108,76 @@ set(CORE_SOURCES
         src/CameraBackend.cpp
         src/CameraManager.cpp
         src/NativeCameraBackend.cpp
-        src/AgentCameraBackend.cpp
+        src/DriverHostCameraBackend.cpp
         src/ScopeOneCore.cpp
+        src/ScanImageAssembler.cpp
+        src/SignalSourceManager.cpp
 )
 
 set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
+        include/scopeone/CameraProvider.h
+        include/scopeone/DaqDevice.h
+        include/scopeone/DriverHostProviderPlugin.h
+        include/scopeone/HardwareCapabilities.h
+        include/scopeone/HardwareProvider.h
+        include/scopeone/HardwareTypes.h
+        include/scopeone/ImageFrame.h
+        include/scopeone/PluginManifest.h
+        include/scopeone/PluginSDK.h
+        include/scopeone/ProcessingPlugin.h
+        include/scopeone/ScanImageAssembler.h
+        include/scopeone/scopeone_sdk_export.h
+        include/scopeone/SharedFrame.h
+        include/scopeone/SignalSource.h
+        include/scopeone/ToolFrameStream.h
+        include/scopeone/ToolPlugin.h
+        include/scopeone/ToolTask.h
+        internal/AcquisitionEngine.h
+        internal/CameraRuntimeControl.h
+        include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
+        internal/HardwareRuntime.h
+        internal/MicroManagerProvider.h
         internal/MMCoreManager.h
         internal/FrameBufferUtils.h
         internal/ParticleAnalysis.h
         internal/StageMosaicManager.h
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
-        internal/AgentProtocol.h
+        internal/ProcessingModuleRegistry.h
+        include/scopeone/ProcessingPipeline.h
+        internal/DriverHostProtocol.h
+        internal/SharedFrameRing.h
+        internal/DriverHostProviderProxy.h
+        internal/DaqDeviceManager.h
+        internal/SignalSourceManager.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
         internal/FFTModule.h
+        internal/FrequencyDomainFilterModule.h
+        internal/MaskModule.h
+        internal/IFFTModule.h
         internal/BackgroundCalibrationModule.h
         internal/DifferentialRollingModule.h
         internal/MDAManager.h
         internal/RecordingManager.h
         internal/CameraBackend.h
         internal/CameraManager.h
-        include/scopeone/ImageFrame.h
-        include/scopeone/SharedFrame.h
         include/scopeone/scopeone_core_export.h
         include/scopeone/ScopeOneCore.h
 )
 
 add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
+add_library(ScopeOnePluginSDK INTERFACE)
+add_library(scopeone::PluginSDK ALIAS ScopeOnePluginSDK)
+set_target_properties(ScopeOnePluginSDK PROPERTIES EXPORT_NAME PluginSDK)
+target_link_libraries(ScopeOnePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
+target_include_directories(ScopeOnePluginSDK INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 target_link_libraries(ScopeOneCore
         PUBLIC
         Qt::Core
@@ -187,24 +241,25 @@ add_custom_command(TARGET ScopeOneCore POST_BUILD
         $<TARGET_FILE_DIR:ScopeOneCore>
 )
 
-add_executable(ScopeOne_Agent
-        src/AgentMain.cpp
+add_executable(ScopeOne_DriverHost
+        src/DriverHostMain.cpp
 )
-target_link_libraries(ScopeOne_Agent
+target_link_libraries(ScopeOne_DriverHost
+        ScopeOneCore
         MMCore
         Qt::Core
         Qt::Network
 )
-target_compile_definitions(ScopeOne_Agent PRIVATE MMDEVICE_CLIENT_BUILD)
-target_include_directories(ScopeOne_Agent PRIVATE
+target_compile_definitions(ScopeOne_DriverHost PRIVATE MMDEVICE_CLIENT_BUILD)
+target_include_directories(ScopeOne_DriverHost PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${MMCORE_INCLUDE_DIR}
         ${MMDEVICE_INCLUDE_DIR}
 )
-target_link_directories(ScopeOne_Agent PRIVATE ${MMCORE_BIN_DIR})
+target_link_directories(ScopeOne_DriverHost PRIVATE ${MMCORE_BIN_DIR})
 
-scopeone_add_runtime_copy_commands(ScopeOne_Agent $<TARGET_FILE_DIR:ScopeOne_Agent>)
+scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOne_DriverHost>)
 
 # Fast Release build
 # if (MSVC)
@@ -222,10 +277,10 @@ if (MSVC)
             $<$<CONFIG:Release>:/LTCG>
     )
 
-    target_compile_options(ScopeOne_Agent PRIVATE
+    target_compile_options(ScopeOne_DriverHost PRIVATE
             $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
     )
-    target_link_options(ScopeOne_Agent PRIVATE
+    target_link_options(ScopeOne_DriverHost PRIVATE
             $<$<CONFIG:Release>:/LTCG>
     )
 endif ()
@@ -242,13 +297,13 @@ write_basic_package_version_file(
         COMPATIBILITY SameMajorVersion
 )
 
-install(TARGETS ScopeOneCore
+install(TARGETS ScopeOneCore ScopeOnePluginSDK
         EXPORT ScopeOneCoreTargets
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
-install(TARGETS ScopeOne_Agent
+install(TARGETS ScopeOne_DriverHost
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"

@@ -1,7 +1,6 @@
 #include "internal/RecordingManager.h"
 
-#include "internal/CameraManager.h"
-#include "MMCore.h"
+#include "scopeone/CameraProvider.h"
 #include <scopewriter/ScopeWriter.h>
 
 #include <QDateTime>
@@ -802,10 +801,6 @@ namespace scopeone::core::internal
                 plan.cameraIds.append(trimmedCameraId);
             }
         }
-        if (plan.cameraIds.isEmpty() && m_mmcore)
-        {
-            plan.cameraIds << QStringLiteral("Camera");
-        }
         if (plan.cameraIds.isEmpty())
         {
             errorMessage = QStringLiteral("No cameras available for recording");
@@ -833,7 +828,7 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraManager && !m_latestFrameFetcher)
+        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraProvider && !m_latestFrameFetcher)
         {
             errorMessage = QStringLiteral("Frame source is not available for recording");
             return false;
@@ -850,7 +845,7 @@ namespace scopeone::core::internal
     // Returns whether native preview recording uses the requested frame interval
     bool RecordingManager::planStreamsMda(const ExperimentPlan& plan) const
     {
-        return m_mmcore && plan.cameraIds.size() == 1 && !planUsesMda(plan);
+        return m_cameraProvider && plan.cameraIds.size() == 1 && !planUsesMda(plan);
     }
 
     // Resets counters and MDA state for a new capture plan
@@ -1329,8 +1324,9 @@ namespace scopeone::core::internal
         if (!usesMda)
         {
             primeLastFrameIndices();
-            if (m_cameraManager
-                && !m_cameraManager->setRecordingFrameDeliveryEnabled(true))
+            if (m_cameraRuntimeControl
+                && !m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+                    m_captureState.activeCameraIds, true))
             {
                 if (plan.streamToDisk)
                 {
@@ -1346,9 +1342,10 @@ namespace scopeone::core::internal
         {
             if (!startStreamingOutputs(plan))
             {
-                if (m_cameraManager)
+                if (m_cameraRuntimeControl)
                 {
-                    m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+                    m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+                        m_captureState.activeCameraIds, false);
                 }
                 const QString writerError = writerErrorSnapshot();
                 qWarning().noquote() << (writerError.isEmpty()
@@ -1403,6 +1400,7 @@ namespace scopeone::core::internal
         if (!m_captureState.isRecording) return;
 
         const bool streamToDisk = m_captureState.streamToDisk;
+        const QStringList activeCameraIds = m_captureState.activeCameraIds;
         auto session = m_activeSession;
         m_completionPending = true;
         if (streamToDisk)
@@ -1414,17 +1412,17 @@ namespace scopeone::core::internal
         emit recordingStateChanged(false);
         emitProgress(true);
 
-        if (m_cameraManager)
+        if (m_cameraRuntimeControl)
         {
-            m_cameraManager->setRecordingFrameDeliveryEnabled(false);
+            m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(activeCameraIds, false);
         }
         if (m_mdaState.usingMda && m_mdaState.manager && m_mdaState.manager->isRunning())
         {
             m_mdaState.manager->requestCancel();
         }
-        if (m_cameraManager)
+        if (m_cameraRuntimeControl)
         {
-            m_cameraManager->setFrameDeliveryPaused(false);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(activeCameraIds, false);
         }
 
         qInfo().noquote() << "Recording stopped";
@@ -1788,6 +1786,21 @@ namespace scopeone::core::internal
             return;
         }
 
+        const quint64 previousFrameIndex = m_captureState.lastFrameIndex.value(cameraId, 0);
+        if (!m_mdaState.usingMda
+            && !(m_mdaState.streamMda && m_mdaState.streamIntervalMs > 0.0)
+            && m_captureState.framesCapturedThisBurst.value(cameraId, 0) > 0
+            && frame.frameIndex - previousFrameIndex > 1)
+        {
+            const quint64 droppedFrames = frame.frameIndex - previousFrameIndex - 1;
+            onFrameDeliveryFailed(
+                QStringLiteral("Recording frame delivery skipped %1 frame(s) for %2")
+                    .arg(droppedFrames)
+                    .arg(cameraId),
+                droppedFrames);
+            return;
+        }
+
         const QString writerError = m_captureState.streamToDisk
                                         ? writerErrorSnapshot()
                                         : QString();
@@ -1961,9 +1974,9 @@ namespace scopeone::core::internal
     // Starts MDA driven recording capture
     bool RecordingManager::startMdaCapture(QString* errorMessage)
     {
-        if (!m_mmcore)
+        if (!m_cameraProvider)
         {
-            const QString message = QStringLiteral("MMCore not available for MDA");
+            const QString message = QStringLiteral("Camera provider not available for MDA");
             if (errorMessage) *errorMessage = message;
             qWarning().noquote() << message;
             return false;
@@ -1975,9 +1988,9 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        if (m_captureState.activeCameraIds.size() > 1 && !m_cameraManager)
+        if (planUsesMda(m_mdaState.plan) && !m_stageProvider)
         {
-            const QString message = QStringLiteral("Multi-camera MDA requires CameraManager");
+            const QString message = QStringLiteral("Stage provider not available for MDA");
             if (errorMessage) *errorMessage = message;
             qWarning().noquote() << message;
             return false;
@@ -1985,7 +1998,7 @@ namespace scopeone::core::internal
 
         if (!m_mdaState.manager)
         {
-            m_mdaState.manager = new MDAManager(m_mmcore, this);
+            m_mdaState.manager = new MDAManager(this);
         }
         if (m_mdaState.manager->isRunning())
         {
@@ -1994,11 +2007,13 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        m_mdaState.manager->setCameraManager(m_cameraManager);
+        m_mdaState.manager->setCameraProvider(m_cameraProvider);
+        m_mdaState.manager->setStageProvider(m_stageProvider);
 
-        if (m_captureState.activeCameraIds.size() > 1)
+        if (m_cameraRuntimeControl)
         {
-            m_cameraManager->setFrameDeliveryPaused(true);
+            m_cameraRuntimeControl->setFrameDeliveryPaused(
+                m_captureState.activeCameraIds, true);
         }
 
         m_mdaState.cameraId = m_captureState.activeCameraIds.first();
@@ -2202,12 +2217,15 @@ namespace scopeone::core::internal
     }
 
     // Saves buffered sessions and preserves direct writer outputs
-    QString RecordingManager::saveSessionToDisk(const std::shared_ptr<RecordingSessionData>& session)
+    QString RecordingManager::saveSessionToDisk(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const std::shared_ptr<RecordingSessionData>& sourceSession)
     {
         if (!session)
         {
             return QStringLiteral("Error: Missing recording session");
         }
+        const auto inputSession = sourceSession ? sourceSession : session->cloneForSave();
         ExperimentPlan capturePlan = session->capturePlan();
         if (capturePlan.cameraIds.isEmpty())
         {
@@ -2227,21 +2245,8 @@ namespace scopeone::core::internal
             return updateSessionResult(*session, QStringLiteral("Error: %1").arg(planError), false);
         }
 
-        if (!session->hasAnyFrames())
+        if (!inputSession->hasAnyFrames() && !inputSession->hasRecordedOutput())
         {
-            if (!session->saveMessage().isEmpty())
-            {
-                return session->saveMessage();
-            }
-            if (session->streamedToDisk() && session->hasRecordedOutput())
-            {
-                return updateSessionResult(
-                    *session,
-                    saveSuccessMessage(
-                        QStringLiteral("Success: Recording was already saved during acquisition"),
-                        savedSessionOutputDir(*session)),
-                    true);
-            }
             return updateSessionResult(*session, QStringLiteral("Error: No frames captured"), false);
         }
 
@@ -2273,8 +2278,8 @@ namespace scopeone::core::internal
         QHash<QString, RecordingFileManifest> completedOutputs;
         for (const QString& cameraId : session->cameraIds())
         {
-            const int frameCount = session->frameCount(cameraId);
-            if (frameCount <= 0)
+            const qint64 frameCount = inputSession->recordedFrameCount(cameraId);
+            if (frameCount <= 0 || frameCount > (std::numeric_limits<int>::max)())
             {
                 continue;
             }
@@ -2284,7 +2289,7 @@ namespace scopeone::core::internal
             tiffOpts.useDeflate = capturePlan.enableCompression;
             tiffOpts.zipQuality = capturePlan.compressionLevel;
 
-            const ImageFrame firstImageFrame = session->imageFrameAt(cameraId, 0);
+            const ImageFrame firstImageFrame = inputSession->imageFrameAt(cameraId, 0);
             if (!firstImageFrame.isValid())
             {
                 continue;
@@ -2293,7 +2298,7 @@ namespace scopeone::core::internal
             if (capturePlan.format == RecordingFormat::OmeTiff
                 || capturePlan.format == RecordingFormat::OmeZarr)
             {
-                for (const AcquisitionEventRecord& record : session->experimentDocument().events)
+                for (const AcquisitionEventRecord& record : inputSession->experimentDocument().events)
                 {
                     if (record.succeeded && record.frames.contains(cameraId))
                     {
@@ -2316,13 +2321,13 @@ namespace scopeone::core::internal
                                         capturePlan,
                                         physicalPixelSizeUm(firstImageFrame.width,
                                                             firstImageFrame.sourceRoiWidth,
-                                                            session->cameraPixelSizeUm(cameraId)),
+                                                            inputSession->cameraPixelSizeUm(cameraId)),
                                         physicalPixelSizeUm(firstImageFrame.height,
                                                             firstImageFrame.sourceRoiHeight,
-                                                            session->cameraPixelSizeUm(cameraId)),
-                                        session->experimentDocument().startedTimestampNs,
+                                                            inputSession->cameraPixelSizeUm(cameraId)),
+                                        inputSession->experimentDocument().startedTimestampNs,
                                         cameraId,
-                                        session->experimentDocument().deviceProperties
+                                        inputSession->experimentDocument().deviceProperties
                                             .value(cameraId).toObject(),
                                         tiffOpts))
             {
@@ -2330,9 +2335,9 @@ namespace scopeone::core::internal
                 return failSave(errorMessage);
             }
             int saved = 0;
-            for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+            for (int frameIndex = 0; frameIndex < static_cast<int>(frameCount); ++frameIndex)
             {
-                const ImageFrame imageFrame = session->imageFrameAt(cameraId, frameIndex);
+                const ImageFrame imageFrame = inputSession->imageFrameAt(cameraId, frameIndex);
                 if (!imageFrame.isValid())
                 {
                     continue;

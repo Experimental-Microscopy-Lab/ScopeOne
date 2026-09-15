@@ -1,6 +1,7 @@
 #include "internal/CameraManager.h"
 
 #include <QTimer>
+#include <utility>
 
 namespace scopeone::core::internal
 {
@@ -28,6 +29,16 @@ namespace scopeone::core::internal
         shutdownNow();
     }
 
+    void CameraManager::setFrameSink(FrameSink sink)
+    {
+        m_frameSink = std::move(sink);
+    }
+
+    void CameraManager::setPreviewStateSink(PreviewStateSink sink)
+    {
+        m_previewStateSink = std::move(sink);
+    }
+
     // Selects one camera backend and forwards its runtime signals
     bool CameraManager::activateBackend(CameraBackend::Kind kind)
     {
@@ -39,14 +50,20 @@ namespace scopeone::core::internal
         shutdownNow();
         m_backend = kind == CameraBackend::Kind::Native
                         ? createNativeCameraBackend(m_processingFrameGate)
-                        : createAgentCameraBackend(m_processingFrameGate);
+                        : createDriverHostCameraBackend(m_processingFrameGate);
         if (!m_backend)
         {
             return false;
         }
 
         connect(m_backend.get(), &CameraBackend::rawFrameReady,
-                this, &CameraManager::newRawFrameReady);
+                this, [this](const scopeone::core::ImageFrame& frame)
+                {
+                    if (m_frameSink)
+                    {
+                        m_frameSink(frame);
+                    }
+                });
         // Keeps processing input on the producer thread
         connect(m_backend.get(), &CameraBackend::processingFrameReady,
                 this, &CameraManager::processingFrameReady,
@@ -58,9 +75,13 @@ namespace scopeone::core::internal
         connect(m_backend.get(), &CameraBackend::frameDeliveryFailed,
                 this, &CameraManager::frameDeliveryFailed);
         connect(m_backend.get(), &CameraBackend::previewStateChanged,
-                this, &CameraManager::previewStateChanged);
-        connect(m_backend.get(), &CameraBackend::agentControlServerListening,
-                this, &CameraManager::agentControlServerListening);
+                this, [this](bool running)
+                {
+                    if (m_previewStateSink) m_previewStateSink(running);
+                    emit previewStateChanged(running);
+                });
+        connect(m_backend.get(), &CameraBackend::driverHostControlServerListening,
+                this, &CameraManager::driverHostControlServerListening);
         if (!m_backend->setHighRateFrameDeliveryEnabled(m_highRateFrameDeliveryEnabled)
             || !m_backend->setRecordingFrameDeliveryEnabled(m_recordingFrameDeliveryEnabled))
         {
@@ -88,8 +109,8 @@ namespace scopeone::core::internal
         return configured;
     }
 
-    // Adds one process isolated camera to the agent backend
-    bool CameraManager::addAgentCamera(const QString& cameraId,
+    // Add one process isolated camera to the DriverHost backend
+    bool CameraManager::addDriverHostCamera(const QString& cameraId,
                                        const QString& adapter,
                                        const QString& device,
                                        const QStringList& preInitProperties,
@@ -98,8 +119,8 @@ namespace scopeone::core::internal
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const bool configured = !normalizedId.isEmpty()
-            && activateBackend(CameraBackend::Kind::Agent)
-            && m_backend->addAgentCamera(normalizedId,
+            && activateBackend(CameraBackend::Kind::DriverHost)
+            && m_backend->addDriverHostCamera(normalizedId,
                                          adapter,
                                          device,
                                          preInitProperties,
@@ -179,10 +200,10 @@ namespace scopeone::core::internal
         return m_backend && m_backend->stopPreview();
     }
 
-    // Report whether cameras are isolated in agent processes
-    bool CameraManager::usesAgentBackend() const
+    // Report whether cameras are isolated in DriverHost processes
+    bool CameraManager::usesDriverHostBackend() const
     {
-        return m_backend && m_backend->kind() == CameraBackend::Kind::Agent;
+        return m_backend && m_backend->kind() == CameraBackend::Kind::DriverHost;
     }
 
     bool CameraManager::startPreviewFor(const QString& cameraId)
@@ -203,7 +224,7 @@ namespace scopeone::core::internal
         return !normalizedId.isEmpty() && m_backend && m_backend->isPreviewRunning(normalizedId);
     }
 
-    void CameraManager::setFrameDeliveryPaused(bool paused)
+    void CameraManager::setFrameDeliveryPaused(const QStringList&, bool paused)
     {
         if (m_backend)
         {
@@ -212,7 +233,7 @@ namespace scopeone::core::internal
     }
 
     // Switches the active backend between preview and lossless recording delivery
-    bool CameraManager::setRecordingFrameDeliveryEnabled(bool enabled)
+    bool CameraManager::setRecordingFrameDeliveryEnabled(const QStringList&, bool enabled)
     {
         const bool ok = !m_backend || m_backend->setRecordingFrameDeliveryEnabled(enabled);
         if (ok || !enabled)
@@ -223,7 +244,7 @@ namespace scopeone::core::internal
     }
 
     // Switches processing delivery independently of preview display rate
-    bool CameraManager::setHighRateFrameDeliveryEnabled(bool enabled)
+    bool CameraManager::setHighRateFrameDeliveryEnabled(const QStringList&, bool enabled)
     {
         const bool ok = !m_backend || m_backend->setHighRateFrameDeliveryEnabled(enabled);
         if (ok)

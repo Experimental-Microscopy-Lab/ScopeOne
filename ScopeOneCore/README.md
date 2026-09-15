@@ -2,13 +2,13 @@
 
 `ScopeOneCore` is the reusable runtime library behind the desktop app.
 
-The desktop app currently assumes `ScopeOneCore` is checked out under the `ScopeOne` repository root.
+The desktop app consumes `ScopeOneCore` through its installed CMake package.
 
 ## Source Layout
 
 ```text
 ScopeOneCore/
-|-- include/scopeone/   Public C++ headers installed for consumers
+|-- include/scopeone/   Core facade and all public plugin contracts
 |-- internal/           Private headers used only while building ScopeOneCore
 |-- src/                C++ implementations for both public and private types
 |-- python/scopeone/    External Python client for a running ScopeOne app
@@ -18,20 +18,20 @@ ScopeOneCore/
 `-- install/            Generated local installation consumed by the desktop app
 ```
 
-`include/scopeone` defines the installed C++ contract. A header belongs here only when the desktop app or another external consumer must compile against it. Consumers include these files with the installed prefix, for example:
+`include/scopeone` contains the Core facade, Core-owned public models and all plugin contracts:
 
 ```cpp
 #include <scopeone/ScopeOneCore.h>
 #include <scopeone/ImageFrame.h>
 ```
 
-`internal` contains implementation contracts between Core managers, processing modules and the camera agent. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
+`internal` contains implementation contracts between Core managers, processing modules and DriverHost. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
 
 `src` contains implementations. A public class such as `ScopeOneCore`, `ImageSceneModel` or `ExperimentDocument` still has its `.cpp` file in `src`; being public is determined by its header location and exported API, not by the location of its implementation.
 
 Use this placement rule:
 
-- Put a stable type or function required by consumers in `include/scopeone`.
+- Put every public Core model, plugin contract and shared plugin data type in `ScopeOneCore/include/scopeone`.
 - Put a Core-only manager, algorithm or protocol detail in `internal`.
 - Put executable implementation in `src`.
 - Keep desktop widgets and Qt UI behavior in the top-level ScopeOne `src` directory, outside `ScopeOneCore`.
@@ -42,9 +42,10 @@ Use this placement rule:
 
 | Namespace | Purpose | Examples |
 |---|---|---|
-| `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ImageFrame`, `ExperimentDocument`, `ImageSceneModel` |
+| `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ExperimentDocument`, `ImageSceneModel` |
+| `scopeone::core` SDK contracts | Stable plugin-facing types and interfaces | `ImageFrame`, `CameraProvider`, `DaqDevice`, `SignalSource`, `ProcessingPlugin`, `ToolPlugin` |
 | `scopeone::core::internal` | Core-only managers and processing implementations | `CameraManager`, `MMCoreManager`, `RecordingManager`, processing modules |
-| `scopeone::core::internal::agent` | Private camera-agent protocol details | Agent request, response and frame transport types |
+| `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `InspectWidget` |
 
 Code in `src` that implements a public type remains in `scopeone::core`. Code that implements an `internal` header remains in `scopeone::core::internal`. The Python package named `scopeone` is an external client package and is not an embedded form of the C++ namespace.
@@ -87,29 +88,45 @@ Outputs:
 
 - `build/Release/ScopeOneCore.dll`
 - `build/Release/ScopeOneCore.lib`
-- `build/Release/ScopeOne_Agent.exe`
+- `build/Release/ScopeOne_DriverHost.exe`
+- External plugins are built under `plugins`.
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
-- `install/bin/ScopeOne_Agent.exe`
+- `install/bin/ScopeOne_DriverHost.exe`
+- Hardware, DAQ and signal source plugins are installed under `plugins/hardware`.
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
-## Public API
+## Core and SDK API
 
-The installed headers are the source of truth for the public API:
+The installed headers in `include/scopeone` are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
-- `ImageFrame.h` defines the image payload and metadata exchanged across Core features.
-- `ExperimentDocument.h` defines experiment plans, results, persistence and provenance.
-- `ImageSceneModel.h` defines shared image-layer, display-state and markup state.
-- `SharedFrame.h` defines the language-neutral shared-memory frame layout.
+- `SimulatorProvider.h`, `ProcessingPipeline.h`, `ExperimentDocument.h` and `ImageSceneModel.h` are Core-owned runtime models and services.
+- The SDK provides `HardwareProvider.h`, `HardwareCapabilities.h`, `CameraProvider.h`, `DriverHostProviderPlugin.h`, `DaqDevice.h`, `SignalSource.h`, `ScanImageAssembler.h`, `ProcessingPlugin.h`, `ToolPlugin.h`, `PluginManifest.h`, `HardwareTypes.h`, `ImageFrame.h` and `SharedFrame.h`.
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Register in-process providers with `ScopeOneCore::registerHardwareProvider(...)`. Submit isolated module loading with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)` and observe `hardwareProviderRegistrationFinished` for the result. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
+
+## Plugin Boundaries
+
+- `plugins/hardware` contains native `HardwareProvider` modules. Each provider runs in an isolated DriverHost process. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne plugins.
+- `plugins/hardware` contains DAQ and signal source plugins alongside native `HardwareProvider` modules. The Core selects each plugin by its interface without linking DAQ vendor libraries into the application.
+- `ScanImageAssembler` is implemented in Core as a provider-independent 1D-to-2D reconstruction algorithm, while its public contract is owned by the SDK. The Core publishes reconstructed frames through the shared frame graph and Gallery session path.
+- `plugins/processing` contains `ProcessingPlugin` modules loaded by ScopeOneCore. A plugin publishes stable module IDs, parameter descriptors and factories. Built-in processing methods use the same registry.
+- `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. These receive a restricted UI context rather than direct access to `MainWindow` or `PreviewWidget`. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
+
+External projects consume the exported `scopeone::PluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; incompatible manifests are rejected before the plugin instance is created.
+
+Hardware, processing, DAQ, signal-source and tool contracts are installed SDK APIs. Desktop tool plugins target the ScopeOne application UI contract exposed by the SDK.
+
 ## Processing Data Flow
 
-`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved OME-TIFF, OME-Zarr, TIFF and binary recording outputs are read back asynchronously through `ScopeOneCore::requestRecordingSessionFrame(...)`. Live preview processing and synchronous API processing use separate runtime pipeline state so offline frame edits do not change live module buffers.
+`ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Processing recipes persist stable module IDs rather than registry positions. Available modules and their parameter descriptors come from the processing registry. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved OME-TIFF, OME-Zarr, TIFF and binary recording outputs are read back asynchronously through `ScopeOneCore::requestRecordingSessionFrame(...)`.
+
+Real-time processing can consume all camera streams or one camera selected with `setRealTimeProcessingSource(...)`. `requestImageProcessing(...)` applies an isolated pipeline to one current image. `requestRecordingSessionStackProcessing(...)` applies one stateful isolated runtime to a complete session camera stack, reports progress, supports cancellation and creates a new in-memory Gallery session. These offline paths do not change live module buffers. The Local API can list, open, activate, process, save and close independent image windows backed by retained sessions.
 
 Raw live frames, processed live frames, static tool/gallery frames, external API frames and session frame sources are routed through the core frame graph. UI preview widgets keep only a render cache, and callers should use `ScopeOneCore` frame facade methods instead of reading camera managers, recording sessions or preview cache state directly.
 

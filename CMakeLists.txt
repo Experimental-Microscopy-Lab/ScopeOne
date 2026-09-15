@@ -71,16 +71,19 @@ set(SCOPEONE_UI_SOURCES
         src/MainWindow.cpp
         src/ImageProcessingWidget.cpp
         src/ImageGalleryWidget.cpp
+        src/ImageWorkspace.cpp
         src/ImageToolsDialog.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
         src/AboutDialog.cpp
         src/SettingsDialog.cpp
+        src/PluginManagerDialog.cpp
         src/DeviceControlWidget.cpp
         src/RecordingWidget.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
+        src/ScopeOneToolPlugin.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
@@ -89,16 +92,19 @@ set(SCOPEONE_UI_HEADERS
         src/MainWindow.h
         src/ImageProcessingWidget.h
         src/ImageGalleryWidget.h
+        src/ImageWorkspace.h
         src/ImageToolsDialog.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
         src/AboutDialog.h
         src/SettingsDialog.h
+        src/PluginManagerDialog.h
         src/DeviceControlWidget.h
         src/RecordingWidget.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
+        src/ScopeOneToolPlugin.h
 )
 
 if (WIN32)
@@ -176,11 +182,20 @@ install(FILES
         DESTINATION .
 )
 
-file(GLOB SCOPEONE_CORE_RUNTIME_FILES
-        LIST_DIRECTORIES false
-        "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/*.dll"
-        "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_Agent.exe"
-)
+if (WIN32)
+    file(GLOB SCOPEONE_CORE_RUNTIME_FILES
+            LIST_DIRECTORIES false
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/*.dll"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_DriverHost.exe"
+    )
+else ()
+    file(GLOB SCOPEONE_CORE_RUNTIME_FILES
+            LIST_DIRECTORIES false
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_DriverHost"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
+    )
+endif ()
 
 if (SCOPEONE_CORE_RUNTIME_FILES)
     add_custom_command(TARGET ScopeOne POST_BUILD
@@ -190,6 +205,18 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
             COMMAND_EXPAND_LISTS
     )
 endif ()
+
+foreach (_plugin_kind IN ITEMS processing hardware tools)
+    set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/${_plugin_kind}")
+    if (EXISTS "${_plugin_dir}")
+        add_custom_command(TARGET ScopeOne POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_plugin_dir}"
+                "$<TARGET_FILE_DIR:ScopeOne>/plugins/${_plugin_kind}"
+        )
+        install(DIRECTORY "${_plugin_dir}/" DESTINATION "plugins/${_plugin_kind}")
+    endif ()
+endforeach ()
 
 if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)
@@ -227,7 +254,7 @@ if (WIN32)
     install(CODE "
         file(GLOB _core_runtime_files
             \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/*.dll\"
-            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/ScopeOne_Agent.exe\"
+            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/ScopeOne_DriverHost.exe\"
         )
         if (_core_runtime_files)
             file(INSTALL

@@ -7,7 +7,7 @@ namespace scopeone::core::internal
     class GaussianBlurModule : public ProcessingModule
     {
     public:
-        ProcessingModuleKind kind() const noexcept override { return ProcessingModuleKind::GaussianBlur; }
+        QString id() const override { return QStringLiteral("gaussian_blur"); }
         QString name() const override { return "Gaussian Blur"; }
         QVariantMap parameters() const override;
         void setParameters(const QVariantMap& params) override;

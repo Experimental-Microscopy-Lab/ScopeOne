@@ -2,6 +2,7 @@
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
+#include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
 #include <QElapsedTimer>
@@ -15,17 +16,25 @@
 #include <QSize>
 #include <QTimer>
 #include <QVector>
+#include <QVector2D>
+#include <functional>
 #include <vector>
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
+class QDragEnterEvent;
+class QDropEvent;
 class QEvent;
+class QImage;
 class QKeyEvent;
 class QLabel;
 class QMouseEvent;
 class QPainter;
 class QPointF;
+class QPushButton;
+class QSlider;
 class QWheelEvent;
+class QWidget;
 
 namespace scopeone::ui
 {
@@ -37,6 +46,7 @@ namespace scopeone::ui
 
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
+        enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
 
         struct PreviewInteractionTarget
         {
@@ -50,17 +60,20 @@ namespace scopeone::ui
 
         PreviewWidget(ImageSceneModel* sceneModel, QWidget* parent);
         ~PreviewWidget() override;
+        ImageSceneModel* sceneModel() const { return m_sceneModel; }
 
         void setGraphProcessedFrame(const scopeone::core::ImageFrame& frame);
         void setGraphRawFrame(const scopeone::core::ImageFrame& frame);
-        void trackProcessedFrameRate(const QString& cameraId, quint64 frameCount);
-        void trackRawFrameRate(const QString& cameraId, quint64 frameCount);
         void resetLiveFrameRates();
+        void setLayerFrameRates(const QMap<QString, double>& frameRates);
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
         void setAvailableCameraIds(const QStringList& cameraIds);
         QString setGraphStaticLayerFrame(const QString& layerId,
                                          const scopeone::core::ImageFrame& frame);
+        void setLayerSliceCount(const QString& layerKey, int sliceCount);
+        QString setGraphToolLayerFrame(const QString& layerId,
+                                       const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
         void clearStaticLayers();
         QStringList availableCameraIds() const;
@@ -77,6 +90,22 @@ namespace scopeone::ui
         int zoomPercent() const;
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
+        void setScaleBarVisible(bool visible);
+        bool isScaleBarVisible() const;
+        void setClippingWarningEnabled(bool enabled);
+        bool isClippingWarningEnabled() const;
+        void setViewDimensionMode(ViewDimensionMode mode);
+        ViewDimensionMode viewDimensionMode() const { return m_viewDimensionMode; }
+        void set3dZScale(float scale);
+        float get3dZScale() const { return m_zScale; }
+        void reset3dCamera();
+        void set3dWireframeEnabled(bool enabled);
+        bool is3dWireframeEnabled() const { return m_wireframe3d; }
+        void setThreeDimensionalColorbarVisible(bool visible);
+        bool isThreeDimensionalColorbarVisible() const { return m_threeDimensionalColorbarVisible; }
+        void setActiveLayerKey(const QString& key);
+        QString activeLayerKey() const { return m_activeLayerKey; }
+        void setPixelSizeCallback(std::function<double(const QString&)> callback);
         void startROIDrawing(const QString& cameraId);
         void startMeasurementLineDrawingForLayer(const QString& layerKey);
         void startCrossSectionDrawingForLayer(const QString& layerKey);
@@ -86,6 +115,7 @@ namespace scopeone::ui
                                  PreviewInteractionTarget& outTarget,
                                  const QString& sourceId = QString(),
                                  bool rawOnly = false) const;
+        QVector<PreviewInteractionTarget> interactionTargetsAt(const QPoint& widgetPos) const;
 signals:
         void availableCameraIdsChanged(const QStringList& cameraIds);
         void availableLayerKeysChanged(const QStringList& layerKeys);
@@ -94,6 +124,17 @@ signals:
         void layerInfoTextChanged(const QString& text);
         void zoomLevelChanged(int zoomPercent);
         void fitToWindowChanged(bool enabled);
+        void scaleBarVisibilityChanged(bool visible);
+        void clippingWarningChanged(bool enabled);
+        void viewDimensionModeChanged(ViewDimensionMode mode);
+        void threeDimensionalZScaleChanged(float scale);
+        void threeDimensionalWireframeChanged(bool enabled);
+        void threeDimensionalColorbarVisibilityChanged(bool visible);
+        void stageStepRequested(double dxScale, double dyScale, bool big);
+        void stageZStepRequested(double dzScale, bool big);
+        void layerClicked(const QString& layerKey);
+        void layerSliceIndexRequested(const QString& layerKey, int sliceIndex);
+        void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
                       int x,
@@ -107,25 +148,23 @@ signals:
                                       const QPoint& start,
                                       const QPoint& end);
         void measurementLineCleared();
+        void imageFilesDropped(const QStringList& filePaths);
 
     protected:
         void initializeGL() override;
         void resizeGL(int, int) override;
         void paintGL() override;
         void mousePressEvent(QMouseEvent* event) override;
+        void mouseDoubleClickEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
         void leaveEvent(QEvent* event) override;
         void wheelEvent(QWheelEvent* event) override;
         void keyPressEvent(QKeyEvent* event) override;
+        void dragEnterEvent(QDragEnterEvent* event) override;
+        void dropEvent(QDropEvent* event) override;
 
     private:
-        struct FpsState
-        {
-            QElapsedTimer intervalTimer;
-            quint64 framesSinceUpdate{0};
-        };
-
         enum class Blending { Translucent = 0, Additive, Minimum, Opaque, Multiplicative };
         enum class FrameRole { Raw, Processed };
         enum class MarkupEditMode
@@ -173,6 +212,13 @@ signals:
             bool hasRawFrame{false};
         };
 
+        struct ViewportState
+        {
+            int zoomPercent{100};
+            QPoint offset;
+            bool fitToWindow{true};
+        };
+
         struct LayerRenderItem
         {
             const FrameSourceRenderInfo* info{nullptr};
@@ -190,33 +236,66 @@ signals:
             bool firstVisibleInArea{false};
         };
 
+        struct Camera3dState
+        {
+            float pitch{35.0f};
+            float yaw{45.0f};
+            float distance{2.8f};
+            QVector2D pan{0.0f, 0.0f};
+        };
+
     private:
         QStringList m_availableCameraIds;
         QSet<QString> m_staticSourceIds;
+        QSet<QString> m_toolSourceIds;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
         QMap<QString, double> m_layerFps;
         QString m_layerInfoText{QStringLiteral("No image loaded")};
-        QMap<QString, FpsState> m_fpsStates;
-        QTimer m_fpsUpdateTimer;
+        QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
+        QWidget* m_sliceBar{nullptr};
+        QSlider* m_sliceSlider{nullptr};
+        QLabel* m_sliceLabel{nullptr};
+        QPushButton* m_slicePlayButton{nullptr};
 
         mutable QMutex m_mutex;
         QMap<QString, FrameSourceState> m_frameSources;
         quint64 m_nextFrameRevision{0};
-        int m_zoomPercent{100};
-        bool m_fitToWindow{true};
-        QPoint m_viewOffset;
+        QMap<QString, ViewportState> m_viewportStates;
+        ViewportState m_overlayViewportState;
         QString m_placeholderText{QStringLiteral("No image loaded")};
 
         bool m_glInited{false};
+        QOpenGLFunctions_3_3_Core m_gl3dFunctions;
         QOpenGLVertexArrayObject m_vao;
         GLuint m_vbo{0};
         GLuint m_colormapTexture{0};
         QOpenGLShaderProgram m_prog;
+        QOpenGLShaderProgram m_prog3d;
+        QOpenGLVertexArrayObject m_gridVao;
+        GLuint m_gridVbo{0};
+        GLuint m_gridIbo{0};
+        int m_gridElementCount{0};
         GLint m_uTex{-1}, m_uMinNorm{-1}, m_uMaxNorm{-1}, m_uTexNormScale{-1}, m_uAlpha{-1};
         GLint m_uGamma{-1}, m_uColormap{-1}, m_uColormapLut{-1};
-        GLint m_uUvScale{-1}, m_uUvOffset{-1};
+        GLint m_uUvScale{-1}, m_uUvOffset{-1}, m_uShowClipping{-1};
+        GLint m_u3dTex{-1}, m_u3dMvp{-1}, m_u3dMinNorm{-1}, m_u3dMaxNorm{-1};
+        GLint m_u3dTexNormScale{-1}, m_u3dZScale{-1}, m_u3dGamma{-1};
+        GLint m_u3dColormap{-1}, m_u3dColormapLut{-1}, m_u3dShowClipping{-1};
+        GLint m_u3dUvScale{-1}, m_u3dUvOffset{-1}, m_u3dLightDirection{-1};
+        ViewDimensionMode m_viewDimensionMode{ViewDimensionMode::TwoDimensional};
+        QMap<QString, Camera3dState> m_layerCameras3d;
+        QMap<QString, int> m_layerSliceCounts;
+        QMap<QString, int> m_layerSliceIndices;
+        float m_zScale{1.0f};
+        bool m_wireframe3d{false};
+        bool m_threeDimensionalColorbarVisible{true};
+        bool m_scaleBarVisible{true};
+        bool m_clippingWarning{false};
+        QString m_activeLayerKey;
+        QStringList m_savedVisibleLayerKeys;
+        std::function<double(const QString&)> m_pixelSizeCallback;
 
         struct CachedTexture
         {
@@ -252,9 +331,18 @@ signals:
         QPoint m_dragMarkupStartImagePos;
         MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
         bool m_markupDragging{false};
+        bool m_viewPanning{false};
+        QPoint m_panStartWidgetPos;
+        QPoint m_panStartOffset;
+        QString m_panLayerKey;
+        bool m_surfaceOrbiting{false};
+        bool m_surfacePanning{false};
+        QPoint m_surfaceDragStart;
+        QString m_surfaceLayerKey;
+        float m_surfaceStartPitch{35.0f};
+        float m_surfaceStartYaw{45.0f};
+        QVector2D m_surfaceStartPan{0.0f, 0.0f};
         void updateImageDisplay();
-        void updateLayerFps(const QString& layerKey, quint64 frameCount = 1);
-        void updateFrameRates();
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
                               const scopeone::core::ImageFrame& frame,
@@ -265,7 +353,6 @@ signals:
         LayerDisplaySettings defaultLayerDisplaySettings(bool processed) const;
         LayerDisplaySettings layerDisplaySettings(const QString& layerKey) const;
         Blending blendingFromName(const QString& name) const;
-        QString blendingName(Blending blending) const;
         void removeStaticLayerData(const QString& sourceId);
         QSet<QString> validLayerKeys() const;
         bool hasRawFrame(const FrameSourceState& frameState) const;
@@ -276,6 +363,7 @@ signals:
                                  std::vector<RenderItem>& renderItems) const;
         bool resolveDisplayGeometry(const FrameSourceState& frameState,
                                     bool processed,
+                                    const QString& layerKey,
                                     const QRect& area,
                                     QRect& displayRect,
                                     QSize& imageSize) const;
@@ -292,16 +380,19 @@ signals:
                                       const QString& layerKey) const;
         bool mapWidgetPositionToImage(const FrameSourceState& frameState,
                                       bool processed,
+                                      const QString& layerKey,
                                       const QRect& area,
                                       const QPoint& widgetPos,
                                       QPoint& imagePos) const;
         bool mapWidgetRectToImage(const FrameSourceState& frameState,
                                   bool processed,
+                                  const QString& layerKey,
                                   const QRect& area,
                                   const QRect& widgetRect,
                                   QRect& imageRect) const;
         bool mapImagePositionToWidget(const FrameSourceState& frameState,
                                       bool processed,
+                                      const QString& layerKey,
                                       const QRect& area,
                                       const QPoint& imagePos,
                                       QPoint& widgetPos) const;
@@ -311,26 +402,44 @@ signals:
                         const RenderItem& item) const;
         void drawMarkups(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,
                                     MarkupEditMode& outEditMode) const;
         void clearSelectedMarkups();
         void drawRenderItem(const RenderItem& item);
+        void draw3dSurface(const RenderItem& item,
+                           const Camera3dState& camera,
+                           const QRect& targetArea);
+        void draw3dColorbar(QPainter& painter,
+                            const RenderItem& item,
+                            const QRect& viewportRect) const;
+        QImage colormapStripImage(int colormapIndex, int height) const;
         void ensureGlPipeline();
+        GLuint ensureFrameTexture(const QString& textureKey,
+                                  const scopeone::core::ImageFrame& frame,
+                                  quint64 frameRevision);
         void drawFrameInRect(const QString& textureKey,
                              const scopeone::core::ImageFrame& frame,
                              quint64 frameRevision,
-                             const QRect& r,
+                             const QRect& displayRect,
+                             const QRect& clipRect,
                              bool flipX,
                              bool flipY,
                              const LayerDisplaySettings& display,
                              bool firstVisibleInArea);
         QRect targetRectForImageSize(const QSize& imageSize,
                                      const FrameSourceState& frameState,
+                                     const QString& layerKey,
                                      const QRect& avail) const;
         void setUvTransform(bool flipX, bool flipY);
         void applyViewportForRect(const QRect& logicalRect);
+        void applyScissorForRect(const QRect& logicalRect);
+        ViewportState& viewportStateForLayer(const QString& layerKey);
+        ViewportState viewportStateForLayer(const QString& layerKey) const;
+        QString viewportControlLayerKey() const;
         std::vector<QRect> computeLayout(int count) const;
         std::vector<RenderItem> buildRenderItems(const std::vector<FrameSourceRenderInfo>& frameSourceRenderInfos) const;
 
@@ -339,5 +448,10 @@ signals:
         void cancelROIDrawing();
         void cancelMeasurementLineDrawing();
         void cancelCrossSectionDrawing();
+        void updateSliceBar();
+        void updateSliceBarGeometry();
+        Camera3dState& cameraForLayer(const QString& layerKey);
+        const Camera3dState& cameraForLayer(const QString& layerKey) const;
+        QString layerKeyAt3dPosition(const QPoint& widgetPos) const;
     };
 }

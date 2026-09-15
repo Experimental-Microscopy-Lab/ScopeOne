@@ -52,7 +52,7 @@ namespace scopeone::core::internal
         enum class Kind
         {
             Native,
-            Agent
+            DriverHost
         };
 
         explicit CameraBackend(ProcessingFrameGate& processingFrameGate,
@@ -71,7 +71,7 @@ namespace scopeone::core::internal
         virtual bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                            const QString& cameraId,
                                            double exposureMs);
-        virtual bool addAgentCamera(const QString& cameraId,
+        virtual bool addDriverHostCamera(const QString& cameraId,
                                     const QString& adapter,
                                     const QString& device,
                                     const QStringList& preInitProperties,
@@ -113,7 +113,7 @@ namespace scopeone::core::internal
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
         void previewStateChanged(bool running);
-        void agentControlServerListening(const QString& cameraId, const QString& serverName);
+        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
 
     protected:
         bool applyWithPreviewRestart(const QString& cameraId, const std::function<bool()>& operation);
@@ -170,5 +170,5 @@ namespace scopeone::core::internal
     };
 
     std::unique_ptr<CameraBackend> createNativeCameraBackend(ProcessingFrameGate& processingFrameGate);
-    std::unique_ptr<CameraBackend> createAgentCameraBackend(ProcessingFrameGate& processingFrameGate);
+    std::unique_ptr<CameraBackend> createDriverHostCameraBackend(ProcessingFrameGate& processingFrameGate);
 }

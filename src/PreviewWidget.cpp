@@ -3,18 +3,30 @@
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QDebug>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
+#include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
+#include <QMimeData>
 #include <QPainter>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QMatrix4x4>
 #include <QOpenGLContext>
 #include <QSurfaceFormat>
+#include <QUrl>
+#include <QVector3D>
 #include <QtGlobal>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace scopeone::ui
@@ -243,6 +255,7 @@ namespace scopeone::ui
         setMinimumSize(256, 256);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
+        setAcceptDrops(true);
 
         m_placeholderLabel = new QLabel(m_placeholderText, this);
         m_placeholderLabel->setAlignment(Qt::AlignCenter);
@@ -258,9 +271,56 @@ namespace scopeone::ui
         m_placeholderLabel->setFont(placeholderFont);
         m_placeholderLabel->setGeometry(rect());
 
-        m_fpsUpdateTimer.setInterval(3000);
-        connect(&m_fpsUpdateTimer, &QTimer::timeout, this, &PreviewWidget::updateFrameRates);
-        m_fpsUpdateTimer.start();
+        m_sliceBar = new QWidget(this);
+        m_sliceBar->setStyleSheet(QStringLiteral(
+            "QWidget { background: rgba(20, 24, 28, 220); border-radius: 5px; }"
+            "QLabel { color: white; }"
+            "QPushButton { color: white; padding: 2px 6px; }"));
+        auto* sliceLayout = new QHBoxLayout(m_sliceBar);
+        sliceLayout->setContentsMargins(6, 2, 6, 2);
+        sliceLayout->setSpacing(4);
+        m_sliceLabel = new QLabel(m_sliceBar);
+        m_sliceSlider = new QSlider(Qt::Horizontal, m_sliceBar);
+        m_sliceSlider->setMinimumWidth(30);
+        m_slicePlayButton = new QPushButton(QStringLiteral("Play"), m_sliceBar);
+        m_slicePlayButton->setCheckable(true);
+        sliceLayout->addWidget(m_sliceLabel);
+        sliceLayout->addWidget(m_sliceSlider, 1);
+        sliceLayout->addWidget(m_slicePlayButton);
+        connect(m_sliceSlider, &QSlider::valueChanged,
+                this, [this](int index)
+                {
+                    m_layerSliceIndices[m_activeLayerKey] = index;
+                    const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+                    const bool compact = m_sliceBar->width() < 260;
+                    m_sliceLabel->setText(
+                        compact ? tr("%1/%2").arg(index + 1).arg(sliceCount)
+                                : tr("Slice %1 / %2").arg(index + 1).arg(sliceCount));
+                    emit layerSliceIndexRequested(m_activeLayerKey, index);
+                });
+        connect(m_slicePlayButton, &QPushButton::toggled,
+                this, [this](bool enabled)
+                {
+                    m_slicePlayButton->setText(enabled ? QStringLiteral("Stop")
+                                                       : QStringLiteral("Play"));
+                    if (enabled)
+                    {
+                        m_sliceTimer.start();
+                    }
+                    else
+                    {
+                        m_sliceTimer.stop();
+                    }
+                });
+        m_sliceTimer.setInterval(120);
+        connect(&m_sliceTimer, &QTimer::timeout,
+                this, [this]()
+                {
+                    m_sliceSlider->setValue(
+                        (m_sliceSlider->value() + 1) % (m_sliceSlider->maximum() + 1));
+                });
+        m_sliceBar->hide();
+
     }
 
     // Releases cached OpenGL textures
@@ -328,17 +388,6 @@ namespace scopeone::ui
         }
     }
 
-    // Counts one frame in a live layer throughput window
-    void PreviewWidget::updateLayerFps(const QString& layerKey, quint64 frameCount)
-    {
-        FpsState& state = m_fpsStates[layerKey];
-        if (!state.intervalTimer.isValid())
-        {
-            state.intervalTimer.start();
-        }
-        state.framesSinceUpdate += frameCount;
-    }
-
     // Stores one graph processed frame and updates layer statistics
     void PreviewWidget::setGraphProcessedFrame(const ImageFrame& frame)
     {
@@ -384,44 +433,23 @@ namespace scopeone::ui
         update();
     }
 
-    // Tracks completed processing throughput from aggregated frame counts
-    void PreviewWidget::trackProcessedFrameRate(const QString& cameraId, quint64 frameCount)
-    {
-        const QString sourceId = normalizedSourceId(cameraId);
-        if (!sourceId.isEmpty() && frameCount > 0)
-        {
-            updateLayerFps(previewLayerKey(sourceId, true), frameCount);
-        }
-    }
-
-    // Tracks acquired raw throughput from backend frame counts
-    void PreviewWidget::trackRawFrameRate(const QString& cameraId, quint64 frameCount)
-    {
-        const QString sourceId = normalizedSourceId(cameraId);
-        if (!sourceId.isEmpty() && frameCount > 0)
-        {
-            updateLayerFps(previewLayerKey(sourceId, false), frameCount);
-        }
-    }
-
     // Clears live throughput windows when preview stops
     void PreviewWidget::resetLiveFrameRates()
     {
-        bool changed = false;
         for (auto it = m_layerFps.begin(); it != m_layerFps.end(); ++it)
         {
-            if ((ScopeOneCore::isRawLayerKey(it.key()) || ScopeOneCore::isProcessedLayerKey(it.key()))
-                && !qFuzzyIsNull(it.value()))
+            if (ScopeOneCore::isRawLayerKey(it.key()) || ScopeOneCore::isProcessedLayerKey(it.key()))
             {
                 it.value() = 0.0;
-                changed = true;
             }
         }
-        m_fpsStates.clear();
-        if (changed)
-        {
-            updateLayerInfoDisplay();
-        }
+        updateLayerInfoDisplay();
+    }
+
+    void PreviewWidget::setLayerFrameRates(const QMap<QString, double>& frameRates)
+    {
+        m_layerFps = frameRates;
+        updateLayerInfoDisplay();
     }
 
     // Changes how multiple preview layers are laid out
@@ -432,6 +460,7 @@ namespace scopeone::ui
             return;
         }
         m_layerLayoutMode = mode;
+        updateSliceBar();
         updateImageDisplay();
         emit layerLayoutModeChanged(m_layerLayoutMode);
     }
@@ -486,6 +515,48 @@ namespace scopeone::ui
         return layerKey;
     }
 
+    void PreviewWidget::setLayerSliceCount(const QString& layerKey, int sliceCount)
+    {
+        m_layerSliceCounts.insert(layerKey, sliceCount);
+        m_layerSliceIndices.insert(layerKey,
+                                   qBound(0,
+                                          m_layerSliceIndices.value(layerKey),
+                                          sliceCount - 1));
+        updateSliceBar();
+    }
+
+    // Adds or updates one realtime tool layer
+    QString PreviewWidget::setGraphToolLayerFrame(const QString& layerId,
+                                                   const ImageFrame& frame)
+    {
+        const QString normalizedId = layerId.trimmed();
+        if (normalizedId.isEmpty() || !frame.isValid())
+        {
+            return {};
+        }
+        const QString layerKey = ScopeOneCore::toolLayerKey(normalizedId);
+        const QString sourceId = ScopeOneCore::sourceIdFromLayerKey(layerKey);
+        if (normalizedSourceId(frame.cameraId) != sourceId)
+        {
+            return {};
+        }
+        const bool newLayer = !m_toolSourceIds.contains(sourceId);
+        m_toolSourceIds.insert(sourceId);
+        if (!storeSourceFrame(sourceId, FrameRole::Raw, frame))
+        {
+            return {};
+        }
+        initializeLayerInfo(layerKey);
+        updateLayerInfoDisplay();
+        updateImageDisplay();
+        if (newLayer)
+        {
+            emit availableLayerKeysChanged(availableLayerKeys());
+            emit visibleLayerKeysChanged(visibleLayerKeys());
+        }
+        return layerKey;
+    }
+
     // Removes one static image layer from the preview
     bool PreviewWidget::removeStaticLayer(const QString& layerKey)
     {
@@ -499,6 +570,7 @@ namespace scopeone::ui
         updateLayerInfoDisplay();
         emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
+        updateSliceBar();
         updateImageDisplay();
         return true;
     }
@@ -525,6 +597,7 @@ namespace scopeone::ui
         updateLayerInfoDisplay();
         emit visibleLayerKeysChanged(visibleLayerKeys());
         emit availableLayerKeysChanged(availableLayerKeys());
+        updateSliceBar();
         updateImageDisplay();
     }
 
@@ -556,6 +629,17 @@ namespace scopeone::ui
         for (const QString& sourceId : m_staticSourceIds)
         {
             const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
+            scopeone::core::DocumentLayer layer;
+            if (!m_sceneModel->findLayer(layerKey, layer))
+            {
+                continue;
+            }
+            availableKeys.append(layerKey);
+            availableSet.insert(layerKey);
+        }
+        for (const QString& sourceId : m_toolSourceIds)
+        {
+            const QString layerKey = ScopeOneCore::toolLayerKey(sourceId);
             scopeone::core::DocumentLayer layer;
             if (!m_sceneModel->findLayer(layerKey, layer))
             {
@@ -663,8 +747,6 @@ namespace scopeone::ui
         const QString normalizedId = normalizedSourceId(sourceId);
         m_layerFps.remove(previewLayerKey(normalizedId, false));
         m_layerFps.remove(previewLayerKey(normalizedId, true));
-        m_fpsStates.remove(previewLayerKey(normalizedId, false));
-        m_fpsStates.remove(previewLayerKey(normalizedId, true));
         updateLayerInfoDisplay();
 
         QMutexLocker lock(&m_mutex);
@@ -698,7 +780,6 @@ namespace scopeone::ui
         for (const QString& cameraId : m_availableCameraIds)
         {
             m_layerFps.remove(previewLayerKey(cameraId, true));
-            m_fpsStates.remove(previewLayerKey(cameraId, true));
         }
         updateLayerInfoDisplay();
 
@@ -787,31 +868,14 @@ namespace scopeone::ui
         return Blending::Translucent;
     }
 
-    QString PreviewWidget::blendingName(Blending blending) const
-    {
-        switch (blending)
-        {
-        case Blending::Additive:
-            return QStringLiteral("Additive");
-        case Blending::Minimum:
-            return QStringLiteral("Minimum");
-        case Blending::Opaque:
-            return QStringLiteral("Opaque");
-        case Blending::Multiplicative:
-            return QStringLiteral("Multiplicative");
-        case Blending::Translucent:
-            return QStringLiteral("Translucent");
-        }
-        return QStringLiteral("Translucent");
-    }
-
     // Removes stored state for one static image source
     void PreviewWidget::removeStaticLayerData(const QString& sourceId)
     {
         const QString layerKey = ScopeOneCore::staticLayerKey(sourceId);
         m_staticSourceIds.remove(sourceId);
+        m_layerSliceCounts.remove(layerKey);
+        m_layerSliceIndices.remove(layerKey);
         m_layerFps.remove(layerKey);
-        m_fpsStates.remove(layerKey);
 
         {
             QMutexLocker lock(&m_mutex);
@@ -836,46 +900,226 @@ namespace scopeone::ui
         {
             keys.insert(ScopeOneCore::staticLayerKey(sourceId));
         }
+        for (const QString& sourceId : m_toolSourceIds)
+        {
+            keys.insert(ScopeOneCore::toolLayerKey(sourceId));
+        }
         return keys;
     }
 
-    // Sets the global preview zoom percentage
+    // Returns the viewport state used by one layer or by the overlay
+    PreviewWidget::ViewportState& PreviewWidget::viewportStateForLayer(const QString& layerKey)
+    {
+        if (m_layerLayoutMode == LayerLayoutMode::Overlay)
+        {
+            return m_overlayViewportState;
+        }
+        return m_viewportStates[layerKey];
+    }
+
+    PreviewWidget::ViewportState PreviewWidget::viewportStateForLayer(const QString& layerKey) const
+    {
+        if (m_layerLayoutMode == LayerLayoutMode::Overlay)
+        {
+            return m_overlayViewportState;
+        }
+        return m_viewportStates.value(layerKey);
+    }
+
+    QString PreviewWidget::viewportControlLayerKey() const
+    {
+        if (!m_activeLayerKey.isEmpty())
+        {
+            return m_activeLayerKey;
+        }
+        return visibleLayerKeys().value(0);
+    }
+
+    // Sets the preview zoom for the active layer or the overlay
     void PreviewWidget::setZoomPercent(int percent)
     {
-        const int nextPercent = qBound(10, percent, 500);
-        if (m_zoomPercent == nextPercent)
+        const int nextPercent = qBound(10, percent, 800);
+        ViewportState& state = viewportStateForLayer(viewportControlLayerKey());
+        if (state.zoomPercent == nextPercent)
         {
             return;
         }
-        m_zoomPercent = nextPercent;
-        emit zoomLevelChanged(m_zoomPercent);
+        state.zoomPercent = nextPercent;
+        emit zoomLevelChanged(state.zoomPercent);
         update();
     }
 
     int PreviewWidget::zoomPercent() const
     {
-        return m_zoomPercent;
+        return viewportStateForLayer(viewportControlLayerKey()).zoomPercent;
     }
 
-    // Enables or disables fit to window display mode
+    // Enables or disables fit to window for the active layer or the overlay
     void PreviewWidget::setFitToWindow(bool enabled)
     {
-        if (m_fitToWindow == enabled)
+        ViewportState& state = viewportStateForLayer(viewportControlLayerKey());
+        if (state.fitToWindow == enabled)
         {
             return;
         }
-        m_fitToWindow = enabled;
-        if (m_fitToWindow)
+        state.fitToWindow = enabled;
+        if (state.fitToWindow)
         {
-            m_viewOffset = QPoint();
+            state.offset = QPoint();
         }
-        emit fitToWindowChanged(m_fitToWindow);
+        emit fitToWindowChanged(state.fitToWindow);
         update();
     }
 
     bool PreviewWidget::isFitToWindow() const
     {
-        return m_fitToWindow;
+        return viewportStateForLayer(viewportControlLayerKey()).fitToWindow;
+    }
+
+    // Sets whether the calibrated scale bar is drawn on preview
+    void PreviewWidget::setScaleBarVisible(bool visible)
+    {
+        if (m_scaleBarVisible == visible)
+        {
+            return;
+        }
+        m_scaleBarVisible = visible;
+        emit scaleBarVisibilityChanged(m_scaleBarVisible);
+        update();
+    }
+
+    bool PreviewWidget::isScaleBarVisible() const
+    {
+        return m_scaleBarVisible;
+    }
+
+    // Sets whether overexposure and underexposure clipping warning is active
+    void PreviewWidget::setClippingWarningEnabled(bool enabled)
+    {
+        if (m_clippingWarning == enabled)
+        {
+            return;
+        }
+        m_clippingWarning = enabled;
+        emit clippingWarningChanged(m_clippingWarning);
+        update();
+    }
+
+    bool PreviewWidget::isClippingWarningEnabled() const
+    {
+        return m_clippingWarning;
+    }
+
+    void PreviewWidget::setViewDimensionMode(ViewDimensionMode mode)
+    {
+        if (m_viewDimensionMode == mode)
+        {
+            return;
+        }
+        m_viewDimensionMode = mode;
+        m_surfaceOrbiting = false;
+        m_surfacePanning = false;
+        m_surfaceLayerKey.clear();
+        unsetCursor();
+        emit viewDimensionModeChanged(m_viewDimensionMode);
+        update();
+    }
+
+    void PreviewWidget::set3dZScale(float scale)
+    {
+        const float nextScale = qBound(0.1f, scale, 10.0f);
+        if (qFuzzyCompare(m_zScale, nextScale))
+        {
+            return;
+        }
+        m_zScale = nextScale;
+        emit threeDimensionalZScaleChanged(m_zScale);
+        update();
+    }
+
+    void PreviewWidget::reset3dCamera()
+    {
+        if (m_activeLayerKey.isEmpty())
+        {
+            return;
+        }
+        Camera3dState& camera = cameraForLayer(m_activeLayerKey);
+        camera = Camera3dState{};
+        update();
+    }
+
+    PreviewWidget::Camera3dState& PreviewWidget::cameraForLayer(const QString& layerKey)
+    {
+        return m_layerCameras3d[layerKey];
+    }
+
+    const PreviewWidget::Camera3dState& PreviewWidget::cameraForLayer(
+        const QString& layerKey) const
+    {
+        return m_layerCameras3d.constFind(layerKey).value();
+    }
+
+    QString PreviewWidget::layerKeyAt3dPosition(const QPoint& widgetPos) const
+    {
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.layerKey == m_activeLayerKey && item.area.contains(widgetPos))
+            {
+                return item.layerKey;
+            }
+        }
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.area.contains(widgetPos))
+            {
+                return item.layerKey;
+            }
+        }
+        return {};
+    }
+
+    void PreviewWidget::set3dWireframeEnabled(bool enabled)
+    {
+        if (m_wireframe3d == enabled)
+        {
+            return;
+        }
+        m_wireframe3d = enabled;
+        emit threeDimensionalWireframeChanged(m_wireframe3d);
+        update();
+    }
+
+    void PreviewWidget::setThreeDimensionalColorbarVisible(bool visible)
+    {
+        if (m_threeDimensionalColorbarVisible == visible)
+        {
+            return;
+        }
+        m_threeDimensionalColorbarVisible = visible;
+        emit threeDimensionalColorbarVisibilityChanged(visible);
+        update();
+    }
+
+    void PreviewWidget::setActiveLayerKey(const QString& key)
+    {
+        if (m_activeLayerKey == key)
+        {
+            return;
+        }
+        m_activeLayerKey = key;
+        updateSliceBar();
+        update();
+    }
+
+    // Sets the callback providing pixel size in micrometers per layer
+    void PreviewWidget::setPixelSizeCallback(std::function<double(const QString&)> callback)
+    {
+        m_pixelSizeCallback = std::move(callback);
+        update();
     }
 
     // Refreshes placeholder state and schedules repaint
@@ -900,39 +1144,8 @@ namespace scopeone::ui
         {
             m_placeholderText = QStringLiteral("No layer visible");
         }
+        updateSliceBarGeometry();
         update();
-    }
-
-    // Publishes raw and processed throughput over one shared time window
-    void PreviewWidget::updateFrameRates()
-    {
-        if (m_fpsStates.isEmpty())
-        {
-            return;
-        }
-
-        bool changed = false;
-        for (auto it = m_fpsStates.begin(); it != m_fpsStates.end(); ++it)
-        {
-            FpsState& state = it.value();
-            const qint64 elapsedNs = state.intervalTimer.nsecsElapsed();
-            const double fps = elapsedNs > 0
-                                   ? (static_cast<double>(state.framesSinceUpdate) * 1000000000.0)
-                                       / static_cast<double>(elapsedNs)
-                                   : 0.0;
-            state.framesSinceUpdate = 0;
-            state.intervalTimer.restart();
-            double& currentFps = m_layerFps[it.key()];
-            if (!qFuzzyCompare(currentFps + 1.0, fps + 1.0))
-            {
-                currentFps = fps;
-                changed = true;
-            }
-        }
-        if (changed)
-        {
-            updateLayerInfoDisplay();
-        }
     }
 
     // Checks whether a frame source has raw data
@@ -994,6 +1207,7 @@ namespace scopeone::ui
     // Resolves the displayed image rectangle for one layer
     bool PreviewWidget::resolveDisplayGeometry(const FrameSourceState& frameState,
                                                bool processed,
+                                               const QString& layerKey,
                                                const QRect& area,
                                                QRect& displayRect,
                                                QSize& imageSize) const
@@ -1005,7 +1219,7 @@ namespace scopeone::ui
                 return false;
             }
             imageSize = frameState.processedFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, area);
+            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
         }
         else
         {
@@ -1014,7 +1228,7 @@ namespace scopeone::ui
                 return false;
             }
             imageSize = frameState.rawFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, area);
+            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
         }
 
         return imageSize.width() > 0
@@ -1046,7 +1260,7 @@ namespace scopeone::ui
             frameState = *item.info->frameState;
             processed = item.processed;
             itemArea = item.area;
-            return resolveDisplayGeometry(frameState, processed, itemArea, displayRect, imageSize);
+            return resolveDisplayGeometry(frameState, processed, layerKey, itemArea, displayRect, imageSize);
         }
 
         return false;
@@ -1055,13 +1269,14 @@ namespace scopeone::ui
     // Maps one widget position into image coordinates
     bool PreviewWidget::mapWidgetPositionToImage(const FrameSourceState& frameState,
                                                  bool processed,
+                                                 const QString& layerKey,
                                                  const QRect& area,
                                                  const QPoint& widgetPos,
                                                  QPoint& imagePos) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize)
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize)
             || !displayRect.contains(widgetPos))
         {
             return false;
@@ -1090,13 +1305,14 @@ namespace scopeone::ui
     // Maps one widget rectangle into image rectangle bounds
     bool PreviewWidget::mapWidgetRectToImage(const FrameSourceState& frameState,
                                              bool processed,
+                                             const QString& layerKey,
                                              const QRect& area,
                                              const QRect& widgetRect,
                                              QRect& imageRect) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize))
         {
             return false;
         }
@@ -1150,13 +1366,14 @@ namespace scopeone::ui
     // Maps one image coordinate into widget coordinates
     bool PreviewWidget::mapImagePositionToWidget(const FrameSourceState& frameState,
                                                  bool processed,
+                                                 const QString& layerKey,
                                                  const QRect& area,
                                                  const QPoint& imagePos,
                                                  QPoint& widgetPos) const
     {
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, processed, area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState, processed, layerKey, area, displayRect, imageSize))
         {
             return false;
         }
@@ -1212,6 +1429,7 @@ namespace scopeone::ui
         QSize imageSize;
         if (!resolveDisplayGeometry(*item.info->frameState,
                                     item.processed,
+                                    item.layerKey,
                                     item.area,
                                     displayRect,
                                     imageSize))
@@ -1238,11 +1456,13 @@ namespace scopeone::ui
             QPoint endWidget;
             if (!mapImagePositionToWidget(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           startImage,
                                           startWidget)
                 || !mapImagePositionToWidget(*item.info->frameState,
                                              item.processed,
+                                             item.layerKey,
                                              item.area,
                                              endImage,
                                              endWidget))
@@ -1275,11 +1495,13 @@ namespace scopeone::ui
             }
             if (!mapImagePositionToWidget(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           imageRect.topLeft(),
                                           topLeft)
                 || !mapImagePositionToWidget(*item.info->frameState,
                                              item.processed,
+                                             item.layerKey,
                                              item.area,
                                              imageRect.bottomRight(),
                                              bottomRight))
@@ -1351,6 +1573,7 @@ namespace scopeone::ui
                 QPoint clippedEnd;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
@@ -1361,11 +1584,13 @@ namespace scopeone::ui
                                        clippedEnd)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedStart,
                                                  markup.start)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedEnd,
                                                  markup.end))
@@ -1394,17 +1619,20 @@ namespace scopeone::ui
                 QPoint imageEnd;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
                     || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedStart,
                                                  imageStart)
                     || !mapWidgetPositionToImage(*item.info->frameState,
                                                  item.processed,
+                                                 item.layerKey,
                                                  item.area,
                                                  clippedEnd,
                                                  imageEnd))
@@ -1435,6 +1663,7 @@ namespace scopeone::ui
                 QRect imageRect;
                 if (!mapWidgetRectToImage(*item.info->frameState,
                                           item.processed,
+                                          item.layerKey,
                                           item.area,
                                           QRect(m_roiStart, m_roiEnd),
                                           imageRect))
@@ -1451,6 +1680,193 @@ namespace scopeone::ui
                 break;
             }
         }
+    }
+
+    // Draws a calibrated scale bar overlay in the corner of visible image areas
+    void PreviewWidget::drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (renderItems.empty())
+        {
+            return;
+        }
+
+        QSet<QRect> drawnAreas;
+        for (const RenderItem& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState || drawnAreas.contains(item.area))
+            {
+                continue;
+            }
+
+            QRect displayRect;
+            QSize imageSize;
+            if (!resolveDisplayGeometry(*item.info->frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize))
+            {
+                continue;
+            }
+
+            if (imageSize.width() <= 0 || displayRect.width() <= 0)
+            {
+                continue;
+            }
+
+            const double pixelSize = m_pixelSizeCallback ? m_pixelSizeCallback(item.layerKey) : 0.0;
+            if (pixelSize <= 0.0)
+            {
+                continue;
+            }
+
+            const double pixelsPerImagePixel = static_cast<double>(displayRect.width()) / static_cast<double>(imageSize.width());
+            const double screenPixelsPerUm = pixelsPerImagePixel / pixelSize;
+            if (screenPixelsPerUm <= 1e-6)
+            {
+                continue;
+            }
+
+            const double targetUm = 80.0 / screenPixelsPerUm;
+            static const double niceSteps[] = {
+                0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0,
+                100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 25000.0, 50000.0
+            };
+
+            double bestUm = niceSteps[0];
+            double minDiff = std::abs(targetUm - bestUm);
+            for (double step : niceSteps)
+            {
+                const double diff = std::abs(targetUm - step);
+                if (diff < minDiff)
+                {
+                    minDiff = diff;
+                    bestUm = step;
+                }
+            }
+
+            const int barWidthPx = static_cast<int>(std::round(bestUm * screenPixelsPerUm));
+            if (barWidthPx < 10 || barWidthPx > displayRect.width() - 20)
+            {
+                continue;
+            }
+
+            QString labelText;
+            if (bestUm >= 1000.0)
+            {
+                labelText = QString::number(bestUm / 1000.0, 'g', 3) + QStringLiteral(" mm");
+            }
+            else if (bestUm >= 1.0)
+            {
+                labelText = QString::number(bestUm, 'g', 3) + QStringLiteral(" um");
+            }
+            else
+            {
+                labelText = QString::number(bestUm * 1000.0, 'g', 3) + QStringLiteral(" nm");
+            }
+
+            painter.save();
+            painter.setRenderHint(QPainter::Antialiasing, true);
+
+            QFont font = painter.font();
+            font.setPointSize(9);
+            font.setBold(true);
+            painter.setFont(font);
+
+            const QFontMetrics fm(font);
+            const int textWidth = fm.horizontalAdvance(labelText);
+            const int boxWidth = std::max(barWidthPx, textWidth) + 16;
+            const int boxHeight = fm.height() + 14;
+
+            const int margin = 12;
+            const int boxX = displayRect.right() - boxWidth - margin;
+            const int boxY = displayRect.bottom() - boxHeight - margin;
+            const QRect boxRect(boxX, boxY, boxWidth, boxHeight);
+
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 160));
+            painter.drawRoundedRect(boxRect, 4, 4);
+
+            painter.setPen(Qt::white);
+            const QRect textRect(boxX, boxY + 2, boxWidth, fm.height());
+            painter.drawText(textRect, Qt::AlignCenter, labelText);
+
+            const int barX = boxX + (boxWidth - barWidthPx) / 2;
+            const int barY = boxY + fm.height() + 6;
+            QPen linePen(Qt::white, 3, Qt::SolidLine, Qt::RoundCap);
+            painter.setPen(linePen);
+            painter.drawLine(barX, barY, barX + barWidthPx, barY);
+
+            painter.restore();
+            drawnAreas.insert(item.area);
+        }
+    }
+
+    // Draws tile names and active border outlines in Grid View
+    void PreviewWidget::drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (renderItems.empty())
+        {
+            return;
+        }
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+
+        const QFont font(QStringLiteral("Segoe UI"), 9);
+        painter.setFont(font);
+        const QFontMetrics fm(font);
+        const bool overlay = m_layerLayoutMode == LayerLayoutMode::Overlay
+                             && renderItems.size() > 1;
+        bool overlayBadgeDrawn = false;
+
+        for (const auto& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState)
+            {
+                continue;
+            }
+
+            if (overlay)
+            {
+                if (!m_activeLayerKey.isEmpty() && item.layerKey != m_activeLayerKey)
+                {
+                    continue;
+                }
+                if (overlayBadgeDrawn)
+                {
+                    continue;
+                }
+            }
+
+            if (!m_activeLayerKey.isEmpty() && item.layerKey == m_activeLayerKey && renderItems.size() > 1)
+            {
+                painter.setPen(QPen(QColor(0, 200, 255, 200), 2));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(item.area.adjusted(1, 1, -1, -1));
+            }
+
+            if (m_layerLayoutMode == LayerLayoutMode::SideBySide || renderItems.size() > 1)
+            {
+                const QString name = layerName(item.layerKey);
+                const int frameW = item.processed ? item.info->frameState->processedFrame.width : item.info->frameState->rawFrame.width;
+                const int frameH = item.processed ? item.info->frameState->processedFrame.height : item.info->frameState->rawFrame.height;
+                const QString labelText = (frameW > 0 && frameH > 0)
+                                              ? QString("%1 (%2x%3)").arg(name).arg(frameW).arg(frameH)
+                                              : name;
+                const int textWidth = fm.horizontalAdvance(labelText);
+                const QRect badgeRect(item.area.left() + 8, item.area.top() + 8, textWidth + 14, fm.height() + 6);
+
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(15, 18, 22, 180));
+                painter.drawRoundedRect(badgeRect, 4, 4);
+
+                painter.setPen(QColor(230, 235, 240));
+                painter.drawText(badgeRect, Qt::AlignCenter, labelText);
+                overlayBadgeDrawn = true;
+            }
+        }
+        painter.restore();
     }
 
     bool PreviewWidget::markupAtWidgetPosition(const QPoint& widgetPos,
@@ -1488,6 +1904,7 @@ namespace scopeone::ui
                 QSize imageSize;
                 if (!resolveDisplayGeometry(*item.info->frameState,
                                             item.processed,
+                                            item.layerKey,
                                             item.area,
                                             displayRect,
                                             imageSize)
@@ -1499,6 +1916,7 @@ namespace scopeone::ui
                 QPoint imagePos;
                 if (!mapWidgetPositionToImage(*item.info->frameState,
                                                item.processed,
+                                               item.layerKey,
                                                item.area,
                                                widgetPos,
                                                imagePos))
@@ -1512,11 +1930,13 @@ namespace scopeone::ui
                     QPoint endWidget;
                     if (!mapImagePositionToWidget(*item.info->frameState,
                                                   item.processed,
+                                                  item.layerKey,
                                                   item.area,
                                                   markup.start,
                                                   startWidget)
                         || !mapImagePositionToWidget(*item.info->frameState,
                                                      item.processed,
+                                                     item.layerKey,
                                                      item.area,
                                                      markup.end,
                                                      endWidget))
@@ -1546,11 +1966,13 @@ namespace scopeone::ui
                     QPoint bottomRight;
                     if (!mapImagePositionToWidget(*item.info->frameState,
                                                   item.processed,
+                                                  item.layerKey,
                                                   item.area,
                                                   markup.rect.normalized().topLeft(),
                                                   topLeft)
                         || !mapImagePositionToWidget(*item.info->frameState,
                                                      item.processed,
+                                                     item.layerKey,
                                                      item.area,
                                                      markup.rect.normalized().bottomRight(),
                                                      bottomRight))
@@ -1634,7 +2056,12 @@ namespace scopeone::ui
         const FrameSourceState& frameState = *item.info->frameState;
         QRect displayRect;
         QSize imageSize;
-        if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize))
+        if (!resolveDisplayGeometry(frameState,
+                                    item.processed,
+                                    item.layerKey,
+                                    item.area,
+                                    displayRect,
+                                    imageSize))
         {
             return;
         }
@@ -1645,6 +2072,7 @@ namespace scopeone::ui
                             frameState.processedFrame,
                             frameState.processedRevision,
                             displayRect,
+                            item.area,
                             frameState.flipX,
                             frameState.flipY,
                             item.display,
@@ -1658,12 +2086,151 @@ namespace scopeone::ui
                             frameState.rawFrame,
                             frameState.rawRevision,
                             displayRect,
+                            item.area,
                             frameState.flipX,
                             frameState.flipY,
                             item.display,
                             item.firstVisibleInArea);
             return;
         }
+    }
+
+    // Draws one image layer as a GPU-displaced surface
+    void PreviewWidget::draw3dSurface(const RenderItem& item,
+                                      const Camera3dState& camera,
+                                      const QRect& targetArea)
+    {
+        const FrameSourceState& frameState = *item.info->frameState;
+        const ImageFrame& frame = item.processed ? frameState.processedFrame : frameState.rawFrame;
+        const quint64 revision = item.processed ? frameState.processedRevision : frameState.rawRevision;
+        const GLuint texture = ensureFrameTexture(item.layerKey, frame, revision);
+        const GLint internalFormat = frame.isMono16() ? GL_R16 : GL_R8;
+        const float sampleMax = internalFormat == GL_R16 ? 65535.0f : 255.0f;
+        const float bitMax = static_cast<float>(qMax(1, frame.maxValue()));
+        const float levelDomain = static_cast<float>(qMax(1, item.display.levelDomainMax));
+
+        QMatrix4x4 projection;
+        projection.perspective(45.0f,
+                               static_cast<float>(targetArea.width())
+                                   / static_cast<float>(targetArea.height()),
+                               0.1f,
+                               100.0f);
+        QMatrix4x4 view;
+        view.translate(camera.pan.x(), camera.pan.y(), -camera.distance);
+        view.rotate(camera.pitch, 1.0f, 0.0f, 0.0f);
+        view.rotate(camera.yaw, 0.0f, 0.0f, 1.0f);
+
+        m_prog3d.bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        m_prog3d.setUniformValue(m_u3dTex, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_colormapTexture);
+        m_prog3d.setUniformValue(m_u3dColormapLut, 1);
+        glActiveTexture(GL_TEXTURE0);
+
+        m_prog3d.setUniformValue(m_u3dMvp, projection * view);
+        m_prog3d.setUniformValue(m_u3dMinNorm,
+                                 static_cast<float>(item.display.levelMin) / levelDomain);
+        m_prog3d.setUniformValue(m_u3dMaxNorm,
+                                 static_cast<float>(item.display.levelMax) / levelDomain);
+        m_prog3d.setUniformValue(m_u3dTexNormScale, sampleMax / bitMax);
+        m_prog3d.setUniformValue(m_u3dZScale, m_zScale);
+        m_prog3d.setUniformValue(m_u3dGamma, static_cast<float>(item.display.gamma));
+        m_prog3d.setUniformValue(m_u3dColormap, item.display.colormapIndex);
+        m_prog3d.setUniformValue(m_u3dShowClipping, m_clippingWarning ? 1 : 0);
+        m_prog3d.setUniformValue(m_u3dUvScale, frameState.flipX ? -1.0f : 1.0f,
+                                 frameState.flipY ? 1.0f : -1.0f);
+        m_prog3d.setUniformValue(m_u3dUvOffset, frameState.flipX ? 1.0f : 0.0f,
+                                 frameState.flipY ? 0.0f : 1.0f);
+        m_prog3d.setUniformValue(m_u3dLightDirection, QVector3D(-0.4f, 0.5f, 1.0f));
+
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        m_gridVao.bind();
+        if (m_wireframe3d)
+        {
+            m_gl3dFunctions.glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        }
+        glDrawElements(GL_TRIANGLES,
+                       m_gridElementCount,
+                       GL_UNSIGNED_INT,
+                       nullptr);
+        if (m_wireframe3d)
+        {
+            m_gl3dFunctions.glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
+        m_gridVao.release();
+        glDisable(GL_DEPTH_TEST);
+        m_prog3d.release();
+    }
+
+    QImage PreviewWidget::colormapStripImage(int colormapIndex, int height) const
+    {
+        const QStringList names = ImageSceneModel::supportedColormaps();
+        const QByteArray lut = loadImageJLut(names[colormapIndex]);
+        QImage strip(16, height, QImage::Format_RGB888);
+        for (int y = 0; y < height; ++y)
+        {
+            const int lutIndex = 255 - (y * 255 / (height - 1));
+            uchar* line = strip.scanLine(y);
+            for (int x = 0; x < strip.width(); ++x)
+            {
+                line[3 * x] = static_cast<uchar>(lut[3 * lutIndex]);
+                line[3 * x + 1] = static_cast<uchar>(lut[3 * lutIndex + 1]);
+                line[3 * x + 2] = static_cast<uchar>(lut[3 * lutIndex + 2]);
+            }
+        }
+        return strip;
+    }
+
+    void PreviewWidget::draw3dColorbar(QPainter& painter,
+                                       const RenderItem& item,
+                                       const QRect& viewportRect) const
+    {
+        const int panelWidth = 100;
+        const int panelHeight = 220;
+        const QRect panel(viewportRect.right() - panelWidth - 16,
+                          viewportRect.center().y() - panelHeight / 2,
+                          panelWidth,
+                          panelHeight);
+        const QRect strip(panel.x() + 10, panel.y() + 32, 16, 174);
+        const QStringList names = ImageSceneModel::supportedColormaps();
+
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 160));
+        painter.drawRoundedRect(panel, 5, 5);
+        painter.drawImage(strip, colormapStripImage(item.display.colormapIndex, strip.height()));
+
+        QFont font = painter.font();
+        font.setPointSize(8);
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(panel.x() + 4, panel.y() + 7, panel.width() - 8, 18),
+                         Qt::AlignCenter,
+                         names[item.display.colormapIndex]);
+
+        const QFontMetrics metrics(font);
+        for (int tick = 0; tick < 5; ++tick)
+        {
+            const double fraction = static_cast<double>(tick) / 4.0;
+            const int y = strip.top() + qRound(fraction * (strip.height() - 1));
+            const double value = item.display.levelMax
+                + (item.display.levelMin - item.display.levelMax) * fraction;
+            painter.setPen(QPen(Qt::white, 1));
+            painter.drawLine(strip.right() + 2, y, strip.right() + 7, y);
+            painter.drawText(QRect(strip.right() + 10,
+                                   y - metrics.height() / 2,
+                                   panel.right() - strip.right() - 14,
+                                   metrics.height()),
+                             Qt::AlignLeft | Qt::AlignVCenter,
+                             QString::number(value, 'f', 0));
+        }
+        painter.restore();
     }
 
     // Updates the layer info summary text
@@ -1774,14 +2341,24 @@ namespace scopeone::ui
             const FrameSourceState& frameState = *item.info->frameState;
             QRect displayRect;
             QSize imageSize;
-            if (!resolveDisplayGeometry(frameState, item.processed, item.area, displayRect, imageSize)
+            if (!resolveDisplayGeometry(frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize)
                 || !displayRect.contains(widgetPos))
             {
                 continue;
             }
 
             QPoint imagePos;
-            if (!mapWidgetPositionToImage(frameState, item.processed, item.area, widgetPos, imagePos))
+            if (!mapWidgetPositionToImage(frameState,
+                                          item.processed,
+                                          item.layerKey,
+                                          item.area,
+                                          widgetPos,
+                                          imagePos))
             {
                 continue;
             }
@@ -1807,10 +2384,67 @@ namespace scopeone::ui
         return resolveInteractionTarget(widgetPos, outTarget, sourceId, rawOnly, QString());
     }
 
+    // Resolves all visible layers under one widget point
+    QVector<PreviewWidget::PreviewInteractionTarget> PreviewWidget::interactionTargetsAt(
+        const QPoint& widgetPos) const
+    {
+        QVector<PreviewInteractionTarget> targets;
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        for (const RenderItem& item : renderItems)
+        {
+            if (!item.info || !item.info->frameState || !item.area.contains(widgetPos))
+            {
+                continue;
+            }
+            if (item.display.blending != Blending::Opaque && item.display.opacityPercent <= 0)
+            {
+                continue;
+            }
+
+            const FrameSourceState& frameState = *item.info->frameState;
+            QRect displayRect;
+            QSize imageSize;
+            if (!resolveDisplayGeometry(frameState,
+                                        item.processed,
+                                        item.layerKey,
+                                        item.area,
+                                        displayRect,
+                                        imageSize)
+                || !displayRect.contains(widgetPos))
+            {
+                continue;
+            }
+
+            QPoint imagePos;
+            if (!mapWidgetPositionToImage(frameState,
+                                          item.processed,
+                                          item.layerKey,
+                                          item.area,
+                                          widgetPos,
+                                          imagePos))
+            {
+                continue;
+            }
+
+            targets.append({item.layerKey,
+                            item.info->sourceId,
+                            imagePos,
+                            item.area,
+                            displayRect,
+                            item.processed});
+        }
+        return targets;
+    }
+
     // Initializes OpenGL state for preview rendering
     void PreviewWidget::initializeGL()
     {
         initializeOpenGLFunctions();
+        m_gl3dFunctions.initializeOpenGLFunctions();
 
         const QSurfaceFormat format = context()->format();
         QString profile = QStringLiteral("No profile");
@@ -1850,6 +2484,77 @@ namespace scopeone::ui
     {
         applyViewportForRect(rect());
         m_placeholderLabel->setGeometry(rect());
+        updateSliceBarGeometry();
+    }
+
+    void PreviewWidget::updateSliceBar()
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1)
+        {
+            m_sliceBar->hide();
+            m_sliceTimer.stop();
+            m_slicePlayButton->setChecked(false);
+            return;
+        }
+
+        m_sliceSlider->setRange(0, sliceCount - 1);
+        {
+            const QSignalBlocker blocker(m_sliceSlider);
+            m_sliceSlider->setValue(m_layerSliceIndices.value(m_activeLayerKey));
+        }
+        updateSliceBarGeometry();
+    }
+
+    void PreviewWidget::updateSliceBarGeometry()
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1)
+        {
+            m_sliceBar->hide();
+            return;
+        }
+
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        QRect cell;
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.layerKey == m_activeLayerKey)
+            {
+                cell = item.area;
+                break;
+            }
+        }
+
+        if (cell.isEmpty() || cell.width() < 80)
+        {
+            m_sliceBar->hide();
+            return;
+        }
+
+        const int margin = 8;
+        const int barHeight = 28;
+        const int maxBarWidth = cell.width() - 2 * margin;
+
+        const bool compact = maxBarWidth < 260;
+        const bool ultraCompact = maxBarWidth < 160;
+
+        m_slicePlayButton->setVisible(!ultraCompact);
+        const int currentSlice = m_sliceSlider->value() + 1;
+        m_sliceLabel->setText(compact ? tr("%1/%2").arg(currentSlice).arg(sliceCount)
+                                      : tr("Slice %1 / %2").arg(currentSlice).arg(sliceCount));
+
+        m_sliceBar->setMaximumSize(maxBarWidth, barHeight);
+        m_sliceBar->setGeometry(cell.x() + margin,
+                                cell.y() + cell.height() - barHeight - margin,
+                                maxBarWidth,
+                                barHeight);
+        m_sliceBar->show();
+        m_sliceBar->raise();
     }
 
     // Computes tiled preview rectangles for visible layers
@@ -2001,8 +2706,10 @@ namespace scopeone::ui
             return;
         }
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glDisable(GL_SCISSOR_TEST);
         applyViewportForRect(rect());
-        glClear(GL_COLOR_BUFFER_BIT);
+        glDepthMask(GL_TRUE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         bool canGpu = m_glInited && m_prog.isLinked();
         QMap<QString, FrameSourceState> frameSources;
@@ -2015,7 +2722,6 @@ namespace scopeone::ui
             showPlaceholder(m_placeholderText);
             return;
         }
-
         if (canGpu)
         {
             if (renderItems.empty())
@@ -2025,19 +2731,140 @@ namespace scopeone::ui
             }
 
             m_placeholderLabel->hide();
+            if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+            {
+                if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
+                {
+                    glEnable(GL_SCISSOR_TEST);
+                    for (const RenderItem& item : renderItems)
+                    {
+                        applyScissorForRect(item.area);
+                        applyViewportForRect(item.area);
+                        glClear(GL_DEPTH_BUFFER_BIT);
+                        draw3dSurface(item,
+                                      cameraForLayer(item.layerKey),
+                                      item.area);
+                    }
+                    glDisable(GL_SCISSOR_TEST);
+                    applyViewportForRect(rect());
+
+                    QPainter p(this);
+                    p.setRenderHint(QPainter::Antialiasing, true);
+                    for (const RenderItem& item : renderItems)
+                    {
+                        const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
+                            .intersected(QRect(item.area.x() + 8,
+                                               item.area.y() + 8,
+                                               qMax(0, item.area.width() - 16),
+                                               42));
+                        p.setPen(Qt::NoPen);
+                        p.setBrush(QColor(0, 0, 0, 170));
+                        p.drawRoundedRect(panelRect, 5, 5);
+                        p.setPen(Qt::white);
+                        QFont font = p.font();
+                        font.setBold(true);
+                        p.setFont(font);
+                        p.drawText(panelRect.adjusted(8, 4, -8, -4),
+                                   Qt::AlignLeft | Qt::AlignVCenter,
+                                   layerName(item.layerKey));
+                        p.setPen(item.layerKey == m_activeLayerKey
+                                     ? QColor(255, 220, 80)
+                                     : QColor(220, 225, 230, 190));
+                        p.setBrush(Qt::NoBrush);
+                        p.setPen(QPen(p.pen().color(), item.layerKey == m_activeLayerKey ? 2 : 1));
+                        p.drawRect(item.area.adjusted(1, 1, -2, -2));
+                    }
+                    if (m_threeDimensionalColorbarVisible)
+                    {
+                        const RenderItem* activeItem = &renderItems.front();
+                        for (const RenderItem& item : renderItems)
+                        {
+                            if (item.layerKey == m_activeLayerKey)
+                            {
+                                activeItem = &item;
+                                break;
+                            }
+                        }
+                        draw3dColorbar(p, *activeItem, activeItem->area);
+                    }
+                    p.setPen(QColor(220, 225, 230, 190));
+                    p.drawText(QRect(12, height() - 28, width() - 24, 18),
+                               Qt::AlignRight | Qt::AlignVCenter,
+                               tr("Left drag: orbit   Right drag: pan   Wheel: zoom"));
+                    return;
+                }
+
+                const RenderItem* surfaceItem = &renderItems.back();
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.layerKey == m_activeLayerKey)
+                    {
+                        surfaceItem = &item;
+                        break;
+                    }
+                }
+
+                glDisable(GL_SCISSOR_TEST);
+                applyViewportForRect(rect());
+                draw3dSurface(*surfaceItem,
+                              cameraForLayer(surfaceItem->layerKey),
+                              rect());
+
+                QPainter p(this);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                QFont font = p.font();
+                font.setBold(true);
+                p.setFont(font);
+                const QString title = tr("3D Surface: %1").arg(layerName(surfaceItem->layerKey));
+                const QString detail = tr("Z-Scale %1x%2").arg(m_zScale, 0, 'f', 1)
+                    .arg(m_wireframe3d ? tr(" | Wireframe") : QString());
+                const QRect panelRect(12, 12, 230, 52);
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(0, 0, 0, 170));
+                p.drawRoundedRect(panelRect, 5, 5);
+                p.setPen(Qt::white);
+                p.drawText(panelRect.adjusted(10, 7, -10, -26),
+                           Qt::AlignLeft | Qt::AlignVCenter,
+                           title);
+                font.setBold(false);
+                p.setFont(font);
+                p.drawText(panelRect.adjusted(10, 25, -10, -7),
+                           Qt::AlignLeft | Qt::AlignVCenter,
+                           detail);
+                if (m_threeDimensionalColorbarVisible)
+                {
+                    draw3dColorbar(p, *surfaceItem, rect());
+                }
+                p.setPen(QColor(220, 225, 230, 190));
+                p.drawText(QRect(12, height() - 28, width() - 24, 18),
+                           Qt::AlignRight | Qt::AlignVCenter,
+                           tr("Left drag: orbit   Right drag: pan   Wheel: zoom"));
+                return;
+            }
+
+            glDisable(GL_DEPTH_TEST);
             for (const auto& item : renderItems)
             {
                 drawRenderItem(item);
             }
 
+            glDisable(GL_SCISSOR_TEST);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            applyViewportForRect(rect());
+            QPainter p(this);
             if (m_sceneModel->hasMarkups()
                 || (m_roiDrawingMode && m_roiDragging)
                 || (m_crossSectionDrawingMode && m_crossSectionDragging))
             {
-                QPainter p(this);
                 drawMarkups(p, renderItems);
                 drawActiveInteractionMarkup(p, renderItems);
             }
+            if (m_scaleBarVisible)
+            {
+                drawScaleBar(p, renderItems);
+            }
+            drawTileLabelsAndBadges(p, renderItems);
             return;
         }
 
@@ -2093,6 +2920,7 @@ namespace scopeone::ui
         uniform float uAlpha;
         uniform float uGamma;
         uniform int uColormap;
+        uniform int uShowClipping;
         uniform sampler2D uColormapLut;
         vec3 applyColormap(float t, int map) {
             vec2 lutSize = vec2(textureSize(uColormapLut, 0));
@@ -2103,6 +2931,16 @@ namespace scopeone::ui
         void main(){
             vec4 s = texture(uTex, vUV);
             float t0 = s.r * uTexNormScale;
+            if (uShowClipping == 1) {
+                if (t0 >= 0.999) {
+                    FragColor = vec4(1.0, 0.0, 0.0, uAlpha);
+                    return;
+                }
+                if (t0 <= 0.0001) {
+                    FragColor = vec4(0.0, 0.2, 1.0, uAlpha);
+                    return;
+                }
+            }
             float t = clamp((t0 - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
             t = pow(t, 1.0 / max(uGamma, 1e-3));
             FragColor = vec4(applyColormap(t, uColormap), uAlpha);
@@ -2141,6 +2979,153 @@ namespace scopeone::ui
         m_uColormapLut = m_prog.uniformLocation("uColormapLut");
         m_uUvScale = m_prog.uniformLocation("uUvScale");
         m_uUvOffset = m_prog.uniformLocation("uUvOffset");
+        m_uShowClipping = m_prog.uniformLocation("uShowClipping");
+
+        const char* vs3d = R"(
+        #version 330 core
+        layout (location = 0) in vec2 aPos;
+        layout (location = 1) in vec2 aUV;
+        out vec2 vUV;
+        out float vHeight;
+        uniform sampler2D uTex;
+        uniform mat4 uMvp;
+        uniform float uMinNorm;
+        uniform float uMaxNorm;
+        uniform float uTexNormScale;
+        uniform float uGamma;
+        uniform float uZScale;
+        uniform vec2 uUvScale;
+        uniform vec2 uUvOffset;
+        float heightAt(vec2 uv) {
+            float value = texture(uTex, uv * uUvScale + uUvOffset).r * uTexNormScale;
+            float normalized = clamp((value - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
+            return pow(normalized, 1.0 / max(uGamma, 1e-3));
+        }
+        void main() {
+            vUV = aUV * uUvScale + uUvOffset;
+            vHeight = heightAt(aUV);
+            gl_Position = uMvp * vec4(aPos, vHeight * uZScale, 1.0);
+        }
+        )";
+        const char* fs3d = R"(
+        #version 330 core
+        in vec2 vUV;
+        in float vHeight;
+        out vec4 FragColor;
+        uniform sampler2D uTex;
+        uniform float uMinNorm;
+        uniform float uMaxNorm;
+        uniform float uTexNormScale;
+        uniform float uGamma;
+        uniform int uColormap;
+        uniform int uShowClipping;
+        uniform sampler2D uColormapLut;
+        uniform vec3 uLightDirection;
+        vec3 applyColormap(float t, int map) {
+            vec2 lutSize = vec2(textureSize(uColormapLut, 0));
+            float column = (t * (lutSize.x - 1.0) + 0.5) / lutSize.x;
+            float row = (float(map) + 0.5) / lutSize.y;
+            return texture(uColormapLut, vec2(column, row)).rgb;
+        }
+        void main() {
+            float value = texture(uTex, vUV).r * uTexNormScale;
+            if (uShowClipping == 1 && value >= 0.999) {
+                FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                return;
+            }
+            if (uShowClipping == 1 && value <= 0.0001) {
+                FragColor = vec4(0.0, 0.2, 1.0, 1.0);
+                return;
+            }
+            vec2 texel = 1.0 / vec2(textureSize(uTex, 0));
+            float dx = texture(uTex, clamp(vUV + vec2(texel.x, 0.0), 0.0, 1.0)).r
+                       - texture(uTex, clamp(vUV - vec2(texel.x, 0.0), 0.0, 1.0)).r;
+            float dy = texture(uTex, clamp(vUV + vec2(0.0, texel.y), 0.0, 1.0)).r
+                       - texture(uTex, clamp(vUV - vec2(0.0, texel.y), 0.0, 1.0)).r;
+            vec3 normal = normalize(vec3(-dx * 4.0, -dy * 4.0, 1.0));
+            float diffuse = max(dot(normal, normalize(uLightDirection)), 0.0);
+            float lighting = 0.28 + 0.72 * diffuse;
+            float normalized = clamp((value - uMinNorm) / max(uMaxNorm - uMinNorm, 1e-6), 0.0, 1.0);
+            normalized = pow(normalized, 1.0 / max(uGamma, 1e-3));
+            FragColor = vec4(applyColormap(normalized, uColormap) * lighting, 1.0);
+        }
+        )";
+        if (!m_prog3d.addShaderFromSourceCode(QOpenGLShader::Vertex, vs3d)
+            || !m_prog3d.addShaderFromSourceCode(QOpenGLShader::Fragment, fs3d)
+            || !m_prog3d.link())
+        {
+            qCritical() << "PreviewWidget: 3D shader setup FAILED" << m_prog3d.log();
+            return;
+        }
+
+        constexpr int gridSize = 256;
+        std::vector<float> gridVertices;
+        gridVertices.reserve(gridSize * gridSize * 4);
+        for (int y = 0; y < gridSize; ++y)
+        {
+            const float v = static_cast<float>(y) / static_cast<float>(gridSize - 1);
+            for (int x = 0; x < gridSize; ++x)
+            {
+                const float u = static_cast<float>(x) / static_cast<float>(gridSize - 1);
+                gridVertices.push_back(u * 2.0f - 1.0f);
+                gridVertices.push_back(v * 2.0f - 1.0f);
+                gridVertices.push_back(u);
+                gridVertices.push_back(1.0f - v);
+            }
+        }
+
+        std::vector<GLuint> gridIndices;
+        gridIndices.reserve((gridSize - 1) * (gridSize - 1) * 6);
+        for (int y = 0; y < gridSize - 1; ++y)
+        {
+            for (int x = 0; x < gridSize - 1; ++x)
+            {
+                const GLuint topLeft = static_cast<GLuint>(y * gridSize + x);
+                const GLuint topRight = topLeft + 1;
+                const GLuint bottomLeft = static_cast<GLuint>((y + 1) * gridSize + x);
+                const GLuint bottomRight = bottomLeft + 1;
+                gridIndices.insert(gridIndices.end(),
+                                   {topLeft, bottomLeft, topRight,
+                                    topRight, bottomLeft, bottomRight});
+            }
+        }
+
+        m_gridVao.create();
+        glGenBuffers(1, &m_gridVbo);
+        glGenBuffers(1, &m_gridIbo);
+        m_gridVao.bind();
+        glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(gridVertices.size() * sizeof(float)),
+                     gridVertices.data(),
+                     GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_gridIbo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(gridIndices.size() * sizeof(GLuint)),
+                     gridIndices.data(),
+                     GL_STATIC_DRAW);
+        m_prog3d.bind();
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        m_prog3d.release();
+        m_gridVao.release();
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        m_gridElementCount = static_cast<int>(gridIndices.size());
+        m_u3dTex = m_prog3d.uniformLocation("uTex");
+        m_u3dMvp = m_prog3d.uniformLocation("uMvp");
+        m_u3dMinNorm = m_prog3d.uniformLocation("uMinNorm");
+        m_u3dMaxNorm = m_prog3d.uniformLocation("uMaxNorm");
+        m_u3dTexNormScale = m_prog3d.uniformLocation("uTexNormScale");
+        m_u3dZScale = m_prog3d.uniformLocation("uZScale");
+        m_u3dGamma = m_prog3d.uniformLocation("uGamma");
+        m_u3dColormap = m_prog3d.uniformLocation("uColormap");
+        m_u3dColormapLut = m_prog3d.uniformLocation("uColormapLut");
+        m_u3dShowClipping = m_prog3d.uniformLocation("uShowClipping");
+        m_u3dUvScale = m_prog3d.uniformLocation("uUvScale");
+        m_u3dUvOffset = m_prog3d.uniformLocation("uUvOffset");
+        m_u3dLightDirection = m_prog3d.uniformLocation("uLightDirection");
 
         // Uploads all colormaps once for shader lookup
         glGenTextures(1, &m_colormapTexture);
@@ -2154,6 +3139,7 @@ namespace scopeone::ui
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8,
                      kColormapSize, colormaps.size(), 0,
                      GL_RGB, GL_UNSIGNED_BYTE, atlas.constData());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glActiveTexture(GL_TEXTURE0);
         m_prog.release();
         m_vao.release();
@@ -2173,58 +3159,72 @@ namespace scopeone::ui
         if (m_uUvOffset >= 0) m_prog.setUniformValue(m_uUvOffset, ox, oy);
     }
 
-    // Uploads and draws one image frame into a target rectangle
-    void PreviewWidget::drawFrameInRect(const QString& textureKey,
-                                        const ImageFrame& frame,
-                                        quint64 frameRevision,
-                                        const QRect& r,
-                                        bool flipX,
-                                        bool flipY,
-                                        const LayerDisplaySettings& display,
-                                        bool firstVisibleInArea)
+    GLuint PreviewWidget::ensureFrameTexture(const QString& textureKey,
+                                             const ImageFrame& frame,
+                                             quint64 frameRevision)
     {
-        if (!frame.isValid() || r.width() <= 0 || r.height() <= 0) return;
-
-        ensureGlPipeline();
-
         GLenum uploadType = GL_UNSIGNED_BYTE;
         GLint internalFormat = GL_R8;
         int unpackAlign = 1;
-
         if (frame.isMono16())
         {
             uploadType = GL_UNSIGNED_SHORT;
             internalFormat = GL_R16;
             unpackAlign = 2;
         }
-        else if (!frame.isMono8())
+
+        const GLuint texId = getOrCreateTexture(textureKey,
+                                                frame.width,
+                                                frame.height,
+                                                internalFormat);
+        CachedTexture& cachedTexture = m_textureCache[textureKey];
+        glBindTexture(GL_TEXTURE_2D, texId);
+        if (cachedTexture.uploadedRevision == frameRevision)
+        {
+            return texId;
+        }
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
+        const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
+        if (frame.stride > 0)
+        {
+            const int rowPixels = frame.stride / bytesPerPixel;
+            if (rowPixels != frame.width)
+            {
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
+            }
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                        frame.width, frame.height,
+                        GL_RED, uploadType, frame.bytes.constData());
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        cachedTexture.uploadedRevision = frameRevision;
+        return texId;
+    }
+
+    // Uploads and draws one image frame into a target rectangle
+    void PreviewWidget::drawFrameInRect(const QString& textureKey,
+                                        const ImageFrame& frame,
+                                        quint64 frameRevision,
+                                        const QRect& displayRect,
+                                        const QRect& clipRect,
+                                        bool flipX,
+                                        bool flipY,
+                                        const LayerDisplaySettings& display,
+                                        bool firstVisibleInArea)
+    {
+        if (!frame.isValid() || displayRect.width() <= 0 || displayRect.height() <= 0) return;
+
+        ensureGlPipeline();
+
+        if (!frame.isMono8() && !frame.isMono16())
         {
             return;
         }
 
-        GLuint texId = getOrCreateTexture(textureKey, frame.width, frame.height, internalFormat);
-        CachedTexture& cachedTexture = m_textureCache[textureKey];
-
-        glBindTexture(GL_TEXTURE_2D, texId);
-
-        if (cachedTexture.uploadedRevision != frameRevision)
-        {
-            glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
-            const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
-            if (frame.stride > 0)
-            {
-                const int rowPixels = frame.stride / bytesPerPixel;
-                if (rowPixels != frame.width)
-                {
-                    glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
-                }
-            }
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                            frame.width, frame.height,
-                            GL_RED, uploadType, frame.bytes.constData());
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            cachedTexture.uploadedRevision = frameRevision;
-        }
+        const GLint internalFormat = frame.isMono16() ? GL_R16 : GL_R8;
+        const GLuint texId = ensureFrameTexture(textureKey, frame, frameRevision);
 
         m_prog.bind();
         glActiveTexture(GL_TEXTURE0);
@@ -2247,6 +3247,7 @@ namespace scopeone::ui
         m_prog.setUniformValue(m_uAlpha, opacity);
         m_prog.setUniformValue(m_uGamma, static_cast<float>(std::clamp(display.gamma, 0.2, 2.0)));
         m_prog.setUniformValue(m_uColormap, display.colormapIndex);
+        m_prog.setUniformValue(m_uShowClipping, m_clippingWarning ? 1 : 0);
         setUvTransform(flipX, flipY);
 
         if (display.blending == Blending::Opaque)
@@ -2285,13 +3286,16 @@ namespace scopeone::ui
             }
         }
 
-        applyViewportForRect(r);
+        glEnable(GL_SCISSOR_TEST);
+        applyScissorForRect(clipRect);
+        applyViewportForRect(displayRect);
 
         m_vao.bind();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         m_vao.release();
         glBlendEquation(GL_FUNC_ADD);
         glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
         m_prog.release();
     }
 
@@ -2299,29 +3303,31 @@ namespace scopeone::ui
     // Computes the target rectangle for an image inside an area
     QRect PreviewWidget::targetRectForImageSize(const QSize& imageSize,
                                                 const FrameSourceState& frameState,
+                                                const QString& layerKey,
                                                 const QRect& avail) const
     {
         if (imageSize.width() <= 0 || imageSize.height() <= 0 || avail.width() <= 0 || avail.height() <= 0) return
             avail;
 
+        const ViewportState viewport = viewportStateForLayer(layerKey);
         QSize s = imageSize;
-        if (m_fitToWindow)
+        if (viewport.fitToWindow)
         {
             s.scale(avail.size(), Qt::KeepAspectRatio);
             s = s * (frameState.zoomPercent / 100.0);
         }
         else
         {
-            const double z = (m_zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
+            const double z = (viewport.zoomPercent / 100.0) * (frameState.zoomPercent / 100.0);
             s = s * z;
         }
 
         int x = avail.x() + (avail.width() - s.width()) / 2 + frameState.offsetX;
         int y = avail.y() + (avail.height() - s.height()) / 2 + frameState.offsetY;
-        if (!m_fitToWindow)
+        if (!viewport.fitToWindow)
         {
-            x += m_viewOffset.x();
-            y += m_viewOffset.y();
+            x += viewport.offset.x();
+            y += viewport.offset.y();
         }
         return QRect(QPoint(x, y), s);
     }
@@ -2342,6 +3348,26 @@ namespace scopeone::ui
         const int hPx = qMax(1, qRound(logicalRect.height() * dpr));
         const int glY = totalHeightPx - hPx - yPx;
         glViewport(xPx, glY, wPx, hPx);
+    }
+
+    // Applies an OpenGL scissor rectangle in logical widget coordinates
+    void PreviewWidget::applyScissorForRect(const QRect& logicalRect)
+    {
+        const QRect clippedRect = logicalRect.intersected(rect());
+        if (clippedRect.width() <= 0 || clippedRect.height() <= 0)
+        {
+            glScissor(0, 0, 0, 0);
+            return;
+        }
+
+        const qreal dpr = devicePixelRatioF();
+        const int totalHeightPx = qMax(1, qRound(height() * dpr));
+        const int xPx = qRound(clippedRect.x() * dpr);
+        const int yPx = qRound(clippedRect.y() * dpr);
+        const int wPx = qMax(1, qRound(clippedRect.width() * dpr));
+        const int hPx = qMax(1, qRound(clippedRect.height() * dpr));
+        const int glY = totalHeightPx - hPx - yPx;
+        glScissor(xPx, glY, wPx, hPx);
     }
 
     // Returns an existing texture or creates one with matching shape
@@ -2393,6 +3419,23 @@ namespace scopeone::ui
             glDeleteTextures(1, &m_colormapTexture);
             m_colormapTexture = 0;
         }
+        if (m_gridVbo != 0)
+        {
+            glDeleteBuffers(1, &m_gridVbo);
+            m_gridVbo = 0;
+        }
+        if (m_gridIbo != 0)
+        {
+            glDeleteBuffers(1, &m_gridIbo);
+            m_gridIbo = 0;
+        }
+        if (m_vbo != 0)
+        {
+            glDeleteBuffers(1, &m_vbo);
+            m_vbo = 0;
+        }
+        m_gridVao.destroy();
+        m_vao.destroy();
         doneCurrent();
     }
 
@@ -2502,7 +3545,89 @@ namespace scopeone::ui
     // Starts active drawing interactions from a mouse press
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
+        emit activated();
         emit mousePositionChanged(event->pos());
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            const QString layerKey = layerKeyAt3dPosition(event->pos());
+            if (layerKey.isEmpty())
+            {
+                event->accept();
+                return;
+            }
+            if (m_activeLayerKey != layerKey)
+            {
+                setActiveLayerKey(layerKey);
+                emit layerClicked(layerKey);
+            }
+            m_surfaceLayerKey = layerKey;
+            Camera3dState& camera = cameraForLayer(layerKey);
+            if (event->button() == Qt::LeftButton)
+            {
+                m_surfaceOrbiting = true;
+                m_surfacePanning = false;
+                m_surfaceDragStart = event->pos();
+                m_surfaceStartPitch = camera.pitch;
+                m_surfaceStartYaw = camera.yaw;
+                setCursor(Qt::ClosedHandCursor);
+                event->accept();
+                return;
+            }
+            if (event->button() == Qt::RightButton)
+            {
+                m_surfacePanning = true;
+                m_surfaceOrbiting = false;
+                m_surfaceDragStart = event->pos();
+                m_surfaceStartPan = camera.pan;
+                setCursor(Qt::SizeAllCursor);
+                event->accept();
+                return;
+            }
+        }
+        if (event->button() == Qt::MiddleButton)
+        {
+            PreviewInteractionTarget target;
+            if (!interactionTargetAt(event->pos(), target))
+            {
+                return;
+            }
+
+            setActiveLayerKey(target.layerKey);
+            emit layerClicked(target.layerKey);
+            const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
+            ViewportState& viewport = viewportStateForLayer(target.layerKey);
+            if (viewport.fitToWindow)
+            {
+                const QPointF relativePos(
+                    static_cast<double>(event->pos().x() - target.displayRect.x())
+                        / static_cast<double>(target.displayRect.width()),
+                    static_cast<double>(event->pos().y() - target.displayRect.y())
+                        / static_cast<double>(target.displayRect.height()));
+                viewport.fitToWindow = false;
+                QRect newRect;
+                QSize imageSize;
+                if (resolveDisplayGeometry(frameState,
+                                            target.processed,
+                                            target.layerKey,
+                                            target.itemArea,
+                                            newRect,
+                                            imageSize))
+                {
+                    const int desiredX = qRound(event->pos().x() - relativePos.x() * newRect.width());
+                    const int desiredY = qRound(event->pos().y() - relativePos.y() * newRect.height());
+                    viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
+                }
+                emit fitToWindowChanged(false);
+            }
+            m_viewPanning = true;
+            m_panLayerKey = target.layerKey;
+            m_panStartWidgetPos = event->pos();
+            m_panStartOffset = viewport.offset;
+            setCursor(Qt::ClosedHandCursor);
+            update();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode && event->button() == Qt::LeftButton)
         {
             PreviewInteractionTarget target;
@@ -2588,15 +3713,123 @@ namespace scopeone::ui
                 return;
             }
             m_sceneModel->selectOnly(QString());
+
+            if (interactionTargetAt(event->pos(), target) && !target.layerKey.isEmpty())
+            {
+                setActiveLayerKey(target.layerKey);
+                emit layerClicked(target.layerKey);
+            }
+            else if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
+            {
+                QMap<QString, FrameSourceState> frameSources;
+                std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+                std::vector<RenderItem> renderItems;
+                buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.area.contains(event->pos()))
+                    {
+                        setActiveLayerKey(item.layerKey);
+                        emit layerClicked(item.layerKey);
+                        break;
+                    }
+                }
+            }
         }
 
         QOpenGLWidget::mousePressEvent(event);
+    }
+
+    // Toggles visibility of the layer under the double click
+    void PreviewWidget::mouseDoubleClickEvent(QMouseEvent* event)
+    {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+            && event->button() == Qt::LeftButton)
+        {
+            const QString layerKey = layerKeyAt3dPosition(event->pos());
+            if (!layerKey.isEmpty())
+            {
+                if (m_activeLayerKey != layerKey)
+                {
+                    setActiveLayerKey(layerKey);
+                    emit layerClicked(layerKey);
+                }
+                reset3dCamera();
+            }
+            event->accept();
+            return;
+        }
+        if (event->button() == Qt::LeftButton)
+        {
+            PreviewInteractionTarget target;
+            if (interactionTargetAt(event->pos(), target) && !target.layerKey.isEmpty())
+            {
+                if (m_savedVisibleLayerKeys.isEmpty())
+                {
+                    m_savedVisibleLayerKeys = m_sceneModel->visibleLayerIds();
+                    m_sceneModel->setVisibleLayers({target.layerKey});
+                }
+                else
+                {
+                    m_sceneModel->setVisibleLayers(m_savedVisibleLayerKeys);
+                    m_savedVisibleLayerKeys.clear();
+                }
+                update();
+                return;
+            }
+            if (!m_savedVisibleLayerKeys.isEmpty())
+            {
+                m_sceneModel->setVisibleLayers(m_savedVisibleLayerKeys);
+                m_savedVisibleLayerKeys.clear();
+                update();
+                return;
+            }
+        }
+        QOpenGLWidget::mouseDoubleClickEvent(event);
     }
 
     // Updates active drawing interactions during mouse move
     void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        update();
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            if (m_surfaceOrbiting)
+            {
+                Camera3dState& camera = cameraForLayer(m_surfaceLayerKey);
+                const QPoint delta = event->pos() - m_surfaceDragStart;
+                camera.yaw = m_surfaceStartYaw + static_cast<float>(delta.x()) * 0.5f;
+                camera.pitch = qBound(-85.0f,
+                                      m_surfaceStartPitch + static_cast<float>(delta.y()) * 0.5f,
+                                      85.0f);
+                update();
+                return;
+            }
+            if (m_surfacePanning)
+            {
+                Camera3dState& camera = cameraForLayer(m_surfaceLayerKey);
+                const QPoint delta = event->pos() - m_surfaceDragStart;
+                QMap<QString, FrameSourceState> frameSources;
+                std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+                std::vector<RenderItem> renderItems;
+                buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+                QRect area = rect();
+                for (const RenderItem& item : renderItems)
+                {
+                    if (item.layerKey == m_surfaceLayerKey)
+                    {
+                        area = item.area;
+                        break;
+                    }
+                }
+                camera.pan = m_surfaceStartPan
+                    + QVector2D(static_cast<float>(delta.x()) / static_cast<float>(area.width()),
+                                -static_cast<float>(delta.y()) / static_cast<float>(area.height()));
+                update();
+                return;
+            }
+        }
         if (m_measurementLineDrawingMode && m_measurementLineDragging)
         {
             m_measurementLineEnd = event->pos();
@@ -2618,6 +3851,15 @@ namespace scopeone::ui
             return;
         }
 
+        if (m_viewPanning)
+        {
+            ViewportState& viewport = viewportStateForLayer(m_panLayerKey);
+            viewport.offset = m_panStartOffset + event->pos() - m_panStartWidgetPos;
+            emit mousePositionChanged(event->pos());
+            update();
+            return;
+        }
+
         if (m_markupDragging)
         {
             FrameSourceState frameState;
@@ -2632,7 +3874,12 @@ namespace scopeone::ui
                                             itemArea,
                                             displayRect,
                                             imageSize)
-                && mapWidgetPositionToImage(frameState, processed, itemArea, event->pos(), imagePos))
+                && mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             m_dragMarkupOriginal.layerKey,
+                                             itemArea,
+                                             event->pos(),
+                                             imagePos))
             {
                 if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Line)
                 {
@@ -2702,6 +3949,34 @@ namespace scopeone::ui
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            if (m_surfaceOrbiting && event->button() == Qt::LeftButton)
+            {
+                m_surfaceOrbiting = false;
+                m_surfaceLayerKey.clear();
+                unsetCursor();
+                event->accept();
+                return;
+            }
+            if (m_surfacePanning && event->button() == Qt::RightButton)
+            {
+                m_surfacePanning = false;
+                m_surfaceLayerKey.clear();
+                unsetCursor();
+                event->accept();
+                return;
+            }
+        }
+        if (m_viewPanning && event->button() == Qt::MiddleButton)
+        {
+            m_viewPanning = false;
+            m_panLayerKey.clear();
+            unsetCursor();
+            update();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode
             && event->button() == Qt::LeftButton
             && m_measurementLineDragging)
@@ -2743,11 +4018,13 @@ namespace scopeone::ui
                                 clippedEnd)
                 || !mapWidgetPositionToImage(frameState,
                                              processed,
+                                             m_measurementLineTargetLayerKey,
                                              itemArea,
                                              clippedStart,
                                              imageStart)
                 || !mapWidgetPositionToImage(frameState,
                                              processed,
+                                             m_measurementLineTargetLayerKey,
                                              itemArea,
                                              clippedEnd,
                                              imageEnd)
@@ -2791,8 +4068,18 @@ namespace scopeone::ui
                                                 displayRect,
                                                 imageSize)
                 || !clipLineToRect(m_crossSectionStart, m_crossSectionEnd, displayRect, clippedStart, clippedEnd)
-                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedStart, imgStart)
-                || !mapWidgetPositionToImage(frameState, processed, itemArea, clippedEnd, imgEnd))
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             startTarget.layerKey,
+                                             itemArea,
+                                             clippedStart,
+                                             imgStart)
+                || !mapWidgetPositionToImage(frameState,
+                                             processed,
+                                             startTarget.layerKey,
+                                             itemArea,
+                                             clippedEnd,
+                                             imgEnd))
             {
                 cancelCrossSectionDrawing();
                 return;
@@ -2856,7 +4143,12 @@ namespace scopeone::ui
             }
 
             QRect imageRect;
-            if (!mapWidgetRectToImage(frameState, false, itemArea, clippedRect, imageRect))
+            if (!mapWidgetRectToImage(frameState,
+                                      false,
+                                      startTarget.layerKey,
+                                      itemArea,
+                                      clippedRect,
+                                      imageRect))
             {
                 cancelROIDrawing();
                 return;
@@ -2900,12 +4192,43 @@ namespace scopeone::ui
     void PreviewWidget::leaveEvent(QEvent* event)
     {
         emit mousePositionChanged(QPoint(-1, -1));
+        update();
         QOpenGLWidget::leaveEvent(event);
     }
 
     // Handles control wheel zoom around the cursor anchor
     void PreviewWidget::wheelEvent(QWheelEvent* event)
     {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            const QPoint widgetPos = event->position().toPoint();
+            const QString layerKey = layerKeyAt3dPosition(widgetPos);
+            if (layerKey.isEmpty())
+            {
+                event->accept();
+                return;
+            }
+            if (m_activeLayerKey != layerKey)
+            {
+                setActiveLayerKey(layerKey);
+                emit layerClicked(layerKey);
+            }
+            Camera3dState& camera = cameraForLayer(layerKey);
+            const int deltaY = event->angleDelta().y();
+            if (deltaY != 0)
+            {
+                const int steps = (deltaY / 120 != 0)
+                    ? (deltaY / 120)
+                    : ((deltaY > 0) ? 1 : -1);
+                camera.distance = qBound(0.8f,
+                                          camera.distance * std::pow(0.88f,
+                                                                      static_cast<float>(steps)),
+                                          20.0f);
+            }
+            update();
+            event->accept();
+            return;
+        }
         if (!(event->modifiers() & Qt::ControlModifier))
         {
             QOpenGLWidget::wheelEvent(event);
@@ -2919,59 +4242,65 @@ namespace scopeone::ui
             return;
         }
 
-        const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
         PreviewInteractionTarget target;
-        QPointF relativePos;
-        const bool hasAnchor = interactionTargetAt(event->position().toPoint(), target)
-            && !target.sourceId.isEmpty()
-            && target.displayRect.width() > 0
-            && target.displayRect.height() > 0;
-        if (hasAnchor)
+        const QPoint widgetPos = event->position().toPoint();
+        if (!interactionTargetAt(widgetPos, target))
         {
-            relativePos = QPointF(
-                static_cast<double>(event->position().x() - target.displayRect.x())
-                    / static_cast<double>(target.displayRect.width()),
-                static_cast<double>(event->position().y() - target.displayRect.y())
-                    / static_cast<double>(target.displayRect.height()));
+            event->accept();
+            return;
         }
-        if (m_fitToWindow)
-        {
-            setFitToWindow(false);
-        }
-        setZoomPercent(m_zoomPercent + steps * 10);
 
-        if (hasAnchor)
+        if (m_activeLayerKey != target.layerKey)
         {
-            FrameSourceState frameState;
-            const QMap<QString, FrameSourceState> frameSources = snapshotFrameSources();
-            const auto frameStateIt = frameSources.constFind(target.sourceId);
-            const bool hasFrameState = frameStateIt != frameSources.constEnd();
-            if (hasFrameState)
-            {
-                frameState = frameStateIt.value();
-            }
-
-            if (hasFrameState)
-            {
-                QRect newRect;
-                QSize imageSize;
-                if (!resolveDisplayGeometry(frameState, target.processed, target.itemArea, newRect, imageSize))
-                {
-                    event->accept();
-                    return;
-                }
-                const int desiredX = qRound(event->position().x() - relativePos.x() * newRect.width());
-                const int desiredY = qRound(event->position().y() - relativePos.y() * newRect.height());
-                m_viewOffset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
-                update();
-            }
+            setActiveLayerKey(target.layerKey);
+            emit layerClicked(target.layerKey);
         }
+
+        const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
+        const QPointF relativePos(
+            static_cast<double>(widgetPos.x() - target.displayRect.x())
+                / static_cast<double>(target.displayRect.width()),
+            static_cast<double>(widgetPos.y() - target.displayRect.y())
+                / static_cast<double>(target.displayRect.height()));
+        ViewportState& viewport = viewportStateForLayer(target.layerKey);
+        const bool wasFitToWindow = viewport.fitToWindow;
+        viewport.fitToWindow = false;
+        viewport.zoomPercent = qBound(10, viewport.zoomPercent + steps * 10, 800);
+
+        if (wasFitToWindow)
+        {
+            emit fitToWindowChanged(false);
+        }
+        emit zoomLevelChanged(viewport.zoomPercent);
+
+        const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
+        QRect newRect;
+        QSize imageSize;
+        if (resolveDisplayGeometry(frameState,
+                                   target.processed,
+                                   target.layerKey,
+                                   target.itemArea,
+                                   newRect,
+                                   imageSize))
+        {
+            const int desiredX = qRound(widgetPos.x() - relativePos.x() * newRect.width());
+            const int desiredY = qRound(widgetPos.y() - relativePos.y() * newRect.height());
+            viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
+        }
+        update();
         event->accept();
     }
 
     // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+            && event->key() == Qt::Key_R)
+        {
+            reset3dCamera();
+            event->accept();
+            return;
+        }
         if (m_measurementLineDrawingMode && event->key() == Qt::Key_Escape)
         {
             cancelMeasurementLineDrawing();
@@ -3000,6 +4329,8 @@ namespace scopeone::ui
             return;
         }
 
+
+
         if (event->key() == Qt::Key_Escape)
         {
             m_sceneModel->selectOnly(QString());
@@ -3007,6 +4338,72 @@ namespace scopeone::ui
             return;
         }
 
+        const bool bigStep = (event->modifiers() & Qt::ShiftModifier);
+        if (event->key() == Qt::Key_Up)
+        {
+            emit stageStepRequested(0.0, 1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Down)
+        {
+            emit stageStepRequested(0.0, -1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Left)
+        {
+            emit stageStepRequested(-1.0, 0.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Right)
+        {
+            emit stageStepRequested(1.0, 0.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_PageUp)
+        {
+            emit stageZStepRequested(1.0, bigStep);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_PageDown)
+        {
+            emit stageZStepRequested(-1.0, bigStep);
+            event->accept();
+            return;
+        }
+
         QOpenGLWidget::keyPressEvent(event);
+    }
+
+    // Accept file drag operations containing image files
+    void PreviewWidget::dragEnterEvent(QDragEnterEvent* event)
+    {
+        if (event->mimeData()->hasUrls())
+        {
+            event->acceptProposedAction();
+        }
+    }
+
+    // Process dropped files and emit image paths
+    void PreviewWidget::dropEvent(QDropEvent* event)
+    {
+        const QList<QUrl> urls = event->mimeData()->urls();
+        QStringList filePaths;
+        for (const QUrl& url : urls)
+        {
+            if (url.isLocalFile())
+            {
+                filePaths.append(url.toLocalFile());
+            }
+        }
+        if (!filePaths.isEmpty())
+        {
+            emit imageFilesDropped(filePaths);
+            event->acceptProposedAction();
+        }
     }
 } // namespace scopeone::ui

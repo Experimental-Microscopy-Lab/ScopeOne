@@ -9,12 +9,14 @@
 #include <memory>
 
 #include "internal/CameraBackend.h"
+#include "scopeone/CameraProvider.h"
+#include "internal/CameraRuntimeControl.h"
 
 class CMMCore;
 
 namespace scopeone::core::internal
 {
-    class CameraManager : public QObject
+    class CameraManager : public QObject, public CameraProvider, public CameraRuntimeControl
     {
         Q_OBJECT
 
@@ -22,10 +24,13 @@ namespace scopeone::core::internal
         explicit CameraManager(QObject* parent = nullptr);
         ~CameraManager() override;
 
+        void setFrameSink(FrameSink sink) override;
+        void setPreviewStateSink(PreviewStateSink sink) override;
+
         bool configureNativeCamera(const std::shared_ptr<CMMCore>& core,
                                    const QString& cameraId,
                                    double exposureMs = 0.0);
-        bool addAgentCamera(const QString& cameraId,
+        bool addDriverHostCamera(const QString& cameraId,
                             const QString& adapter,
                             const QString& device,
                             const QStringList& preInitProperties = QStringList(),
@@ -34,57 +39,60 @@ namespace scopeone::core::internal
         void shutdownNow();
         void shutdown(std::function<void(const QString&)> completion);
 
-        bool startPreview();
-        bool stopPreview();
-        bool usesAgentBackend() const;
-        bool startPreviewFor(const QString& cameraId);
-        bool stopPreviewFor(const QString& cameraId);
-        bool isPreviewRunning(const QString& cameraId) const;
-        void setFrameDeliveryPaused(bool paused);
-        bool setRecordingFrameDeliveryEnabled(bool enabled);
-        bool setHighRateFrameDeliveryEnabled(bool enabled);
-        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token);
-        void finishProcessingFrame(const QString& cameraId, quint64 token);
+        bool startPreview() override;
+        bool stopPreview() override;
+        bool usesDriverHostBackend() const;
+        bool startPreviewFor(const QString& cameraId) override;
+        bool stopPreviewFor(const QString& cameraId) override;
+        bool isPreviewRunning(const QString& cameraId) const override;
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+        bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
+                                              bool enabled) override;
+        bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
+                                             bool enabled) override;
+        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
+        void finishProcessingFrame(const QString& cameraId, quint64 token) override;
 
-        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs);
-        QStringList listProperties(const QString& cameraId);
+        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const override;
+        bool setExposure(const QString& cameraIdOrAll, double exposureMs) override;
+        QStringList listProperties(const QString& cameraId) override;
         QString getProperty(const QString& cameraId,
                             const QString& name,
-                            bool fromCache = false);
+                            bool fromCache = false) override;
         bool setProperty(const QString& cameraId,
                          const QString& name,
                          const QString& value,
-                         QString* errorMessage = nullptr);
-        QString getPropertyType(const QString& cameraId, const QString& name);
-        bool isPropertyReadOnly(const QString& cameraId, const QString& name);
-        bool isPropertyPreInit(const QString& cameraId, const QString& name);
-        QStringList getAllowedPropertyValues(const QString& cameraId, const QString& name);
-        bool hasPropertyLimits(const QString& cameraId, const QString& name);
-        double getPropertyLowerLimit(const QString& cameraId, const QString& name);
-        double getPropertyUpperLimit(const QString& cameraId, const QString& name);
+                         QString* errorMessage = nullptr) override;
+        QString getPropertyType(const QString& cameraId, const QString& name) override;
+        bool isPropertyReadOnly(const QString& cameraId, const QString& name) override;
+        bool isPropertyPreInit(const QString& cameraId, const QString& name) override;
+        QStringList getAllowedPropertyValues(const QString& cameraId, const QString& name) override;
+        bool hasPropertyLimits(const QString& cameraId, const QString& name) override;
+        double getPropertyLowerLimit(const QString& cameraId, const QString& name) override;
+        double getPropertyUpperLimit(const QString& cameraId, const QString& name) override;
 
-        bool setROI(const QString& cameraId, int x, int y, int width, int height);
-        bool clearROI(const QString& cameraId);
-        bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height);
+        bool setROI(const QString& cameraId, int x, int y, int width, int height) override;
+        bool clearROI(const QString& cameraId) override;
+        bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height) override;
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
-                               int timeoutMs = 1500);
+                               int timeoutMs = 1500) override;
 
     signals:
-        void newRawFrameReady(const scopeone::core::ImageFrame& frame);
         void processingFrameReady(const scopeone::core::ImageFrame& frame, quint64 token);
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void recordingFramesReady(const QList<scopeone::core::ImageFrame>& frames);
         void frameDeliveryFailed(const QString& errorMessage, quint64 droppedFrames);
         void previewStateChanged(bool running);
-        void agentControlServerListening(const QString& cameraId, const QString& serverName);
+        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
 
     private:
         bool activateBackend(CameraBackend::Kind kind);
 
         ProcessingFrameGate m_processingFrameGate;
         std::unique_ptr<CameraBackend> m_backend;
+        FrameSink m_frameSink;
+        PreviewStateSink m_previewStateSink;
         bool m_recordingFrameDeliveryEnabled{false};
         bool m_highRateFrameDeliveryEnabled{false};
         QMap<QString, QStringList> m_propertyNamesCache;

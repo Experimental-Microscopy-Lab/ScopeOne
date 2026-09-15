@@ -1,17 +1,20 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
+#include "scopeone/ScanImageAssembler.h"
 
-#include "internal/BackgroundCalibrationModule.h"
-#include "internal/DifferentialRollingModule.h"
-#include "internal/FFTModule.h"
-#include "internal/GaussianBlurModule.h"
+#include "internal/AcquisitionEngine.h"
 #include "internal/ImageProcessingFramework.h"
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/DriverHostProviderProxy.h"
+#include "internal/HardwareRuntime.h"
 #include "internal/MMCoreManager.h"
+#include "internal/MicroManagerProvider.h"
 #include "internal/CameraManager.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
-#include "internal/SpatiotemporalBinningModule.h"
 #include "internal/StageMosaicManager.h"
+#include "internal/DaqDeviceManager.h"
+#include "internal/SignalSourceManager.h"
 #include "MMCore.h"
 #include <scopewriter/ScopeWriter.h>
 #include <QCoreApplication>
@@ -23,15 +26,21 @@
 #include <QFutureWatcher>
 #include <QJsonObject>
 #include <QList>
+#include <QMetaObject>
 #include <QMutex>
+#include <QLibrary>
 #include <QStringList>
 #include <QSysInfo>
+#include <QStandardPaths>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
 #include <QtConcurrent>
 #include <opencv2/core/version.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +51,67 @@
 
 namespace
 {
+    std::atomic<quint64> s_importCounter{1};
+
+    struct StaticImageImportTask
+    {
+        QString filePath;
+        QString displayName;
+        QString sourceId;
+        std::vector<scopeone::core::ImageFrame> slices;
+        QString errorMessage;
+    };
+
+    scopeone::core::ImageFrame convertImportedImage(
+        const cv::Mat& image,
+        const QString& sourceId)
+    {
+        scopeone::core::ImageFrame frame;
+        cv::Mat gray;
+        if (image.channels() == 1)
+        {
+            gray = image;
+        }
+        else if (image.channels() == 4)
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
+        }
+        else
+        {
+            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+        }
+
+        if (gray.depth() == CV_8U)
+        {
+            frame.bitsPerSample = 8;
+            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono8;
+            frame.stride = static_cast<int>(gray.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray.data),
+                                     static_cast<qsizetype>(gray.total() * gray.elemSize()));
+        }
+        else
+        {
+            cv::Mat gray16;
+            if (gray.depth() == CV_16U)
+            {
+                gray16 = gray;
+            }
+            else
+            {
+                gray.convertTo(gray16, CV_16U);
+            }
+            frame.bitsPerSample = 16;
+            frame.pixelFormat = scopeone::core::ImagePixelFormat::Mono16;
+            frame.stride = static_cast<int>(gray16.step);
+            frame.bytes = QByteArray(reinterpret_cast<const char*>(gray16.data),
+                                     static_cast<qsizetype>(gray16.total() * gray16.elemSize()));
+        }
+        frame.cameraId = sourceId;
+        frame.width = gray.cols;
+        frame.height = gray.rows;
+        return frame;
+    }
+
     // Histogram bins are fixed to keep UI cost stable
     constexpr int kHistogramBinCount = 256;
     // Auto stretch ignores a small tail on each side
@@ -55,6 +125,20 @@ namespace
     // Change to true temporarily when pipeline FPS diagnostics are needed
     constexpr bool kFrameRateDiagnosticsEnabled = false;
     constexpr int kFrameRateDiagnosticIntervalMs = 3000;
+
+    struct ProviderRegistrationResult
+    {
+        scopeone::core::HardwareProviderPtr provider;
+        QString errorMessage;
+    };
+
+    struct OfflineProcessingResult
+    {
+        QList<scopeone::core::ImageFrame> frames;
+        scopeone::core::ExperimentPlan plan;
+        QString errorMessage;
+        bool canceled{false};
+    };
 
     // Convert a histogram bin to its lower source value
     int histogramBinLowerValue(int binIndex, int maxValue)
@@ -135,18 +219,6 @@ namespace
         }
     }
 
-    // Convert MMCore string vectors into Qt string lists
-    QStringList toQStringList(const std::vector<std::string>& values)
-    {
-        QStringList out;
-        out.reserve(static_cast<int>(values.size()));
-        for (const auto& value : values)
-        {
-            out.append(QString::fromStdString(value));
-        }
-        return out;
-    }
-
     // Build the cache key for raw and processed histogram layers
     QString histogramLayerKey(const QString& cameraId, bool processed)
     {
@@ -177,7 +249,7 @@ namespace
         {
             const auto& leftModule = left.modules.at(index);
             const auto& rightModule = right.modules.at(index);
-            if (leftModule.kind != rightModule.kind
+            if (leftModule.moduleId != rightModule.moduleId
                 || leftModule.schemaVersion != rightModule.schemaVersion
                 || leftModule.parameters != rightModule.parameters)
             {
@@ -364,6 +436,7 @@ namespace
         facade.failCount = result.failCount;
         facade.skippedCameraCount = result.skippedCameraCount;
         facade.foundCamera = result.foundCamera;
+        facade.devices = result.devices;
         return facade;
     }
 
@@ -444,38 +517,16 @@ namespace
 
 namespace scopeone::core
 {
-    using scopeone::core::internal::BackgroundCalibrationModule;
-    using scopeone::core::internal::FFTModule;
-    using scopeone::core::internal::GaussianBlurModule;
     using scopeone::core::internal::ImageProcessingManager;
+    using scopeone::core::internal::HardwareRuntime;
     using scopeone::core::internal::MMCoreManager;
     using scopeone::core::internal::CameraManager;
+    using scopeone::core::internal::CameraRuntimeControl;
+    using scopeone::core::internal::MicroManagerProvider;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipelineDefinition;
     using scopeone::core::internal::RecordingManager;
-    using scopeone::core::internal::DifferentialRollingModule;
-    using scopeone::core::internal::SpatiotemporalBinningModule;
     using scopeone::core::internal::StageMosaicManager;
-
-    static std::unique_ptr<ProcessingModule> createProcessingModule(ProcessingModuleKind kind)
-    {
-        switch (kind)
-        {
-        case ProcessingModuleKind::FFT:
-            return std::make_unique<FFTModule>();
-        case ProcessingModuleKind::BackgroundCalibration:
-            return std::make_unique<BackgroundCalibrationModule>();
-        case ProcessingModuleKind::SpatiotemporalBinning:
-            return std::make_unique<SpatiotemporalBinningModule>();
-        case ProcessingModuleKind::GaussianBlur:
-            return std::make_unique<GaussianBlurModule>();
-        case ProcessingModuleKind::DifferentialRolling:
-            return std::make_unique<DifferentialRollingModule>();
-        case ProcessingModuleKind::Unknown:
-            return {};
-        }
-        return {};
-    }
 
     static bool equalCanonicalParameter(const QVariant& actual, const QVariant& expected)
     {
@@ -506,6 +557,7 @@ namespace scopeone::core
     {
         m_rawFrames.clear();
         m_processedFrames.clear();
+        m_toolFrames.clear();
         m_staticFrames.clear();
         m_externalFrames.clear();
     }
@@ -568,6 +620,10 @@ namespace scopeone::core
         {
             return m_staticFrames;
         }
+        if (stream == FrameGraphStream::Tool)
+        {
+            return m_toolFrames;
+        }
         if (stream == FrameGraphStream::External)
         {
             return m_externalFrames;
@@ -584,6 +640,10 @@ namespace scopeone::core
         if (stream == FrameGraphStream::Static)
         {
             return m_staticFrames;
+        }
+        if (stream == FrameGraphStream::Tool)
+        {
+            return m_toolFrames;
         }
         if (stream == FrameGraphStream::External)
         {
@@ -911,11 +971,27 @@ namespace scopeone::core
             quint64 completedCount{0};
         };
 
+        HardwareRuntime* hardwareRuntime{nullptr};
+        CameraProvider* cameraProvider{nullptr};
+        CameraRuntimeControl* cameraRuntimeControl{nullptr};
+        std::shared_ptr<MicroManagerProvider> microManagerProvider;
         MMCoreManager* mmcoreManager{nullptr};
         CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
+        std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
+        std::unique_ptr<QLibrary> cudaLibrary;
         StageMosaicManager* stageMosaicManager{nullptr};
+        internal::DaqDeviceManager* daqDeviceManager{nullptr};
+        internal::SignalSourceManager* signalSourceManager{nullptr};
+        struct ScanImageSessionState
+        {
+            std::shared_ptr<RecordingSessionData> session;
+            QString baseName;
+            quint64 lastTimestampNs{0};
+        };
+        QHash<QString, std::shared_ptr<ScanImageAssembler>> scanImageAssemblers;
+        QHash<QString, ScanImageSessionState> scanImageSessions;
         QHash<QString, ExperimentDocument> experiments;
         QHash<QString, std::shared_ptr<RecordingSessionData>> sessions;
         QString activeExperimentId;
@@ -936,6 +1012,106 @@ namespace scopeone::core
     QString ScopeOneCore::getVersion()
     {
         return QStringLiteral(SCOPEONE_CORE_VERSION_STRING);
+    }
+
+    // Return the unified device catalog owned by the hardware runtime
+    QList<HardwareDeviceDescriptor> ScopeOneCore::hardwareDevices() const
+    {
+        return m_managers->hardwareRuntime->deviceRegistry()->devices();
+    }
+
+    bool ScopeOneCore::registerHardwareProvider(const HardwareProviderPtr& provider)
+    {
+        const QString providerId = provider ? provider->descriptor().id.trimmed() : QString{};
+        if (!provider
+            || providerId.isEmpty()
+            || providerId == QStringLiteral("micro-manager")
+            || m_managers->hardwareRuntime->deviceRegistry()->provider(providerId)
+            || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
+            || isRecording())
+        {
+            return false;
+        }
+        return m_managers->hardwareRuntime->registerProvider(provider);
+    }
+
+    bool ScopeOneCore::registerDriverHostProvider(const QString& providerId,
+                                                  const QString& modulePath,
+                                                  const QVariantMap& options,
+                                                  QString* errorMessage)
+    {
+        if (errorMessage) errorMessage->clear();
+        const QString normalizedId = providerId.trimmed();
+        if (normalizedId.isEmpty()
+            || normalizedId == QStringLiteral("micro-manager")
+            || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
+            || isRecording()
+            || m_pendingProviderRegistrations.contains(normalizedId)
+            || m_managers->hardwareRuntime->deviceRegistry()->provider(normalizedId))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Provider cannot be registered in the current state");
+            }
+            return false;
+        }
+
+        m_pendingProviderRegistrations.insert(normalizedId);
+        auto* watcher = new QFutureWatcher<ProviderRegistrationResult>(this);
+        connect(watcher, &QFutureWatcher<ProviderRegistrationResult>::finished,
+                this, [this, watcher, normalizedId]()
+                {
+                    ProviderRegistrationResult result = watcher->result();
+                    m_pendingProviderRegistrations.remove(normalizedId);
+                    bool success = static_cast<bool>(result.provider);
+                    if (success
+                        && !m_managers->hardwareRuntime->registerProvider(result.provider))
+                    {
+                        success = false;
+                        result.errorMessage = QStringLiteral(
+                            "Provider device catalog conflicts with registered hardware");
+                    }
+                    emit hardwareProviderRegistrationFinished(normalizedId,
+                                                              success,
+                                                              result.errorMessage);
+                    watcher->deleteLater();
+                });
+        const QJsonObject providerOptions = QJsonObject::fromVariantMap(options);
+        watcher->setFuture(QtConcurrent::run(
+            m_hardwareThreadPool.get(),
+            [normalizedId, modulePath, providerOptions]()
+            {
+                ProviderRegistrationResult result;
+                result.provider = internal::createDriverHostProviderProxy(
+                    normalizedId, modulePath, providerOptions, &result.errorMessage);
+                return result;
+            }));
+        return true;
+    }
+
+    bool ScopeOneCore::unregisterHardwareProvider(const QString& providerId)
+    {
+        const QString normalizedId = providerId.trimmed();
+        if (normalizedId.isEmpty()
+            || normalizedId == QStringLiteral("micro-manager")
+            || m_configurationOperationRunning
+            || m_pendingStageCommands > 0
+            || !m_managers->activeExperimentId.isEmpty()
+            || isRecording()
+            || m_pendingProviderRegistrations.contains(normalizedId))
+        {
+            return false;
+        }
+        if (!m_managers->hardwareRuntime->deviceRegistry()->provider(normalizedId))
+        {
+            return false;
+        }
+        m_managers->hardwareRuntime->unregisterProvider(normalizedId);
+        return true;
     }
 
     // Return the linked MMCore version
@@ -977,6 +1153,12 @@ namespace scopeone::core
         return QStringLiteral("proc:%1").arg(cameraId.trimmed());
     }
 
+    // Build the graph layer key for one tool stream
+    QString ScopeOneCore::toolLayerKey(const QString& sourceId)
+    {
+        return QStringLiteral("tool:%1").arg(sourceId.trimmed());
+    }
+
     // Build the graph layer key for one static source
     QString ScopeOneCore::staticLayerKey(const QString& sourceId)
     {
@@ -999,6 +1181,11 @@ namespace scopeone::core
     bool ScopeOneCore::isProcessedLayerKey(const QString& layerKey)
     {
         return layerKey.trimmed().startsWith(QStringLiteral("proc:"));
+    }
+
+    bool ScopeOneCore::isToolLayerKey(const QString& layerKey)
+    {
+        return layerKey.trimmed().startsWith(QStringLiteral("tool:"));
     }
 
     bool ScopeOneCore::isStaticLayerKey(const QString& layerKey)
@@ -1039,6 +1226,50 @@ namespace scopeone::core
         qRegisterMetaType<scopeone::core::ScopeOneCore::ParticleDetectionResult>(
             "scopeone::core::ScopeOneCore::ParticleDetectionResult");
         qRegisterMetaType<scopeone::core::ImageFrame>("scopeone::core::ImageFrame");
+        qRegisterMetaType<scopeone::core::SignalSourceState>(
+            "scopeone::core::SignalSourceState");
+        qRegisterMetaType<scopeone::core::DaqState>("scopeone::core::DaqState");
+        qRegisterMetaType<scopeone::core::DaqInputChunk>(
+            "scopeone::core::DaqInputChunk");
+        qRegisterMetaType<scopeone::core::TimeSeriesChunk>(
+            "scopeone::core::TimeSeriesChunk");
+        qRegisterMetaType<scopeone::core::TimestampedEventChunk>(
+            "scopeone::core::TimestampedEventChunk");
+        qRegisterMetaType<scopeone::core::ScanImageConfig>(
+            "scopeone::core::ScanImageConfig");
+        m_managers->processingModuleRegistry =
+            std::make_unique<internal::ProcessingModuleRegistry>();
+        const QString cudaLibraryPath = QDir(QCoreApplication::applicationDirPath())
+                                            .filePath(QStringLiteral("ScopeOneCuda"));
+        {
+            auto cudaLibrary = std::make_unique<QLibrary>(cudaLibraryPath);
+            if (cudaLibrary->load())
+            {
+                using RegisterProcessingModules = void (*)(ScopeOneCore*);
+                const auto registerProcessingModules =
+                    reinterpret_cast<RegisterProcessingModules>(
+                        cudaLibrary->resolve("scopeone_register_processing_modules"));
+                if (registerProcessingModules)
+                {
+                    registerProcessingModules(this);
+                    m_managers->cudaLibrary = std::move(cudaLibrary);
+                }
+                else
+                {
+                    cudaLibrary->unload();
+                }
+            }
+        }
+        const QStringList processingPluginErrors = m_managers->processingModuleRegistry->loadPlugins(
+            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins/processing")));
+        QStringList allProcessingPluginErrors = processingPluginErrors;
+        allProcessingPluginErrors.append(m_managers->processingModuleRegistry->loadPlugins(
+            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("plugins/processing"))));
+        for (const QString& error : allProcessingPluginErrors)
+        {
+            qWarning().noquote() << QStringLiteral("Failed to load processing plugin %1").arg(error);
+        }
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
         m_hardwareThreadPool = std::make_unique<QThreadPool>();
@@ -1047,11 +1278,19 @@ namespace scopeone::core
         m_analysisThreadPool->setMaxThreadCount(1);
         m_sessionFrameThreadPool = std::make_unique<QThreadPool>();
         m_sessionFrameThreadPool->setMaxThreadCount(1);
+        m_offlineProcessingThreadPool = std::make_unique<QThreadPool>();
+        m_offlineProcessingThreadPool->setMaxThreadCount(1);
         m_previewFlushTimer = new QTimer(this);
         m_previewFlushTimer->setSingleShot(true);
         m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
         connect(m_previewFlushTimer, &QTimer::timeout,
                 this, &ScopeOneCore::flushPreviewFrames);
+        m_layerFrameRateTimer = new QTimer(this);
+        m_layerFrameRateTimer->setInterval(3000);
+        connect(m_layerFrameRateTimer, &QTimer::timeout,
+                this, &ScopeOneCore::updateLayerFrameRates);
+        m_layerFrameRateElapsed.start();
+        m_layerFrameRateTimer->start();
         if constexpr (kFrameRateDiagnosticsEnabled)
         {
             auto* frameRateDiagnosticTimer = new QTimer(this);
@@ -1100,13 +1339,32 @@ namespace scopeone::core
                 this, &ScopeOneCore::syncLineProfileFromScene);
         m_managers->mmcoreManager = new MMCoreManager(this);
         m_managers->cameraManager = new CameraManager(this);
+        m_managers->microManagerProvider =
+            std::make_shared<MicroManagerProvider>(m_managers->mmcoreManager->getCore(),
+                                                   m_managers->cameraManager,
+                                                   m_managers->cameraManager);
+        m_managers->hardwareRuntime = new HardwareRuntime(this);
+        m_managers->cameraProvider = m_managers->hardwareRuntime;
+        m_managers->cameraRuntimeControl = m_managers->hardwareRuntime;
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::devicesChanged,
+                this, [this]()
+                {
+                    synchronizeCameraIdsFromRegistry();
+                    emit hardwareDevicesChanged();
+                });
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::previewStateChanged,
+                this, &ScopeOneCore::previewStateChanged);
+        m_managers->hardwareRuntime->registerProvider(m_managers->microManagerProvider);
         m_managers->recordingManager = new RecordingManager(this);
+        m_managers->signalSourceManager = new internal::SignalSourceManager(this);
+        m_managers->daqDeviceManager = new internal::DaqDeviceManager(this);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingWriterStatus.reset(
             m_managers->recordingManager->recordedMaxBytes());
-        m_managers->recordingManager->setCameraManager(m_managers->cameraManager);
-        m_managers->recordingManager->setMMCore(m_managers->mmcoreManager->getCore());
+        m_managers->recordingManager->setCameraProvider(m_managers->cameraProvider);
+        m_managers->recordingManager->setStageProvider(m_managers->hardwareRuntime);
+        m_managers->recordingManager->setCameraRuntimeControl(m_managers->cameraRuntimeControl);
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)
             {
@@ -1122,8 +1380,65 @@ namespace scopeone::core
                 session.setPresentationState(layers, markups);
             });
 
-        connect(m_managers->cameraManager, &CameraManager::newRawFrameReady,
+        connect(m_managers->signalSourceManager,
+                &internal::SignalSourceManager::timeSeriesReady,
+                this,
+                &ScopeOneCore::handleSignalTimeSeries);
+        connect(m_managers->signalSourceManager,
+                &internal::SignalSourceManager::timestampedEventsReady,
+                this,
+                &ScopeOneCore::handleTimestampedSignalEvents);
+        connect(m_managers->signalSourceManager,
+                &internal::SignalSourceManager::sourceStateChanged,
+                this,
+                [this](const QString& sourceId,
+                       SignalSourceState state,
+                       const QString& message)
+                {
+                    if (state == SignalSourceState::Idle
+                        || state == SignalSourceState::Error)
+                    {
+                        finishScanImageSession(
+                            sourceId,
+                            state == SignalSourceState::Error
+                                ? ExperimentRunState::Failed
+                                : ExperimentRunState::Completed,
+                            message);
+                    }
+                    emit signalSourceStateChanged(sourceId, state, message);
+                });
+        connect(m_managers->signalSourceManager,
+                &internal::SignalSourceManager::sourceError,
+                this,
+                &ScopeOneCore::signalSourceError);
+        connect(m_managers->daqDeviceManager,
+                &internal::DaqDeviceManager::stateChanged,
+                this,
+                &ScopeOneCore::daqStateChanged);
+        connect(m_managers->daqDeviceManager,
+                &internal::DaqDeviceManager::deviceError,
+                this,
+                &ScopeOneCore::daqError);
+        connect(m_managers->daqDeviceManager,
+                &internal::DaqDeviceManager::inputDataReady,
+                this,
+                &ScopeOneCore::daqInputDataReady);
+
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
+        connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
+                this, [this](const ImageFrame& frame)
+                {
+                    const HardwareDeviceDescriptor device =
+                        m_managers->hardwareRuntime->deviceRegistry()->device(frame.cameraId);
+                    if (device.providerId == QStringLiteral("micro-manager"))
+                    {
+                        return;
+                    }
+                    emit rawFramesAcquired(frame.cameraId, 1);
+                    submitProcessingFrame(frame);
+                    m_managers->recordingManager->onRawFramesReady(QList<ImageFrame>{frame});
+                });
         connect(m_managers->cameraManager, &CameraManager::processingFrameReady,
                 this, &ScopeOneCore::submitProcessingFrame,
                 Qt::DirectConnection);
@@ -1144,10 +1459,8 @@ namespace scopeone::core
                 m_managers->recordingManager, &RecordingManager::onRawFramesReady);
         connect(m_managers->cameraManager, &CameraManager::frameDeliveryFailed,
                 m_managers->recordingManager, &RecordingManager::onFrameDeliveryFailed);
-        connect(m_managers->cameraManager, &CameraManager::previewStateChanged,
-                this, &ScopeOneCore::previewStateChanged);
-        connect(m_managers->cameraManager, &CameraManager::agentControlServerListening,
-                this, &ScopeOneCore::agentControlServerListening);
+        connect(m_managers->cameraManager, &CameraManager::driverHostControlServerListening,
+                this, &ScopeOneCore::driverHostControlServerListening);
 
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
                 this, [this](const ImageFrame& frame)
@@ -1238,10 +1551,11 @@ namespace scopeone::core
                 this, &ScopeOneCore::handleProcessedFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingFrameFinished,
-                m_managers->cameraManager, &CameraManager::finishProcessingFrame,
+                m_managers->hardwareRuntime, &HardwareRuntime::finishProcessingFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
+
     }
 
     // Release loaded devices before the facade is destroyed
@@ -1250,11 +1564,18 @@ namespace scopeone::core
         m_hardwareThreadPool->waitForDone();
         m_analysisThreadPool->waitForDone();
         m_sessionFrameThreadPool->waitForDone();
+        for (const auto& token : std::as_const(m_processingRequestCancelTokens))
+        {
+            token->store(true);
+        }
+        m_offlineProcessingThreadPool->waitForDone();
         m_managers->recordingManager->shutdown();
         m_pendingStageCommands = 0;
         m_configurationOperationRunning = false;
         unloadConfigurationForShutdown();
         m_histogramThreadPool->waitForDone();
+        delete m_managers->imageProcessingManager;
+        m_managers->imageProcessingManager = nullptr;
     }
 
     // Return the public configuration lifecycle state
@@ -1284,39 +1605,13 @@ namespace scopeone::core
         return m_managers->mmcoreManager->getCore();
     }
 
-    // Check whether a device is owned by the active camera backend
-    bool ScopeOneCore::isConfiguredCamera(const QString& deviceLabel) const
-    {
-        return m_cameraIds.contains(deviceLabel);
-    }
-
-    // Check whether a device is a native MMCore camera
-    bool ScopeOneCore::isNativeCamera(const QString& deviceLabel) const
-    {
-        const QString device = deviceLabel.trimmed();
-        if (m_configurationOperationRunning || device.isEmpty() || isConfiguredCamera(device))
-        {
-            return false;
-        }
-
-        auto handle = core();
-        try
-        {
-            return handle->getDeviceType(device.toStdString().c_str()) == MM::CameraDevice;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
-    }
-
     // Collect camera ids that currently have active previews
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
         QStringList running;
         for (const QString& cameraId : m_cameraIds)
         {
-            if (m_managers->cameraManager->isPreviewRunning(cameraId))
+            if (m_managers->cameraProvider->isPreviewRunning(cameraId))
             {
                 running.append(cameraId);
             }
@@ -1333,7 +1628,10 @@ namespace scopeone::core
         {
             return overrideIt.value();
         }
-        if (!m_managers->cameraManager->usesAgentBackend()
+        const HardwareDeviceDescriptor device =
+            m_managers->hardwareRuntime->deviceRegistry()->device(camera);
+        if (device.providerId == QStringLiteral("micro-manager")
+            && !m_managers->cameraManager->usesDriverHostBackend()
             && m_cameraIds.size() == 1
             && m_cameraIds.first() == camera)
         {
@@ -1374,7 +1672,6 @@ namespace scopeone::core
         {
             return false;
         }
-
         QStringList normalizedPaths;
         for (const QString& path : paths)
         {
@@ -1394,26 +1691,21 @@ namespace scopeone::core
     }
 
     // Applies a completed device load to the frame graph and public state
-    void ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
+    bool ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
                                                 const LoadConfigResult& result)
     {
-        m_cameraIds = result.cameraIds;
+        m_managers->microManagerProvider->setDevices(result.devices);
+        if (!m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager")))
+        {
+            m_managers->microManagerProvider->setDevices({});
+            m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
+            return false;
+        }
         m_configurationFailedDevices = result.failedDevices;
         m_configurationError.clear();
         m_configurationState = result.failedDevices.isEmpty()
                                   ? ConfigurationState::Loaded
                                   : ConfigurationState::PartiallyLoaded;
-        for (const QString& cameraId : m_cameraIds)
-        {
-            ensureSceneLayer(rawLayerKey(cameraId),
-                             cameraId,
-                             QStringLiteral("%1 Raw").arg(cameraId),
-                             DocumentLayerKind::Raw);
-            ensureSceneLayer(processedLayerKey(cameraId),
-                             cameraId,
-                             QStringLiteral("%1 Processed").arg(cameraId),
-                             DocumentLayerKind::Processed);
-        }
         const QFileInfo configFile(configPath);
         m_loadedConfigPath = configPath.trimmed().isEmpty()
                                  ? QString()
@@ -1425,7 +1717,52 @@ namespace scopeone::core
             m_loadedConfigSha256 = QString::fromLatin1(
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
-        emit hardwareConfigurationChanged();
+        return true;
+    }
+
+    void ScopeOneCore::synchronizeCameraIdsFromRegistry()
+    {
+        QStringList nextCameraIds;
+        for (const HardwareDeviceDescriptor& device
+             : m_managers->hardwareRuntime->deviceRegistry()->devices())
+        {
+            const QString logicalId = device.logicalId.trimmed();
+            if (device.kind == HardwareDeviceKind::Camera
+                && !logicalId.isEmpty()
+                && !nextCameraIds.contains(logicalId))
+            {
+                nextCameraIds.append(logicalId);
+            }
+        }
+        nextCameraIds.sort(Qt::CaseInsensitive);
+
+        for (const QString& cameraId : m_cameraIds)
+        {
+            if (!nextCameraIds.contains(cameraId))
+            {
+                clearLiveFrames(cameraId);
+                m_imageSceneModel->removeLayer(rawLayerKey(cameraId));
+                m_imageSceneModel->removeLayer(processedLayerKey(cameraId));
+            }
+        }
+        m_cameraIds = nextCameraIds;
+        if (!m_realTimeProcessingSource.isEmpty()
+            && !m_cameraIds.contains(m_realTimeProcessingSource))
+        {
+            m_realTimeProcessingSource.clear();
+            emit processingSettingsChanged();
+        }
+        for (const QString& cameraId : m_cameraIds)
+        {
+            ensureSceneLayer(rawLayerKey(cameraId),
+                             cameraId,
+                             QStringLiteral("%1 Raw").arg(cameraId),
+                             DocumentLayerKind::Raw);
+            ensureSceneLayer(processedLayerKey(cameraId),
+                             cameraId,
+                             QStringLiteral("%1 Processed").arg(cameraId),
+                             DocumentLayerKind::Processed);
+        }
     }
 
     // Complete a failed configuration load and publish one consistent result
@@ -1455,11 +1792,13 @@ namespace scopeone::core
         catch (const CMMError&)
         {
         }
+        m_managers->hardwareRuntime->clear();
     }
 
     // Apply the configured hardware shutdown state before releasing devices
     void ScopeOneCore::applySystemShutdownPreset()
     {
+        m_managers->hardwareRuntime->stopPreviewForProvider(QStringLiteral("micro-manager"));
         auto handle = core();
         try
         {
@@ -1468,8 +1807,8 @@ namespace scopeone::core
             {
                 return;
             }
-            m_managers->cameraManager->stopPreview();
-            setConfig(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown);
+            m_managers->microManagerProvider->setConfig(
+                MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown, nullptr);
         }
         catch (const CMMError& error)
         {
@@ -1487,9 +1826,9 @@ namespace scopeone::core
         const bool processingWasEnabled = isRealTimeProcessingEnabled();
         m_managers->imageProcessingManager->enableRealTimeProcessing(false);
         const QStringList cameraIds = m_cameraIds;
+        m_managers->hardwareRuntime->stopPreviewForProvider(QStringLiteral("micro-manager"));
         if (shutdownCameraBackend)
         {
-            m_managers->cameraManager->stopPreview();
             m_managers->cameraManager->shutdownNow();
         }
 
@@ -1509,6 +1848,8 @@ namespace scopeone::core
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
+        m_managers->microManagerProvider->setDevices(QList<HardwareDeviceDescriptor>{});
+        m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
         if (notify && processingWasEnabled)
         {
             emit processingSettingsChanged();
@@ -1536,6 +1877,11 @@ namespace scopeone::core
         if (m_configurationOperationRunning)
         {
             m_configurationError = QStringLiteral("Another configuration operation is running");
+            return false;
+        }
+        if (!m_pendingProviderRegistrations.isEmpty())
+        {
+            m_configurationError = QStringLiteral("A hardware provider is still loading");
             return false;
         }
         if (m_pendingStageCommands > 0)
@@ -1604,8 +1950,28 @@ namespace scopeone::core
                     watcher->deleteLater();
                     return;
                 }
+                if (!applyLoadedConfiguration(path, result))
+                {
+                    const QString errorMessage =
+                        QStringLiteral("Micro-Manager device catalog conflicts with registered hardware");
+                    m_managers->cameraManager->shutdown(
+                        [this, result, errorMessage](const QString& shutdownError)
+                        {
+                            if (!shutdownError.isEmpty())
+                            {
+                                finishConfigurationLoadFailure(
+                                    result,
+                                    QStringLiteral("%1; camera cleanup failed: %2")
+                                        .arg(errorMessage, shutdownError));
+                                return;
+                            }
+                            startConfigurationLoadCleanupTask(result, errorMessage);
+                        });
+                    watcher->deleteLater();
+                    return;
+                }
                 m_configurationOperationRunning = false;
-                applyLoadedConfiguration(path, result);
+                emit hardwareConfigurationChanged();
                 emit configurationLoadFinished(true, result, {});
             }
             else
@@ -1691,6 +2057,11 @@ namespace scopeone::core
         if (m_configurationOperationRunning)
         {
             m_configurationError = QStringLiteral("Another configuration operation is running");
+            return false;
+        }
+        if (!m_pendingProviderRegistrations.isEmpty())
+        {
+            m_configurationError = QStringLiteral("A hardware provider is still loading");
             return false;
         }
         if (m_pendingStageCommands > 0)
@@ -1779,11 +2150,15 @@ namespace scopeone::core
         {
             return false;
         }
-        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
+        const bool started = all
+                                 ? m_managers->hardwareRuntime->startPreview()
+                                 : m_managers->hardwareRuntime->startPreviewFor(target);
+        if (started)
         {
-            return m_managers->cameraManager->startPreview();
+            emit previewStateChanged(true);
         }
-        return m_managers->cameraManager->startPreviewFor(target);
+        return started;
     }
 
     // Stop preview for one camera or the full camera set
@@ -1794,11 +2169,15 @@ namespace scopeone::core
         {
             return false;
         }
-        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
+        const bool stopped = all
+                                 ? m_managers->hardwareRuntime->stopPreview()
+                                 : m_managers->hardwareRuntime->stopPreviewFor(target);
+        if (stopped)
         {
-            return m_managers->cameraManager->stopPreview();
+            emit previewStateChanged(!runningPreviewCameraIds().isEmpty());
         }
-        return m_managers->cameraManager->stopPreviewFor(target);
+        return stopped;
     }
 
     // Submit exposure changes through the active camera manager
@@ -1809,7 +2188,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->cameraManager->setExposure(target, exposureMs);
+        const bool ok = m_managers->cameraProvider->setExposure(target, exposureMs);
         if (ok)
         {
             emit deviceStateChanged();
@@ -1825,7 +2204,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->cameraManager->setROI(target, x, y, width, height);
+        const bool ok = m_managers->cameraProvider->setROI(target, x, y, width, height);
         if (ok)
         {
             clearLiveFrames(target);
@@ -1888,7 +2267,7 @@ namespace scopeone::core
         bool changed = false;
         for (const QString& cameraId : targets)
         {
-            if (!m_managers->cameraManager->clearROI(cameraId))
+            if (!m_managers->cameraProvider->clearROI(cameraId))
             {
                 ok = false;
                 continue;
@@ -1911,14 +2290,230 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->cameraManager->getROI(target, x, y, width, height);
+        return m_managers->cameraProvider->getROI(target, x, y, width, height);
+    }
+
+    // List signal sources discovered through external source plugins
+    QList<SignalSourceDescriptor> ScopeOneCore::signalSources() const
+    {
+        return m_managers->signalSourceManager->sources();
+    }
+
+    // Start one external signal source and optionally enable scan reconstruction
+    bool ScopeOneCore::startSignalTrace(const SignalAcquisitionConfig& config,
+                                        QString* errorMessage)
+    {
+        const QString sourceId = config.sourceId.trimmed();
+        std::shared_ptr<ScanImageAssembler> assembler;
+        if (config.scanImage.enabled)
+        {
+            assembler = std::make_shared<ScanImageAssembler>(sourceId, config.scanImage);
+            if (!assembler->isValid())
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Invalid scan image configuration");
+                }
+                return false;
+            }
+        }
+
+        if (!m_managers->signalSourceManager->startTrace(config, errorMessage))
+        {
+            return false;
+        }
+
+        if (assembler)
+        {
+            m_managers->scanImageAssemblers.insert(sourceId, std::move(assembler));
+            QString baseName = QFileInfo(
+                config.sourceSettings.value(QStringLiteral("filePath")).toString())
+                                   .completeBaseName();
+            if (baseName.isEmpty())
+            {
+                baseName = QStringLiteral("scan_")
+                    + QDateTime::currentDateTime().toString(
+                        QStringLiteral("yyyyMMdd_hhmmss_zzz"));
+            }
+            else
+            {
+                baseName += QStringLiteral("_scan");
+            }
+            Managers::ScanImageSessionState state;
+            state.baseName = baseName;
+            m_managers->scanImageSessions.insert(sourceId, std::move(state));
+        }
+        else
+        {
+            m_managers->scanImageAssemblers.remove(sourceId);
+            m_managers->scanImageSessions.remove(sourceId);
+        }
+        return true;
+    }
+
+    void ScopeOneCore::stopSignalTrace(const QString& sourceId)
+    {
+        m_managers->signalSourceManager->stopTrace(sourceId);
+    }
+
+    SignalSourceState ScopeOneCore::signalSourceState(const QString& sourceId) const
+    {
+        return m_managers->signalSourceManager->state(sourceId);
+    }
+
+    QString ScopeOneCore::signalSourceStateMessage(const QString& sourceId) const
+    {
+        return m_managers->signalSourceManager->stateMessage(sourceId);
+    }
+
+    QList<DaqDeviceDescriptor> ScopeOneCore::daqDevices() const
+    {
+        return m_managers->daqDeviceManager->devices();
+    }
+
+    bool ScopeOneCore::startDaqSession(const DaqSessionConfig& config,
+                                       QString* errorMessage)
+    {
+        return m_managers->daqDeviceManager->start(config, errorMessage);
+    }
+
+    void ScopeOneCore::stopDaqSession(const QString& deviceId)
+    {
+        m_managers->daqDeviceManager->stop(deviceId);
+    }
+
+    DaqState ScopeOneCore::daqState(const QString& deviceId) const
+    {
+        return m_managers->daqDeviceManager->state(deviceId);
+    }
+
+    QString ScopeOneCore::daqStateMessage(const QString& deviceId) const
+    {
+        return m_managers->daqDeviceManager->stateMessage(deviceId);
+    }
+
+    void ScopeOneCore::handleSignalTimeSeries(const TimeSeriesChunk& chunk)
+    {
+        emit signalTimeSeriesReady(chunk);
+    }
+
+    void ScopeOneCore::handleTimestampedSignalEvents(const TimestampedEventChunk& chunk)
+    {
+        const auto assembler = m_managers->scanImageAssemblers.value(chunk.sourceId);
+        if (assembler)
+        {
+            publishScanFrames(chunk.sourceId, assembler->append(chunk));
+        }
+        emit timestampedSignalEventsReady(chunk);
+    }
+
+    void ScopeOneCore::publishScanFrames(const QString& sourceId,
+                                         const QList<ImageFrame>& frames)
+    {
+        if (frames.isEmpty())
+        {
+            return;
+        }
+
+        auto stateIt = m_managers->scanImageSessions.find(sourceId);
+        if (stateIt == m_managers->scanImageSessions.end())
+        {
+            return;
+        }
+
+        const QString scanSourceId = QStringLiteral("scan:%1").arg(sourceId);
+        QList<ImageFrame> normalizedFrames;
+        normalizedFrames.reserve(frames.size());
+        for (const ImageFrame& sourceFrame : frames)
+        {
+            ImageFrame frame = sourceFrame;
+            frame.cameraId = scanSourceId;
+            publishStaticFrame(scanSourceId, frame,
+                               QStringLiteral("Scan %1").arg(sourceId));
+            normalizedFrames.append(std::move(frame));
+        }
+
+        if (!stateIt->session)
+        {
+            ExperimentPlan plan;
+            plan.streamToDisk = false;
+            plan.baseName = stateIt->baseName;
+            stateIt->session = createFrameSession(normalizedFrames, plan);
+            if (!stateIt->session)
+            {
+                return;
+            }
+            stateIt->session->setRunState(ExperimentRunState::Running);
+        }
+        else
+        {
+            const QString cameraId = normalizedFrames.constFirst().cameraId;
+            quint64 sequenceIndex = static_cast<quint64>(
+                stateIt->session->recordedFrameCount(cameraId));
+            for (const ImageFrame& frame : normalizedFrames)
+            {
+                if (!stateIt->session->appendImageFrame(frame))
+                {
+                    continue;
+                }
+                AcquisitionEventRecord record;
+                record.event.sequenceIndex = sequenceIndex;
+                record.event.timeIndex = static_cast<int>(sequenceIndex);
+                record.event.cameraIds = {cameraId};
+                record.startedTimestampNs = frame.timestampNs;
+                record.completedTimestampNs = frame.timestampNs;
+                record.succeeded = true;
+                record.frames.insert(cameraId, frameRecordFromImageFrame(frame));
+                stateIt->session->appendEventRecord(record);
+                ++sequenceIndex;
+            }
+            ExperimentPlan plan = stateIt->session->capturePlan();
+            plan.framesPerBurst = static_cast<int>(
+                stateIt->session->recordedFrameCount(cameraId));
+            stateIt->session->setCapturePlan(plan);
+        }
+        stateIt->lastTimestampNs = normalizedFrames.constLast().timestampNs;
+    }
+
+    void ScopeOneCore::finishScanImageSession(const QString& sourceId,
+                                              ExperimentRunState finalState,
+                                              const QString& message)
+    {
+        const auto assembler = m_managers->scanImageAssemblers.value(sourceId);
+        if (assembler)
+        {
+            publishScanFrames(sourceId, assembler->finish());
+        }
+
+        auto stateIt = m_managers->scanImageSessions.find(sourceId);
+        if (stateIt == m_managers->scanImageSessions.end())
+        {
+            return;
+        }
+        if (!stateIt->session)
+        {
+            m_managers->scanImageSessions.erase(stateIt);
+            m_managers->scanImageAssemblers.remove(sourceId);
+            return;
+        }
+
+        const auto session = stateIt->session;
+        session->setRunState(
+            finalState,
+            stateIt->lastTimestampNs,
+            finalState == ExperimentRunState::Failed ? message : QString());
+        registerRecordingSession(session);
+        m_managers->scanImageSessions.erase(stateIt);
+        m_managers->scanImageAssemblers.remove(sourceId);
+        emit scanImageSessionReady(session);
     }
 
     // Track the active line profile request for future frames
     void ScopeOneCore::setLineProfile(const QString& cameraId,
                                       const QPoint& start,
                                       const QPoint& end,
-                                      bool processed)
+                                      bool processed,
+                                      bool toolSource)
     {
         const QString trimmedCameraId = cameraId.trimmed();
         if (trimmedCameraId.isEmpty())
@@ -1931,16 +2526,26 @@ namespace scopeone::core
         m_activeLineProfile.start = start;
         m_activeLineProfile.end = end;
         m_activeLineProfile.processed = processed;
+        m_activeLineProfile.toolSource = toolSource;
         m_activeLineProfile.staticSource = false;
         m_activeLineProfile.active = true;
         m_lineProfileUpdateTimer.invalidate();
 
+        if (toolSource)
+        {
+            const ImageFrame frame = graphFrame(toolLayerKey(trimmedCameraId));
+            if (frame.isValid())
+            {
+                updateLineProfile(trimmedCameraId, false, true, frame);
+            }
+            return;
+        }
         if (processed)
         {
             const ImageFrame frame = graphFrame(processedLayerKey(trimmedCameraId));
             if (frame.isValid())
             {
-                updateLineProfile(trimmedCameraId, true, frame);
+                updateLineProfile(trimmedCameraId, true, false, frame);
             }
             return;
         }
@@ -1948,7 +2553,7 @@ namespace scopeone::core
         const ImageFrame frame = graphFrame(rawLayerKey(trimmedCameraId));
         if (frame.isValid())
         {
-            updateLineProfile(trimmedCameraId, false, frame);
+            updateLineProfile(trimmedCameraId, false, false, frame);
         }
     }
 
@@ -2014,7 +2619,8 @@ namespace scopeone::core
                 setLineProfile(markup.sourceId,
                                markup.start,
                                markup.end,
-                               markup.layerKind == DocumentLayerKind::Processed);
+                               markup.layerKind == DocumentLayerKind::Processed,
+                               markup.layerKind == DocumentLayerKind::Tool);
             }
             return;
         }
@@ -2037,19 +2643,22 @@ namespace scopeone::core
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
         const QString layerKey = rawLayerKey(cameraId);
+        recordLayerFrame(layerKey);
         m_imageSceneModel->updateLayerFrame(layerKey, normalizedFrame);
         m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
         queuePreviewRawFrame(normalizedFrame);
         scheduleHistogramStats(layerKey, normalizedFrame);
-        updateLineProfile(cameraId, false, normalizedFrame);
+        updateLineProfile(cameraId, false, false, normalizedFrame);
     }
 
     // Submits one acquisition frame without crossing the UI event queue
     void ScopeOneCore::submitProcessingFrame(const ImageFrame& frame, quint64 processingToken)
     {
         if (!frame.isValid()
-            || !m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
+            || !m_managers->imageProcessingManager->isRealTimeProcessingEnabled()
+            || (!m_realTimeProcessingSource.isEmpty()
+                && frame.cameraId != m_realTimeProcessingSource))
         {
             return;
         }
@@ -2069,7 +2678,7 @@ namespace scopeone::core
             processingToken,
             [this, cameraId, processingToken]()
             {
-                return m_managers->cameraManager->isProcessingFrameTokenCurrent(
+                return m_managers->cameraRuntimeControl->isProcessingFrameTokenCurrent(
                     cameraId,
                     processingToken);
             });
@@ -2084,6 +2693,7 @@ namespace scopeone::core
         }
 
         bool queueFlush = false;
+        recordLayerFrame(processedLayerKey(frame.cameraId));
         {
             QMutexLocker locker(&m_managers->processedDeliveryMutex);
             if (!m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
@@ -2134,7 +2744,7 @@ namespace scopeone::core
             emit processedFramesCompleted(frame.cameraId, it.value().completedCount);
             m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
             scheduleHistogramStats(layerKey, frame);
-            updateLineProfile(frame.cameraId, true, frame);
+            updateLineProfile(frame.cameraId, true, false, frame);
         }
     }
 
@@ -2203,6 +2813,10 @@ namespace scopeone::core
         {
             return m_frameGraph.latest(FrameGraphStream::Static, sourceId);
         }
+        if (isToolLayerKey(trimmedLayerKey))
+        {
+            return m_frameGraph.latest(FrameGraphStream::Tool, sourceId);
+        }
         if (trimmedLayerKey.startsWith(QStringLiteral("external:")))
         {
             return m_frameGraph.latest(FrameGraphStream::External, sourceId);
@@ -2224,6 +2838,18 @@ namespace scopeone::core
             }
         }
         return frames;
+    }
+
+    double ScopeOneCore::layerFrameRate(const QString& layerKey) const
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        return m_layerFrameRates.value(layerKey.trimmed(), 0.0);
+    }
+
+    QMap<QString, double> ScopeOneCore::layerFrameRates() const
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        return m_layerFrameRates;
     }
 
     // Read one pixel from a named frame graph layer
@@ -2312,6 +2938,308 @@ namespace scopeone::core
         return storedFrame;
     }
 
+    int ScopeOneCore::layerSliceCount(const QString& layerKey) const
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey.trimmed());
+        return static_cast<int>(m_layerStacks.value(sourceId).size());
+    }
+
+    void ScopeOneCore::recordLayerFrame(const QString& layerKey, quint64 count)
+    {
+        QMutexLocker locker(&m_layerFrameRateMutex);
+        m_layerFrameCounts[layerKey] += count;
+    }
+
+    void ScopeOneCore::updateLayerFrameRates()
+    {
+        const double elapsedSeconds = static_cast<double>(m_layerFrameRateElapsed.restart()) / 1000.0;
+        QMap<QString, double> frameRates;
+        {
+            QMutexLocker locker(&m_layerFrameRateMutex);
+            frameRates = m_layerFrameRates;
+            for (auto it = frameRates.begin(); it != frameRates.end(); ++it)
+            {
+                it.value() = 0.0;
+            }
+            for (auto it = m_layerFrameCounts.cbegin(); it != m_layerFrameCounts.cend(); ++it)
+            {
+                frameRates[it.key()] = static_cast<double>(it.value()) / elapsedSeconds;
+            }
+            m_layerFrameCounts.clear();
+            m_layerFrameRates = frameRates;
+        }
+        for (auto it = frameRates.cbegin(); it != frameRates.cend(); ++it)
+        {
+            emit layerFrameRateChanged(it.key(), it.value());
+        }
+        emit layerFrameRatesUpdated(frameRates);
+    }
+
+    bool ScopeOneCore::setLayerSliceIndex(const QString& layerKey, int sliceIndex)
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey.trimmed());
+        const auto stackIt = m_layerStacks.constFind(sourceId);
+        const std::vector<ImageFrame>& slices = stackIt.value();
+        const ImageFrame& frame = slices.at(static_cast<size_t>(sliceIndex));
+        DocumentLayer layer;
+        m_imageSceneModel->findLayer(staticLayerKey(sourceId), layer);
+        publishStaticFrame(sourceId, frame, layer.name);
+        return true;
+    }
+
+    // Import an external image file as a static frame layer
+    ImageFrame ScopeOneCore::importImageAsStaticLayer(const QString& filePath,
+                                                      QString* outLayerKey,
+                                                      QString* errorMessage)
+    {
+        const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
+        if (cleanedPath.isEmpty() || !QFileInfo::exists(cleanedPath))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("File does not exist: %1").arg(filePath);
+            }
+            return {};
+        }
+
+        std::vector<cv::Mat> images;
+        if (!cv::imreadmulti(cleanedPath.toStdString(), images, cv::IMREAD_UNCHANGED))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
+            }
+            return {};
+        }
+
+        const QFileInfo fileInfo(cleanedPath);
+        const QString sourceId = QStringLiteral("imported:%1_%2")
+                                     .arg(fileInfo.completeBaseName())
+                                     .arg(s_importCounter.fetch_add(1));
+
+        std::vector<ImageFrame> slices;
+        slices.reserve(images.size());
+        for (const cv::Mat& image : images)
+        {
+            slices.push_back(convertImportedImage(image, sourceId));
+        }
+
+        m_layerStacks.insert(sourceId, std::move(slices));
+        const ImageFrame& frame = m_layerStacks[sourceId].front();
+
+        const ImageFrame published = publishStaticFrame(sourceId, frame, fileInfo.fileName());
+        if (published.isValid())
+        {
+            const QString layerKey = staticLayerKey(sourceId);
+            if (outLayerKey)
+            {
+                *outLayerKey = layerKey;
+            }
+            if (m_imageSceneModel)
+            {
+                m_imageSceneModel->setLayerVisible(layerKey, true);
+            }
+        }
+        return published;
+    }
+
+    void ScopeOneCore::importImageAsStaticLayerAsync(const QString& filePath)
+    {
+        const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
+        const QFileInfo fileInfo(cleanedPath);
+        if (cleanedPath.isEmpty() || !fileInfo.isFile())
+        {
+            emit staticImageImportFinished(
+                filePath,
+                {},
+                false,
+                QStringLiteral("File does not exist: %1").arg(filePath));
+            return;
+        }
+
+        emit staticImageImportProgress(
+            filePath,
+            0,
+            QStringLiteral("Reading %1...").arg(fileInfo.fileName()));
+
+        auto* watcher = new QFutureWatcher<StaticImageImportTask>(this);
+        connect(watcher, &QFutureWatcher<StaticImageImportTask>::finished,
+                this, [this, watcher]()
+                {
+                    StaticImageImportTask task = watcher->result();
+                    if (!task.errorMessage.isEmpty())
+                    {
+                        emit staticImageImportFinished(
+                            task.filePath,
+                            {},
+                            false,
+                            task.errorMessage);
+                        watcher->deleteLater();
+                        return;
+                    }
+
+                    m_layerStacks.insert(task.sourceId, std::move(task.slices));
+                    const ImageFrame& frame = m_layerStacks[task.sourceId].front();
+                    const ImageFrame published = publishStaticFrame(
+                        task.sourceId,
+                        frame,
+                        task.displayName);
+                    const QString layerKey = staticLayerKey(task.sourceId);
+                    emit staticImageImportFinished(
+                        task.filePath,
+                        layerKey,
+                        published.isValid(),
+                        published.isValid()
+                            ? QString()
+                            : QStringLiteral("Failed to publish image layer"));
+                    watcher->deleteLater();
+                });
+
+        watcher->setFuture(QtConcurrent::run(
+            m_hardwareThreadPool.get(),
+            [this, cleanedPath, filePath]()
+            {
+                StaticImageImportTask task;
+                task.filePath = filePath;
+                const QFileInfo fileInfo(cleanedPath);
+                task.displayName = fileInfo.fileName();
+                task.sourceId = QStringLiteral("imported:%1_%2")
+                                    .arg(fileInfo.completeBaseName())
+                                    .arg(s_importCounter.fetch_add(1));
+
+                auto reportProgress = [this, filePath](int percent, const QString& statusText)
+                {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, filePath, percent, statusText]()
+                        {
+                            emit staticImageImportProgress(filePath, percent, statusText);
+                        },
+                        Qt::QueuedConnection);
+                };
+
+                std::vector<cv::Mat> images;
+                if (!cv::imreadmulti(cleanedPath.toStdString(),
+                                     images,
+                                     cv::IMREAD_UNCHANGED))
+                {
+                    task.errorMessage = QStringLiteral("Failed to read image file: %1")
+                                            .arg(filePath);
+                    return task;
+                }
+
+                task.slices.reserve(images.size());
+                for (size_t index = 0; index < images.size(); ++index)
+                {
+                    task.slices.push_back(convertImportedImage(images[index], task.sourceId));
+                    const int percent = static_cast<int>(
+                        ((index + 1) * 100) / images.size());
+                    reportProgress(
+                        percent,
+                        QStringLiteral("Converting slice %1 / %2")
+                            .arg(static_cast<qulonglong>(index + 1))
+                            .arg(static_cast<qulonglong>(images.size())));
+                }
+                return task;
+            }));
+    }
+
+    // Imports a gallery recording session as a static layer
+    QString ScopeOneCore::importSessionAsStaticLayer(
+        const std::shared_ptr<RecordingSessionData>& session)
+    {
+        if (!session || !session->hasRecordedOutput())
+        {
+            return {};
+        }
+
+        const QString expId = session->capturePlan().experimentId.trimmed().isEmpty()
+                                  ? QString::number(s_importCounter.fetch_add(1))
+                                  : session->capturePlan().experimentId.trimmed();
+        const QStringList cameras = session->recordedCameraIds();
+        QString lastLayerKey;
+
+        for (const QString& camera : cameras)
+        {
+            const qint64 count = session->recordedFrameCount(camera);
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
+            const QString layerKey = staticLayerKey(sourceId);
+
+            DocumentLayer existingLayer;
+            if (m_imageSceneModel->findLayer(layerKey, existingLayer))
+            {
+                m_imageSceneModel->setLayerVisible(layerKey, true);
+                lastLayerKey = layerKey;
+                continue;
+            }
+
+            std::vector<ImageFrame> slices;
+            slices.reserve(static_cast<size_t>(count));
+            for (int i = 0; i < count; ++i)
+            {
+                ImageFrame frame = session->imageFrameAt(camera, i);
+                if (frame.isValid())
+                {
+                    frame.cameraId = sourceId;
+                    slices.push_back(std::move(frame));
+                }
+            }
+            if (slices.empty())
+            {
+                continue;
+            }
+
+            const QString baseName = session->capturePlan().baseName.trimmed().isEmpty()
+                                         ? QStringLiteral("snapshot")
+                                         : session->capturePlan().baseName.trimmed();
+            const QString displayName = cameras.size() > 1
+                                            ? QStringLiteral("%1 - %2").arg(baseName, camera)
+                                            : baseName;
+
+            m_layerStacks.insert(sourceId, std::move(slices));
+            const ImageFrame& frame = m_layerStacks[sourceId].front();
+            const ImageFrame published = publishStaticFrame(sourceId, frame, displayName);
+            if (published.isValid())
+            {
+                lastLayerKey = layerKey;
+            }
+        }
+        return lastLayerKey;
+    }
+
+    // Publish the latest frame of a tool-owned realtime stream
+    ImageFrame ScopeOneCore::publishToolStreamFrame(const QString& sourceId,
+                                                    const ImageFrame& frame,
+                                                    const QString& displayName)
+    {
+        if (!m_frameGraph.publishLatest(FrameGraphStream::Tool, sourceId, frame))
+        {
+            return {};
+        }
+        recordLayerFrame(toolLayerKey(sourceId));
+        const ImageFrame storedFrame = graphFrame(toolLayerKey(sourceId));
+        const QString layerKey = toolLayerKey(storedFrame.cameraId);
+        ensureSceneLayer(layerKey,
+                         storedFrame.cameraId,
+                         displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed(),
+                         DocumentLayerKind::Tool);
+        m_imageSceneModel->setLayerName(
+            layerKey,
+            displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed());
+        m_imageSceneModel->updateLayerFrame(layerKey, storedFrame);
+        m_imageSceneModel->setLayerVisible(layerKey, true);
+        m_latestHistogramStats.remove(layerKey);
+        scheduleHistogramStats(layerKey, storedFrame);
+        emit toolStreamFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
+        updateLineProfile(storedFrame.cameraId, false, true, storedFrame);
+        return storedFrame;
+    }
+
     // Publish an externally supplied frame to the central graph
     ImageFrame ScopeOneCore::publishExternalFrame(const QString& sourceId, const ImageFrame& frame)
     {
@@ -2319,6 +3247,7 @@ namespace scopeone::core
         {
             return {};
         }
+        recordLayerFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
         return graphFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
     }
 
@@ -2333,6 +3262,7 @@ namespace scopeone::core
 
         const QString layerKey = staticLayerKey(trimmedSourceId);
         m_frameGraph.remove(FrameGraphStream::Static, trimmedSourceId);
+        m_layerStacks.remove(trimmedSourceId);
         m_imageSceneModel->removeLayer(layerKey);
         clearLayerAnalysis(layerKey);
         if (m_activeLineProfile.active
@@ -2348,6 +3278,7 @@ namespace scopeone::core
     void ScopeOneCore::clearStaticFrames()
     {
         m_frameGraph.clear(FrameGraphStream::Static);
+        m_layerStacks.clear();
         for (const QString& layerId : m_imageSceneModel->layerIds())
         {
             DocumentLayer layer;
@@ -2429,6 +3360,7 @@ namespace scopeone::core
 
         m_frameGraph.remove(FrameGraphStream::Raw, trimmedCameraId);
         m_frameGraph.remove(FrameGraphStream::Processed, trimmedCameraId);
+        m_frameGraph.remove(FrameGraphStream::Tool, trimmedCameraId);
         {
             QMutexLocker locker(&m_managers->processedDeliveryMutex);
             m_managers->pendingProcessedFrames.remove(trimmedCameraId);
@@ -2631,7 +3563,18 @@ namespace scopeone::core
                                           int maxParticles)
     {
         const QString key = layerKey.trimmed();
-        const ImageFrame frame = graphFrame(key);
+        return detectParticles(graphFrame(key), key,
+                               threshold, minArea, maxArea, maxParticles);
+    }
+
+    quint64 ScopeOneCore::detectParticles(const ImageFrame& frame,
+                                          const QString& resultLayerKey,
+                                          int threshold,
+                                          int minArea,
+                                          int maxArea,
+                                          int maxParticles)
+    {
+        const QString key = resultLayerKey.trimmed();
         if (key.isEmpty() || !frame.isValid())
         {
             return 0;
@@ -2829,6 +3772,7 @@ namespace scopeone::core
     // Emit a line profile when the active request matches this frame
     void ScopeOneCore::updateLineProfile(const QString& cameraId,
                                          bool processed,
+                                         bool toolSource,
                                          const ImageFrame& frame)
     {
         if (!frame.isValid())
@@ -2838,6 +3782,7 @@ namespace scopeone::core
 
         if (!m_activeLineProfile.active
             || m_activeLineProfile.staticSource
+            || m_activeLineProfile.toolSource != toolSource
             || m_activeLineProfile.processed != processed
             || m_activeLineProfile.sourceId != cameraId)
         {
@@ -2860,7 +3805,9 @@ namespace scopeone::core
             return;
         }
 
-        const QString layerKey = histogramLayerKey(cameraId, processed);
+        const QString layerKey = m_activeLineProfile.toolSource
+                                     ? toolLayerKey(cameraId)
+                                     : histogramLayerKey(cameraId, processed);
         emit lineProfileUpdated(cameraId, processed, values);
         emit layerLineProfileUpdated(layerKey, values);
     }
@@ -2900,15 +3847,15 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
+        QStringList devices;
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            return toQStringList(handle->getLoadedDevicesOfType(MM::XYStageDevice));
+            if (device.kind == HardwareDeviceKind::XYStage)
+            {
+                devices.append(device.logicalId);
+            }
         }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return devices;
     }
 
     QStringList ScopeOneCore::zStageDevices() const
@@ -2917,15 +3864,15 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
+        QStringList devices;
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            return toQStringList(handle->getLoadedDevicesOfType(MM::StageDevice));
+            if (device.kind == HardwareDeviceKind::ZStage)
+            {
+                devices.append(device.logicalId);
+            }
         }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return devices;
     }
 
     QString ScopeOneCore::currentXYStageDevice() const
@@ -2934,15 +3881,7 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            return QString::fromStdString(handle->getXYStageDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->defaultXYStage();
     }
 
     QString ScopeOneCore::currentFocusDevice() const
@@ -2951,64 +3890,38 @@ namespace scopeone::core
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            return QString::fromStdString(handle->getFocusDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->defaultZStage();
     }
 
-    // Read the current XY stage position from MMCore
+    // Read the current XY stage position through its provider
     bool ScopeOneCore::readXYPosition(const QString& xyStageLabel, double& x, double& y) const
     {
         x = 0.0;
         y = 0.0;
         const QString label = xyStageLabel.trimmed();
-        auto handle = core();
         if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
-        try
-        {
-            handle->getXYPosition(label.toStdString().c_str(), x, y);
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->getXYPosition(label, x, y, nullptr);
     }
 
-    // Read the current Z stage position from MMCore
+    // Read the current Z stage position through its provider
     bool ScopeOneCore::readZPosition(const QString& zStageLabel, double& z) const
     {
         z = 0.0;
         const QString label = zStageLabel.trimmed();
-        auto handle = core();
         if (m_configurationOperationRunning || label.isEmpty())
         {
             return false;
         }
-        try
-        {
-            z = handle->getPosition(label.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->getZPosition(label, z, nullptr);
     }
 
     // Queues one stage command on the serialized hardware worker
     quint64 ScopeOneCore::queueStageMove(
         const QString& deviceLabel,
-        std::function<void(CMMCore&, const char*)> command)
+        std::function<bool(QString*)> command)
     {
         const QString label = deviceLabel.trimmed();
         if (label.isEmpty()
@@ -3036,23 +3949,12 @@ namespace scopeone::core
             watcher->deleteLater();
         });
 
-        const auto handle = core();
         watcher->setFuture(QtConcurrent::run(
             m_hardwareThreadPool.get(),
-            [handle, label, command = std::move(command)]()
+            [command = std::move(command)]()
             {
                 StageTaskResult task;
-                try
-                {
-                    const std::string device = label.toStdString();
-                    command(*handle, device.c_str());
-                    handle->waitForDevice(device.c_str());
-                    task.success = true;
-                }
-                catch (const CMMError& error)
-                {
-                    task.errorMessage = QString::fromStdString(error.getMsg());
-                }
+                task.success = command(&task.errorMessage);
                 return task;
             }));
         return commandId;
@@ -3060,164 +3962,149 @@ namespace scopeone::core
 
     quint64 ScopeOneCore::moveXYRelative(const QString& xyStageLabel, double dx, double dy)
     {
-        return queueStageMove(xyStageLabel, [dx, dy](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = xyStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, dx, dy](QString* errorMessage)
         {
-            handle.setRelativeXYPosition(label, dx, dy);
+            return runtime->setRelativeXYPosition(device, dx, dy, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveZRelative(const QString& zStageLabel, double dz)
     {
-        return queueStageMove(zStageLabel, [dz](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = zStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, dz](QString* errorMessage)
         {
-            handle.setRelativePosition(label, dz);
+            return runtime->setRelativeZPosition(device, dz, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveXYTo(const QString& xyStageLabel, double x, double y)
     {
-        return queueStageMove(xyStageLabel, [x, y](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = xyStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, x, y](QString* errorMessage)
         {
-            handle.setXYPosition(label, x, y);
+            return runtime->setXYPosition(device, x, y, errorMessage);
         });
     }
 
     quint64 ScopeOneCore::moveZTo(const QString& zStageLabel, double z)
     {
-        return queueStageMove(zStageLabel, [z](CMMCore& handle, const char* label)
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString device = zStageLabel.trimmed();
+        return queueStageMove(device, [runtime, device, z](QString* errorMessage)
         {
-            handle.setPosition(label, z);
+            return runtime->setZPosition(device, z, errorMessage);
         });
     }
 
-    // List available Micro Manager configuration groups
+    bool ScopeOneCore::readShutterOpen(const QString& shutterLabel, bool& open) const
+    {
+        open = false;
+        const QString device = shutterLabel.trimmed();
+        return !m_configurationOperationRunning
+            && !device.isEmpty()
+            && m_managers->hardwareRuntime->isShutterOpen(device, open, nullptr);
+    }
+
+    bool ScopeOneCore::setShutterOpen(const QString& shutterLabel,
+                                      bool open,
+                                      QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        const QString device = shutterLabel.trimmed();
+        if (m_configurationOperationRunning || device.isEmpty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Invalid shutter target");
+            }
+            return false;
+        }
+        const bool ok = m_managers->hardwareRuntime->setShutterOpen(
+            device, open, errorMessage);
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
+    }
+
+    bool ScopeOneCore::readDeviceState(const QString& deviceLabel, long& state) const
+    {
+        state = 0;
+        const QString device = deviceLabel.trimmed();
+        return !m_configurationOperationRunning
+            && !device.isEmpty()
+            && m_managers->hardwareRuntime->getState(device, state, nullptr);
+    }
+
+    bool ScopeOneCore::setDeviceState(const QString& deviceLabel,
+                                      long state,
+                                      QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        const QString device = deviceLabel.trimmed();
+        if (m_configurationOperationRunning || device.isEmpty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Invalid state device target");
+            }
+            return false;
+        }
+        const bool ok = m_managers->hardwareRuntime->setState(device, state, errorMessage);
+        if (ok)
+        {
+            emit deviceStateChanged();
+        }
+        return ok;
+    }
+
+    QString ScopeOneCore::deviceStateLabel(const QString& deviceLabel, long state) const
+    {
+        const QString device = deviceLabel.trimmed();
+        return !m_configurationOperationRunning && !device.isEmpty()
+                   ? m_managers->hardwareRuntime->stateLabel(device, state)
+                   : QString{};
+    }
+
+    // List configuration groups exposed by registered providers
     QStringList ScopeOneCore::availableConfigGroups() const
     {
         if (m_configurationOperationRunning)
         {
             return {};
         }
-        auto handle = core();
-        try
-        {
-            const auto groups = handle->getAvailableConfigGroups();
-            QStringList result;
-            for (const auto& g : groups)
-            {
-                result.append(QString::fromStdString(g));
-            }
-            return result;
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->availableConfigGroups();
     }
 
-    // List presets in a Micro Manager configuration group
+    // List presets in a provider configuration group
     QStringList ScopeOneCore::availableConfigs(const QString& configGroup) const
     {
-        auto handle = core();
         if (m_configurationOperationRunning || configGroup.isEmpty())
         {
             return {};
         }
-        try
-        {
-            const auto configs = handle->getAvailableConfigs(configGroup.toStdString().c_str());
-            QStringList result;
-            for (const auto& c : configs)
-            {
-                result.append(QString::fromStdString(c));
-            }
-            return result;
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->availableConfigs(configGroup);
     }
 
     // Read the current preset for a configuration group
     QString ScopeOneCore::currentConfig(const QString& groupName) const
     {
-        auto handle = core();
         if (m_configurationOperationRunning || groupName.isEmpty())
         {
             return {};
         }
-        try
-        {
-            if (m_managers->cameraManager->usesAgentBackend())
-            {
-                const std::string group = groupName.toStdString();
-                const std::vector<std::string> configs = handle->getAvailableConfigs(group.c_str());
-                QHash<QString, QString> currentValues;
-                QSet<QString> failedProperties;
-                for (const std::string& config : configs)
-                {
-                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
-                    bool matches = true;
-                    for (size_t index = 0; index < preset.size(); ++index)
-                    {
-                        const PropertySetting setting = preset.getSetting(index);
-                        const QString device = QString::fromStdString(setting.getDeviceLabel());
-                        const QString property = QString::fromStdString(setting.getPropertyName());
-                        const QString key = device + QChar(0x1f) + property;
-                        if (!currentValues.contains(key) && !failedProperties.contains(key))
-                        {
-                            if (isConfiguredCamera(device))
-                            {
-                                const QString value = m_managers->cameraManager->getProperty(
-                                    device, property, false);
-                                if (value.isNull())
-                                {
-                                    failedProperties.insert(key);
-                                }
-                                else
-                                {
-                                    currentValues.insert(key, value);
-                                }
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    currentValues.insert(
-                                        key,
-                                        QString::fromStdString(
-                                            handle->getProperty(
-                                                setting.getDeviceLabel().c_str(),
-                                                setting.getPropertyName().c_str())));
-                                }
-                                catch (const CMMError&)
-                                {
-                                    failedProperties.insert(key);
-                                }
-                            }
-                        }
-                        if (failedProperties.contains(key)
-                            || currentValues.value(key)
-                                   != QString::fromStdString(setting.getPropertyValue()))
-                        {
-                            matches = false;
-                            break;
-                        }
-                    }
-                    if (matches)
-                    {
-                        return QString::fromStdString(config);
-                    }
-                }
-                return {};
-            }
-            return QString::fromStdString(
-                handle->getCurrentConfig(groupName.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->currentConfig(groupName);
     }
 
     // Apply a configuration preset while camera previews are paused
@@ -3229,7 +4116,6 @@ namespace scopeone::core
         {
             errorMessage->clear();
         }
-        auto handle = core();
         if (m_configurationOperationRunning
             || m_pendingStageCommands > 0
             || groupName.isEmpty()
@@ -3255,106 +4141,9 @@ namespace scopeone::core
         const QStringList runningPreviewIds = runningPreviewCameraIds();
         const bool ok = withSuspendedPreviews(this, runningPreviewIds, [&]()
         {
-            try
-            {
-                const std::string group = groupName.toStdString();
-                const std::string config = configName.toStdString();
-                const bool agentMode = m_managers->cameraManager->usesAgentBackend();
-                if (!agentMode)
-                {
-                    handle->setConfig(group.c_str(), config.c_str());
-                }
-                else
-                {
-                    const Configuration preset = handle->getConfigData(group.c_str(), config.c_str());
-                    std::vector<PropertySetting> pending;
-                    pending.reserve(preset.size());
-                    for (size_t index = 0; index < preset.size(); ++index)
-                    {
-                        pending.push_back(preset.getSetting(index));
-                    }
-                    while (!pending.empty())
-                    {
-                        std::vector<PropertySetting> failed;
-                        QString failureDescription;
-                        for (const PropertySetting& setting : pending)
-                        {
-                            const QString device = QString::fromStdString(setting.getDeviceLabel());
-                            const QString property = QString::fromStdString(setting.getPropertyName());
-                            const QString value = QString::fromStdString(setting.getPropertyValue());
-                            if (isConfiguredCamera(device))
-                            {
-                                QString error;
-                                if (!m_managers->cameraManager->setProperty(
-                                        device, property, value, &error))
-                                {
-                                    failed.push_back(setting);
-                                    failureDescription = QString("%1.%2 = %3: %4")
-                                        .arg(device, property, value, error);
-                                }
-                                continue;
-                            }
-                            try
-                            {
-                                handle->setProperty(setting.getDeviceLabel().c_str(),
-                                                    setting.getPropertyName().c_str(),
-                                                    setting.getPropertyValue().c_str());
-                            }
-                            catch (const CMMError& error)
-                            {
-                                failed.push_back(setting);
-                                failureDescription = QString("%1.%2 = %3: %4")
-                                    .arg(device,
-                                         property,
-                                         value,
-                                         QString::fromStdString(error.getMsg()));
-                            }
-                        }
-                        if (failed.empty())
-                        {
-                            break;
-                        }
-                        if (failed.size() == pending.size())
-                        {
-                            const QString message =
-                                QString("Failed to apply config preset %1 = %2 at %3")
-                                    .arg(groupName, configName, failureDescription);
-                            if (errorMessage)
-                            {
-                                *errorMessage = message;
-                            }
-                            qWarning().noquote()
-                                << message;
-                            return false;
-                        }
-                        pending = std::move(failed);
-                    }
-                }
-                if (agentMode)
-                {
-                    handle->waitForSystem();
-                }
-                else
-                {
-                    handle->waitForConfig(group.c_str(), config.c_str());
-                }
-                handle->updateSystemStateCache();
-                return true;
-            }
-            catch (const CMMError& error)
-            {
-                const QString message = QString("Failed to apply config preset %1 = %2: %3")
-                                            .arg(groupName,
-                                                 configName,
-                                                 QString::fromStdString(error.getMsg()));
-                if (errorMessage)
-                {
-                    *errorMessage = message;
-                }
-                qWarning().noquote()
-                    << message;
-                return false;
-            }
+            return m_managers->hardwareRuntime->setConfig(groupName,
+                                                          configName,
+                                                          errorMessage);
         });
         if (ok)
         {
@@ -3373,65 +4162,20 @@ namespace scopeone::core
             return false;
         }
 
-        QString resolvedTarget = target;
-        if (resolvedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-        {
-            if (m_cameraIds.isEmpty())
-            {
-                return false;
-            }
-            resolvedTarget = m_cameraIds.first();
-        }
-        if (m_cameraIds.contains(resolvedTarget)
-            && m_managers->cameraManager->getExposure(resolvedTarget, exposureMs))
-        {
-            return true;
-        }
-
-        auto handle = core();
-        try
-        {
-            if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-            {
-                exposureMs = handle->getExposure();
-            }
-            else
-            {
-                exposureMs = handle->getExposure(target.toStdString().c_str());
-            }
-            return true;
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->cameraProvider->getExposure(target, exposureMs);
     }
 
-    // Merge native MMCore devices with agent camera labels
+    // List devices from the unified registry
     QStringList ScopeOneCore::loadedDevices() const
     {
         if (m_configurationOperationRunning)
         {
             return {};
         }
-        auto handle = core();
         QStringList devices;
-        try
+        for (const HardwareDeviceDescriptor& device : hardwareDevices())
         {
-            devices = toQStringList(handle->getLoadedDevices());
-        }
-        catch (const CMMError&)
-        {
-            devices.clear();
-        }
-
-        // Agent cameras are not always loaded in the UI side MMCore instance
-        for (const QString& cameraId : m_cameraIds)
-        {
-            if (!devices.contains(cameraId))
-            {
-                devices.append(cameraId);
-            }
+            devices.append(device.logicalId);
         }
         return devices;
     }
@@ -3471,19 +4215,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->listProperties(device);
-        }
-        auto handle = core();
-        try
-        {
-            return toQStringList(handle->getDevicePropertyNames(device.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->listProperties(device);
     }
 
     // Read a property value from hardware or cache
@@ -3495,26 +4227,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->getProperty(device, property, fromCache);
-        }
-        auto handle = core();
-        try
-        {
-            if (fromCache)
-            {
-                return QString::fromStdString(
-                    handle->getPropertyFromCache(device.toStdString().c_str(),
-                                                 property.toStdString().c_str()));
-            }
-            return QString::fromStdString(
-                handle->getProperty(device.toStdString().c_str(), property.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->getProperty(device, property, fromCache);
     }
 
     // Convert backend property types into UI strings
@@ -3526,27 +4239,7 @@ namespace scopeone::core
         {
             return QStringLiteral("Unknown");
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->getPropertyType(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            const MM::PropertyType type = handle->getPropertyType(device.toStdString().c_str(),
-                                                                  property.toStdString().c_str());
-            switch (type)
-            {
-            case MM::String: return QStringLiteral("String");
-            case MM::Float: return QStringLiteral("Float");
-            case MM::Integer: return QStringLiteral("Integer");
-            default: return QStringLiteral("Unknown");
-            }
-        }
-        catch (const CMMError&)
-        {
-            return QStringLiteral("Unknown");
-        }
+        return m_managers->hardwareRuntime->getPropertyType(device, property);
     }
 
     // Check whether a property can be edited
@@ -3558,19 +4251,7 @@ namespace scopeone::core
         {
             return true;
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->isPropertyReadOnly(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return handle->isPropertyReadOnly(device.toStdString().c_str(), property.toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return true;
-        }
+        return m_managers->hardwareRuntime->isPropertyReadOnly(device, property);
     }
 
     // Check whether a property must be set before initialization
@@ -3582,19 +4263,7 @@ namespace scopeone::core
         {
             return false;
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->isPropertyPreInit(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return handle->isPropertyPreInit(device.toStdString().c_str(), property.toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return m_managers->hardwareRuntime->isPropertyPreInit(device, property);
     }
 
     // Return allowed values for enumerated properties
@@ -3606,20 +4275,7 @@ namespace scopeone::core
         {
             return {};
         }
-        if (isConfiguredCamera(device))
-        {
-            return m_managers->cameraManager->getAllowedPropertyValues(device, property);
-        }
-        auto handle = core();
-        try
-        {
-            return toQStringList(
-                handle->getAllowedPropertyValues(device.toStdString().c_str(), property.toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return m_managers->hardwareRuntime->getAllowedPropertyValues(device, property);
     }
 
     // Return numeric limits for range constrained properties
@@ -3637,32 +4293,13 @@ namespace scopeone::core
         {
             return false;
         }
-        if (isConfiguredCamera(device))
-        {
-            if (!m_managers->cameraManager->hasPropertyLimits(device, property))
-            {
-                return false;
-            }
-            lower = m_managers->cameraManager->getPropertyLowerLimit(device, property);
-            upper = m_managers->cameraManager->getPropertyUpperLimit(device, property);
-            return true;
-        }
-
-        auto handle = core();
-        try
-        {
-            if (!handle->hasPropertyLimits(device.toStdString().c_str(), property.toStdString().c_str()))
-            {
-                return false;
-            }
-            lower = handle->getPropertyLowerLimit(device.toStdString().c_str(), property.toStdString().c_str());
-            upper = handle->getPropertyUpperLimit(device.toStdString().c_str(), property.toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError&)
+        if (!m_managers->hardwareRuntime->hasPropertyLimits(device, property))
         {
             return false;
         }
+        lower = m_managers->hardwareRuntime->getPropertyLowerLimit(device, property);
+        upper = m_managers->hardwareRuntime->getPropertyUpperLimit(device, property);
+        return true;
     }
 
     // Set a property and refresh backend state after the device accepts it
@@ -3696,49 +4333,8 @@ namespace scopeone::core
             return false;
         }
 
-        if (isConfiguredCamera(device))
-        {
-            QString cameraError;
-            if (!m_managers->cameraManager->setProperty(device, property, value, &cameraError))
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = cameraError.isEmpty()
-                                        ? QStringLiteral("Camera setProperty failed")
-                                        : cameraError;
-                }
-                return false;
-            }
-            emit deviceStateChanged();
-            return true;
-        }
-
-        auto handle = core();
-        const bool isCamera = isNativeCamera(device);
-        const QStringList runningPreviewIds = isCamera ? runningPreviewCameraIds() : QStringList{};
-        const auto applyProperty = [&]() -> bool
-        {
-            try
-            {
-                handle->setProperty(device.toStdString().c_str(),
-                                    property.toStdString().c_str(),
-                                    value.toStdString().c_str());
-                handle->waitForDevice(device.toStdString().c_str());
-                handle->updateSystemStateCache();
-                return true;
-            }
-            catch (const CMMError& e)
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QString::fromStdString(e.getMsg());
-                }
-                return false;
-            }
-        };
-        const bool ok = isCamera
-                            ? withSuspendedPreviews(this, runningPreviewIds, applyProperty)
-                            : applyProperty();
+        const bool ok = m_managers->hardwareRuntime->setProperty(
+            device, property, value, errorMessage);
         if (ok)
         {
             emit deviceStateChanged();
@@ -3770,7 +4366,8 @@ namespace scopeone::core
         }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
-            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(enabled))
+            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+                    m_cameraIds, enabled))
             {
                 return false;
             }
@@ -3783,7 +4380,8 @@ namespace scopeone::core
         if (enabled)
         {
             m_managers->imageProcessingManager->enableRealTimeProcessing(true);
-            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(true))
+            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+                    m_cameraIds, true))
             {
                 m_managers->imageProcessingManager->enableRealTimeProcessing(false);
                 return false;
@@ -3791,7 +4389,8 @@ namespace scopeone::core
         }
         else
         {
-            if (!m_managers->cameraManager->setHighRateFrameDeliveryEnabled(false))
+            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+                    m_cameraIds, false))
             {
                 return false;
             }
@@ -3828,6 +4427,28 @@ namespace scopeone::core
         return true;
     }
 
+    QString ScopeOneCore::realTimeProcessingSource() const
+    {
+        return m_realTimeProcessingSource;
+    }
+
+    bool ScopeOneCore::setRealTimeProcessingSource(const QString& cameraId)
+    {
+        const QString source = cameraId.trimmed();
+        if (isRealTimeProcessingEnabled()
+            || (!source.isEmpty() && !m_cameraIds.contains(source)))
+        {
+            return false;
+        }
+        if (m_realTimeProcessingSource == source)
+        {
+            return true;
+        }
+        m_realTimeProcessingSource = source;
+        emit processingSettingsChanged();
+        return true;
+    }
+
     // Captures the ordered processing pipeline as a replayable recipe
     ProcessingRecipe ScopeOneCore::processingRecipe() const
     {
@@ -3838,8 +4459,8 @@ namespace scopeone::core
         for (const ProcessingModuleInfo& module : modules)
         {
             ProcessingModuleRecipe entry;
-            entry.kind = module.kind();
-            entry.schemaVersion = kProcessingModuleSchemaVersion;
+            entry.moduleId = module.id();
+            entry.schemaVersion = module.descriptor().schemaVersion;
             entry.parameters = module.parameters();
             recipe.modules.append(std::move(entry));
         }
@@ -3866,23 +4487,35 @@ namespace scopeone::core
         modules.reserve(static_cast<size_t>(recipe.modules.size()));
         for (const ProcessingModuleRecipe& entry : recipe.modules)
         {
-            if (entry.schemaVersion != kProcessingModuleSchemaVersion)
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Unsupported processing module schema version: %1")
-                                        .arg(entry.schemaVersion);
-                }
-                return false;
-            }
-            std::unique_ptr<ProcessingModule> module = createProcessingModule(entry.kind);
-            if (!module)
+            const ProcessingModuleDescriptor descriptor =
+                m_managers->processingModuleRegistry->descriptor(entry.moduleId);
+            if (descriptor.id.isEmpty())
             {
                 if (errorMessage)
                 {
                     *errorMessage = QStringLiteral("Unsupported processing module: %1")
-                                        .arg(processingModuleKindName(entry.kind));
+                                        .arg(entry.moduleId);
                 }
+                return false;
+            }
+            if (entry.schemaVersion != descriptor.schemaVersion)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral(
+                        "Unsupported schema version %1 for processing module %2; expected %3")
+                                        .arg(entry.schemaVersion)
+                                        .arg(entry.moduleId)
+                                        .arg(descriptor.schemaVersion);
+                }
+                return false;
+            }
+            std::unique_ptr<ProcessingModule> module =
+                m_managers->processingModuleRegistry->create(entry.moduleId);
+            if (!module)
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Failed to create processing module: %1")
+                                                    .arg(entry.moduleId);
                 return false;
             }
             module->setParameters(entry.parameters);
@@ -3954,6 +4587,31 @@ namespace scopeone::core
         return m_managers->imageProcessingManager->processFrameThrough(endModuleIndex, frame);
     }
 
+    // Lists every registered processing module type
+    QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
+    {
+        return m_managers->processingModuleRegistry->descriptors();
+    }
+
+    bool ScopeOneCore::registerProcessingModule(
+        const ProcessingModuleDescriptor& descriptor,
+        std::function<std::unique_ptr<ProcessingModule>()> factory)
+    {
+        return m_managers->processingModuleRegistry->registerModule(descriptor,
+                                                                      std::move(factory));
+    }
+
+    std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(
+        const QString& moduleId) const
+    {
+        return m_managers->processingModuleRegistry->create(moduleId);
+    }
+
+    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline() const
+    {
+        return std::make_unique<ProcessingPipeline>();
+    }
+
     // Export processing module descriptions for the UI
     QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
     {
@@ -3961,26 +4619,29 @@ namespace scopeone::core
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
 
         out.reserve(definition.moduleCount());
-        definition.forEachModule([&out](const ProcessingModule* module)
+        definition.forEachModule([this, &out](const ProcessingModule* module)
         {
             ProcessingModuleInfo info;
-            info.setKind(module->kind());
+            info.setId(module->id());
             info.setName(module->name());
             info.setParameters(module->parameters());
+            info.setDescriptor(m_managers->processingModuleRegistry->descriptor(module->id()));
+            info.setEnabled(module->isEnabled());
             out.append(std::move(info));
         });
         return out;
     }
 
     // Add a processing module to the editable pipeline
-    bool ScopeOneCore::addProcessingModule(ProcessingModuleKind kind)
+    bool ScopeOneCore::addProcessingModule(const QString& moduleId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
         ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
-        std::unique_ptr<ProcessingModule> module = createProcessingModule(kind);
+        std::unique_ptr<ProcessingModule> module =
+            m_managers->processingModuleRegistry->create(moduleId);
         if (!module) return false;
 
         definition.addModule(std::move(module));
@@ -4010,6 +4671,48 @@ namespace scopeone::core
         return true;
     }
 
+    // Move one editable processing module and rebuild runtime pipelines
+    bool ScopeOneCore::moveProcessingModule(int from, int to)
+    {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        if (!definition.moveModule(from, to))
+        {
+            return false;
+        }
+        m_managers->imageProcessingManager->clearRuntimePipelines();
+        emit processingModulesChanged();
+        return true;
+    }
+
+    // Enable or bypass one editable processing module
+    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled)
+    {
+        if (isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        bool updated = false;
+        if (!definition.withModule(index, [enabled, &updated](ProcessingModule* module)
+        {
+            updated = module->isEnabled() != enabled;
+            module->setEnabled(enabled);
+        }))
+        {
+            return false;
+        }
+        if (updated)
+        {
+            m_managers->imageProcessingManager->clearRuntimePipelines();
+            emit processingModulesChanged();
+        }
+        return true;
+    }
+
     // Update module parameters and rebuild per camera runtime modules
     bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
     {
@@ -4027,7 +4730,7 @@ namespace scopeone::core
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        emit processingModulesChanged();
+        emit processingModuleParametersChanged(index);
         return true;
     }
 
@@ -4053,6 +4756,275 @@ namespace scopeone::core
             m_managers->imageProcessingManager->clearRuntimePipelines();
             emit processingModuleParametersChanged(index);
         }
+        return true;
+    }
+
+    // Process one image without coupling the task to a UI layer
+    quint64 ScopeOneCore::requestImageProcessing(const ImageFrame& frame,
+                                                 const QString& sourceId)
+    {
+        if (!frame.isValid() || processingModules().isEmpty())
+        {
+            return 0;
+        }
+
+        const quint64 requestId = ++m_nextProcessingRequestId;
+        auto cancelToken = std::make_shared<std::atomic_bool>(false);
+        m_processingRequestCancelTokens.insert(requestId, cancelToken);
+        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        const int bitDepth = static_cast<int>(processingBitDepth());
+        auto* watcher = new QFutureWatcher<ProcessingResult>(this);
+        connect(watcher, &QFutureWatcher<ProcessingResult>::finished,
+                this, [this, watcher, requestId, sourceId, cancelToken]()
+                {
+                    ProcessingResult result = watcher->result();
+                    m_processingRequestCancelTokens.remove(requestId);
+                    emit imageProcessingFinished(
+                        requestId,
+                        sourceId,
+                        cancelToken->load() ? ImageFrame{} : result.frame,
+                        cancelToken->load() ? QStringLiteral("Processing canceled") : result.error);
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run(
+            m_offlineProcessingThreadPool.get(),
+            [pipeline = std::move(pipeline), frame, bitDepth, cancelToken]()
+            {
+                if (cancelToken->load())
+                {
+                    return ProcessingResult(ImageFrame{}, QStringLiteral("Processing canceled"));
+                }
+                return pipeline->process(frame, bitDepth);
+            }));
+        return requestId;
+    }
+
+    // Process a complete recorded stack with one isolated stateful runtime
+    quint64 ScopeOneCore::requestRecordingSessionStackProcessing(const QString& sessionId,
+                                                                 const QString& cameraId)
+    {
+        const auto sourceSession = recordingSession(sessionId);
+        const QString sourceCameraId = cameraId.trimmed();
+        const qint64 frameCount = sourceSession
+                                      ? sourceSession->recordedFrameCount(sourceCameraId)
+                                      : 0;
+        if (!sourceSession
+            || sourceCameraId.isEmpty()
+            || frameCount <= 0
+            || frameCount > (std::numeric_limits<int>::max)()
+            || processingModules().isEmpty())
+        {
+            return 0;
+        }
+
+        const quint64 requestId = ++m_nextProcessingRequestId;
+        auto cancelToken = std::make_shared<std::atomic_bool>(false);
+        m_processingRequestCancelTokens.insert(requestId, cancelToken);
+        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        const int bitDepth = static_cast<int>(processingBitDepth());
+        const ProcessingRecipe recipe = processingRecipe();
+        auto* watcher = new QFutureWatcher<OfflineProcessingResult>(this);
+        connect(watcher, &QFutureWatcher<OfflineProcessingResult>::finished,
+                this, [this, watcher, requestId, cancelToken]()
+                {
+                    OfflineProcessingResult result = watcher->result();
+                    m_processingRequestCancelTokens.remove(requestId);
+                    result.canceled = result.canceled || cancelToken->load();
+                    std::shared_ptr<RecordingSessionData> outputSession;
+                    if (!result.canceled && result.errorMessage.isEmpty())
+                    {
+                        result.plan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                        result.plan.streamToDisk = false;
+                        result.plan.saveDir.clear();
+                        result.plan.baseName += QStringLiteral("_processed");
+                        outputSession = createFrameSession(result.frames, result.plan);
+                        if (!outputSession)
+                        {
+                            result.errorMessage = QStringLiteral("Failed to create processed stack");
+                        }
+                        else
+                        {
+                            outputSession->setCapturePlan(result.plan);
+                        }
+                    }
+                    if (result.canceled)
+                    {
+                        result.errorMessage = QStringLiteral("Processing canceled");
+                    }
+                    emit stackProcessingFinished(requestId, outputSession, result.errorMessage);
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run(
+            m_offlineProcessingThreadPool.get(),
+            [this, requestId, sourceSession, sourceCameraId, frameCount, bitDepth, recipe,
+             pipeline = std::move(pipeline), cancelToken]()
+            {
+                OfflineProcessingResult result;
+                result.plan = sourceSession->capturePlan();
+                result.plan.cameraIds = {sourceCameraId};
+                result.plan.processing = recipe;
+                result.frames.reserve(static_cast<qsizetype>(frameCount));
+                QElapsedTimer progressTimer;
+                progressTimer.start();
+                for (int index = 0; index < static_cast<int>(frameCount); ++index)
+                {
+                    if (cancelToken->load())
+                    {
+                        result.canceled = true;
+                        break;
+                    }
+                    const ImageFrame frame = sourceSession->imageFrameAt(sourceCameraId, index);
+                    if (!frame.isValid())
+                    {
+                        result.errorMessage = QStringLiteral("Failed to read stack frame %1")
+                                                  .arg(index + 1);
+                        break;
+                    }
+                    ProcessingResult processed = pipeline->process(frame, bitDepth);
+                    if (!processed.succeeded())
+                    {
+                        result.errorMessage = processed.error;
+                        break;
+                    }
+                    result.frames.append(std::move(processed.frame));
+                    if (progressTimer.elapsed() >= 100 || index + 1 == frameCount)
+                    {
+                        const qint64 completed = index + 1;
+                        QMetaObject::invokeMethod(this, [this, requestId, completed, frameCount]()
+                        {
+                            emit stackProcessingProgress(requestId, completed, frameCount);
+                        });
+                        progressTimer.restart();
+                    }
+                }
+                return result;
+            }));
+        return requestId;
+    }
+
+    // Process a static layer image stack with an isolated runtime
+    quint64 ScopeOneCore::requestLayerStackProcessing(const QString& layerKey)
+    {
+        const QString sourceId = sourceIdFromLayerKey(layerKey);
+        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules().isEmpty())
+        {
+            return 0;
+        }
+
+        const auto inputSlices = m_layerStacks.value(sourceId);
+        const qsizetype frameCount = static_cast<qsizetype>(inputSlices.size());
+        if (frameCount <= 0)
+        {
+            return 0;
+        }
+
+        QString cleanSourceId = sourceId;
+        if (cleanSourceId.startsWith(QStringLiteral("processed:")))
+        {
+            cleanSourceId = cleanSourceId.mid(10);
+        }
+        const QString outputSourceId = QStringLiteral("processed:%1").arg(cleanSourceId);
+        const QString outputLayerKey = staticLayerKey(outputSourceId);
+
+        DocumentLayer layer;
+        QString baseName;
+        if (m_imageSceneModel->findLayer(layerKey, layer) && !layer.name.isEmpty())
+        {
+            baseName = layer.name;
+        }
+        else
+        {
+            baseName = sourceId;
+        }
+        const QString displayName = baseName.startsWith(QStringLiteral("Processed: "))
+                                        ? baseName
+                                        : QStringLiteral("Processed: %1").arg(baseName);
+
+        const quint64 requestId = ++m_nextProcessingRequestId;
+        auto cancelToken = std::make_shared<std::atomic_bool>(false);
+        m_processingRequestCancelTokens.insert(requestId, cancelToken);
+        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        const int bitDepth = static_cast<int>(processingBitDepth());
+
+        struct LayerStackProcessingResult
+        {
+            std::vector<ImageFrame> frames;
+            QString errorMessage;
+            bool canceled{false};
+        };
+
+        auto* watcher = new QFutureWatcher<LayerStackProcessingResult>(this);
+        connect(watcher, &QFutureWatcher<LayerStackProcessingResult>::finished,
+                this, [this, watcher, requestId, outputSourceId, outputLayerKey, displayName, cancelToken]()
+                {
+                    LayerStackProcessingResult result = watcher->result();
+                    m_processingRequestCancelTokens.remove(requestId);
+                    result.canceled = result.canceled || cancelToken->load();
+                    if (!result.canceled && result.errorMessage.isEmpty() && !result.frames.empty())
+                    {
+                        m_layerStacks.insert(outputSourceId, std::move(result.frames));
+                        publishStaticFrame(outputSourceId, m_layerStacks[outputSourceId].front(), displayName);
+                    }
+                    if (result.canceled)
+                    {
+                        result.errorMessage = QStringLiteral("Processing canceled");
+                    }
+                    emit layerStackProcessingFinished(requestId, outputLayerKey, result.errorMessage);
+                    watcher->deleteLater();
+                });
+
+        watcher->setFuture(QtConcurrent::run(
+            m_offlineProcessingThreadPool.get(),
+            [this, requestId, inputSlices, outputSourceId, frameCount, bitDepth, pipeline = std::move(pipeline), cancelToken]()
+            {
+                LayerStackProcessingResult result;
+                result.frames.reserve(static_cast<size_t>(frameCount));
+                QElapsedTimer progressTimer;
+                progressTimer.start();
+                for (qsizetype index = 0; index < frameCount; ++index)
+                {
+                    if (cancelToken->load())
+                    {
+                        result.canceled = true;
+                        break;
+                    }
+                    const ImageFrame& frame = inputSlices[static_cast<size_t>(index)];
+                    if (!frame.isValid())
+                    {
+                        result.errorMessage = QStringLiteral("Failed to read stack frame %1").arg(index + 1);
+                        break;
+                    }
+                    ProcessingResult processed = pipeline->process(frame, bitDepth);
+                    if (!processed.succeeded())
+                    {
+                        result.errorMessage = processed.error;
+                        break;
+                    }
+                    processed.frame.cameraId = outputSourceId;
+                    result.frames.push_back(std::move(processed.frame));
+                    if (progressTimer.elapsed() >= 100 || index + 1 == frameCount)
+                    {
+                        const qint64 completed = index + 1;
+                        QMetaObject::invokeMethod(this, [this, requestId, completed, frameCount]()
+                        {
+                            emit stackProcessingProgress(requestId, completed, frameCount);
+                        });
+                        progressTimer.restart();
+                    }
+                }
+                return result;
+            }));
+        return requestId;
+    }
+
+    bool ScopeOneCore::cancelProcessingRequest(quint64 requestId)
+    {
+        const auto token = m_processingRequestCancelTokens.value(requestId);
+        if (!token)
+        {
+            return false;
+        }
+        token->store(true);
         return true;
     }
 
@@ -4420,6 +5392,7 @@ namespace scopeone::core
         }
         m_managers->sessions.remove(id);
         emit recordingSessionClosed(id);
+        emit recordingSessionsChanged();
         return true;
     }
 
@@ -4437,6 +5410,7 @@ namespace scopeone::core
         }
         m_managers->sessions.insert(experimentId, session);
         m_managers->experiments.insert(experimentId, session->experimentDocument());
+        emit recordingSessionsChanged();
     }
 
     // Finalize the shared experiment state before notifying API and UI clients
@@ -4537,6 +5511,48 @@ namespace scopeone::core
         return true;
     }
 
+    // Queue one session copy for background writing
+    bool ScopeOneCore::queueRecordingSessionSave(
+        const std::shared_ptr<RecordingSessionData>& sourceSession,
+        const std::shared_ptr<RecordingSessionData>& saveSession,
+        const QString& cameraId)
+    {
+        if (!sourceSession || !saveSession || m_sessionsSaving.contains(sourceSession.get()))
+        {
+            return false;
+        }
+        saveSession->m_frames.clear();
+        saveSession->clearOutputFiles();
+        saveSession->m_manifest.output.streamedToDisk = false;
+        m_sessionsSaving.insert(sourceSession.get());
+        auto* watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished,
+                this, [this, watcher, sourceSession, saveSession, cameraId]()
+                {
+                    m_sessionsSaving.remove(sourceSession.get());
+                    if (cameraId.isEmpty())
+                    {
+                        sourceSession->applySaveStateFrom(*saveSession);
+                        registerRecordingSession(sourceSession);
+                        emit recordingSessionSaveFinished(sourceSession);
+                    }
+                    else
+                    {
+                        emit recordingSessionCameraSaveFinished(
+                            sourceSession,
+                            cameraId,
+                            saveSession->isSaved(),
+                            saveSession->saveMessage());
+                    }
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run([saveSession, sourceSession]()
+        {
+            return RecordingManager::saveSessionToDisk(saveSession, sourceSession);
+        }));
+        return true;
+    }
+
     // Save a completed session on a worker thread
     bool ScopeOneCore::saveRecordingSession(const std::shared_ptr<RecordingSessionData>& session)
     {
@@ -4544,50 +5560,27 @@ namespace scopeone::core
         {
             return false;
         }
-        if (m_sessionsSaving.contains(session.get()))
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
+        if (plan.metadataFileName.trimmed().isEmpty())
         {
-            return false;
+            plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+            saveSession->setCapturePlan(plan);
         }
-
-        ExperimentPlan capturePlan = session->capturePlan();
-        if (capturePlan.metadataFileName.trimmed().isEmpty())
-        {
-            capturePlan.metadataFileName = recordingMetadataFileName(capturePlan.baseName);
-            session->setCapturePlan(capturePlan);
-        }
-        const std::shared_ptr<RecordingSessionData> saveSession = session->cloneForSave();
-        m_sessionsSaving.insert(session.get());
-        auto* watcher = new QFutureWatcher<QString>(this);
-        connect(watcher, &QFutureWatcher<QString>::finished,
-                this,
-                [this, watcher, session, saveSession]()
-        {
-            session->applySaveStateFrom(*saveSession);
-            registerRecordingSession(session);
-            m_sessionsSaving.remove(session.get());
-            emit recordingSessionSaveFinished(session);
-            watcher->deleteLater();
-        });
-
-        const auto future = QtConcurrent::run([saveSession]()
-        {
-            return RecordingManager::saveSessionToDisk(saveSession);
-        });
-        watcher->setFuture(future);
-        return true;
+        return queueRecordingSessionSave(session, saveSession);
     }
 
-    // Updates save options before dispatching the asynchronous writer
+    // Apply output options to a detached session copy before writing
     bool ScopeOneCore::saveRecordingSession(
         const std::shared_ptr<RecordingSessionData>& session,
         const RecordingSaveOptions& saveOptions)
     {
-        if (!session || m_sessionsSaving.contains(session.get()))
+        if (!session)
         {
             return false;
         }
-
-        ExperimentPlan plan = session->capturePlan();
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
         plan.format = saveOptions.format;
         plan.enableCompression = saveOptions.enableCompression;
         plan.compressionLevel = saveOptions.compressionLevel;
@@ -4599,8 +5592,65 @@ namespace scopeone::core
         {
             plan.baseName = saveOptions.baseName;
         }
-        session->setCapturePlan(plan);
-        return saveRecordingSession(session);
+        plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+        saveSession->setCapturePlan(plan);
+        return queueRecordingSessionSave(session, saveSession);
+    }
+
+    // Save only the camera stack represented by one image document
+    bool ScopeOneCore::saveRecordingSessionCamera(
+        const std::shared_ptr<RecordingSessionData>& session,
+        const QString& cameraId,
+        const RecordingSaveOptions& saveOptions,
+        const ExperimentDocument* presentation)
+    {
+        const QString sourceCameraId = cameraId.trimmed();
+        if (!session || sourceCameraId.isEmpty()
+            || session->recordedFrameCount(sourceCameraId) <= 0)
+        {
+            return false;
+        }
+        auto saveSession = session->cloneForSave();
+        ExperimentPlan plan = saveSession->capturePlan();
+        plan.cameraIds = {sourceCameraId};
+        plan.format = saveOptions.format;
+        plan.enableCompression = saveOptions.enableCompression;
+        plan.compressionLevel = saveOptions.compressionLevel;
+        if (!saveOptions.saveDir.trimmed().isEmpty())
+        {
+            plan.saveDir = saveOptions.saveDir;
+        }
+        if (!saveOptions.baseName.trimmed().isEmpty())
+        {
+            plan.baseName = saveOptions.baseName;
+        }
+        plan.metadataFileName = recordingMetadataFileName(plan.baseName);
+        saveSession->setCapturePlan(plan);
+        QList<AcquisitionEventRecord> cameraEvents;
+        for (const AcquisitionEventRecord& record : saveSession->m_manifest.events)
+        {
+            const auto frame = record.frames.constFind(sourceCameraId);
+            if (frame == record.frames.constEnd())
+            {
+                continue;
+            }
+            AcquisitionEventRecord cameraRecord = record;
+            cameraRecord.event.cameraIds = {sourceCameraId};
+            cameraRecord.frames = {{sourceCameraId, frame.value()}};
+            cameraEvents.append(std::move(cameraRecord));
+        }
+        saveSession->m_manifest.events = std::move(cameraEvents);
+        if (presentation)
+        {
+            filterRecordingPresentation(
+                *presentation, saveSession->m_manifest.layers, saveSession->m_manifest.markups);
+        }
+        else
+        {
+            saveSession->m_manifest.layers.clear();
+            saveSession->m_manifest.markups.clear();
+        }
+        return queueRecordingSessionSave(session, saveSession, sourceCameraId);
     }
 
     // Reads one recording frame on the serialized session IO worker

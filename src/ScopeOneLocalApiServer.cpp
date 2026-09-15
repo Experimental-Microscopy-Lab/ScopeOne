@@ -2,6 +2,7 @@
 
 #include "scopeone/ImageSceneModel.h"
 #include "PreviewWidget.h"
+#include "ImageWorkspace.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QCoreApplication>
@@ -118,6 +119,30 @@ namespace scopeone::ui
             return response;
         }
 
+        QJsonObject imageDocumentToJson(const ImageDocumentInfo& document)
+        {
+            QJsonObject object;
+            object.insert(QStringLiteral("documentId"), document.id);
+            object.insert(QStringLiteral("title"), document.title);
+            object.insert(QStringLiteral("sessionId"), document.sessionId);
+            object.insert(QStringLiteral("cameraId"), document.cameraId);
+            object.insert(QStringLiteral("frameIndex"), document.frameIndex);
+            object.insert(QStringLiteral("frameCount"), document.frameCount);
+            object.insert(QStringLiteral("ready"), document.ready);
+            object.insert(QStringLiteral("active"), document.active);
+            return object;
+        }
+
+        QJsonArray imageDocumentsToJson(const QList<ImageDocumentInfo>& documents)
+        {
+            QJsonArray array;
+            for (const ImageDocumentInfo& document : documents)
+            {
+                array.append(imageDocumentToJson(document));
+            }
+            return array;
+        }
+
         // Converts one markup to local API JSON
         QJsonObject markupToJson(const ImageSceneModel::Markup& markup)
         {
@@ -189,71 +214,9 @@ namespace scopeone::ui
             return object;
         }
 
-        QString processingModuleApiKindName(scopeone::core::ScopeOneCore::ProcessingModuleKind kind)
+        QString processingModuleIdFromJson(const QJsonValue& value)
         {
-            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
-            switch (kind)
-            {
-            case ProcessingModuleKind::FFT:
-                return QStringLiteral("fft");
-            case ProcessingModuleKind::BackgroundCalibration:
-                return QStringLiteral("background_calibration");
-            case ProcessingModuleKind::SpatiotemporalBinning:
-                return QStringLiteral("spatiotemporal_binning");
-            case ProcessingModuleKind::GaussianBlur:
-                return QStringLiteral("gaussian_blur");
-            case ProcessingModuleKind::DifferentialRolling:
-                return QStringLiteral("differential_rolling");
-            case ProcessingModuleKind::Unknown:
-                return QStringLiteral("unknown");
-            }
-            return QStringLiteral("unknown");
-        }
-
-        scopeone::core::ScopeOneCore::ProcessingModuleKind processingModuleKindFromJson(const QJsonValue& value)
-        {
-            using ProcessingModuleKind = scopeone::core::ScopeOneCore::ProcessingModuleKind;
-            if (value.isDouble())
-            {
-                const int kind = value.toInt(static_cast<int>(ProcessingModuleKind::Unknown));
-                switch (static_cast<ProcessingModuleKind>(kind))
-                {
-                case ProcessingModuleKind::FFT:
-                case ProcessingModuleKind::BackgroundCalibration:
-                case ProcessingModuleKind::SpatiotemporalBinning:
-                case ProcessingModuleKind::GaussianBlur:
-                case ProcessingModuleKind::DifferentialRolling:
-                    return static_cast<ProcessingModuleKind>(kind);
-                case ProcessingModuleKind::Unknown:
-                    return ProcessingModuleKind::Unknown;
-                }
-            }
-
-            QString name = value.toString().trimmed().toLower();
-            name.remove(QLatin1Char('_'));
-            name.remove(QLatin1Char('-'));
-            name.remove(QLatin1Char(' '));
-            if (name == QStringLiteral("fft"))
-            {
-                return ProcessingModuleKind::FFT;
-            }
-            if (name == QStringLiteral("backgroundcalibration") || name == QStringLiteral("background"))
-            {
-                return ProcessingModuleKind::BackgroundCalibration;
-            }
-            if (name == QStringLiteral("spatiotemporalbinning") || name == QStringLiteral("binning"))
-            {
-                return ProcessingModuleKind::SpatiotemporalBinning;
-            }
-            if (name == QStringLiteral("gaussianblur") || name == QStringLiteral("blur"))
-            {
-                return ProcessingModuleKind::GaussianBlur;
-            }
-            if (name == QStringLiteral("differentialrolling") || name == QStringLiteral("rolling"))
-            {
-                return ProcessingModuleKind::DifferentialRolling;
-            }
-            return ProcessingModuleKind::Unknown;
+            return value.isString() ? value.toString().trimmed() : QString{};
         }
 
         QJsonObject processingModuleToJson(
@@ -262,10 +225,33 @@ namespace scopeone::ui
         {
             QJsonObject object;
             object.insert(QStringLiteral("index"), index);
-            object.insert(QStringLiteral("kind"), processingModuleApiKindName(info.kind()));
-            object.insert(QStringLiteral("kindValue"), static_cast<int>(info.kind()));
+            object.insert(QStringLiteral("kind"), info.id());
             object.insert(QStringLiteral("name"), info.name());
+            object.insert(QStringLiteral("enabled"), info.enabled());
             object.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(info.parameters()));
+            return object;
+        }
+
+        QJsonObject processingModuleDescriptorToJson(
+            const scopeone::core::ProcessingModuleDescriptor& descriptor)
+        {
+            QJsonObject object;
+            object.insert(QStringLiteral("id"), descriptor.id);
+            object.insert(QStringLiteral("name"), descriptor.name);
+            object.insert(QStringLiteral("schemaVersion"), descriptor.schemaVersion);
+            QJsonArray parameters;
+            for (const auto& parameter : descriptor.parameters)
+            {
+                QJsonObject item;
+                item.insert(QStringLiteral("key"), parameter.key);
+                item.insert(QStringLiteral("name"), parameter.name);
+                item.insert(QStringLiteral("type"), static_cast<int>(parameter.type));
+                item.insert(QStringLiteral("default"), QJsonValue::fromVariant(parameter.defaultValue));
+                item.insert(QStringLiteral("minimum"), QJsonValue::fromVariant(parameter.minimum));
+                item.insert(QStringLiteral("maximum"), QJsonValue::fromVariant(parameter.maximum));
+                parameters.append(item);
+            }
+            object.insert(QStringLiteral("parameters"), parameters);
             return object;
         }
 
@@ -750,6 +736,11 @@ namespace scopeone::ui
                 QStringLiteral("show_frame_mapping_as_layer"),
                 QStringLiteral("save_frame_mapping")
             }));
+            groups.insert(QStringLiteral("imageWorkspace"), QJsonArray::fromStringList(QStringList{
+                QStringLiteral("image_windows"), QStringLiteral("open_image_window"),
+                QStringLiteral("activate_image_window"), QStringLiteral("close_image_window"),
+                QStringLiteral("process_image_window"), QStringLiteral("save_image_window")
+            }));
 
             QJsonObject object;
             object.insert(QStringLiteral("localOnly"), true);
@@ -762,7 +753,8 @@ namespace scopeone::ui
             object.insert(QStringLiteral("operationGroups"), groups);
             object.insert(QStringLiteral("longRunningOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("start_experiment"), QStringLiteral("record"),
-                QStringLiteral("start_stage_mosaic")
+                QStringLiteral("start_stage_mosaic"), QStringLiteral("process_image_window"),
+                QStringLiteral("save_image_window")
             }));
             object.insert(QStringLiteral("hardwareMutationOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("load_config"), QStringLiteral("unload_config"),
@@ -777,14 +769,16 @@ namespace scopeone::ui
             }));
             object.insert(QStringLiteral("filesystemMutationOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("save_experiment"), QStringLiteral("start_experiment"),
-                QStringLiteral("save_frame_mapping"), QStringLiteral("session_save")
+                QStringLiteral("save_frame_mapping"), QStringLiteral("session_save"),
+                QStringLiteral("save_image_window")
             }));
             object.insert(QStringLiteral("destructiveOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("unload_config"), QStringLiteral("remove_static_layer"),
                 QStringLiteral("clear_static_layers"), QStringLiteral("remove_markup"),
                 QStringLiteral("clear_markups"), QStringLiteral("remove_processing_module"),
                 QStringLiteral("load_experiment"), QStringLiteral("cancel_experiment"),
-                QStringLiteral("session_close"), QStringLiteral("cancel_stage_mosaic")
+                QStringLiteral("session_close"), QStringLiteral("cancel_stage_mosaic"),
+                QStringLiteral("close_image_window")
             }));
             object.insert(QStringLiteral("frameTransport"), QStringLiteral("shared_memory"));
             return object;
@@ -1125,18 +1119,22 @@ namespace scopeone::ui
     // Starts the local API pipe server and frame mapping
     ScopeOneLocalApiServer::ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
                                                    PreviewWidget* previewWidget,
+                                                   ImageWorkspace* imageWorkspace,
                                                    QObject* parent)
         : QObject(parent)
           , m_scopeonecore(core)
           , m_previewWidget(previewWidget)
-          , m_sceneModel(core ? core->imageSceneModel() : nullptr)
+          , m_imageWorkspace(imageWorkspace)
+          , m_sceneModel(core->imageSceneModel())
           , m_server(new QLocalServer(this))
     {
-        if (!core)
-        {
-            qFatal("ScopeOneLocalApiServer requires ScopeOneCore");
-        }
         m_taskPool.setMaxThreadCount(1);
+        connect(m_imageWorkspace, &ImageWorkspace::activeViewerChanged,
+                this, [this]()
+                {
+                    m_sceneModel = m_imageWorkspace->activeSceneModel();
+                    m_previewWidget = m_imageWorkspace->activePreviewWidget();
+                });
 
         QLocalServer::removeServer(kServerName);
         connect(m_server, &QLocalServer::newConnection,
@@ -1351,17 +1349,203 @@ namespace scopeone::ui
     // Starts Local API operations that must not run in the socket callback
     bool ScopeOneLocalApiServer::processAsyncRequest(QLocalSocket* socket,
                                                      const QJsonObject& request,
-                                                     const QJsonValue& requestId)
+                                                     const QJsonValue& requestId,
+                                                     const ResponseCallback& callback)
     {
         const QString type = request.value(QStringLiteral("type")).toString().trimmed();
         const QPointer<QLocalSocket> guardedSocket(socket);
-        const auto finish = [this, guardedSocket, requestId](QJsonObject response)
+        const auto finish = callback
+                                ? callback
+                                : ResponseCallback([this, guardedSocket, requestId](QJsonObject response)
+                                {
+                                    if (guardedSocket)
+                                    {
+                                        sendRequestResponse(guardedSocket, std::move(response), requestId);
+                                    }
+                                });
+
+        if (type == QStringLiteral("open_image_window"))
         {
-            if (guardedSocket)
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const auto session = m_scopeonecore->recordingSession(sessionId);
+            if (!session)
             {
-                sendRequestResponse(guardedSocket, std::move(response), requestId);
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
+                finish(std::move(response));
+                return true;
             }
-        };
+
+            auto* context = new QObject(this);
+            auto documentIds = std::make_shared<QStringList>();
+            auto completed = std::make_shared<bool>(false);
+            const auto respondWhenReady = [this, context, finish, type, documentIds, completed]()
+            {
+                if (*completed || documentIds->isEmpty())
+                {
+                    return;
+                }
+                for (const QString& documentId : *documentIds)
+                {
+                    const ImageDocumentInfo document = m_imageWorkspace->document(documentId);
+                    if (!document.isValid())
+                    {
+                        *completed = true;
+                        QJsonObject response = makeResponse(type, false);
+                        response.insert(QStringLiteral("error"),
+                                        QStringLiteral("Image window closed before its first frame loaded"));
+                        finish(std::move(response));
+                        context->deleteLater();
+                        return;
+                    }
+                    if (!document.ready)
+                    {
+                        return;
+                    }
+                }
+                *completed = true;
+                QJsonObject response = makeResponse(type, true);
+                response.insert(QStringLiteral("documentIds"),
+                                QJsonArray::fromStringList(*documentIds));
+                response.insert(QStringLiteral("activeDocumentId"),
+                                m_imageWorkspace->activeDocumentId());
+                finish(std::move(response));
+                context->deleteLater();
+            };
+            connect(m_imageWorkspace, &ImageWorkspace::documentsChanged,
+                    context, respondWhenReady);
+            *documentIds = m_imageWorkspace->openSession(
+                session,
+                request.value(QStringLiteral("title")).toString(),
+                request.value(QStringLiteral("cameraId")).toString());
+            if (documentIds->isEmpty())
+            {
+                *completed = true;
+                delete context;
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Session has no matching image data"));
+                finish(std::move(response));
+            }
+            else
+            {
+                respondWhenReady();
+            }
+            return true;
+        }
+
+        if (type == QStringLiteral("process_image_window"))
+        {
+            const QJsonValue completeStackValue = request.value(QStringLiteral("completeStack"));
+            const ImageDocumentInfo source = m_imageWorkspace->document(
+                request.value(QStringLiteral("documentId")).toString());
+            if (!source.isValid()
+                || (!completeStackValue.isUndefined() && !completeStackValue.isBool()))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                source.isValid()
+                                    ? QStringLiteral("completeStack must be a boolean")
+                                    : QStringLiteral("Unknown image window"));
+                finish(std::move(response));
+                return true;
+            }
+
+            auto* context = new QObject(this);
+            auto operationId = std::make_shared<quint64>(0);
+            connect(m_imageWorkspace, &ImageWorkspace::documentProcessingFinished,
+                    context,
+                    [this, context, finish, type, operationId](
+                        quint64 completedId,
+                        const QString& outputDocumentId,
+                        const QString& errorMessage)
+                    {
+                        if (completedId != *operationId)
+                        {
+                            return;
+                        }
+                        const bool success = errorMessage.isEmpty() && !outputDocumentId.isEmpty();
+                        QJsonObject response = makeResponse(type, success);
+                        if (success)
+                        {
+                            response.insert(QStringLiteral("document"),
+                                            imageDocumentToJson(
+                                                m_imageWorkspace->document(outputDocumentId)));
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("error"),
+                                            errorMessage.isEmpty()
+                                                ? QStringLiteral("Image processing failed")
+                                                : errorMessage);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            *operationId = m_imageWorkspace->processDocument(
+                source.id, completeStackValue.toBool(false));
+            if (*operationId == 0)
+            {
+                delete context;
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("No image data or processing modules are available"));
+                finish(std::move(response));
+            }
+            return true;
+        }
+
+        if (type == QStringLiteral("save_image_window"))
+        {
+            const ImageDocumentInfo document = m_imageWorkspace->document(
+                request.value(QStringLiteral("documentId")).toString());
+            const QString saveError = saveRequestError(request);
+            if (!document.isValid() || !saveError.isEmpty())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                document.isValid() ? saveError
+                                                   : QStringLiteral("Unknown image window"));
+                finish(std::move(response));
+                return true;
+            }
+
+            scopeone::core::ScopeOneCore::RecordingSaveOptions options;
+            applySaveRequest(request, options);
+            auto* context = new QObject(this);
+            connect(m_imageWorkspace, &ImageWorkspace::documentSaveFinished,
+                    context,
+                    [context, finish, type, document](const QString& completedDocumentId,
+                                                      bool success,
+                                                      const QString& message)
+                    {
+                        if (completedDocumentId != document.id)
+                        {
+                            return;
+                        }
+                        QJsonObject response = makeResponse(type, success);
+                        response.insert(QStringLiteral("documentId"), document.id);
+                        if (success)
+                        {
+                            response.insert(QStringLiteral("message"), message);
+                        }
+                        else
+                        {
+                            response.insert(QStringLiteral("error"), message);
+                        }
+                        finish(std::move(response));
+                        context->deleteLater();
+                    });
+            if (!m_imageWorkspace->saveDocument(document.id, options))
+            {
+                delete context;
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Failed to start image window save"));
+                finish(std::move(response));
+            }
+            return true;
+        }
 
         if (type == QStringLiteral("load_config"))
         {
@@ -1525,7 +1709,7 @@ namespace scopeone::ui
             int maxParticles = 1000;
             const QJsonValue exportMaskValue = request.value(QStringLiteral("exportMask"));
             const QJsonValue publishMaskValue = request.value(QStringLiteral("publishMask"));
-            const scopeone::core::ImageFrame frame = m_scopeonecore->graphFrame(layerKey);
+            const scopeone::core::ImageFrame frame = m_imageWorkspace->frameForLayer(layerKey);
             if (layerKey.isEmpty()
                 || !intField(request, QStringLiteral("threshold"), threshold)
                 || !intField(request, QStringLiteral("minArea"), minArea)
@@ -1549,8 +1733,11 @@ namespace scopeone::ui
                 return true;
             }
             threshold = qMin(threshold, frame.maxValue());
+            const bool sourceWasLive = m_imageWorkspace->isLiveViewerActive();
+            const QPointer<ImageSceneModel> sourceScene = m_sceneModel;
+            const QPointer<PreviewWidget> sourcePreview = m_previewWidget;
             const quint64 analysisId = m_scopeonecore->detectParticles(
-                layerKey, threshold, minArea, maxArea, maxParticles);
+                frame, layerKey, threshold, minArea, maxArea, maxParticles);
             if (analysisId == 0)
             {
                 QJsonObject response = makeResponse(type, false);
@@ -1563,6 +1750,7 @@ namespace scopeone::ui
             connect(m_scopeonecore, &scopeone::core::ScopeOneCore::particleDetectionFinished,
                     context,
                     [this, context, finish, type, analysisId, threshold, minArea, maxArea,
+                     sourceWasLive, sourceScene, sourcePreview,
                      publishMask = publishMaskValue.toBool(false),
                      exportMask = exportMaskValue.toBool(false)](
                         quint64 completedId,
@@ -1599,28 +1787,52 @@ namespace scopeone::ui
 
                         if (publishMask)
                         {
-                            const QString maskLayerId = QStringLiteral("particle_mask");
-                            const auto publishedMask = m_scopeonecore->publishStaticFrame(
-                                maskLayerId, result.mask, QStringLiteral("Particle Mask"));
-                            if (!publishedMask.isValid())
+                            if (!sourceWasLive)
+                            {
+                                const QString documentId = m_imageWorkspace->openFrame(
+                                    result.mask, QStringLiteral("Particle Mask"));
+                                if (documentId.isEmpty())
+                                {
+                                    response = makeResponse(type, false);
+                                    response.insert(QStringLiteral("error"),
+                                                    QStringLiteral("Failed to open particle mask"));
+                                }
+                                else
+                                {
+                                    response.insert(QStringLiteral("maskDocumentId"), documentId);
+                                }
+                            }
+                            else if (!sourceScene || !sourcePreview)
                             {
                                 response = makeResponse(type, false);
                                 response.insert(QStringLiteral("error"),
-                                                QStringLiteral("Failed to publish particle mask"));
+                                                QStringLiteral("Source viewer was closed"));
                             }
                             else
                             {
-                                const QString maskLayerKey =
-                                    scopeone::core::ScopeOneCore::staticLayerKey(maskLayerId);
-                                m_sceneModel->setLayerColormap(maskLayerKey, QStringLiteral("Magenta"));
-                                m_sceneModel->setLayerOpacityPercent(maskLayerKey, 70);
-                                m_sceneModel->setLayerBlending(maskLayerKey, QStringLiteral("Additive"));
-                                QStringList visibleLayers = m_sceneModel->visibleLayerIds();
-                                if (!visibleLayers.contains(resultLayerKey)) visibleLayers.append(resultLayerKey);
-                                if (!visibleLayers.contains(maskLayerKey)) visibleLayers.append(maskLayerKey);
-                                m_sceneModel->setVisibleLayers(visibleLayers);
-                                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
-                                response.insert(QStringLiteral("maskLayerKey"), maskLayerKey);
+                                const QString maskLayerId = QStringLiteral("particle_mask");
+                                const auto publishedMask = m_scopeonecore->publishStaticFrame(
+                                    maskLayerId, result.mask, QStringLiteral("Particle Mask"));
+                                if (!publishedMask.isValid())
+                                {
+                                    response = makeResponse(type, false);
+                                    response.insert(QStringLiteral("error"),
+                                                    QStringLiteral("Failed to publish particle mask"));
+                                }
+                                else
+                                {
+                                    const QString maskLayerKey =
+                                        scopeone::core::ScopeOneCore::staticLayerKey(maskLayerId);
+                                    sourceScene->setLayerColormap(maskLayerKey, QStringLiteral("Magenta"));
+                                    sourceScene->setLayerOpacityPercent(maskLayerKey, 70);
+                                    sourceScene->setLayerBlending(maskLayerKey, QStringLiteral("Additive"));
+                                    QStringList visibleLayers = sourceScene->visibleLayerIds();
+                                    if (!visibleLayers.contains(resultLayerKey)) visibleLayers.append(resultLayerKey);
+                                    if (!visibleLayers.contains(maskLayerKey)) visibleLayers.append(maskLayerKey);
+                                    sourceScene->setVisibleLayers(visibleLayers);
+                                    sourcePreview->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
+                                    response.insert(QStringLiteral("maskLayerKey"), maskLayerKey);
+                                }
                             }
                         }
                         if (response.value(QStringLiteral("ok")).toBool() && exportMask)
@@ -2071,6 +2283,17 @@ namespace scopeone::ui
         return false;
     }
 
+    // Dispatch one request through the same synchronous or asynchronous path as the local socket
+    void ScopeOneLocalApiServer::dispatchRequest(const QJsonObject& request,
+                                                 ResponseCallback callback)
+    {
+        if (processAsyncRequest(nullptr, request, QJsonValue(), callback))
+        {
+            return;
+        }
+        callback(processRequest(request));
+    }
+
     // Dispatches one local API request object
     QJsonObject ScopeOneLocalApiServer::processRequest(const QJsonObject& request)
     {
@@ -2087,6 +2310,45 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
+            return response;
+        }
+
+        if (type == QStringLiteral("image_windows"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("activeDocumentId"),
+                            m_imageWorkspace->activeDocumentId());
+            response.insert(QStringLiteral("documents"),
+                            imageDocumentsToJson(m_imageWorkspace->documents()));
+            return response;
+        }
+
+        if (type == QStringLiteral("activate_image_window"))
+        {
+            const QString documentId = request.value(QStringLiteral("documentId")).toString();
+            const bool ok = m_imageWorkspace->activateDocument(documentId);
+            QJsonObject response = makeResponse(type, ok);
+            if (ok)
+            {
+                response.insert(QStringLiteral("document"),
+                                imageDocumentToJson(m_imageWorkspace->document(documentId)));
+            }
+            else
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown image window"));
+            }
+            return response;
+        }
+
+        if (type == QStringLiteral("close_image_window"))
+        {
+            const bool ok = m_imageWorkspace->closeDocument(
+                request.value(QStringLiteral("documentId")).toString());
+            QJsonObject response = makeResponse(type, ok);
+            if (!ok)
+            {
+                response.insert(QStringLiteral("error"), QStringLiteral("Unknown image window"));
+            }
             return response;
         }
 
@@ -2329,6 +2591,8 @@ namespace scopeone::ui
         if (type == QStringLiteral("list_layers"))
         {
             QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("activeDocumentId"),
+                            m_imageWorkspace->activeDocumentId());
             response.insert(QStringLiteral("layers"), layersToJson(m_sceneModel, m_previewWidget));
             return response;
         }
@@ -2339,7 +2603,7 @@ namespace scopeone::ui
             scopeone::core::ScopeOneCore::HistogramStats stats;
             QJsonObject response = makeResponse(
                 type,
-                !layerKey.isEmpty() && m_scopeonecore->getLayerHistogram(layerKey, stats));
+                !layerKey.isEmpty() && m_imageWorkspace->histogram(layerKey, stats));
             if (!response.value(QStringLiteral("ok")).toBool())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Layer has no current frame"));
@@ -2360,7 +2624,7 @@ namespace scopeone::ui
             if (layerKey.isEmpty()
                 || !intField(request, QStringLiteral("x"), x)
                 || !intField(request, QStringLiteral("y"), y)
-                || !m_scopeonecore->graphPixelValue(layerKey, QPoint(x, y), value))
+                || !m_imageWorkspace->pixelValue(layerKey, QPoint(x, y), value))
             {
                 response.insert(QStringLiteral("error"),
                                 QStringLiteral("Layer has no current frame or position is outside the image"));
@@ -2386,8 +2650,8 @@ namespace scopeone::ui
                 return response;
             }
             const bool ok = type == QStringLiteral("auto_layer_levels")
-                                ? m_scopeonecore->autoLayerLevels(layerKey)
-                                : m_scopeonecore->fullLayerLevels(layerKey);
+                                ? m_imageWorkspace->autoLayerLevels(layerKey)
+                                : m_imageWorkspace->fullLayerLevels(layerKey);
             if (!ok)
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Layer has no current frame"));
@@ -2397,7 +2661,7 @@ namespace scopeone::ui
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
-                response, layer, m_scopeonecore->layerAutoStretchEnabled(layerKey));
+                response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
             return response;
         }
 
@@ -2417,12 +2681,12 @@ namespace scopeone::ui
                 response.insert(QStringLiteral("error"), QStringLiteral("Missing enabled value"));
                 return response;
             }
-            m_scopeonecore->setLayerAutoStretchEnabled(layerKey, enabledValue.toBool());
+            m_imageWorkspace->setLayerAutoStretchEnabled(layerKey, enabledValue.toBool());
             m_sceneModel->findLayer(layerKey, layer);
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
-                response, layer, m_scopeonecore->layerAutoStretchEnabled(layerKey));
+                response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
             return response;
         }
 
@@ -2446,10 +2710,10 @@ namespace scopeone::ui
             }
 
             QVector<int> values;
-            if (!m_scopeonecore->getLineProfile(layerKey,
-                                                QPoint(x1, y1),
-                                                QPoint(x2, y2),
-                                                values))
+            if (!m_imageWorkspace->lineProfile(layerKey,
+                                               QPoint(x1, y1),
+                                               QPoint(x2, y2),
+                                               values))
             {
                 response.insert(QStringLiteral("error"),
                                 QStringLiteral("Layer has no current frame or line is outside the image"));
@@ -2696,7 +2960,7 @@ namespace scopeone::ui
             }
             if (hasLevels)
             {
-                m_scopeonecore->setLayerAutoStretchEnabled(layerKey, false);
+                m_imageWorkspace->setLayerAutoStretchEnabled(layerKey, false);
                 m_sceneModel->setLayerDisplayLevels(layerKey, minLevel, maxLevel, maxPossible);
             }
 
@@ -2704,7 +2968,7 @@ namespace scopeone::ui
             response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
-                response, layer, m_scopeonecore->layerAutoStretchEnabled(layerKey));
+                response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
             return response;
         }
 
@@ -2789,7 +3053,8 @@ namespace scopeone::ui
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
             const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey).trimmed();
             QJsonObject response = makeResponse(type, false);
-            if (!scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
+            if (!m_imageWorkspace->isLiveViewerActive()
+                || !scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
                 || sourceId.isEmpty()
                 || !m_previewWidget->availableLayerKeys().contains(layerKey))
             {
@@ -2803,6 +3068,13 @@ namespace scopeone::ui
 
         if (type == QStringLiteral("clear_static_layers"))
         {
+            if (!m_imageWorkspace->isLiveViewerActive())
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Static preview layers belong to the live viewer"));
+                return response;
+            }
             m_scopeonecore->clearStaticFrames();
             return makeResponse(type, true);
         }
@@ -3458,7 +3730,15 @@ namespace scopeone::ui
                             static_cast<int>(m_scopeonecore->processingBitDepth()));
             response.insert(QStringLiteral("realTime"),
                             m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("realTimeSource"),
+                            m_scopeonecore->realTimeProcessingSource());
             response.insert(QStringLiteral("modules"), processingModulesToJson(modules));
+            QJsonArray availableModules;
+            for (const auto& descriptor : m_scopeonecore->availableProcessingModules())
+            {
+                availableModules.append(processingModuleDescriptorToJson(descriptor));
+            }
+            response.insert(QStringLiteral("availableModules"), availableModules);
             return response;
         }
 
@@ -3491,6 +3771,15 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_realtime_processing"))
         {
             const bool enabled = request.value(QStringLiteral("enabled")).toBool(false);
+            if (enabled && request.contains(QStringLiteral("cameraId"))
+                && !m_scopeonecore->setRealTimeProcessingSource(
+                    request.value(QStringLiteral("cameraId")).toString()))
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                QStringLiteral("Unknown processing source or processing is already running"));
+                return response;
+            }
             if (!m_scopeonecore->setRealTimeProcessingEnabled(enabled))
             {
                 QJsonObject response = makeResponse(type, false);
@@ -3502,19 +3791,21 @@ namespace scopeone::ui
             }
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("realTime"), m_scopeonecore->isRealTimeProcessingEnabled());
+            response.insert(QStringLiteral("realTimeSource"),
+                            m_scopeonecore->realTimeProcessingSource());
             return response;
         }
 
         if (type == QStringLiteral("add_processing_module"))
         {
-            const auto kind = processingModuleKindFromJson(request.value(QStringLiteral("kind")));
+            const QString moduleId = processingModuleIdFromJson(request.value(QStringLiteral("kind")));
             QJsonObject response = makeResponse(type, false);
-            if (kind == scopeone::core::ScopeOneCore::ProcessingModuleKind::Unknown)
+            if (moduleId.isEmpty())
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown processing module kind"));
                 return response;
             }
-            if (!m_scopeonecore->addProcessingModule(kind))
+            if (!m_scopeonecore->addProcessingModule(moduleId))
             {
                 response.insert(QStringLiteral("error"),
                                 m_scopeonecore->isRealTimeProcessingEnabled()
@@ -3777,7 +4068,9 @@ namespace scopeone::ui
                 return response;
             }
 
-            const scopeone::core::ImageFrame frame = m_scopeonecore->graphFrame(layerKey);
+            const scopeone::core::ImageFrame frame = rawFrameRequest
+                                                         ? m_scopeonecore->graphFrame(layerKey)
+                                                         : m_imageWorkspace->frameForLayer(layerKey);
             if (!frame.isValid())
             {
                 response.insert(QStringLiteral("error"),

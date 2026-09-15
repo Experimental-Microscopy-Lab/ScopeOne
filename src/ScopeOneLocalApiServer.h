@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
+#include <functional>
 #include <memory>
 
 #include "scopeone/ScopeOneCore.h"
@@ -17,16 +18,23 @@ class QLocalSocket;
 namespace scopeone::ui
 {
     class PreviewWidget;
+    class ImageWorkspace;
 
     class ScopeOneLocalApiServer : public QObject
     {
         Q_OBJECT
 
     public:
+        using ResponseCallback = std::function<void(QJsonObject)>;
+
         explicit ScopeOneLocalApiServer(scopeone::core::ScopeOneCore* core,
                                         PreviewWidget* previewWidget,
+                                        ImageWorkspace* imageWorkspace,
                                         QObject* parent = nullptr);
         ~ScopeOneLocalApiServer() override;
+
+        QJsonObject processRequest(const QJsonObject& request);
+        void dispatchRequest(const QJsonObject& request, ResponseCallback callback);
 
     private:
         void handleNewConnection();
@@ -38,8 +46,8 @@ namespace scopeone::ui
                                  const QJsonValue& requestId);
         bool processAsyncRequest(QLocalSocket* socket,
                                  const QJsonObject& request,
-                                 const QJsonValue& requestId);
-        QJsonObject processRequest(const QJsonObject& request);
+                                 const QJsonValue& requestId,
+                                 const ResponseCallback& callback = {});
         scopeone::core::ExperimentDocument createExperimentDocument();
         QJsonObject experimentStatusResponse(const QString& type,
                                              const QString& experimentId) const;
@@ -52,6 +60,7 @@ namespace scopeone::ui
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         PreviewWidget* m_previewWidget{nullptr};
+        ImageWorkspace* m_imageWorkspace{nullptr};
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;

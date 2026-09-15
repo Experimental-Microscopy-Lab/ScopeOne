@@ -15,7 +15,7 @@ class QTimer;
 
 namespace scopeone::ui
 {
-    class PreviewWidget;
+    class ScopeOneToolContext;
 
     class CameraScaleDialog : public QDialog
     {
@@ -40,8 +40,7 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        StageMosaicDialog(scopeone::core::ScopeOneCore* core,
-                          PreviewWidget* previewWidget,
+        StageMosaicDialog(ScopeOneToolContext& context,
                           QWidget* parent = nullptr);
 
         void reject() override;
@@ -56,7 +55,7 @@ namespace scopeone::ui
         QString selectedStageId() const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
-        PreviewWidget* m_previewWidget{nullptr};
+        ScopeOneToolContext& m_context;
         QComboBox* m_cameraCombo{nullptr};
         QComboBox* m_stageCombo{nullptr};
         QSpinBox* m_rowsSpinBox{nullptr};
@@ -68,7 +67,6 @@ namespace scopeone::ui
         QPushButton* m_startButton{nullptr};
         QPushButton* m_stopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
-        QString m_activeCameraId;
     };
 
     class ParticleDetectionDialog : public QDialog
@@ -76,8 +74,7 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
-                                PreviewWidget* previewWidget,
+        ParticleDetectionDialog(ScopeOneToolContext& context,
                                 QWidget* parent = nullptr);
 
         void reject() override;
@@ -95,7 +92,7 @@ namespace scopeone::ui
         QString selectedCameraId() const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
-        PreviewWidget* m_previewWidget{nullptr};
+        ScopeOneToolContext& m_context;
         QComboBox* m_cameraCombo{nullptr};
         QSpinBox* m_thresholdSpinBox{nullptr};
         QSpinBox* m_minAreaSpinBox{nullptr};

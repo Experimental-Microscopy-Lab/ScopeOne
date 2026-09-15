@@ -37,10 +37,10 @@ namespace scopeone::ui
         }
         mainLayout->addWidget(logoLabel, 0, Qt::AlignHCenter);
 
-        m_contentBrowser = new QTextBrowser(this);
-        m_contentBrowser->setOpenExternalLinks(true);
-        setContent();
-        mainLayout->addWidget(m_contentBrowser, 1);
+        auto* contentBrowser = new QTextBrowser(this);
+        contentBrowser->setOpenExternalLinks(true);
+        setContent(contentBrowser);
+        mainLayout->addWidget(contentBrowser, 1);
 
         auto* okButton = new QPushButton("Close", this);
         connect(okButton, &QPushButton::clicked, this, &QDialog::accept);
@@ -55,7 +55,7 @@ namespace scopeone::ui
     }
 
     // Keep app and core version text in one place
-    void AboutDialog::setContent()
+    void AboutDialog::setContent(QTextBrowser* browser)
     {
         const QString title = QStringLiteral(SCOPEONE_APP_NAME " " SCOPEONE_APP_VERSION_STRING);
         const QString coreVersion = scopeone::core::ScopeOneCore::getVersion();
@@ -67,7 +67,7 @@ namespace scopeone::ui
         const QString platformInfo = QString("%1, %2")
             .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture());
 
-        m_contentBrowser->setHtml(QString(R"(
+        browser->setHtml(QString(R"(
 <html>
 <body style="font-family: sans-serif; font-size: 10pt;">
 <h2>%1</h2>

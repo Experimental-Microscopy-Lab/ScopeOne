@@ -522,6 +522,9 @@ namespace scopeone::core
             QStringLiteral("Inferno"),
             QStringLiteral("Magma"),
             QStringLiteral("Cividis"),
+            QStringLiteral("Jet"),
+            QStringLiteral("Rainbow"),
+            QStringLiteral("Turbo"),
         };
     }
 

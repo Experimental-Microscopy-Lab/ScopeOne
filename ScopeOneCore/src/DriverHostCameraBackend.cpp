@@ -1,5 +1,6 @@
 #include "internal/CameraBackend.h"
-#include "internal/AgentProtocol.h"
+#include "internal/DriverHostProtocol.h"
+#include "internal/SharedFrameRing.h"
 #include "scopeone/SharedFrame.h"
 
 #include <QDir>
@@ -30,9 +31,6 @@
 
 namespace scopeone::core::internal
 {
-    static_assert(std::atomic_ref<quint32>::is_always_lock_free,
-                  "Shared frame state requires lock-free 32-bit atomics");
-
     using scopeone::core::ImageFrame;
     using scopeone::core::SharedFrameHeader;
     using scopeone::core::SharedMemoryControl;
@@ -45,10 +43,10 @@ namespace scopeone::core::internal
 
     namespace
     {
-        constexpr int kAgentControlReadyTimeoutMs = 15000;
+        constexpr int kDriverHostControlReadyTimeoutMs = 15000;
         constexpr int kPreviewFrameDeliveryIntervalMs = 16;
 
-        enum class AgentFrameDeliveryMode
+        enum class DriverHostFrameDeliveryMode
         {
             PreviewLatest,
             LatestOnly,
@@ -61,30 +59,30 @@ namespace scopeone::core::internal
             return cameraId.trimmed();
         }
 
-        const QString& frameDeliveryModeName(AgentFrameDeliveryMode mode)
+        const QString& frameDeliveryModeName(DriverHostFrameDeliveryMode mode)
         {
             switch (mode)
             {
-            case AgentFrameDeliveryMode::PreviewLatest:
-                return agent::kFrameDeliveryModePreviewLatest;
-            case AgentFrameDeliveryMode::LatestOnly:
-                return agent::kFrameDeliveryModeLatestOnly;
-            case AgentFrameDeliveryMode::AllFrames:
-                return agent::kFrameDeliveryModeAllFrames;
+            case DriverHostFrameDeliveryMode::PreviewLatest:
+                return driverhost::kFrameDeliveryModePreviewLatest;
+            case DriverHostFrameDeliveryMode::LatestOnly:
+                return driverhost::kFrameDeliveryModeLatestOnly;
+            case DriverHostFrameDeliveryMode::AllFrames:
+                return driverhost::kFrameDeliveryModeAllFrames;
             }
-            return agent::kFrameDeliveryModePreviewLatest;
+            return driverhost::kFrameDeliveryModePreviewLatest;
         }
 
-        AgentFrameDeliveryMode nonRecordingDeliveryMode(bool highRate)
+        DriverHostFrameDeliveryMode nonRecordingDeliveryMode(bool highRate)
         {
             return highRate
-                       ? AgentFrameDeliveryMode::LatestOnly
-                       : AgentFrameDeliveryMode::PreviewLatest;
+                       ? DriverHostFrameDeliveryMode::LatestOnly
+                       : DriverHostFrameDeliveryMode::PreviewLatest;
         }
 
     } // namespace
 
-    struct AgentControlSession final : QObject
+    struct DriverHostControlSession final : QObject
     {
         struct PendingRequest
         {
@@ -93,10 +91,12 @@ namespace scopeone::core::internal
             std::function<void(bool, const QJsonObject&, const QString&)> completion;
         };
 
-        explicit AgentControlSession(const QString& cameraId,
-                                     const QString& serverName,
-                                     QObject* parent = nullptr)
+        explicit DriverHostControlSession(const QString& providerId,
+                                          const QString& cameraId,
+                                          const QString& serverName,
+                                          QObject* parent = nullptr)
             : QObject(parent)
+              , m_providerId(providerId)
               , m_cameraId(cameraId)
               , m_serverName(serverName)
         {
@@ -208,7 +208,7 @@ namespace scopeone::core::internal
                          int timeoutMs,
                          std::function<void(bool, const QJsonObject&, const QString&)> completion)
         {
-            const QString type = request.value(agent::kMessageTypeField).toString();
+            const QString type = request.value(driverhost::kMessageTypeField).toString();
             if (type.isEmpty())
             {
                 return false;
@@ -216,12 +216,12 @@ namespace scopeone::core::internal
 
             const quint64 requestId = m_nextRequestId++;
             QJsonObject envelope = request;
-            envelope.insert(agent::kEnvelopeKindField, agent::kMessageKindRequest);
-            envelope.insert(agent::kEnvelopeVersionField, static_cast<int>(agent::kProtocolVersion));
-            envelope.insert(agent::kEnvelopeRequestIdField, agent::encodeUInt64(requestId));
+            envelope.insert(driverhost::kEnvelopeKindField, driverhost::kMessageKindRequest);
+            envelope.insert(driverhost::kEnvelopeVersionField, static_cast<int>(driverhost::kProtocolVersion));
+            envelope.insert(driverhost::kEnvelopeRequestIdField, driverhost::encodeUInt64(requestId));
 
             PendingRequest pending;
-            pending.encoded = agent::encodeMessage(envelope);
+            pending.encoded = driverhost::encodeMessage(envelope);
             pending.completion = std::move(completion);
             pending.timer = new QTimer(this);
             pending.timer->setSingleShot(true);
@@ -295,30 +295,30 @@ namespace scopeone::core::internal
             {
                 QJsonObject message;
                 QString error;
-                const agent::DecodeResult result =
-                    agent::tryDecodeMessage(m_readBuffer, message, &error);
-                if (result == agent::DecodeResult::Incomplete)
+                const driverhost::DecodeResult result =
+                    driverhost::tryDecodeMessage(m_readBuffer, message, &error);
+                if (result == driverhost::DecodeResult::Incomplete)
                 {
                     return;
                 }
-                if (result == agent::DecodeResult::Error)
+                if (result == driverhost::DecodeResult::Error)
                 {
                     resetWithError(error);
                     return;
                 }
 
-                if (message.value(agent::kEnvelopeVersionField).toInt(0)
-                    != static_cast<int>(agent::kProtocolVersion))
+                if (message.value(driverhost::kEnvelopeVersionField).toInt(0)
+                    != static_cast<int>(driverhost::kProtocolVersion))
                 {
                     resetWithError(QStringLiteral("Control protocol version mismatch"));
                     return;
                 }
 
-                const QString kind = message.value(agent::kEnvelopeKindField).toString();
-                if (kind == agent::kMessageKindResponse)
+                const QString kind = message.value(driverhost::kEnvelopeKindField).toString();
+                if (kind == driverhost::kMessageKindResponse)
                 {
                     const quint64 requestId =
-                        agent::decodeUInt64(message.value(agent::kEnvelopeRequestIdField));
+                        driverhost::decodeUInt64(message.value(driverhost::kEnvelopeRequestIdField));
                     if (requestId == 0)
                     {
                         continue;
@@ -327,11 +327,21 @@ namespace scopeone::core::internal
                     continue;
                 }
 
-                if (kind == agent::kMessageKindEvent)
+                if (kind == driverhost::kMessageKindEvent)
                 {
-                    const QString type = message.value(agent::kMessageTypeField).toString();
-                    if (type == agent::kEventHello)
+                    const QString type = message.value(driverhost::kMessageTypeField).toString();
+                    if (type == driverhost::kEventHello)
                     {
+                        const QJsonArray capabilities =
+                            message.value(driverhost::kCapabilitiesField).toArray();
+                        if (message.value(driverhost::kProviderIdField).toString()
+                                != m_providerId
+                            || message.value(driverhost::kDeviceIdField).toString() != m_cameraId
+                            || !capabilities.contains(driverhost::kCapabilityCamera))
+                        {
+                            resetWithError(QStringLiteral("DriverHost identity mismatch"));
+                            return;
+                        }
                         setReady(true);
                     }
                     for (const auto& handler : m_eventHandlers)
@@ -392,6 +402,7 @@ namespace scopeone::core::internal
             }
         }
 
+        QString m_providerId;
         QString m_cameraId;
         QString m_serverName;
         QLocalSocket m_socket;
@@ -406,12 +417,12 @@ namespace scopeone::core::internal
         bool m_closing{false};
     };
 
-    class AgentCameraBackend;
+    class DriverHostCameraBackend;
 
-    class AgentFrameWorker final : public QObject
+    class DriverHostFrameWorker final : public QObject
     {
     public:
-        explicit AgentFrameWorker(AgentCameraBackend* owner)
+        explicit DriverHostFrameWorker(DriverHostCameraBackend* owner)
             : m_owner(owner)
         {
         }
@@ -448,36 +459,36 @@ namespace scopeone::core::internal
                            QList<ImageFrame>& frames,
                            quint64& acquiredFrameCount);
 
-        AgentCameraBackend* const m_owner;
+        DriverHostCameraBackend* const m_owner;
         QMap<QString, std::shared_ptr<ReaderSlot>> m_readers;
     };
 
-    struct AgentCameraSlot
+    struct DriverHostCameraSlot
     {
         QString cameraId;
         QString shmKey;
         std::shared_ptr<QProcess> process;
-        std::shared_ptr<AgentControlSession> control;
+        std::shared_ptr<DriverHostControlSession> control;
         bool isRunning{false};
         double exposureMs{10.0};
         bool frameReadQueued{false};
         bool frameReadRequested{false};
     };
 
-    class AgentCameraBackend final : public CameraBackend
+    class DriverHostCameraBackend final : public CameraBackend
     {
     public:
-        explicit AgentCameraBackend(ProcessingFrameGate& processingFrameGate);
-        ~AgentCameraBackend() override;
+        explicit DriverHostCameraBackend(ProcessingFrameGate& processingFrameGate);
+        ~DriverHostCameraBackend() override;
 
-        Kind kind() const override { return Kind::Agent; }
-        bool addAgentCamera(const QString& cameraId,
+        Kind kind() const override { return Kind::DriverHost; }
+        bool addDriverHostCamera(const QString& cameraId,
                             const QString& adapter,
                             const QString& device,
                             const QStringList& preInitProperties,
                             const QStringList& properties,
                             double exposureMs) override;
-        void removeAgentCamera(const QString& cameraId);
+        void removeDriverHostCamera(const QString& cameraId);
         bool isPreviewRunning(const QString& cameraId) const override
         {
             const auto it = m_cameras.constFind(cameraId);
@@ -518,7 +529,7 @@ namespace scopeone::core::internal
                 }
                 startedCameraIds.append(cameraId);
             }
-            qInfo().noquote() << "Agent preview started";
+            qInfo().noquote() << "DriverHost preview started";
             return true;
         }
 
@@ -531,7 +542,7 @@ namespace scopeone::core::internal
             }
             if (ok)
             {
-                qInfo().noquote() << "Agent preview stopped";
+                qInfo().noquote() << "DriverHost preview stopped";
             }
             return ok;
         }
@@ -544,18 +555,18 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            AgentCameraSlot& slot = *m_cameras[cameraId];
+            DriverHostCameraSlot& slot = *m_cameras[cameraId];
             if (slot.isRunning)
             {
                 return true;
             }
-            AgentFrameWorker* const worker = m_frameWorker;
+            DriverHostFrameWorker* const worker = m_frameWorker;
             QMetaObject::invokeMethod(
                 worker,
                 [worker, cameraId]() { worker->resetPreviewDeliveryState(cameraId); },
                 Qt::BlockingQueuedConnection);
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandStartPreview);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandStartPreview);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 1200))
             {
@@ -564,7 +575,7 @@ namespace scopeone::core::internal
             }
             if (!resp.value(QStringLiteral("ok")).toBool(false))
             {
-                qWarning().noquote() << QString("Agent refused to start preview for '%1'").arg(cameraId);
+                qWarning().noquote() << QString("DriverHost refused to start preview for '%1'").arg(cameraId);
                 return false;
             }
 
@@ -581,7 +592,7 @@ namespace scopeone::core::internal
             {
                 qWarning().noquote() << QString("Shared memory unavailable for '%1'").arg(cameraId);
                 QJsonObject stopRequest;
-                stopRequest.insert(agent::kMessageTypeField, agent::kCommandStopPreview);
+                stopRequest.insert(driverhost::kMessageTypeField, driverhost::kCommandStopPreview);
                 sendControlCommand(cameraId, stopRequest, nullptr, 1200);
                 return false;
             }
@@ -604,7 +615,7 @@ namespace scopeone::core::internal
             }
 
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandStopPreview);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandStopPreview);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 1200))
             {
@@ -667,19 +678,22 @@ namespace scopeone::core::internal
 
         bool readExposureFor(const QString& cameraId, double& exposureMs) const override
         {
-            const auto it = m_cameras.constFind(cameraId);
-            if (it == m_cameras.constEnd() || !it.value())
+            QJsonObject request;
+            request.insert(driverhost::kMessageTypeField, driverhost::kCommandGetExposure);
+            QJsonObject response;
+            if (!sendControlCommand(cameraId, request, &response, 1200)
+                || !response.value(QStringLiteral("ok")).toBool(false))
             {
                 return false;
             }
-            exposureMs = it.value()->exposureMs;
+            exposureMs = response.value(QStringLiteral("exposureMs")).toDouble(0.0);
             return exposureMs > 0.0;
         }
 
         bool writeExposureFor(const QString& cameraId, double exposureMs) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandSetExposure);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandSetExposure);
             req.insert(QStringLiteral("value"), exposureMs);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 1200)
@@ -696,7 +710,7 @@ namespace scopeone::core::internal
         {
             QStringList out;
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandListProperties);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandListProperties);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 4000))
             {
@@ -720,7 +734,7 @@ namespace scopeone::core::internal
                                     CameraPropertyReadback& readback) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandGetProperty);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandGetProperty);
             req.insert(QStringLiteral("name"), name);
             req.insert(QStringLiteral("fromCache"), fromCache);
             QJsonObject resp;
@@ -755,7 +769,7 @@ namespace scopeone::core::internal
                             QString* errorMessage) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandSetProperty);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandSetProperty);
             req.insert(QStringLiteral("name"), name);
             req.insert(QStringLiteral("value"), value);
             QJsonObject resp;
@@ -763,7 +777,7 @@ namespace scopeone::core::internal
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("Agent control request failed");
+                    *errorMessage = QStringLiteral("DriverHost control request failed");
                 }
                 return false;
             }
@@ -781,7 +795,7 @@ namespace scopeone::core::internal
         bool setROIFor(const QString& cameraId, int x, int y, int width, int height) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandSetRoi);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandSetRoi);
             req.insert(QStringLiteral("x"), x);
             req.insert(QStringLiteral("y"), y);
             req.insert(QStringLiteral("width"), width);
@@ -804,7 +818,7 @@ namespace scopeone::core::internal
         bool clearROIFor(const QString& cameraId) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandClearRoi);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandClearRoi);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 1200))
             {
@@ -823,7 +837,7 @@ namespace scopeone::core::internal
         bool getROIFor(const QString& cameraId, int& x, int& y, int& width, int& height) override
         {
             QJsonObject req;
-            req.insert(agent::kMessageTypeField, agent::kCommandGetRoi);
+            req.insert(driverhost::kMessageTypeField, driverhost::kCommandGetRoi);
             QJsonObject resp;
             if (!sendControlCommand(cameraId, req, &resp, 1200))
             {
@@ -845,9 +859,9 @@ namespace scopeone::core::internal
             return true;
         }
     private:
-        friend class AgentFrameWorker;
+        friend class DriverHostFrameWorker;
 
-        bool waitForControlReady(AgentCameraSlot& slot, int timeoutMs);
+        bool waitForControlReady(DriverHostCameraSlot& slot, int timeoutMs);
         bool addFrameReader(const QString& cameraId, const QString& shmKey);
         void removeFrameReader(const QString& cameraId);
         bool prepareFrameReader(const QString& cameraId);
@@ -857,13 +871,13 @@ namespace scopeone::core::internal
         bool sendControlCommand(const QString& cameraId,
                                 const QJsonObject& request,
                                 QJsonObject* response,
-                                int timeoutMs);
+                                int timeoutMs) const;
         bool sendFrameDeliveryModes(const QStringList& cameraIds,
-                                    AgentFrameDeliveryMode mode);
-        void stopAgentProcessesAsync();
+                                    DriverHostFrameDeliveryMode mode);
+        void stopDriverHostProcessesAsync();
         void completeAsyncShutdown();
 
-        QMap<QString, std::shared_ptr<AgentCameraSlot>> m_cameras;
+        QMap<QString, std::shared_ptr<DriverHostCameraSlot>> m_cameras;
         std::atomic_bool m_frameDeliveryPaused{false};
         bool m_shuttingDown{false};
         bool m_shutdownHadRunningCamera{false};
@@ -872,97 +886,21 @@ namespace scopeone::core::internal
         QString m_shutdownError;
         std::function<void(const QString&)> m_shutdownCompletion;
         QThread m_frameThread;
-        AgentFrameWorker* m_frameWorker{nullptr};
+        DriverHostFrameWorker* m_frameWorker{nullptr};
     };
 
-    // Returns payload byte count from a shared frame header
-    static quint64 sharedFramePayloadSize(const SharedFrameHeader& header)
-    {
-        return static_cast<quint64>(header.stride) * header.height;
-    }
-
-    // Validates one shared frame header before reading pixels
-    static bool headerLooksSane(const SharedFrameHeader& header)
-    {
-        if (header.channels != 1) return false;
-        if (header.width == 0 || header.height == 0) return false;
-        if (header.stride == 0) return false;
-        if (header.pixelFormat != static_cast<quint32>(SharedPixelFormat::Mono8) &&
-            header.pixelFormat != static_cast<quint32>(SharedPixelFormat::Mono16))
-        {
-            return false;
-        }
-
-        const quint32 bytesPerPixel =
-            (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)) ? 2u : 1u;
-        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8)
-            && header.bitsPerSample != 8)
-        {
-            return false;
-        }
-        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16)
-            && (header.bitsPerSample == 0 || header.bitsPerSample > 16))
-        {
-            return false;
-        }
-        const quint64 minimumStride = static_cast<quint64>(header.width) * bytesPerPixel;
-        if (minimumStride > static_cast<quint64>((std::numeric_limits<quint32>::max)())) return false;
-        if (header.width > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.height > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.stride > static_cast<quint32>((std::numeric_limits<int>::max)())) return false;
-        if (header.stride < minimumStride) return false;
-        if ((header.stride % bytesPerPixel) != 0) return false;
-
-        const quint64 rawSize = sharedFramePayloadSize(header);
-        if (rawSize == 0 || rawSize > static_cast<quint64>(kSharedFrameMaxBytes)) return false;
-
-        return true;
-    }
-
-    // Claims one ready ring slot so the producer cannot overwrite it while copying
-    static bool claimFrameSlot(uchar* slotPtr, SharedFrameHeader& header)
-    {
-        auto& stateValue = *reinterpret_cast<quint32*>(slotPtr);
-        std::atomic_ref<quint32> state(stateValue);
-        quint32 expected = 2;
-        if (!state.compare_exchange_strong(expected,
-                                           3,
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_acquire))
-        {
-            return false;
-        }
-
-        memcpy(&header, slotPtr, sizeof(header));
-        header.state = 2;
-        if (headerLooksSane(header))
-        {
-            return true;
-        }
-
-        state.store(2, std::memory_order_release);
-        return false;
-    }
-
-    // Releases one claimed ring slot back to the producer
-    static void releaseFrameSlot(uchar* slotPtr)
-    {
-        auto& stateValue = *reinterpret_cast<quint32*>(slotPtr);
-        std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
-    }
-
-    AgentCameraBackend::AgentCameraBackend(ProcessingFrameGate& processingFrameGate)
+    DriverHostCameraBackend::DriverHostCameraBackend(ProcessingFrameGate& processingFrameGate)
         : CameraBackend(processingFrameGate)
     {
-        m_frameThread.setObjectName(QStringLiteral("ScopeOneAgentFrameReader"));
-        m_frameWorker = new AgentFrameWorker(this);
+        m_frameThread.setObjectName(QStringLiteral("ScopeOneDriverHostFrameReader"));
+        m_frameWorker = new DriverHostFrameWorker(this);
         m_frameWorker->moveToThread(&m_frameThread);
         QObject::connect(&m_frameThread, &QThread::finished,
                          m_frameWorker, &QObject::deleteLater);
         m_frameThread.start();
     }
 
-    AgentCameraBackend::~AgentCameraBackend()
+    DriverHostCameraBackend::~DriverHostCameraBackend()
     {
         shutdownNow();
         m_frameThread.quit();
@@ -970,7 +908,7 @@ namespace scopeone::core::internal
         m_frameWorker = nullptr;
     }
 
-    void AgentCameraBackend::shutdownNow()
+    void DriverHostCameraBackend::shutdownNow()
     {
         if (m_shuttingDown && m_cameras.isEmpty())
         {
@@ -987,7 +925,7 @@ namespace scopeone::core::internal
         }
         if (m_frameWorker && m_frameThread.isRunning())
         {
-            AgentFrameWorker* const worker = m_frameWorker;
+            DriverHostFrameWorker* const worker = m_frameWorker;
             QMetaObject::invokeMethod(worker,
                                       [worker]() { worker->clear(); },
                                       Qt::BlockingQueuedConnection);
@@ -997,7 +935,7 @@ namespace scopeone::core::internal
             if (slot->control)
             {
                 QJsonObject request;
-                request.insert(agent::kMessageTypeField, agent::kCommandShutdown);
+                request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
                 sendControlCommand(slot->cameraId, request, nullptr, 800);
                 slot->control->stop();
             }
@@ -1019,8 +957,8 @@ namespace scopeone::core::internal
         }
     }
 
-    // Stops agent processes without waiting on the facade thread
-    void AgentCameraBackend::shutdown(std::function<void(const QString&)> completion)
+    // Stop DriverHost processes without waiting on the facade thread
+    void DriverHostCameraBackend::shutdown(std::function<void(const QString&)> completion)
     {
         if (m_shuttingDown)
         {
@@ -1038,7 +976,7 @@ namespace scopeone::core::internal
                 completion(m_cameras.isEmpty()
                                ? QString()
                                : m_shutdownError.isEmpty()
-                                   ? QStringLiteral("Camera agent shutdown is already in progress")
+                                   ? QStringLiteral("Camera DriverHost shutdown is already in progress")
                                    : m_shutdownError);
             }
             return;
@@ -1056,8 +994,8 @@ namespace scopeone::core::internal
         }
         if (m_frameWorker && m_frameThread.isRunning())
         {
-            AgentFrameWorker* const worker = m_frameWorker;
-            const QPointer<AgentCameraBackend> guardedThis(this);
+            DriverHostFrameWorker* const worker = m_frameWorker;
+            const QPointer<DriverHostCameraBackend> guardedThis(this);
             const bool queued = QMetaObject::invokeMethod(
                 worker,
                 [guardedThis, worker]()
@@ -1071,7 +1009,7 @@ namespace scopeone::core::internal
                             {
                                 if (guardedThis)
                                 {
-                                    guardedThis->stopAgentProcessesAsync();
+                                    guardedThis->stopDriverHostProcessesAsync();
                                 }
                             },
                             Qt::QueuedConnection);
@@ -1084,11 +1022,11 @@ namespace scopeone::core::internal
             }
         }
 
-        stopAgentProcessesAsync();
+        stopDriverHostProcessesAsync();
     }
 
-    // Requests agent exit and falls back to bounded process termination
-    void AgentCameraBackend::stopAgentProcessesAsync()
+    // Request DriverHost exit and fall back to bounded process termination
+    void DriverHostCameraBackend::stopDriverHostProcessesAsync()
     {
         if (!m_shutdownCompletion)
         {
@@ -1131,7 +1069,7 @@ namespace scopeone::core::internal
             if (slot->control)
             {
                 QJsonObject request;
-                request.insert(agent::kMessageTypeField, agent::kCommandShutdown);
+                request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
                 const QPointer<QProcess> guardedProcess(process);
                 shutdownQueued = slot->control->sendRequest(
                     request,
@@ -1176,8 +1114,8 @@ namespace scopeone::core::internal
         });
     }
 
-    // Releases agent state and completes the owning manager callback
-    void AgentCameraBackend::completeAsyncShutdown()
+    // Release DriverHost state and complete the owning manager callback
+    void DriverHostCameraBackend::completeAsyncShutdown()
     {
         if (!m_shutdownCompletion && m_shutdownError.isEmpty())
         {
@@ -1193,7 +1131,7 @@ namespace scopeone::core::internal
                 }
                 if (m_shutdownKillPollsRemaining <= 0)
                 {
-                    m_shutdownError = QStringLiteral("Camera agent process did not stop after termination");
+                    m_shutdownError = QStringLiteral("Camera DriverHost process did not stop after termination");
                     auto completion = std::move(m_shutdownCompletion);
                     completion(m_shutdownError);
                     return;
@@ -1222,7 +1160,7 @@ namespace scopeone::core::internal
     }
 
     // Registers one camera shared memory reader on the worker thread
-    void AgentFrameWorker::addCamera(const QString& cameraId, const QString& shmKey)
+    void DriverHostFrameWorker::addCamera(const QString& cameraId, const QString& shmKey)
     {
         removeCamera(cameraId);
         auto slot = std::make_shared<ReaderSlot>();
@@ -1234,19 +1172,19 @@ namespace scopeone::core::internal
     }
 
     // Removes one camera reader and releases its shared memory mapping
-    void AgentFrameWorker::removeCamera(const QString& cameraId)
+    void DriverHostFrameWorker::removeCamera(const QString& cameraId)
     {
         m_readers.remove(cameraId);
     }
 
     // Releases every shared memory reader owned by the worker
-    void AgentFrameWorker::clear()
+    void DriverHostFrameWorker::clear()
     {
         m_readers.clear();
     }
 
-    // Resets preview coalescing after an agent delivery mode change
-    void AgentFrameWorker::resetPreviewDeliveryState(const QString& cameraId)
+    // Reset preview coalescing after a DriverHost delivery mode change
+    void DriverHostFrameWorker::resetPreviewDeliveryState(const QString& cameraId)
     {
         const auto it = m_readers.find(cameraId);
         if (it == m_readers.end())
@@ -1258,14 +1196,14 @@ namespace scopeone::core::internal
     }
 
     // Attaches the named camera reader when its mapping is unavailable
-    bool AgentFrameWorker::ensureSharedMemory(const QString& cameraId)
+    bool DriverHostFrameWorker::ensureSharedMemory(const QString& cameraId)
     {
         const auto it = m_readers.find(cameraId);
         return it != m_readers.end() && ensureSharedMemory(*it.value());
     }
 
     // Validates and attaches one shared memory reader slot
-    bool AgentFrameWorker::ensureSharedMemory(ReaderSlot& slot)
+    bool DriverHostFrameWorker::ensureSharedMemory(ReaderSlot& slot)
     {
         const int expectedSize =
             kSharedMemoryControlSize + kSharedFrameNumSlots * kSharedFrameSlotStride;
@@ -1298,20 +1236,20 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Waits for one agent control channel to become ready
-    bool AgentCameraBackend::waitForControlReady(AgentCameraSlot& slot, int timeoutMs)
+    // Wait for one DriverHost control channel to become ready
+    bool DriverHostCameraBackend::waitForControlReady(DriverHostCameraSlot& slot, int timeoutMs)
     {
         return slot.control && slot.control->waitForReady(timeoutMs);
     }
 
     // Creates one shared memory reader on the dedicated frame thread
-    bool AgentCameraBackend::addFrameReader(const QString& cameraId, const QString& shmKey)
+    bool DriverHostCameraBackend::addFrameReader(const QString& cameraId, const QString& shmKey)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
         {
             return false;
         }
-        AgentFrameWorker* const worker = m_frameWorker;
+        DriverHostFrameWorker* const worker = m_frameWorker;
         return QMetaObject::invokeMethod(
             worker,
             [worker, cameraId, shmKey]() { worker->addCamera(cameraId, shmKey); },
@@ -1319,11 +1257,11 @@ namespace scopeone::core::internal
     }
 
     // Removes one shared memory reader on the dedicated frame thread
-    void AgentCameraBackend::removeFrameReader(const QString& cameraId)
+    void DriverHostCameraBackend::removeFrameReader(const QString& cameraId)
     {
         if (m_frameWorker && m_frameThread.isRunning())
         {
-            AgentFrameWorker* const worker = m_frameWorker;
+            DriverHostFrameWorker* const worker = m_frameWorker;
             QMetaObject::invokeMethod(
                 worker,
                 [worker, cameraId]() { worker->removeCamera(cameraId); },
@@ -1332,14 +1270,14 @@ namespace scopeone::core::internal
     }
 
     // Attaches one reader before preview begins
-    bool AgentCameraBackend::prepareFrameReader(const QString& cameraId)
+    bool DriverHostCameraBackend::prepareFrameReader(const QString& cameraId)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
         {
             return false;
         }
         bool attached = false;
-        AgentFrameWorker* const worker = m_frameWorker;
+        DriverHostFrameWorker* const worker = m_frameWorker;
         const bool invoked = QMetaObject::invokeMethod(
             worker,
             [worker, cameraId, &attached]() { attached = worker->ensureSharedMemory(cameraId); },
@@ -1347,11 +1285,11 @@ namespace scopeone::core::internal
         return invoked && attached;
     }
 
-    // Sends one JSON command to an agent control channel
-    bool AgentCameraBackend::sendControlCommand(const QString& cameraId,
+    // Send one JSON command to a DriverHost control channel
+    bool DriverHostCameraBackend::sendControlCommand(const QString& cameraId,
                                                 const QJsonObject& request,
                                                 QJsonObject* response,
-                                                int timeoutMs)
+                                                int timeoutMs) const
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const auto it = m_cameras.constFind(normalizedId);
@@ -1412,12 +1350,12 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Switches multiple agent producers within one bounded wait
-    bool AgentCameraBackend::sendFrameDeliveryModes(const QStringList& cameraIds,
-                                                    AgentFrameDeliveryMode mode)
+    // Switch multiple DriverHost producers within one bounded wait
+    bool DriverHostCameraBackend::sendFrameDeliveryModes(const QStringList& cameraIds,
+                                                    DriverHostFrameDeliveryMode mode)
     {
         QJsonObject request;
-        request.insert(agent::kMessageTypeField, agent::kCommandSetFrameDeliveryMode);
+        request.insert(driverhost::kMessageTypeField, driverhost::kCommandSetFrameDeliveryMode);
         request.insert(QStringLiteral("mode"), frameDeliveryModeName(mode));
 
         struct BatchState
@@ -1471,12 +1409,12 @@ namespace scopeone::core::internal
     }
 
     // Copies one claimed shared memory slot into an owned frame
-    bool AgentFrameWorker::copyFrame(ReaderSlot& slot,
+    bool DriverHostFrameWorker::copyFrame(ReaderSlot& slot,
                                      const SharedFrameHeader& header,
                                      const uchar* pixelData,
                                      QList<ImageFrame>& frames)
     {
-        const quint64 rawSize = sharedFramePayloadSize(header);
+        const quint64 rawSize = sharedframe::payloadSize(header);
         QByteArray payload;
         payload.resize(static_cast<qsizetype>(rawSize));
         memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
@@ -1492,7 +1430,7 @@ namespace scopeone::core::internal
     }
 
     // Reads only the newest ready frame for responsive preview delivery
-    bool AgentFrameWorker::readLatestFrame(ReaderSlot& slot,
+    bool DriverHostFrameWorker::readLatestFrame(ReaderSlot& slot,
                                            QList<ImageFrame>& frames,
                                            quint64& acquiredFrameCount)
     {
@@ -1515,10 +1453,10 @@ namespace scopeone::core::internal
             if (idx >= kSharedFrameNumSlots) return false;
             uchar* ptr = base + baseOffset + idx * slotStride;
             SharedFrameHeader header{};
-            if (!claimFrameSlot(ptr, header)) return false;
+            if (!sharedframe::claimSlot(ptr, header)) return false;
             if (header.frameIndex <= slot.lastFrameIndex)
             {
-                releaseFrameSlot(ptr);
+                sharedframe::releaseSlot(ptr);
                 return false;
             }
             capturedHeader = header;
@@ -1537,12 +1475,12 @@ namespace scopeone::core::internal
             {
                 uchar* ptr = base + baseOffset + i * slotStride;
                 SharedFrameHeader header{};
-                if (!claimFrameSlot(ptr, header)) continue;
+                if (!sharedframe::claimSlot(ptr, header)) continue;
                 if (header.frameIndex > bestIndex)
                 {
                     if (capturedSlot)
                     {
-                        releaseFrameSlot(capturedSlot);
+                        sharedframe::releaseSlot(capturedSlot);
                     }
                     bestIndex = header.frameIndex;
                     capturedHeader = header;
@@ -1550,7 +1488,7 @@ namespace scopeone::core::internal
                 }
                 else
                 {
-                    releaseFrameSlot(ptr);
+                    sharedframe::releaseSlot(ptr);
                 }
             }
         }
@@ -1562,7 +1500,7 @@ namespace scopeone::core::internal
                          frames);
         if (capturedSlot)
         {
-            releaseFrameSlot(capturedSlot);
+            sharedframe::releaseSlot(capturedSlot);
         }
         if (ok)
         {
@@ -1575,7 +1513,7 @@ namespace scopeone::core::internal
     }
 
     // Reads every retained shared memory frame in order for recording delivery
-    bool AgentFrameWorker::readAllFrames(ReaderSlot& slot,
+    bool DriverHostFrameWorker::readAllFrames(ReaderSlot& slot,
                                          QList<ImageFrame>& frames,
                                          quint64& acquiredFrameCount)
     {
@@ -1601,14 +1539,14 @@ namespace scopeone::core::internal
         {
             uchar* ptr = base + baseOffset + i * slotStride;
             SharedFrameHeader header{};
-            if (!claimFrameSlot(ptr, header)) continue;
+            if (!sharedframe::claimSlot(ptr, header)) continue;
             if (header.frameIndex > lastIndex)
             {
                 claimedSlots.push_back({ptr, header});
             }
             else
             {
-                releaseFrameSlot(ptr);
+                sharedframe::releaseSlot(ptr);
             }
         }
 
@@ -1633,7 +1571,7 @@ namespace scopeone::core::internal
             {
                 maxIndex = claimed.header.frameIndex;
             }
-            releaseFrameSlot(claimed.ptr);
+            sharedframe::releaseSlot(claimed.ptr);
         }
         if (frames.isEmpty())
         {
@@ -1649,7 +1587,7 @@ namespace scopeone::core::internal
     }
 
     // Reads frames on the worker thread and optionally publishes the batch
-    ImageFrame AgentFrameWorker::consumeFrames(const QString& cameraId, bool publishFrames)
+    ImageFrame DriverHostFrameWorker::consumeFrames(const QString& cameraId, bool publishFrames)
     {
         const auto it = m_readers.find(cameraId);
         if (it == m_readers.end())
@@ -1717,21 +1655,21 @@ namespace scopeone::core::internal
         return slot.latestFrame;
     }
 
-    // Consumes one agent batch and reports completion on the backend thread
-    void AgentFrameWorker::consumeFramesAsync(const QString& cameraId)
+    // Consume one DriverHost batch and report completion on the backend thread
+    void DriverHostFrameWorker::consumeFramesAsync(const QString& cameraId)
     {
         if (!m_owner->m_frameDeliveryPaused.load(std::memory_order_relaxed))
         {
             consumeFrames(cameraId, true);
         }
-        AgentCameraBackend* const owner = m_owner;
+        DriverHostCameraBackend* const owner = m_owner;
         QMetaObject::invokeMethod(owner,
                                   [owner, cameraId]() { owner->completeFrameRead(cameraId); },
                                   Qt::QueuedConnection);
     }
 
     // Reads the newest frame synchronously for event capture
-    ImageFrame AgentCameraBackend::consumeFrameNow(const QString& cameraId)
+    ImageFrame DriverHostCameraBackend::consumeFrameNow(const QString& cameraId)
     {
         if (!m_frameWorker || !m_frameThread.isRunning())
         {
@@ -1739,7 +1677,7 @@ namespace scopeone::core::internal
         }
 
         ImageFrame frame;
-        AgentFrameWorker* const worker = m_frameWorker;
+        DriverHostFrameWorker* const worker = m_frameWorker;
         const bool invoked = QMetaObject::invokeMethod(
             worker,
             [worker, cameraId, &frame]() { frame = worker->consumeFrames(cameraId, false); },
@@ -1748,14 +1686,14 @@ namespace scopeone::core::internal
     }
 
     // Coalesces frame notifications into one worker request per camera
-    void AgentCameraBackend::scheduleFrameRead(const QString& cameraId)
+    void DriverHostCameraBackend::scheduleFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
         if (it == m_cameras.end() || !it.value() || !m_frameWorker || m_shuttingDown)
         {
             return;
         }
-        AgentCameraSlot& slot = *it.value();
+        DriverHostCameraSlot& slot = *it.value();
         if (!slot.isRunning || m_frameDeliveryPaused.load(std::memory_order_relaxed))
         {
             return;
@@ -1767,7 +1705,7 @@ namespace scopeone::core::internal
         }
 
         slot.frameReadQueued = true;
-        AgentFrameWorker* const worker = m_frameWorker;
+        DriverHostFrameWorker* const worker = m_frameWorker;
         if (!QMetaObject::invokeMethod(
                 worker,
                 [worker, cameraId]() { worker->consumeFramesAsync(cameraId); },
@@ -1778,14 +1716,14 @@ namespace scopeone::core::internal
     }
 
     // Schedules one deferred read when notifications arrived during a request
-    void AgentCameraBackend::completeFrameRead(const QString& cameraId)
+    void DriverHostCameraBackend::completeFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
         if (it == m_cameras.end() || !it.value())
         {
             return;
         }
-        AgentCameraSlot& slot = *it.value();
+        DriverHostCameraSlot& slot = *it.value();
         slot.frameReadQueued = false;
         if (!slot.frameReadRequested)
         {
@@ -1797,7 +1735,7 @@ namespace scopeone::core::internal
     }
 
     // Triggers one camera and waits for its event frame
-    bool AgentCameraBackend::captureEventFrame(const QString& cameraId,
+    bool DriverHostCameraBackend::captureEventFrame(const QString& cameraId,
                                                ImageFrame& frame,
                                                int timeoutMs)
     {
@@ -1815,7 +1753,7 @@ namespace scopeone::core::internal
                                                : 0;
 
         QJsonObject req;
-        req.insert(agent::kMessageTypeField, agent::kCommandCaptureEvent);
+        req.insert(driverhost::kMessageTypeField, driverhost::kCommandCaptureEvent);
         QJsonObject resp;
         const int waitMs = (timeoutMs > 0) ? timeoutMs : 1500;
         if (!sendControlCommand(normalizedId, req, &resp, waitMs + 1000))
@@ -1828,7 +1766,7 @@ namespace scopeone::core::internal
         }
 
         const quint64 targetFrameIndex =
-            agent::decodeUInt64(resp.value(QStringLiteral("frameIndex")));
+            driverhost::decodeUInt64(resp.value(QStringLiteral("frameIndex")));
         QElapsedTimer timer;
         timer.start();
 
@@ -1850,7 +1788,7 @@ namespace scopeone::core::internal
     }
 
     // Pauses or resumes polling while another workflow controls capture
-    void AgentCameraBackend::setFrameDeliveryPaused(bool paused)
+    void DriverHostCameraBackend::setFrameDeliveryPaused(bool paused)
     {
         if (m_frameDeliveryPaused.exchange(paused, std::memory_order_relaxed) == paused)
         {
@@ -1868,15 +1806,15 @@ namespace scopeone::core::internal
         }
     }
 
-    // Switches agent producers before changing the local recording consumer mode
-    bool AgentCameraBackend::setRecordingFrameDeliveryEnabled(bool enabled)
+    // Switch DriverHost producers before changing the local recording consumer mode
+    bool DriverHostCameraBackend::setRecordingFrameDeliveryEnabled(bool enabled)
     {
         if (enabled && recordingFrameDeliveryEnabled())
         {
             return true;
         }
 
-        const AgentFrameDeliveryMode previewMode =
+        const DriverHostFrameDeliveryMode previewMode =
             nonRecordingDeliveryMode(highRateFrameDeliveryEnabled());
         if (!enabled)
         {
@@ -1885,7 +1823,7 @@ namespace scopeone::core::internal
         }
 
         const QStringList cameraIds = m_cameras.keys();
-        if (!sendFrameDeliveryModes(cameraIds, AgentFrameDeliveryMode::AllFrames))
+        if (!sendFrameDeliveryModes(cameraIds, DriverHostFrameDeliveryMode::AllFrames))
         {
             sendFrameDeliveryModes(cameraIds, previewMode);
             return false;
@@ -1904,7 +1842,7 @@ namespace scopeone::core::internal
     }
 
     // Switches preview producers between display-rate and processing-rate delivery
-    bool AgentCameraBackend::setHighRateFrameDeliveryEnabled(bool enabled)
+    bool DriverHostCameraBackend::setHighRateFrameDeliveryEnabled(bool enabled)
     {
         if (highRateFrameDeliveryEnabled() == enabled)
         {
@@ -1916,8 +1854,8 @@ namespace scopeone::core::internal
             return CameraBackend::setHighRateFrameDeliveryEnabled(enabled);
         }
 
-        const AgentFrameDeliveryMode targetMode = nonRecordingDeliveryMode(enabled);
-        const AgentFrameDeliveryMode rollbackMode =
+        const DriverHostFrameDeliveryMode targetMode = nonRecordingDeliveryMode(enabled);
+        const DriverHostFrameDeliveryMode rollbackMode =
             nonRecordingDeliveryMode(highRateFrameDeliveryEnabled());
         const QStringList cameraIds = m_cameras.keys();
         if (!sendFrameDeliveryModes(cameraIds, targetMode))
@@ -1928,8 +1866,8 @@ namespace scopeone::core::internal
         return CameraBackend::setHighRateFrameDeliveryEnabled(enabled);
     }
 
-    // Starts one camera agent process and connects its control channel
-    bool AgentCameraBackend::addAgentCamera(const QString& cameraId,
+    // Start one camera DriverHost process and connect its control channel
+    bool DriverHostCameraBackend::addDriverHostCamera(const QString& cameraId,
                                             const QString& adapter,
                                             const QString& device,
                                             const QStringList& preInitProperties,
@@ -1947,22 +1885,25 @@ namespace scopeone::core::internal
         {
             return true;
         }
-        auto slot = std::make_shared<AgentCameraSlot>();
+        auto slot = std::make_shared<DriverHostCameraSlot>();
         slot->cameraId = normalizedId;
-        slot->shmKey = agent::sharedMemoryKey(normalizedId);
+        slot->shmKey = driverhost::sharedMemoryKey(normalizedId);
         slot->process = std::make_shared<QProcess>();
-        slot->control = std::make_shared<AgentControlSession>(normalizedId,
-                                                              agent::controlServerName(normalizedId));
+        slot->control = std::make_shared<DriverHostControlSession>(
+            QStringLiteral("micro-manager"),
+            normalizedId,
+            driverhost::controlServerName(normalizedId));
         slot->exposureMs = exposureMs;
-        const QString agentPath =
-            QDir(QCoreApplication::applicationDirPath()).filePath(agent::kExecutableFileName);
-        if (!QFileInfo::exists(agentPath))
+        const QString driverHostPath =
+            QDir(QCoreApplication::applicationDirPath()).filePath(driverhost::kExecutableFileName);
+        if (!QFileInfo::exists(driverHostPath))
         {
-            qWarning().noquote() << QString("Agent executable not found: %1").arg(agentPath);
+            qWarning().noquote() << QString("DriverHost executable not found: %1").arg(driverHostPath);
             return false;
         }
         QStringList args;
-        args << "--cameraId" << normalizedId
+        args << "--provider" << QStringLiteral("micro-manager")
+            << "--deviceId" << normalizedId
             << "--adapter" << adapterName
             << "--device" << deviceName
             << "--shm" << slot->shmKey;
@@ -1984,7 +1925,7 @@ namespace scopeone::core::internal
                 args << "--property" << encodedProperty;
             }
         }
-        slot->process->setProgram(agentPath);
+        slot->process->setProgram(driverHostPath);
         slot->process->setArguments(args);
         slot->process->setProcessChannelMode(QProcess::MergedChannels);
 
@@ -1998,7 +1939,7 @@ namespace scopeone::core::internal
                 for (const QString& line : lines)
                 {
                     const QString trimmed = line.trimmed();
-                    qInfo().noquote() << QString("[Agent %1] %2").arg(normalizedId, trimmed);
+                    qInfo().noquote() << QString("[DriverHost %1] %2").arg(normalizedId, trimmed);
                 }
             }
         });
@@ -2024,7 +1965,7 @@ namespace scopeone::core::internal
                     if (wasRecording)
                     {
                         emit frameDeliveryFailed(
-                            QStringLiteral("Camera agent exited for '%1'").arg(normalizedId),
+                            QStringLiteral("Camera DriverHost exited for '%1'").arg(normalizedId),
                             0);
                     }
                 });
@@ -2035,7 +1976,7 @@ namespace scopeone::core::internal
             {
                 if (ready)
                 {
-                    emit agentControlServerListening(normalizedId, agent::controlServerName(normalizedId));
+                    emit driverHostControlServerListening(normalizedId, driverhost::controlServerName(normalizedId));
                 }
             });
             slot->control->addEventHandler([this, normalizedId](const QJsonObject& event)
@@ -2045,14 +1986,14 @@ namespace scopeone::core::internal
                 {
                     return;
                 }
-                AgentCameraSlot& slot = *it.value();
-                const QString type = event.value(agent::kMessageTypeField).toString();
-                if (type == agent::kEventFrameAvailable)
+                DriverHostCameraSlot& slot = *it.value();
+                const QString type = event.value(driverhost::kMessageTypeField).toString();
+                if (type == driverhost::kEventFrameAvailable)
                 {
                     scheduleFrameRead(normalizedId);
                     return;
                 }
-                if (type == agent::kEventPreviewState)
+                if (type == driverhost::kEventPreviewState)
                 {
                     const bool wasRunning = slot.isRunning;
                     slot.isRunning = event.value(QStringLiteral("running")).toBool(slot.isRunning);
@@ -2062,9 +2003,9 @@ namespace scopeone::core::internal
                     }
                     return;
                 }
-                if (type == agent::kEventAgentError)
+                if (type == driverhost::kEventDriverHostError)
                 {
-                    const QString error = QStringLiteral("Agent '%1' error: %2")
+                    const QString error = QStringLiteral("DriverHost '%1' error: %2")
                                               .arg(slot.cameraId,
                                                    event.value(QStringLiteral("error")).toString());
                     qWarning().noquote() << error;
@@ -2081,7 +2022,7 @@ namespace scopeone::core::internal
         slot->process->start();
         if (!slot->process->waitForStarted(3000))
         {
-            qWarning().noquote() << QString("Failed to start agent for %1").arg(normalizedId);
+            qWarning().noquote() << QString("Failed to start DriverHost for %1").arg(normalizedId);
             return false;
         }
         m_cameras.insert(normalizedId, slot);
@@ -2089,34 +2030,34 @@ namespace scopeone::core::internal
         {
             slot->control->start();
         }
-        if (!waitForControlReady(*slot, kAgentControlReadyTimeoutMs))
+        if (!waitForControlReady(*slot, kDriverHostControlReadyTimeoutMs))
         {
             qWarning().noquote()
-                << QString("Agent control session did not become ready for %1 within %2 ms")
+                << QString("DriverHost control session did not become ready for %1 within %2 ms")
                    .arg(normalizedId)
-                   .arg(kAgentControlReadyTimeoutMs);
-            removeAgentCamera(normalizedId);
+                   .arg(kDriverHostControlReadyTimeoutMs);
+            removeDriverHostCamera(normalizedId);
             return false;
         }
         if (!addFrameReader(normalizedId, slot->shmKey))
         {
-            removeAgentCamera(normalizedId);
+            removeDriverHostCamera(normalizedId);
             return false;
         }
-        const AgentFrameDeliveryMode deliveryMode = recordingFrameDeliveryEnabled()
-                                                        ? AgentFrameDeliveryMode::AllFrames
+        const DriverHostFrameDeliveryMode deliveryMode = recordingFrameDeliveryEnabled()
+                                                        ? DriverHostFrameDeliveryMode::AllFrames
                                                         : nonRecordingDeliveryMode(
                                                               highRateFrameDeliveryEnabled());
         if (!sendFrameDeliveryModes(QStringList{normalizedId}, deliveryMode))
         {
-            removeAgentCamera(normalizedId);
+            removeDriverHostCamera(normalizedId);
             return false;
         }
         return true;
     }
 
-    // Stops one camera agent process and releases its resources
-    void AgentCameraBackend::removeAgentCamera(const QString& cameraId)
+    // Stop one camera DriverHost process and release its resources
+    void DriverHostCameraBackend::removeDriverHostCamera(const QString& cameraId)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         if (!m_cameras.contains(normalizedId))
@@ -2130,7 +2071,7 @@ namespace scopeone::core::internal
         if (slot->control)
         {
             QJsonObject request;
-            request.insert(agent::kMessageTypeField, agent::kCommandShutdown);
+            request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
             sendControlCommand(normalizedId, request, nullptr, 800);
         }
         m_cameras.remove(normalizedId);
@@ -2153,9 +2094,9 @@ namespace scopeone::core::internal
         }
     }
 
-    std::unique_ptr<CameraBackend> createAgentCameraBackend(
+    std::unique_ptr<CameraBackend> createDriverHostCameraBackend(
         ProcessingFrameGate& processingFrameGate)
     {
-        return std::make_unique<AgentCameraBackend>(processingFrameGate);
+        return std::make_unique<DriverHostCameraBackend>(processingFrameGate);
     }
 }

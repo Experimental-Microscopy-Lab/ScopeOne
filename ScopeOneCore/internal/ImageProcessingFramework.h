@@ -18,11 +18,12 @@ namespace scopeone::core::internal
         explicit ProcessingPipelineRuntime(std::vector<std::unique_ptr<ProcessingModule>> modules);
 
         ProcessingResult process(const ImageFrame& input, int processingBitDepth);
+        ProcessingResult processValue(const ProcessingValue& input, int processingBitDepth);
         ProcessingResult processFrom(int startModuleIndex, const ImageFrame& input, int processingBitDepth);
         ProcessingResult processThrough(int endModuleIndex, const ImageFrame& input, int processingBitDepth);
 
     private:
-        ProcessingResult processRange(const ImageFrame& input,
+        ProcessingResult processRange(const ProcessingValue& input,
                                       int processingBitDepth,
                                       int startModuleIndex,
                                       int endModuleIndexExclusive);
@@ -35,6 +36,7 @@ namespace scopeone::core::internal
     public:
         void addModule(std::unique_ptr<ProcessingModule> module);
         bool removeModule(int index);
+        bool moveModule(int from, int to);
         std::shared_ptr<ProcessingPipelineRuntime> createRuntime() const;
         void forEachModule(const std::function<void(const ProcessingModule *)>& visitor) const;
         bool withModule(int index, const std::function<void(ProcessingModule *)>& visitor);

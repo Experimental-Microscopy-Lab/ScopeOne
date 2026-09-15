@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <memory>
 #include "MMCore.h"
+#include "scopeone/HardwareTypes.h"
 
 namespace scopeone::core::internal
 {
@@ -35,6 +36,7 @@ namespace scopeone::core::internal
             int skippedCameraCount{0};
             bool foundCamera{false};
             bool useSingleCamera{false};
+            QList<scopeone::core::HardwareDeviceDescriptor> devices;
         };
 
         explicit MMCoreManager(QObject* parent = nullptr);

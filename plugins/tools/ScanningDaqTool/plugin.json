@@ -1,0 +1,7 @@
+{
+  "id": "scopeone.scanning-daq-tool",
+  "name": "Scanning and DAQ Tools",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "tool"
+}
