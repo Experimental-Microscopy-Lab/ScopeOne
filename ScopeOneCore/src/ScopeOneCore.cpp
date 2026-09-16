@@ -122,10 +122,6 @@ namespace
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
-    // Change to true temporarily when pipeline FPS diagnostics are needed
-    constexpr bool kFrameRateDiagnosticsEnabled = false;
-    constexpr int kFrameRateDiagnosticIntervalMs = 3000;
-
     struct ProviderRegistrationResult
     {
         scopeone::core::HardwareProviderPtr provider;
@@ -958,13 +954,6 @@ namespace scopeone::core
 
     struct ScopeOneCore::Managers
     {
-        struct FrameRateCounters
-        {
-            quint64 acquired{0};
-            quint64 input{0};
-            quint64 processed{0};
-        };
-
         struct PendingProcessedFrame
         {
             ImageFrame frame;
@@ -1000,9 +989,6 @@ namespace scopeone::core
         RecordingProgress recordingProgress;
         RecordingWriterStatus recordingWriterStatus;
         QHash<QString, double> cameraPixelSizesUm;
-        QMutex frameRateCountersMutex;
-        QHash<QString, FrameRateCounters> frameRateCounters;
-        QElapsedTimer frameRateTimer;
         QMutex processedDeliveryMutex;
         QHash<QString, PendingProcessedFrame> pendingProcessedFrames;
         bool processedFlushQueued{false};
@@ -1291,49 +1277,6 @@ namespace scopeone::core
                 this, &ScopeOneCore::updateLayerFrameRates);
         m_layerFrameRateElapsed.start();
         m_layerFrameRateTimer->start();
-        if constexpr (kFrameRateDiagnosticsEnabled)
-        {
-            auto* frameRateDiagnosticTimer = new QTimer(this);
-            frameRateDiagnosticTimer->setInterval(kFrameRateDiagnosticIntervalMs);
-            connect(frameRateDiagnosticTimer, &QTimer::timeout, this, [this]()
-            {
-                if (!isRealTimeProcessingEnabled())
-                {
-                    QMutexLocker locker(&m_managers->frameRateCountersMutex);
-                    m_managers->frameRateCounters.clear();
-                    m_managers->frameRateTimer.restart();
-                    return;
-                }
-
-                QHash<QString, Managers::FrameRateCounters> counters;
-                qint64 elapsedNs = 0;
-                {
-                    QMutexLocker locker(&m_managers->frameRateCountersMutex);
-                    elapsedNs = m_managers->frameRateTimer.nsecsElapsed();
-                    counters.swap(m_managers->frameRateCounters);
-                    m_managers->frameRateTimer.restart();
-                }
-                if (elapsedNs <= 0)
-                {
-                    return;
-                }
-                const double elapsedSeconds = static_cast<double>(elapsedNs) / 1000000000.0;
-                QStringList cameraIds = counters.keys();
-                cameraIds.sort(Qt::CaseInsensitive);
-                for (const QString& cameraId : cameraIds)
-                {
-                    const Managers::FrameRateCounters frameCounters = counters.value(cameraId);
-                    qDebug().noquote()
-                        << QString("Frame pipeline FPS [%1]: acquired=%2, input=%3, processed=%4")
-                               .arg(cameraId)
-                               .arg(frameCounters.acquired / elapsedSeconds, 0, 'f', 1)
-                               .arg(frameCounters.input / elapsedSeconds, 0, 'f', 1)
-                               .arg(frameCounters.processed / elapsedSeconds, 0, 'f', 1);
-                }
-            });
-            m_managers->frameRateTimer.start();
-            frameRateDiagnosticTimer->start();
-        }
         m_imageSceneModel = new ImageSceneModel(this);
         connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
                 this, &ScopeOneCore::syncLineProfileFromScene);
@@ -1445,14 +1388,6 @@ namespace scopeone::core
         connect(m_managers->cameraManager, &CameraManager::rawFramesAcquired,
                 this, [this](const QString& cameraId, quint64 frameCount)
                 {
-                    if constexpr (kFrameRateDiagnosticsEnabled)
-                    {
-                        if (isRealTimeProcessingEnabled())
-                        {
-                            QMutexLocker locker(&m_managers->frameRateCountersMutex);
-                            m_managers->frameRateCounters[cameraId].acquired += frameCount;
-                        }
-                    }
                     emit rawFramesAcquired(cameraId, frameCount);
                 });
         connect(m_managers->cameraManager, &CameraManager::recordingFramesReady,
@@ -2662,11 +2597,6 @@ namespace scopeone::core
         {
             return;
         }
-        if constexpr (kFrameRateDiagnosticsEnabled)
-        {
-            QMutexLocker locker(&m_managers->frameRateCountersMutex);
-            ++m_managers->frameRateCounters[frame.cameraId].input;
-        }
         if (processingToken == 0)
         {
             m_managers->imageProcessingManager->processFrameAsync(frame);
@@ -2709,11 +2639,6 @@ namespace scopeone::core
                 m_managers->processedFlushQueued = true;
                 queueFlush = true;
             }
-        }
-        if constexpr (kFrameRateDiagnosticsEnabled)
-        {
-            QMutexLocker locker(&m_managers->frameRateCountersMutex);
-            ++m_managers->frameRateCounters[frame.cameraId].processed;
         }
         emit processedFrameReady(frame);
 
@@ -4357,12 +4282,6 @@ namespace scopeone::core
         if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
         {
             return false;
-        }
-        if constexpr (kFrameRateDiagnosticsEnabled)
-        {
-            QMutexLocker locker(&m_managers->frameRateCountersMutex);
-            m_managers->frameRateCounters.clear();
-            m_managers->frameRateTimer.restart();
         }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
