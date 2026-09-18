@@ -3102,13 +3102,12 @@ namespace scopeone::core
             }));
     }
 
-    void ScopeOneCore::importSessionAsStaticLayerAsync(
+    void ScopeOneCore::importSessionAsStaticLayer(
         const std::shared_ptr<RecordingSessionData>& session)
     {
         if (!session || !session->hasRecordedOutput())
         {
             emit gallerySessionImportFinished(
-                session,
                 {},
                 false,
                 QStringLiteral("No gallery image available for preview"));
@@ -3126,22 +3125,12 @@ namespace scopeone::core
             if (frameCount > (std::numeric_limits<int>::max)())
             {
                 emit gallerySessionImportFinished(
-                    session,
                     {},
                     false,
                     QStringLiteral("Gallery stack is too large to load"));
                 return;
             }
             totalFrames += frameCount;
-        }
-        if (totalFrames <= 0)
-        {
-            emit gallerySessionImportFinished(
-                session,
-                {},
-                false,
-                QStringLiteral("Gallery session contains no frames"));
-            return;
         }
 
         emit gallerySessionImportProgress(0, QStringLiteral("Loading gallery stack..."));
@@ -3154,7 +3143,7 @@ namespace scopeone::core
                     if (!task.errorMessage.isEmpty())
                     {
                         emit gallerySessionImportFinished(
-                            session, {}, false, task.errorMessage);
+                            {}, false, task.errorMessage);
                         watcher->deleteLater();
                         return;
                     }
@@ -3166,8 +3155,8 @@ namespace scopeone::core
                     for (const QString& camera : cameras)
                     {
                         const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
-                        auto stackIt = task.stacks.find(camera);
-                        if (stackIt == task.stacks.end() || stackIt->empty())
+                        auto& stack = task.stacks[camera];
+                        if (stack.empty())
                         {
                             continue;
                         }
@@ -3181,30 +3170,24 @@ namespace scopeone::core
                             continue;
                         }
 
-                        m_layerStacks.insert(sourceId, std::move(stackIt.value()));
+                        m_layerStacks.insert(sourceId, std::move(stack));
                         const QString displayName = cameras.size() > 1
                                                         ? QStringLiteral("%1 - %2").arg(baseName, camera)
                                                         : baseName;
-                        const ImageFrame published = publishStaticFrame(
+                        publishStaticFrame(
                             sourceId, m_layerStacks[sourceId].front(), displayName);
-                        if (published.isValid())
-                        {
-                            lastLayerKey = layerKey;
-                        }
+                        lastLayerKey = layerKey;
                     }
 
                     emit gallerySessionImportFinished(
-                        session,
                         lastLayerKey,
-                        !lastLayerKey.isEmpty(),
-                        lastLayerKey.isEmpty()
-                            ? QStringLiteral("Failed to publish gallery layer")
-                            : QString());
+                        true,
+                        {});
                     watcher->deleteLater();
                 });
         watcher->setFuture(QtConcurrent::run(
             m_sessionFrameThreadPool.get(),
-            [session, cameras, expId, totalFrames]()
+            [this, session, cameras, expId, totalFrames]()
             {
                 GallerySessionImportTask task;
                 qint64 completedFrames = 0;

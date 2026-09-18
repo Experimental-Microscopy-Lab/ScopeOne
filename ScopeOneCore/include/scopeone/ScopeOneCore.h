@@ -589,7 +589,7 @@ namespace scopeone::core
                                             QString* outLayerKey = nullptr,
                                             QString* errorMessage = nullptr);
         void importImageAsStaticLayerAsync(const QString& filePath);
-        void importSessionAsStaticLayerAsync(
+        void importSessionAsStaticLayer(
             const std::shared_ptr<RecordingSessionData>& session);
         int layerSliceCount(const QString& layerKey) const;
         bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
@@ -866,7 +866,6 @@ namespace scopeone::core
         void staticImageImportFinished(const QString& filePath, const QString& layerKey, bool success, const QString& errorMessage);
         void gallerySessionImportProgress(int percent, const QString& statusText);
         void gallerySessionImportFinished(
-            const std::shared_ptr<RecordingSessionData>& session,
             const QString& layerKey,
             bool success,
             const QString& errorMessage);

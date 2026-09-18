@@ -331,12 +331,16 @@ namespace scopeone::ui
         connect(m_deleteButton, &QPushButton::clicked, this, &ImageGalleryWidget::deleteCurrentSession);
 
         auto* returnShortcut = new QShortcut(QKeySequence(Qt::Key_Return), m_sessionList);
+        returnShortcut->setContext(Qt::WidgetShortcut);
         connect(returnShortcut, &QShortcut::activated, this, &ImageGalleryWidget::openCurrentSession);
         auto* enterShortcut = new QShortcut(QKeySequence(Qt::Key_Enter), m_sessionList);
+        enterShortcut->setContext(Qt::WidgetShortcut);
         connect(enterShortcut, &QShortcut::activated, this, &ImageGalleryWidget::openCurrentSession);
         auto* deleteShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), m_sessionList);
+        deleteShortcut->setContext(Qt::WidgetShortcut);
         connect(deleteShortcut, &QShortcut::activated, this, &ImageGalleryWidget::deleteCurrentSession);
         auto* backspaceShortcut = new QShortcut(QKeySequence(Qt::Key_Backspace), m_sessionList);
+        backspaceShortcut->setContext(Qt::WidgetShortcut);
         connect(backspaceShortcut, &QShortcut::activated, this, &ImageGalleryWidget::deleteCurrentSession);
     }
 

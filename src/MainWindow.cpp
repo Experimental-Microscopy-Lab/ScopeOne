@@ -496,8 +496,7 @@ namespace scopeone::ui
         connect(m_scopeonecore,
                 &scopeone::core::ScopeOneCore::gallerySessionImportFinished,
                 this,
-                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
-                       const QString& layerKey,
+                [this](const QString& layerKey,
                        bool success,
                        const QString& errorMessage)
                 {
@@ -871,7 +870,7 @@ namespace scopeone::ui
                         return;
                     }
                     m_imageWorkspace->activateLiveViewer();
-                    m_scopeonecore->importSessionAsStaticLayerAsync(session);
+                    m_scopeonecore->importSessionAsStaticLayer(session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
