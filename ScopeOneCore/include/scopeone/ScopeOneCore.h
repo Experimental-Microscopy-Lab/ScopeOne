@@ -589,7 +589,7 @@ namespace scopeone::core
                                             QString* outLayerKey = nullptr,
                                             QString* errorMessage = nullptr);
         void importImageAsStaticLayerAsync(const QString& filePath);
-        QString importSessionAsStaticLayer(
+        void importSessionAsStaticLayerAsync(
             const std::shared_ptr<RecordingSessionData>& session);
         int layerSliceCount(const QString& layerKey) const;
         bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
@@ -789,6 +789,7 @@ namespace scopeone::core
         void toolStreamFramePublished(const QString& sourceId,
                                       const QString& displayName,
                                       const ImageFrame& frame);
+        void previewToolFrameReady(const ImageFrame& frame);
         void staticFrameRemoved(const QString& sourceId);
         void staticFramesCleared();
         void liveFramesCleared(const QString& cameraId);
@@ -863,6 +864,12 @@ namespace scopeone::core
             const ImageFrame& frame);
         void staticImageImportProgress(const QString& filePath, int percent, const QString& statusText);
         void staticImageImportFinished(const QString& filePath, const QString& layerKey, bool success, const QString& errorMessage);
+        void gallerySessionImportProgress(int percent, const QString& statusText);
+        void gallerySessionImportFinished(
+            const std::shared_ptr<RecordingSessionData>& session,
+            const QString& layerKey,
+            bool success,
+            const QString& errorMessage);
         void layerFrameRateChanged(const QString& layerKey, double fps);
         void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);
 
@@ -882,8 +889,8 @@ namespace scopeone::core
         {
         public:
             void clear();
-            bool publishLatest(FrameGraphStream stream, const ImageFrame& frame);
-            bool publishLatest(FrameGraphStream stream, const QString& sourceId, const ImageFrame& frame);
+            ImageFrame publishLatest(FrameGraphStream stream, const ImageFrame& frame);
+            ImageFrame publishLatest(FrameGraphStream stream, const QString& sourceId, const ImageFrame& frame);
             ImageFrame latest(FrameGraphStream stream, const QString& sourceId) const;
             void remove(FrameGraphStream stream, const QString& sourceId);
             void clear(FrameGraphStream stream);
@@ -993,6 +1000,7 @@ namespace scopeone::core
         FrameGraph m_frameGraph;
         QHash<QString, ImageFrame> m_pendingPreviewRawFrames;
         QHash<QString, ImageFrame> m_pendingPreviewProcessedFrames;
+        QHash<QString, ImageFrame> m_pendingPreviewToolFrames;
         QHash<QString, HistogramJobState> m_histogramJobStates;
         QHash<QString, HistogramStats> m_latestHistogramStats;
         std::unique_ptr<QThreadPool> m_histogramThreadPool;

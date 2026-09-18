@@ -598,14 +598,20 @@ namespace
                 return;
             }
 
-            QStringList layers;
-            const QString rawLayer = scopeone::core::ScopeOneCore::rawLayerKey(m_sourceId);
-            if (m_context.core().graphFrame(rawLayer).isValid())
+            const QString outputLayer = scopeone::core::ScopeOneCore::toolLayerKey(stored.cameraId);
+            if (m_shownInputSourceId != m_sourceId || m_shownOutputLayerKey != outputLayer)
             {
-                layers.append(rawLayer);
+                QStringList layers;
+                const QString rawLayer = scopeone::core::ScopeOneCore::rawLayerKey(m_sourceId);
+                if (m_context.core().graphFrame(rawLayer).isValid())
+                {
+                    layers.append(rawLayer);
+                }
+                layers.append(outputLayer);
+                m_context.showLayers(layers, layers.size() > 1);
+                m_shownInputSourceId = m_sourceId;
+                m_shownOutputLayerKey = outputLayer;
             }
-            layers.append(scopeone::core::ScopeOneCore::toolLayerKey(stored.cameraId));
-            m_context.showLayers(layers, layers.size() > 1);
             finishTask(QStringLiteral("DHM output ready"));
         }
 
@@ -673,6 +679,8 @@ namespace
         scopeone::ui::ScopeOneToolTask* m_task{nullptr};
         scopeone::ui::ScopeOneToolFrameStream* m_stream{nullptr};
         QString m_sourceId;
+        QString m_shownInputSourceId;
+        QString m_shownOutputLayerKey;
     };
 
     class DhmToolPlugin final : public QObject,

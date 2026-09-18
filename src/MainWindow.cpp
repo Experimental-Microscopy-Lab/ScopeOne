@@ -483,6 +483,36 @@ namespace scopeone::ui
                             .arg(m_scopeonecore->layerSliceCount(layerKey)),
                         5000);
                 });
+        connect(m_scopeonecore,
+                &scopeone::core::ScopeOneCore::gallerySessionImportProgress,
+                this,
+                [this](int percent, const QString& statusText)
+                {
+                    m_staticImportProgress->setRange(0, 100);
+                    m_staticImportProgress->setValue(percent);
+                    m_staticImportProgress->show();
+                    showStatusMessage(statusText);
+                });
+        connect(m_scopeonecore,
+                &scopeone::core::ScopeOneCore::gallerySessionImportFinished,
+                this,
+                [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
+                       const QString& layerKey,
+                       bool success,
+                       const QString& errorMessage)
+                {
+                    m_staticImportProgress->hide();
+                    if (!success)
+                    {
+                        showStatusMessage(errorMessage, 5000);
+                        return;
+                    }
+                    m_imageWorkspace->setActiveLayerKey(layerKey);
+                    m_saveImageAsAction->setEnabled(true);
+                    showStatusMessage(
+                        tr("Opened gallery layer: %1").arg(m_previewWidget->layerName(layerKey)),
+                        3000);
+                });
 
         connect(m_imageWorkspace, &ImageWorkspace::mousePositionChanged,
                 this, &MainWindow::handlePreviewMousePosition);
@@ -531,12 +561,10 @@ namespace scopeone::ui
                     const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(sourceId);
                     m_previewWidget->removeStaticLayer(layerKey);
                 });
-        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::toolStreamFramePublished,
-                this, [this](const QString& sourceId,
-                             const QString&,
-                             const scopeone::core::ImageFrame& frame)
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewToolFrameReady,
+                this, [this](const scopeone::core::ImageFrame& frame)
                 {
-                    m_previewWidget->setGraphToolLayerFrame(sourceId, frame);
+                    m_previewWidget->setGraphToolLayerFrame(frame.cameraId, frame);
                     schedulePreviewCursorStatusRefresh();
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFramesCleared,
@@ -843,14 +871,7 @@ namespace scopeone::ui
                         return;
                     }
                     m_imageWorkspace->activateLiveViewer();
-                    const QString layerKey = m_scopeonecore->importSessionAsStaticLayer(session);
-                    if (!layerKey.isEmpty())
-                    {
-                        m_imageWorkspace->setActiveLayerKey(layerKey);
-                        showStatusMessage(
-                            tr("Opened gallery layer: %1").arg(m_previewWidget->layerName(layerKey)),
-                            3000);
-                    }
+                    m_scopeonecore->importSessionAsStaticLayerAsync(session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,

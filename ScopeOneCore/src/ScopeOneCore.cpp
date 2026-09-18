@@ -44,6 +44,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -59,6 +60,12 @@ namespace
         QString displayName;
         QString sourceId;
         std::vector<scopeone::core::ImageFrame> slices;
+        QString errorMessage;
+    };
+
+    struct GallerySessionImportTask
+    {
+        QHash<QString, std::vector<scopeone::core::ImageFrame>> stacks;
         QString errorMessage;
     };
 
@@ -110,6 +117,40 @@ namespace
         frame.width = gray.cols;
         frame.height = gray.rows;
         return frame;
+    }
+
+    bool importImageSlices(const QString& filePath,
+                           const QString& sourceId,
+                           std::vector<scopeone::core::ImageFrame>& slices,
+                           const std::function<void(size_t, size_t)>& progress)
+    {
+        constexpr size_t kImportBatchSize = 8;
+        const size_t sliceCount = cv::imcount(filePath.toStdString(), cv::IMREAD_UNCHANGED);
+        if (sliceCount == 0)
+        {
+            return false;
+        }
+
+        slices.reserve(sliceCount);
+        for (size_t start = 0; start < sliceCount; start += kImportBatchSize)
+        {
+            std::vector<cv::Mat> images;
+            const int count = static_cast<int>((std::min)(kImportBatchSize, sliceCount - start));
+            if (!cv::imreadmulti(filePath.toStdString(),
+                                 images,
+                                 static_cast<int>(start),
+                                 count,
+                                 cv::IMREAD_UNCHANGED))
+            {
+                return false;
+            }
+            for (const cv::Mat& image : images)
+            {
+                slices.push_back(convertImportedImage(image, sourceId));
+                progress(slices.size(), sliceCount);
+            }
+        }
+        return !slices.empty();
     }
 
     // Histogram bins are fixed to keep UI cost stable
@@ -524,31 +565,6 @@ namespace scopeone::core
     using scopeone::core::internal::RecordingManager;
     using scopeone::core::internal::StageMosaicManager;
 
-    static bool equalCanonicalParameter(const QVariant& actual, const QVariant& expected)
-    {
-        return actual.metaType().id() == expected.metaType().id()
-            && actual == expected;
-    }
-
-    static bool equalCanonicalParameters(const QVariantMap& actual, const QVariantMap& expected)
-    {
-        if (actual.size() != expected.size())
-        {
-            return false;
-        }
-        for (auto it = expected.constBegin(); it != expected.constEnd(); ++it)
-        {
-            const auto actualIt = actual.constFind(it.key());
-            if (actualIt == actual.constEnd()
-                || !equalCanonicalParameter(actualIt.value(), it.value()))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // Clear all frame graph state
     void ScopeOneCore::FrameGraph::clear()
     {
         m_rawFrames.clear();
@@ -558,30 +574,28 @@ namespace scopeone::core
         m_externalFrames.clear();
     }
 
-    // Store the latest valid frame for one graph stream
-    bool ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream, const ImageFrame& frame)
+    ImageFrame ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream,
+                                                        const ImageFrame& frame)
     {
         return publishLatest(stream, frame.cameraId, frame);
     }
 
-    // Store one frame using an explicit graph source id
-    bool ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream,
-                                                 const QString& sourceId,
-                                                 const ImageFrame& frame)
+    ImageFrame ScopeOneCore::FrameGraph::publishLatest(FrameGraphStream stream,
+                                                        const QString& sourceId,
+                                                        const ImageFrame& frame)
     {
         const QString trimmedSourceId = sourceId.trimmed();
         if (!frame.isValid() || trimmedSourceId.isEmpty())
         {
-            return false;
+            return {};
         }
 
         ImageFrame storedFrame(frame);
         storedFrame.cameraId = trimmedSourceId;
-        latestMap(stream).insert(trimmedSourceId, std::move(storedFrame));
-        return true;
+        latestMap(stream).insert(trimmedSourceId, storedFrame);
+        return storedFrame;
     }
 
-    // Return one latest frame from the graph
     ImageFrame ScopeOneCore::FrameGraph::latest(FrameGraphStream stream, const QString& sourceId) const
     {
         const QString trimmedSourceId = sourceId.trimmed();
@@ -594,13 +608,11 @@ namespace scopeone::core
         return it != latestMap(stream).constEnd() && it.value().isValid() ? it.value() : ImageFrame{};
     }
 
-    // Remove one graph source
     void ScopeOneCore::FrameGraph::remove(FrameGraphStream stream, const QString& sourceId)
     {
         latestMap(stream).remove(sourceId.trimmed());
     }
 
-    // Clear one graph stream
     void ScopeOneCore::FrameGraph::clear(FrameGraphStream stream)
     {
         latestMap(stream).clear();
@@ -646,6 +658,30 @@ namespace scopeone::core
             return m_externalFrames;
         }
         return m_rawFrames;
+    }
+
+    static bool equalCanonicalParameter(const QVariant& actual, const QVariant& expected)
+    {
+        return actual.metaType().id() == expected.metaType().id()
+            && actual == expected;
+    }
+
+    static bool equalCanonicalParameters(const QVariantMap& actual, const QVariantMap& expected)
+    {
+        if (actual.size() != expected.size())
+        {
+            return false;
+        }
+        for (auto it = expected.constBegin(); it != expected.constEnd(); ++it)
+        {
+            const auto actualIt = actual.constFind(it.key());
+            if (actualIt == actual.constEnd()
+                || !equalCanonicalParameter(actualIt.value(), it.value()))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Return a stored frame from memory or saved disk output
@@ -1378,6 +1414,7 @@ namespace scopeone::core
                     {
                         return;
                     }
+                    recordLayerFrame(rawLayerKey(frame.cameraId));
                     emit rawFramesAcquired(frame.cameraId, 1);
                     submitProcessingFrame(frame);
                     m_managers->recordingManager->onRawFramesReady(QList<ImageFrame>{frame});
@@ -1388,6 +1425,7 @@ namespace scopeone::core
         connect(m_managers->cameraManager, &CameraManager::rawFramesAcquired,
                 this, [this](const QString& cameraId, quint64 frameCount)
                 {
+                    recordLayerFrame(rawLayerKey(cameraId), frameCount);
                     emit rawFramesAcquired(cameraId, frameCount);
                 });
         connect(m_managers->cameraManager, &CameraManager::recordingFramesReady,
@@ -1401,6 +1439,7 @@ namespace scopeone::core
                 this, [this](const ImageFrame& frame)
                 {
                     handleIncomingRawFrame(frame);
+                    recordLayerFrame(rawLayerKey(frame.cameraId));
                     submitProcessingFrame(frame);
                 },
                 Qt::QueuedConnection);
@@ -2578,7 +2617,6 @@ namespace scopeone::core
         ImageFrame normalizedFrame(frame);
         normalizedFrame.cameraId = cameraId;
         const QString layerKey = rawLayerKey(cameraId);
-        recordLayerFrame(layerKey);
         m_imageSceneModel->updateLayerFrame(layerKey, normalizedFrame);
         m_frameGraph.publishLatest(FrameGraphStream::Raw, normalizedFrame);
         emit newRawFrameReady(normalizedFrame);
@@ -2623,7 +2661,6 @@ namespace scopeone::core
         }
 
         bool queueFlush = false;
-        recordLayerFrame(processedLayerKey(frame.cameraId));
         {
             QMutexLocker locker(&m_managers->processedDeliveryMutex);
             if (!m_managers->imageProcessingManager->isRealTimeProcessingEnabled())
@@ -2664,6 +2701,7 @@ namespace scopeone::core
         {
             const ImageFrame& frame = it.value().frame;
             const QString layerKey = processedLayerKey(frame.cameraId);
+            recordLayerFrame(layerKey, it.value().completedCount);
             m_imageSceneModel->updateLayerFrame(layerKey, frame);
             m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
             emit processedFramesCompleted(frame.cameraId, it.value().completedCount);
@@ -2697,15 +2735,17 @@ namespace scopeone::core
         m_previewFlushTimer->start(static_cast<int>(delayMs));
     }
 
-    // Flush the newest raw and processed frames in one display update
+    // Flush the newest raw processed and tool frames in one display update
     void ScopeOneCore::flushPreviewFrames()
     {
         m_previewPublishTimer.restart();
         flushProcessedFrames();
         QHash<QString, ImageFrame> rawFrames;
         QHash<QString, ImageFrame> processedFrames;
+        QHash<QString, ImageFrame> toolFrames;
         rawFrames.swap(m_pendingPreviewRawFrames);
         processedFrames.swap(m_pendingPreviewProcessedFrames);
+        toolFrames.swap(m_pendingPreviewToolFrames);
         for (auto it = rawFrames.constBegin(); it != rawFrames.constEnd(); ++it)
         {
             emit previewRawFrameReady(it.value());
@@ -2713,6 +2753,10 @@ namespace scopeone::core
         for (auto it = processedFrames.constBegin(); it != processedFrames.constEnd(); ++it)
         {
             emit previewProcessedFrameReady(it.value());
+        }
+        for (auto it = toolFrames.constBegin(); it != toolFrames.constEnd(); ++it)
+        {
+            emit previewToolFrameReady(it.value());
         }
     }
 
@@ -2835,11 +2879,12 @@ namespace scopeone::core
                                                 const ImageFrame& frame,
                                                 const QString& displayName)
     {
-        if (!m_frameGraph.publishLatest(FrameGraphStream::Static, sourceId, frame))
+        const ImageFrame storedFrame = m_frameGraph.publishLatest(
+            FrameGraphStream::Static, sourceId, frame);
+        if (!storedFrame.isValid())
         {
             return {};
         }
-        const ImageFrame storedFrame = graphFrame(staticLayerKey(sourceId));
         const QString layerKey = staticLayerKey(storedFrame.cameraId);
         const DocumentLayerKind kind = storedFrame.cameraId.startsWith(QStringLiteral("gallery:"))
                                            ? DocumentLayerKind::Gallery
@@ -2927,26 +2972,19 @@ namespace scopeone::core
             return {};
         }
 
-        std::vector<cv::Mat> images;
-        if (!cv::imreadmulti(cleanedPath.toStdString(), images, cv::IMREAD_UNCHANGED))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
-            }
-            return {};
-        }
-
         const QFileInfo fileInfo(cleanedPath);
         const QString sourceId = QStringLiteral("imported:%1_%2")
                                      .arg(fileInfo.completeBaseName())
                                      .arg(s_importCounter.fetch_add(1));
 
         std::vector<ImageFrame> slices;
-        slices.reserve(images.size());
-        for (const cv::Mat& image : images)
+        if (!importImageSlices(cleanedPath, sourceId, slices, [](size_t, size_t) {}))
         {
-            slices.push_back(convertImportedImage(image, sourceId));
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
+            }
+            return {};
         }
 
         m_layerStacks.insert(sourceId, std::move(slices));
@@ -3043,98 +3081,163 @@ namespace scopeone::core
                         Qt::QueuedConnection);
                 };
 
-                std::vector<cv::Mat> images;
-                if (!cv::imreadmulti(cleanedPath.toStdString(),
-                                     images,
-                                     cv::IMREAD_UNCHANGED))
+                if (!importImageSlices(
+                        cleanedPath,
+                        task.sourceId,
+                        task.slices,
+                        [&reportProgress](size_t completed, size_t total)
+                        {
+                            const int percent = static_cast<int>((completed * 100) / total);
+                            reportProgress(
+                                percent,
+                                QStringLiteral("Converting slice %1 / %2")
+                                    .arg(static_cast<qulonglong>(completed))
+                                    .arg(static_cast<qulonglong>(total)));
+                        }))
                 {
                     task.errorMessage = QStringLiteral("Failed to read image file: %1")
                                             .arg(filePath);
-                    return task;
-                }
-
-                task.slices.reserve(images.size());
-                for (size_t index = 0; index < images.size(); ++index)
-                {
-                    task.slices.push_back(convertImportedImage(images[index], task.sourceId));
-                    const int percent = static_cast<int>(
-                        ((index + 1) * 100) / images.size());
-                    reportProgress(
-                        percent,
-                        QStringLiteral("Converting slice %1 / %2")
-                            .arg(static_cast<qulonglong>(index + 1))
-                            .arg(static_cast<qulonglong>(images.size())));
                 }
                 return task;
             }));
     }
 
-    // Imports a gallery recording session as a static layer
-    QString ScopeOneCore::importSessionAsStaticLayer(
+    void ScopeOneCore::importSessionAsStaticLayerAsync(
         const std::shared_ptr<RecordingSessionData>& session)
     {
         if (!session || !session->hasRecordedOutput())
         {
-            return {};
+            emit gallerySessionImportFinished(
+                session,
+                {},
+                false,
+                QStringLiteral("No gallery image available for preview"));
+            return;
         }
 
+        const QStringList cameras = session->recordedCameraIds();
         const QString expId = session->capturePlan().experimentId.trimmed().isEmpty()
                                   ? QString::number(s_importCounter.fetch_add(1))
                                   : session->capturePlan().experimentId.trimmed();
-        const QStringList cameras = session->recordedCameraIds();
-        QString lastLayerKey;
-
+        qint64 totalFrames = 0;
         for (const QString& camera : cameras)
         {
-            const qint64 count = session->recordedFrameCount(camera);
-            if (count <= 0)
+            const qint64 frameCount = session->recordedFrameCount(camera);
+            if (frameCount > (std::numeric_limits<int>::max)())
             {
-                continue;
+                emit gallerySessionImportFinished(
+                    session,
+                    {},
+                    false,
+                    QStringLiteral("Gallery stack is too large to load"));
+                return;
             }
-
-            const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
-            const QString layerKey = staticLayerKey(sourceId);
-
-            DocumentLayer existingLayer;
-            if (m_imageSceneModel->findLayer(layerKey, existingLayer))
-            {
-                m_imageSceneModel->setLayerVisible(layerKey, true);
-                lastLayerKey = layerKey;
-                continue;
-            }
-
-            std::vector<ImageFrame> slices;
-            slices.reserve(static_cast<size_t>(count));
-            for (int i = 0; i < count; ++i)
-            {
-                ImageFrame frame = session->imageFrameAt(camera, i);
-                if (frame.isValid())
-                {
-                    frame.cameraId = sourceId;
-                    slices.push_back(std::move(frame));
-                }
-            }
-            if (slices.empty())
-            {
-                continue;
-            }
-
-            const QString baseName = session->capturePlan().baseName.trimmed().isEmpty()
-                                         ? QStringLiteral("snapshot")
-                                         : session->capturePlan().baseName.trimmed();
-            const QString displayName = cameras.size() > 1
-                                            ? QStringLiteral("%1 - %2").arg(baseName, camera)
-                                            : baseName;
-
-            m_layerStacks.insert(sourceId, std::move(slices));
-            const ImageFrame& frame = m_layerStacks[sourceId].front();
-            const ImageFrame published = publishStaticFrame(sourceId, frame, displayName);
-            if (published.isValid())
-            {
-                lastLayerKey = layerKey;
-            }
+            totalFrames += frameCount;
         }
-        return lastLayerKey;
+        if (totalFrames <= 0)
+        {
+            emit gallerySessionImportFinished(
+                session,
+                {},
+                false,
+                QStringLiteral("Gallery session contains no frames"));
+            return;
+        }
+
+        emit gallerySessionImportProgress(0, QStringLiteral("Loading gallery stack..."));
+
+        auto* watcher = new QFutureWatcher<GallerySessionImportTask>(this);
+        connect(watcher, &QFutureWatcher<GallerySessionImportTask>::finished,
+                this, [this, watcher, session, cameras, expId]()
+                {
+                    GallerySessionImportTask task = watcher->result();
+                    if (!task.errorMessage.isEmpty())
+                    {
+                        emit gallerySessionImportFinished(
+                            session, {}, false, task.errorMessage);
+                        watcher->deleteLater();
+                        return;
+                    }
+
+                    const QString baseName = session->capturePlan().baseName.trimmed().isEmpty()
+                                                 ? QStringLiteral("snapshot")
+                                                 : session->capturePlan().baseName.trimmed();
+                    QString lastLayerKey;
+                    for (const QString& camera : cameras)
+                    {
+                        const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
+                        auto stackIt = task.stacks.find(camera);
+                        if (stackIt == task.stacks.end() || stackIt->empty())
+                        {
+                            continue;
+                        }
+
+                        const QString layerKey = staticLayerKey(sourceId);
+                        DocumentLayer existingLayer;
+                        if (m_imageSceneModel->findLayer(layerKey, existingLayer))
+                        {
+                            m_imageSceneModel->setLayerVisible(layerKey, true);
+                            lastLayerKey = layerKey;
+                            continue;
+                        }
+
+                        m_layerStacks.insert(sourceId, std::move(stackIt.value()));
+                        const QString displayName = cameras.size() > 1
+                                                        ? QStringLiteral("%1 - %2").arg(baseName, camera)
+                                                        : baseName;
+                        const ImageFrame published = publishStaticFrame(
+                            sourceId, m_layerStacks[sourceId].front(), displayName);
+                        if (published.isValid())
+                        {
+                            lastLayerKey = layerKey;
+                        }
+                    }
+
+                    emit gallerySessionImportFinished(
+                        session,
+                        lastLayerKey,
+                        !lastLayerKey.isEmpty(),
+                        lastLayerKey.isEmpty()
+                            ? QStringLiteral("Failed to publish gallery layer")
+                            : QString());
+                    watcher->deleteLater();
+                });
+        watcher->setFuture(QtConcurrent::run(
+            m_sessionFrameThreadPool.get(),
+            [session, cameras, expId, totalFrames]()
+            {
+                GallerySessionImportTask task;
+                qint64 completedFrames = 0;
+                for (const QString& camera : cameras)
+                {
+                    const qint64 frameCount = session->recordedFrameCount(camera);
+                    auto& slices = task.stacks[camera];
+                    slices.reserve(static_cast<size_t>(frameCount));
+                    for (int index = 0; index < frameCount; ++index)
+                    {
+                        ImageFrame frame = session->imageFrameAt(camera, index);
+                        if (!frame.isValid())
+                        {
+                            task.errorMessage = QStringLiteral("Failed to read gallery frame %1")
+                                                     .arg(index + 1);
+                            return task;
+                        }
+                        frame.cameraId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
+                        slices.push_back(std::move(frame));
+                        ++completedFrames;
+                        const int percent = static_cast<int>((completedFrames * 100) / totalFrames);
+                        QMetaObject::invokeMethod(this, [this, percent, completedFrames, totalFrames]()
+                        {
+                            emit gallerySessionImportProgress(
+                                percent,
+                                QStringLiteral("Loading frame %1 / %2")
+                                    .arg(completedFrames)
+                                    .arg(totalFrames));
+                        }, Qt::QueuedConnection);
+                    }
+                }
+                return task;
+            }));
     }
 
     // Publish the latest frame of a tool-owned realtime stream
@@ -3142,12 +3245,13 @@ namespace scopeone::core
                                                     const ImageFrame& frame,
                                                     const QString& displayName)
     {
-        if (!m_frameGraph.publishLatest(FrameGraphStream::Tool, sourceId, frame))
+        const ImageFrame storedFrame = m_frameGraph.publishLatest(
+            FrameGraphStream::Tool, sourceId, frame);
+        if (!storedFrame.isValid())
         {
             return {};
         }
         recordLayerFrame(toolLayerKey(sourceId));
-        const ImageFrame storedFrame = graphFrame(toolLayerKey(sourceId));
         const QString layerKey = toolLayerKey(storedFrame.cameraId);
         ensureSceneLayer(layerKey,
                          storedFrame.cameraId,
@@ -3161,6 +3265,8 @@ namespace scopeone::core
         m_latestHistogramStats.remove(layerKey);
         scheduleHistogramStats(layerKey, storedFrame);
         emit toolStreamFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
+        m_pendingPreviewToolFrames.insert(storedFrame.cameraId, storedFrame);
+        schedulePreviewFlush();
         updateLineProfile(storedFrame.cameraId, false, true, storedFrame);
         return storedFrame;
     }
@@ -3168,12 +3274,14 @@ namespace scopeone::core
     // Publish an externally supplied frame to the central graph
     ImageFrame ScopeOneCore::publishExternalFrame(const QString& sourceId, const ImageFrame& frame)
     {
-        if (!m_frameGraph.publishLatest(FrameGraphStream::External, sourceId, frame))
+        const ImageFrame storedFrame = m_frameGraph.publishLatest(
+            FrameGraphStream::External, sourceId, frame);
+        if (!storedFrame.isValid())
         {
             return {};
         }
         recordLayerFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
-        return graphFrame(QStringLiteral("external:%1").arg(sourceId.trimmed()));
+        return storedFrame;
     }
 
     // Remove one static frame graph source
