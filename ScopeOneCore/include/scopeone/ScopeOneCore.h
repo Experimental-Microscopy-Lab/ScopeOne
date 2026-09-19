@@ -585,12 +585,7 @@ namespace scopeone::core
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
-        ImageFrame importImageAsStaticLayer(const QString& filePath,
-                                            QString* outLayerKey = nullptr,
-                                            QString* errorMessage = nullptr);
-        void importImageAsStaticLayerAsync(const QString& filePath);
-        void importSessionAsStaticLayer(
-            const std::shared_ptr<RecordingSessionData>& session);
+        void openImage(const QString& filePath);
         int layerSliceCount(const QString& layerKey) const;
         bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         ImageFrame publishToolStreamFrame(const QString& sourceId,
@@ -862,12 +857,10 @@ namespace scopeone::core
             const QString& cameraId,
             int index,
             const ImageFrame& frame);
-        void staticImageImportProgress(const QString& filePath, int percent, const QString& statusText);
-        void staticImageImportFinished(const QString& filePath, const QString& layerKey, bool success, const QString& errorMessage);
-        void gallerySessionImportProgress(int percent, const QString& statusText);
-        void gallerySessionImportFinished(
-            const QString& layerKey,
-            bool success,
+        void imageOpenProgress(const QString& filePath, int percent, const QString& statusText);
+        void imageOpenFinished(
+            const QString& filePath,
+            const std::shared_ptr<RecordingSessionData>& session,
             const QString& errorMessage);
         void layerFrameRateChanged(const QString& layerKey, double fps);
         void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);

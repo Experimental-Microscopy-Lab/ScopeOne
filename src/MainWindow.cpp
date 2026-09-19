@@ -444,73 +444,41 @@ namespace scopeone::ui
                     showStatusMessage(running ? tr("Live preview started") : tr("Live preview stopped"), 3000);
                 });
         connect(m_scopeonecore,
-                &scopeone::core::ScopeOneCore::staticImageImportProgress,
+                &scopeone::core::ScopeOneCore::imageOpenProgress,
                 this,
                 [this](const QString&, int percent, const QString& statusText)
                 {
                     if (percent == 0)
                     {
-                        m_staticImportProgress->setRange(0, 0);
+                        m_imageOpenProgress->setRange(0, 0);
                     }
                     else
                     {
-                        m_staticImportProgress->setRange(0, 100);
-                        m_staticImportProgress->setValue(percent);
+                        m_imageOpenProgress->setRange(0, 100);
+                        m_imageOpenProgress->setValue(percent);
                     }
-                    m_staticImportProgress->show();
+                    m_imageOpenProgress->show();
                     showStatusMessage(statusText);
                 });
         connect(m_scopeonecore,
-                &scopeone::core::ScopeOneCore::staticImageImportFinished,
+                &scopeone::core::ScopeOneCore::imageOpenFinished,
                 this,
                 [this](const QString& filePath,
-                       const QString& layerKey,
-                       bool success,
+                       const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
                        const QString& errorMessage)
                 {
-                    m_staticImportProgress->hide();
-                    if (!success)
+                    m_imageOpenProgress->hide();
+                    if (!session)
                     {
                         showStatusMessage(errorMessage, 5000);
                         return;
                     }
 
-                    m_imageWorkspace->setActiveLayerKey(layerKey);
+                    m_imageWorkspace->openSession(session, QFileInfo(filePath).fileName());
                     m_saveImageAsAction->setEnabled(true);
                     showStatusMessage(
-                        tr("Imported %1 (%2 slices)")
-                            .arg(QFileInfo(filePath).fileName())
-                            .arg(m_scopeonecore->layerSliceCount(layerKey)),
+                        tr("Opened %1").arg(QFileInfo(filePath).fileName()),
                         5000);
-                });
-        connect(m_scopeonecore,
-                &scopeone::core::ScopeOneCore::gallerySessionImportProgress,
-                this,
-                [this](int percent, const QString& statusText)
-                {
-                    m_staticImportProgress->setRange(0, 100);
-                    m_staticImportProgress->setValue(percent);
-                    m_staticImportProgress->show();
-                    showStatusMessage(statusText);
-                });
-        connect(m_scopeonecore,
-                &scopeone::core::ScopeOneCore::gallerySessionImportFinished,
-                this,
-                [this](const QString& layerKey,
-                       bool success,
-                       const QString& errorMessage)
-                {
-                    m_staticImportProgress->hide();
-                    if (!success)
-                    {
-                        showStatusMessage(errorMessage, 5000);
-                        return;
-                    }
-                    m_imageWorkspace->setActiveLayerKey(layerKey);
-                    m_saveImageAsAction->setEnabled(true);
-                    showStatusMessage(
-                        tr("Opened gallery layer: %1").arg(m_previewWidget->layerName(layerKey)),
-                        3000);
                 });
 
         connect(m_imageWorkspace, &ImageWorkspace::mousePositionChanged,
@@ -518,7 +486,7 @@ namespace scopeone::ui
         connect(m_previewWidget, &PreviewWidget::roiDrawn,
                 this, &MainWindow::handleRoiDrawn);
         connect(m_previewWidget, &PreviewWidget::imageFilesDropped,
-                this, &MainWindow::importImages);
+                this, &MainWindow::openImages);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerFrameRatesUpdated,
                 m_previewWidget, &PreviewWidget::setLayerFrameRates);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady,
@@ -869,23 +837,14 @@ namespace scopeone::ui
                         showStatusMessage(tr("No gallery image available for preview"), 5000);
                         return;
                     }
-                    m_imageWorkspace->activateLiveViewer();
-                    m_scopeonecore->importSessionAsStaticLayer(session);
+                    m_imageWorkspace->openSession(session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QString expId = session->capturePlan().experimentId.trimmed();
-                    if (!expId.isEmpty())
-                    {
-                        for (const QString& camera : session->recordedCameraIds())
-                        {
-                            const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
-                            m_scopeonecore->removeStaticFrame(sourceId);
-                        }
-                        m_scopeonecore->closeRecordingSession(expId);
-                    }
+                    m_scopeonecore->closeRecordingSession(
+                        session->capturePlan().experimentId);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionsRequested,
                 this,
@@ -1140,16 +1099,16 @@ namespace scopeone::ui
         m_statusRecordingLabel = new QLabel(tr("Recording: Idle"), this);
         configureStatusLabel(m_statusRecordingLabel, 120, 150, tr("Recording state"));
 
-        m_staticImportProgress = new QProgressBar(this);
-        m_staticImportProgress->setRange(0, 100);
-        m_staticImportProgress->setValue(0);
-        m_staticImportProgress->setTextVisible(false);
-        m_staticImportProgress->setFixedSize(120, 14);
-        m_staticImportProgress->setToolTip(tr("Image import progress"));
-        m_staticImportProgress->hide();
+        m_imageOpenProgress = new QProgressBar(this);
+        m_imageOpenProgress->setRange(0, 100);
+        m_imageOpenProgress->setValue(0);
+        m_imageOpenProgress->setTextVisible(false);
+        m_imageOpenProgress->setFixedSize(120, 14);
+        m_imageOpenProgress->setToolTip(tr("Image loading progress"));
+        m_imageOpenProgress->hide();
 
         bar->addWidget(m_statusMessageLabel, 1);
-        bar->addPermanentWidget(m_staticImportProgress);
+        bar->addPermanentWidget(m_imageOpenProgress);
         bar->addPermanentWidget(m_statusCursorLabel);
         bar->addPermanentWidget(m_statusPreviewLabel);
         bar->addPermanentWidget(m_statusProcessingLabel);
@@ -1184,9 +1143,9 @@ namespace scopeone::ui
         connect(m_unloadConfigurationAction, &QAction::triggered,
                 this, &MainWindow::unloadConfigurationWithConfirmation);
         fileMenu->addSeparator();
-        auto* importImageAction = fileMenu->addAction(tr("&Import Image as Layer..."));
-        importImageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
-        connect(importImageAction, &QAction::triggered, this, &MainWindow::openImportImageDialog);
+        auto* openImageAction = fileMenu->addAction(tr("&Open Image..."));
+        openImageAction->setShortcut(QKeySequence::Open);
+        connect(openImageAction, &QAction::triggered, this, &MainWindow::openImageDialog);
         m_saveImageAsAction = fileMenu->addAction(tr("Save Image &As..."));
         m_saveImageAsAction->setEnabled(false);
         connect(m_saveImageAsAction, &QAction::triggered,
@@ -1886,23 +1845,22 @@ namespace scopeone::ui
             5000);
     }
 
-    // Open file dialog and import image files as static layers
-    void MainWindow::openImportImageDialog()
+    // Open image files as workspace documents
+    void MainWindow::openImageDialog()
     {
         const QStringList filePaths = QFileDialog::getOpenFileNames(
             this,
-            tr("Import Image as Layer"),
+            tr("Open Image"),
             QString(),
             tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
-        importImages(filePaths);
+        openImages(filePaths);
     }
 
-    // Import multiple image files as static layers into the workspace
-    void MainWindow::importImages(const QStringList& filePaths)
+    void MainWindow::openImages(const QStringList& filePaths)
     {
         for (const QString& filePath : filePaths)
         {
-            m_scopeonecore->importImageAsStaticLayerAsync(filePath);
+            m_scopeonecore->openImage(filePath);
         }
     }
 

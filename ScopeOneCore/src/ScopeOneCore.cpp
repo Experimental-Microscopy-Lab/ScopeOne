@@ -52,9 +52,9 @@
 
 namespace
 {
-    std::atomic<quint64> s_importCounter{1};
+    std::atomic<quint64> s_imageOpenCounter{1};
 
-    struct StaticImageImportTask
+    struct ImageOpenTask
     {
         QString filePath;
         QString displayName;
@@ -63,13 +63,7 @@ namespace
         QString errorMessage;
     };
 
-    struct GallerySessionImportTask
-    {
-        QHash<QString, std::vector<scopeone::core::ImageFrame>> stacks;
-        QString errorMessage;
-    };
-
-    scopeone::core::ImageFrame convertImportedImage(
+    scopeone::core::ImageFrame convertOpenedImage(
         const cv::Mat& image,
         const QString& sourceId)
     {
@@ -119,12 +113,12 @@ namespace
         return frame;
     }
 
-    bool importImageSlices(const QString& filePath,
-                           const QString& sourceId,
-                           std::vector<scopeone::core::ImageFrame>& slices,
-                           const std::function<void(size_t, size_t)>& progress)
+    bool readImageSlices(const QString& filePath,
+                         const QString& sourceId,
+                         std::vector<scopeone::core::ImageFrame>& slices,
+                         const std::function<void(size_t, size_t)>& progress)
     {
-        constexpr size_t kImportBatchSize = 8;
+        constexpr size_t kImageReadBatchSize = 8;
         const size_t sliceCount = cv::imcount(filePath.toStdString(), cv::IMREAD_UNCHANGED);
         if (sliceCount == 0)
         {
@@ -132,10 +126,10 @@ namespace
         }
 
         slices.reserve(sliceCount);
-        for (size_t start = 0; start < sliceCount; start += kImportBatchSize)
+        for (size_t start = 0; start < sliceCount; start += kImageReadBatchSize)
         {
             std::vector<cv::Mat> images;
-            const int count = static_cast<int>((std::min)(kImportBatchSize, sliceCount - start));
+            const int count = static_cast<int>((std::min)(kImageReadBatchSize, sliceCount - start));
             if (!cv::imreadmulti(filePath.toStdString(),
                                  images,
                                  static_cast<int>(start),
@@ -146,7 +140,7 @@ namespace
             }
             for (const cv::Mat& image : images)
             {
-                slices.push_back(convertImportedImage(image, sourceId));
+                slices.push_back(convertOpenedImage(image, sourceId));
                 progress(slices.size(), sliceCount);
             }
         }
@@ -2957,118 +2951,68 @@ namespace scopeone::core
         return true;
     }
 
-    // Import an external image file as a static frame layer
-    ImageFrame ScopeOneCore::importImageAsStaticLayer(const QString& filePath,
-                                                      QString* outLayerKey,
-                                                      QString* errorMessage)
-    {
-        const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
-        if (cleanedPath.isEmpty() || !QFileInfo::exists(cleanedPath))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("File does not exist: %1").arg(filePath);
-            }
-            return {};
-        }
-
-        const QFileInfo fileInfo(cleanedPath);
-        const QString sourceId = QStringLiteral("imported:%1_%2")
-                                     .arg(fileInfo.completeBaseName())
-                                     .arg(s_importCounter.fetch_add(1));
-
-        std::vector<ImageFrame> slices;
-        if (!importImageSlices(cleanedPath, sourceId, slices, [](size_t, size_t) {}))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
-            }
-            return {};
-        }
-
-        m_layerStacks.insert(sourceId, std::move(slices));
-        const ImageFrame& frame = m_layerStacks[sourceId].front();
-
-        const ImageFrame published = publishStaticFrame(sourceId, frame, fileInfo.fileName());
-        if (published.isValid())
-        {
-            const QString layerKey = staticLayerKey(sourceId);
-            if (outLayerKey)
-            {
-                *outLayerKey = layerKey;
-            }
-            if (m_imageSceneModel)
-            {
-                m_imageSceneModel->setLayerVisible(layerKey, true);
-            }
-        }
-        return published;
-    }
-
-    void ScopeOneCore::importImageAsStaticLayerAsync(const QString& filePath)
+    // Open an image file as a frame-backed session
+    void ScopeOneCore::openImage(const QString& filePath)
     {
         const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
         const QFileInfo fileInfo(cleanedPath);
         if (cleanedPath.isEmpty() || !fileInfo.isFile())
         {
-            emit staticImageImportFinished(
+            emit imageOpenFinished(
                 filePath,
                 {},
-                false,
                 QStringLiteral("File does not exist: %1").arg(filePath));
             return;
         }
 
-        emit staticImageImportProgress(
+        emit imageOpenProgress(
             filePath,
             0,
             QStringLiteral("Reading %1...").arg(fileInfo.fileName()));
 
-        auto* watcher = new QFutureWatcher<StaticImageImportTask>(this);
-        connect(watcher, &QFutureWatcher<StaticImageImportTask>::finished,
+        auto* watcher = new QFutureWatcher<ImageOpenTask>(this);
+        connect(watcher, &QFutureWatcher<ImageOpenTask>::finished,
                 this, [this, watcher]()
                 {
-                    StaticImageImportTask task = watcher->result();
+                    ImageOpenTask task = watcher->result();
                     if (!task.errorMessage.isEmpty())
                     {
-                        emit staticImageImportFinished(
+                        emit imageOpenFinished(
                             task.filePath,
                             {},
-                            false,
                             task.errorMessage);
                         watcher->deleteLater();
                         return;
                     }
 
-                    m_layerStacks.insert(task.sourceId, std::move(task.slices));
-                    const ImageFrame& frame = m_layerStacks[task.sourceId].front();
-                    const ImageFrame published = publishStaticFrame(
-                        task.sourceId,
-                        frame,
-                        task.displayName);
-                    const QString layerKey = staticLayerKey(task.sourceId);
-                    emit staticImageImportFinished(
+                    QList<ImageFrame> frames;
+                    frames.reserve(static_cast<qsizetype>(task.slices.size()));
+                    for (ImageFrame& frame : task.slices)
+                    {
+                        frames.append(std::move(frame));
+                    }
+                    ExperimentPlan plan;
+                    plan.cameraIds = {task.sourceId};
+                    plan.baseName = task.displayName;
+                    const auto session = createFrameSession(frames, plan);
+                    emit imageOpenFinished(
                         task.filePath,
-                        layerKey,
-                        published.isValid(),
-                        published.isValid()
-                            ? QString()
-                            : QStringLiteral("Failed to publish image layer"));
+                        session,
+                        session ? QString() : QStringLiteral("Failed to open image file"));
                     watcher->deleteLater();
                 });
 
         watcher->setFuture(QtConcurrent::run(
-            m_hardwareThreadPool.get(),
+            m_sessionFrameThreadPool.get(),
             [this, cleanedPath, filePath]()
             {
-                StaticImageImportTask task;
+                ImageOpenTask task;
                 task.filePath = filePath;
                 const QFileInfo fileInfo(cleanedPath);
                 task.displayName = fileInfo.fileName();
-                task.sourceId = QStringLiteral("imported:%1_%2")
+                task.sourceId = QStringLiteral("image:%1_%2")
                                     .arg(fileInfo.completeBaseName())
-                                    .arg(s_importCounter.fetch_add(1));
+                                    .arg(s_imageOpenCounter.fetch_add(1));
 
                 auto reportProgress = [this, filePath](int percent, const QString& statusText)
                 {
@@ -3076,12 +3020,12 @@ namespace scopeone::core
                         this,
                         [this, filePath, percent, statusText]()
                         {
-                            emit staticImageImportProgress(filePath, percent, statusText);
+                            emit imageOpenProgress(filePath, percent, statusText);
                         },
                         Qt::QueuedConnection);
                 };
 
-                if (!importImageSlices(
+                if (!readImageSlices(
                         cleanedPath,
                         task.sourceId,
                         task.slices,
@@ -3097,127 +3041,6 @@ namespace scopeone::core
                 {
                     task.errorMessage = QStringLiteral("Failed to read image file: %1")
                                             .arg(filePath);
-                }
-                return task;
-            }));
-    }
-
-    void ScopeOneCore::importSessionAsStaticLayer(
-        const std::shared_ptr<RecordingSessionData>& session)
-    {
-        if (!session || !session->hasRecordedOutput())
-        {
-            emit gallerySessionImportFinished(
-                {},
-                false,
-                QStringLiteral("No gallery image available for preview"));
-            return;
-        }
-
-        const QStringList cameras = session->recordedCameraIds();
-        const QString expId = session->capturePlan().experimentId.trimmed().isEmpty()
-                                  ? QString::number(s_importCounter.fetch_add(1))
-                                  : session->capturePlan().experimentId.trimmed();
-        qint64 totalFrames = 0;
-        for (const QString& camera : cameras)
-        {
-            const qint64 frameCount = session->recordedFrameCount(camera);
-            if (frameCount > (std::numeric_limits<int>::max)())
-            {
-                emit gallerySessionImportFinished(
-                    {},
-                    false,
-                    QStringLiteral("Gallery stack is too large to load"));
-                return;
-            }
-            totalFrames += frameCount;
-        }
-
-        emit gallerySessionImportProgress(0, QStringLiteral("Loading gallery stack..."));
-
-        auto* watcher = new QFutureWatcher<GallerySessionImportTask>(this);
-        connect(watcher, &QFutureWatcher<GallerySessionImportTask>::finished,
-                this, [this, watcher, session, cameras, expId]()
-                {
-                    GallerySessionImportTask task = watcher->result();
-                    if (!task.errorMessage.isEmpty())
-                    {
-                        emit gallerySessionImportFinished(
-                            {}, false, task.errorMessage);
-                        watcher->deleteLater();
-                        return;
-                    }
-
-                    const QString baseName = session->capturePlan().baseName.trimmed().isEmpty()
-                                                 ? QStringLiteral("snapshot")
-                                                 : session->capturePlan().baseName.trimmed();
-                    QString lastLayerKey;
-                    for (const QString& camera : cameras)
-                    {
-                        const QString sourceId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
-                        auto& stack = task.stacks[camera];
-                        if (stack.empty())
-                        {
-                            continue;
-                        }
-
-                        const QString layerKey = staticLayerKey(sourceId);
-                        DocumentLayer existingLayer;
-                        if (m_imageSceneModel->findLayer(layerKey, existingLayer))
-                        {
-                            m_imageSceneModel->setLayerVisible(layerKey, true);
-                            lastLayerKey = layerKey;
-                            continue;
-                        }
-
-                        m_layerStacks.insert(sourceId, std::move(stack));
-                        const QString displayName = cameras.size() > 1
-                                                        ? QStringLiteral("%1 - %2").arg(baseName, camera)
-                                                        : baseName;
-                        publishStaticFrame(
-                            sourceId, m_layerStacks[sourceId].front(), displayName);
-                        lastLayerKey = layerKey;
-                    }
-
-                    emit gallerySessionImportFinished(
-                        lastLayerKey,
-                        true,
-                        {});
-                    watcher->deleteLater();
-                });
-        watcher->setFuture(QtConcurrent::run(
-            m_sessionFrameThreadPool.get(),
-            [this, session, cameras, expId, totalFrames]()
-            {
-                GallerySessionImportTask task;
-                qint64 completedFrames = 0;
-                for (const QString& camera : cameras)
-                {
-                    const qint64 frameCount = session->recordedFrameCount(camera);
-                    auto& slices = task.stacks[camera];
-                    slices.reserve(static_cast<size_t>(frameCount));
-                    for (int index = 0; index < frameCount; ++index)
-                    {
-                        ImageFrame frame = session->imageFrameAt(camera, index);
-                        if (!frame.isValid())
-                        {
-                            task.errorMessage = QStringLiteral("Failed to read gallery frame %1")
-                                                     .arg(index + 1);
-                            return task;
-                        }
-                        frame.cameraId = QStringLiteral("gallery:%1_%2").arg(expId, camera);
-                        slices.push_back(std::move(frame));
-                        ++completedFrames;
-                        const int percent = static_cast<int>((completedFrames * 100) / totalFrames);
-                        QMetaObject::invokeMethod(this, [this, percent, completedFrames, totalFrames]()
-                        {
-                            emit gallerySessionImportProgress(
-                                percent,
-                                QStringLiteral("Loading frame %1 / %2")
-                                    .arg(completedFrames)
-                                    .arg(totalFrames));
-                        }, Qt::QueuedConnection);
-                    }
                 }
                 return task;
             }));

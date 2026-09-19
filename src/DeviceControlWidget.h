@@ -106,7 +106,7 @@ namespace scopeone::ui
                                             int currentColumn,
                                             int previousRow,
                                             int previousColumn);
-        void onPreviewLayerImportClicked();
+        void onOpenImageClicked();
         void onPreviewLayerDuplicateClicked();
         void onPreviewLayerTableItemChanged(QTableWidgetItem* item);
         void showLayerContextMenu(const QPoint& pos);

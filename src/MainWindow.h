@@ -90,8 +90,8 @@ namespace scopeone::ui
         void applyStoredApplicationSettings();
         void logStartupSummary();
         void openSettingsDialog();
-        void openImportImageDialog();
-        void importImages(const QStringList& filePaths);
+        void openImageDialog();
+        void openImages(const QStringList& filePaths);
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
         void setCursorStatus(const QString& text);
@@ -173,7 +173,7 @@ namespace scopeone::ui
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
         QLabel* m_statusRecordingLabel{nullptr};
-        QProgressBar* m_staticImportProgress{nullptr};
+        QProgressBar* m_imageOpenProgress{nullptr};
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
