@@ -9,7 +9,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -27,6 +29,7 @@
 #include <QProgressBar>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -244,10 +247,16 @@ namespace scopeone::ui
                 });
                 connect(browseButton, &QPushButton::clicked, this, [this]()
                 {
+                    QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                    const QString initialPath = m_pathEdit->text().isEmpty()
+                        ? settings.value(QStringLiteral("LastOnnxDirectory"), QDir::homePath()).toString()
+                        : m_pathEdit->text();
                     const QString path = QFileDialog::getOpenFileName(
-                        this, tr("Select File"), m_pathEdit->text(), m_fileFilter);
+                        this, tr("Select File"), initialPath, m_fileFilter);
                     if (!path.isEmpty())
                     {
+                        settings.setValue(QStringLiteral("LastOnnxDirectory"),
+                                          QFileInfo(path).absolutePath());
                         m_pathEdit->setText(path);
                         m_changed();
                     }

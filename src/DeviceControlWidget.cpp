@@ -11,7 +11,9 @@
 #include <QDebug>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -27,6 +29,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -1320,11 +1323,17 @@ namespace scopeone::ui
     // Open image files as workspace documents
     void DeviceControlWidget::onOpenImageClicked()
     {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QStringList filePaths = QFileDialog::getOpenFileNames(
             this,
             tr("Open Image"),
-            QString(),
+            settings.value(QStringLiteral("LastImageDirectory"), QDir::homePath()).toString(),
             tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
+        if (!filePaths.isEmpty())
+        {
+            settings.setValue(QStringLiteral("LastImageDirectory"),
+                              QFileInfo(filePaths.first()).absolutePath());
+        }
         for (const QString& filePath : filePaths)
         {
             m_scopeonecore->openImage(filePath);
