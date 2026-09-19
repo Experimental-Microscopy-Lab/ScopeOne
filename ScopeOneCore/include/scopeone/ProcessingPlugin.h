@@ -19,7 +19,8 @@ namespace scopeone::core
         Integer,
         Real,
         Boolean,
-        Choice
+        Choice,
+        FilePath
     };
 
     struct ProcessingParameterChoice
@@ -39,6 +40,7 @@ namespace scopeone::core
         QVariant step;
         int decimals{0};
         QList<ProcessingParameterChoice> choices;
+        QString fileFilter;
     };
 
     struct ProcessingModuleDescriptor
