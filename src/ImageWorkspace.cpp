@@ -8,24 +8,12 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
-#include <QFutureWatcher>
-#include <QGroupBox>
-#include <QHBoxLayout>
 #include <QInputDialog>
-#include <QLabel>
 #include <QLineEdit>
-#include <QPointer>
-#include <QRegularExpression>
-#include <QSlider>
 #include <QSignalBlocker>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QTabBar>
-#include <QTabWidget>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QUuid>
-#include <QtConcurrent>
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -36,186 +24,12 @@ namespace scopeone::ui
     {
         using RecordingSessionData = scopeone::core::ScopeOneCore::RecordingSessionData;
 
-        class ImageDocumentPage final : public QWidget
-        {
-            Q_OBJECT
-
-        public:
-            ImageDocumentPage(const QString& documentId,
-                              const QString& title,
-                              const QString& cameraId,
-                              const std::shared_ptr<RecordingSessionData>& session,
-                              const scopeone::core::ExperimentDocument& presentation,
-                              int frameCount,
-                              QWidget* parent)
-                : QWidget(parent), m_documentId(documentId), m_sourceId(cameraId)
-            {
-                auto* scene = new scopeone::core::ImageSceneModel(this);
-                scopeone::core::DocumentLayer layer;
-                auto sourceLayer = std::find_if(
-                    presentation.layers.cbegin(), presentation.layers.cend(),
-                    [&cameraId](const scopeone::core::DocumentLayer& candidate)
-                    {
-                        return candidate.sourceId == cameraId
-                               && candidate.kind == scopeone::core::DocumentLayerKind::Raw;
-                    });
-                if (sourceLayer == presentation.layers.cend())
-                {
-                    sourceLayer = std::find_if(
-                        presentation.layers.cbegin(), presentation.layers.cend(),
-                        [&cameraId](const scopeone::core::DocumentLayer& candidate)
-                        {
-                            return candidate.sourceId == cameraId;
-                        });
-                }
-                if (sourceLayer != presentation.layers.cend())
-                {
-                    layer = *sourceLayer;
-                }
-                layer.id = scopeone::core::ScopeOneCore::staticLayerKey(cameraId);
-                layer.sourceId = cameraId;
-                layer.name = title;
-                layer.kind = scopeone::core::DocumentLayerKind::Gallery;
-                layer.display.visible = true;
-                scene->ensureLayer(layer);
-                scene->setVisibleLayers({layer.id});
-                if (sourceLayer != presentation.layers.cend())
-                {
-                    for (const auto& savedMarkup : presentation.markups)
-                    {
-                        if (savedMarkup.layerId != sourceLayer->id)
-                        {
-                            continue;
-                        }
-                        const QString markupId =
-                            savedMarkup.type == scopeone::core::DocumentMarkupType::Line
-                                ? scene->createLine(layer.id,
-                                                    savedMarkup.start.toPoint(),
-                                                    savedMarkup.end.toPoint(),
-                                                    savedMarkup.label,
-                                                    savedMarkup.role)
-                                : scene->createRect(layer.id,
-                                                   savedMarkup.rect.toRect(),
-                                                   savedMarkup.label,
-                                                   savedMarkup.role);
-                        scene->setVisible(markupId, savedMarkup.visible);
-                        scene->setSelected(markupId, savedMarkup.selected);
-                    }
-                }
-
-                auto* layout = new QVBoxLayout(this);
-                layout->setContentsMargins(0, 0, 0, 0);
-                m_preview = new PreviewWidget(scene, this);
-                m_preview->setPixelSizeCallback([session, cameraId](const QString&)
-                {
-                    return session ? session->cameraPixelSizeUm(cameraId) : 0.0;
-                });
-                layout->addWidget(m_preview, 1);
-
-                auto* navigation = new QWidget(this);
-                auto* navigationLayout = new QHBoxLayout(navigation);
-                navigationLayout->setContentsMargins(8, 4, 8, 4);
-                m_slider = new QSlider(Qt::Horizontal, navigation);
-                m_slider->setRange(0, qMax(0, frameCount - 1));
-                m_frameLabel = new QLabel(navigation);
-                m_frameLabel->setMinimumWidth(90);
-                m_frameLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                navigationLayout->addWidget(m_slider, 1);
-                navigationLayout->addWidget(m_frameLabel);
-                navigation->setVisible(frameCount > 1);
-                layout->addWidget(navigation);
-                updateFrameLabel(0, frameCount);
-
-                connect(m_slider, &QSlider::valueChanged, this,
-                        [this, frameCount](int index)
-                        {
-                            updateFrameLabel(index, frameCount);
-                            emit frameIndexRequested(m_documentId, index);
-                        });
-            }
-
-            void showFrame(const scopeone::core::ImageFrame& frame)
-            {
-                scopeone::core::ImageFrame displayFrame(frame);
-                displayFrame.cameraId = m_sourceId;
-                sceneModel()->updateLayerFrame(
-                    scopeone::core::ScopeOneCore::staticLayerKey(m_sourceId), displayFrame);
-                m_preview->setGraphStaticLayerFrame(m_sourceId, displayFrame);
-            }
-
-            scopeone::core::ImageSceneModel* sceneModel() const
-            {
-                return m_preview->sceneModel();
-            }
-
-            PreviewWidget* previewWidget() const
-            {
-                return m_preview;
-            }
-
-            void setFrameIndex(int index)
-            {
-                const QSignalBlocker blocker(m_slider);
-                m_slider->setValue(index);
-                updateFrameLabel(index, m_slider->maximum() + 1);
-            }
-
-        signals:
-            void frameIndexRequested(const QString& documentId, int frameIndex);
-
-        private:
-            void updateFrameLabel(int index, int count)
-            {
-                m_frameLabel->setText(QStringLiteral("%1 / %2").arg(index + 1).arg(count));
-            }
-
-            QString m_documentId;
-            QString m_sourceId;
-            PreviewWidget* m_preview{nullptr};
-            QSlider* m_slider{nullptr};
-            QLabel* m_frameLabel{nullptr};
-        };
-
         QString defaultTitle(const RecordingSessionData& session, const QString& cameraId)
         {
             const QString baseName = session.capturePlan().baseName.trimmed();
             return baseName.isEmpty() ? cameraId : baseName + QStringLiteral(" - ") + cameraId;
         }
 
-        QString compactViewerTitle(const QString& title)
-        {
-            static const QRegularExpression timestampPattern(
-                QStringLiteral("(\\d{8})_(\\d{6})"));
-            const QRegularExpressionMatch firstMatch = timestampPattern.match(title);
-            if (!firstMatch.hasMatch())
-            {
-                return title;
-            }
-            const QDateTime timestamp = QDateTime::fromString(
-                firstMatch.captured(1) + QStringLiteral("_") + firstMatch.captured(2),
-                QStringLiteral("yyyyMMdd_HHmmss"));
-            if (!timestamp.isValid())
-            {
-                return title;
-            }
-            QString compact = title.left(firstMatch.capturedStart())
-                + timestamp.toString(QStringLiteral("MM-dd HH:mm:ss"))
-                + title.mid(firstMatch.capturedEnd());
-
-            QRegularExpressionMatchIterator iterator = timestampPattern.globalMatch(compact);
-            QList<QPair<int, int>> duplicateRanges;
-            while (iterator.hasNext())
-            {
-                const QRegularExpressionMatch duplicate = iterator.next();
-                duplicateRanges.append({duplicate.capturedStart(), duplicate.capturedLength()});
-            }
-            for (auto it = duplicateRanges.crbegin(); it != duplicateRanges.crend(); ++it)
-            {
-                compact.remove(it->first, it->second);
-            }
-            compact.remove(QRegularExpression(QStringLiteral("\\s*[-|_]\\s*$")));
-            return compact.trimmed();
-        }
     }
 
     struct ImageWorkspace::Document
@@ -230,7 +44,8 @@ namespace scopeone::ui
         quint64 frameRequestId{0};
         scopeone::core::ImageFrame currentFrame;
         QString activeLayerKey;
-        QPointer<ImageDocumentPage> page;
+        QString layerSourceId;
+        bool presentationApplied{false};
     };
 
     ImageWorkspace::ImageWorkspace(scopeone::core::ScopeOneCore* core,
@@ -239,73 +54,20 @@ namespace scopeone::ui
         : QObject(parent), m_core(core)
     {
         m_viewerHost = new QWidget(windowParent);
-        auto* hostLayout = new QVBoxLayout(m_viewerHost);
-        hostLayout->setContentsMargins(0, 0, 0, 0);
-        hostLayout->setSpacing(0);
+        m_viewerLayout = new QVBoxLayout(m_viewerHost);
+        m_viewerLayout->setContentsMargins(0, 0, 0, 0);
+        m_viewerLayout->setSpacing(0);
 
         m_viewerToolbar = new QToolBar(tr("Viewer"), m_viewerHost);
         m_viewerToolbar->setMovable(false);
         m_viewerToolbar->setFloatable(false);
         m_viewerToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        hostLayout->addWidget(m_viewerToolbar);
-
-        m_viewerStack = new QStackedWidget(m_viewerHost);
-        m_viewerTabs = new QTabWidget(m_viewerStack);
-        m_viewerTabs->setTabsClosable(true);
-        m_viewerTabs->setDocumentMode(true);
-        m_viewerStack->addWidget(m_viewerTabs);
-
-        m_compareWidget = new QWidget(m_viewerStack);
-        auto* compareLayout = new QHBoxLayout(m_compareWidget);
-        compareLayout->setContentsMargins(0, 0, 0, 0);
-        auto* compareSplitter = new QSplitter(Qt::Horizontal, m_compareWidget);
-        m_compareLeftHost = new QGroupBox(m_compareWidget);
-        m_compareLeftHost->setLayout(new QVBoxLayout);
-        m_compareLeftHost->layout()->setContentsMargins(4, 4, 4, 4);
-        m_compareRightHost = new QGroupBox(m_compareWidget);
-        m_compareRightHost->setLayout(new QVBoxLayout);
-        m_compareRightHost->layout()->setContentsMargins(4, 4, 4, 4);
-        compareSplitter->addWidget(m_compareLeftHost);
-        compareSplitter->addWidget(m_compareRightHost);
-        compareSplitter->setSizes({1, 1});
-        compareLayout->addWidget(compareSplitter);
-        m_viewerStack->addWidget(m_compareWidget);
-        hostLayout->addWidget(m_viewerStack, 1);
+        m_viewerLayout->addWidget(m_viewerToolbar);
 
         setupViewerToolbar();
         const int viewerToolbarHeight = m_viewerToolbar->sizeHint().height();
         m_viewerToolbar->setMinimumHeight(viewerToolbarHeight);
         m_viewerToolbar->setMaximumHeight(viewerToolbarHeight);
-        connect(m_viewerTabs, &QTabWidget::currentChanged,
-                this, [this](int index)
-                {
-                    if (index == m_liveTabIndex)
-                    {
-                        activateLiveViewer();
-                        return;
-                    }
-                    if (Document* document = findDocumentByPage(m_viewerTabs->widget(index)))
-                    {
-                        if (m_activeDocumentId != document->id)
-                        {
-                            setActiveDocument(document->id);
-                        }
-                        updateViewerToolbar();
-                    }
-                });
-        connect(m_viewerTabs, &QTabWidget::tabCloseRequested,
-                this, [this](int index)
-                {
-                    if (index == m_liveTabIndex)
-                    {
-                        return;
-                    }
-                    if (Document* document = findDocumentByPage(m_viewerTabs->widget(index)))
-                    {
-                        closeDocument(document->id);
-                    }
-                });
-
         connect(core, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
                 this, [this](quint64 requestId,
                              const std::shared_ptr<RecordingSessionData>&,
@@ -325,14 +87,81 @@ namespace scopeone::ui
                         closeDocument(documentId);
                         return;
                     }
-                    if (frame.isValid() && frameIndex == document->requestedFrameIndex)
+                    if (frame.isValid())
                     {
                         document->frameIndex = frameIndex;
                         document->currentFrame = frame;
-                        document->page->setFrameIndex(frameIndex);
-                        document->page->showFrame(frame);
+                        scopeone::core::ImageFrame displayFrame(frame);
+                        displayFrame.cameraId = document->layerSourceId;
+                        m_core->publishStaticFrame(
+                            document->layerSourceId, displayFrame, document->title);
+                        if (!document->presentationApplied)
+                        {
+                            const auto& presentation = document->session->experimentDocument();
+                            const auto sourceLayer = std::find_if(
+                                presentation.layers.cbegin(), presentation.layers.cend(),
+                                [&document](const scopeone::core::DocumentLayer& layer)
+                                {
+                                    return layer.sourceId == document->cameraId
+                                           && layer.kind == scopeone::core::DocumentLayerKind::Raw;
+                                });
+                            if (sourceLayer != presentation.layers.cend())
+                            {
+                                auto* scene = m_core->imageSceneModel();
+                                scene->setLayerOpacityPercent(
+                                    document->activeLayerKey,
+                                    sourceLayer->display.opacityPercent);
+                                scene->setLayerGamma(
+                                    document->activeLayerKey,
+                                    sourceLayer->display.gamma);
+                                scene->setLayerColormap(
+                                    document->activeLayerKey,
+                                    sourceLayer->display.colormap);
+                                scene->setLayerBlending(
+                                    document->activeLayerKey,
+                                    sourceLayer->display.blending);
+                                scene->setLayerDisplayLevels(
+                                    document->activeLayerKey,
+                                    sourceLayer->display.levelMin,
+                                    sourceLayer->display.levelMax,
+                                    sourceLayer->display.levelDomainMax);
+                                for (const auto& savedMarkup : presentation.markups)
+                                {
+                                    if (savedMarkup.layerId != sourceLayer->id)
+                                    {
+                                        continue;
+                                    }
+                                    const QString markupId =
+                                        savedMarkup.type == scopeone::core::DocumentMarkupType::Line
+                                            ? scene->createLine(document->activeLayerKey,
+                                                                savedMarkup.start.toPoint(),
+                                                                savedMarkup.end.toPoint(),
+                                                                savedMarkup.label,
+                                                                savedMarkup.role)
+                                            : scene->createRect(document->activeLayerKey,
+                                                               savedMarkup.rect.toRect(),
+                                                               savedMarkup.label,
+                                                               savedMarkup.role);
+                                    scene->setVisible(markupId, savedMarkup.visible);
+                                    scene->setSelected(markupId, savedMarkup.selected);
+                                }
+                            }
+                            document->presentationApplied = true;
+                        }
                         if (document->id == m_activeDocumentId)
                         {
+                            QStringList visibleLayerKeys;
+                            const QString sessionId = document->session->capturePlan().experimentId;
+                            for (const auto& candidate : m_documents)
+                            {
+                                if (candidate->session->capturePlan().experimentId == sessionId
+                                    && m_core->imageSceneModel()->layerIds().contains(
+                                        candidate->activeLayerKey))
+                                {
+                                    visibleLayerKeys.append(candidate->activeLayerKey);
+                                }
+                            }
+                            m_core->imageSceneModel()->setVisibleLayers(visibleLayerKeys);
                             emit activeFrameChanged();
                             updateLineProfile(*document);
                         }
@@ -342,7 +171,7 @@ namespace scopeone::ui
                     {
                         if (!requestFrame(*document, document->requestedFrameIndex))
                         {
-                            document->page->setFrameIndex(document->frameIndex);
+                            document->requestedFrameIndex = document->frameIndex;
                         }
                     }
                 });
@@ -561,91 +390,16 @@ namespace scopeone::ui
                     }
                 });
 
-        m_compareSeparator = m_viewerToolbar->addSeparator();
-        m_compareAction = m_viewerToolbar->addAction(tr("Compare"));
-        m_compareAction->setCheckable(true);
-        m_compareAction->setToolTip(tr("Show two image documents side by side"));
-        connect(m_compareAction, &QAction::toggled, this,
-                [this](bool enabled)
-                {
-                    if (enabled)
-                    {
-                        if (!beginComparison())
-                        {
-                            const QSignalBlocker blocker(m_compareAction);
-                            m_compareAction->setChecked(false);
-                        }
-                    }
-                    else
-                    {
-                        endComparison();
-                    }
-                });
-
-        m_compareDocumentCombo = new QComboBox(m_viewerToolbar);
-        m_compareDocumentCombo->setMinimumWidth(180);
-        m_compareDocumentCombo->setToolTip(tr("Choose the document shown on the right"));
-        m_compareDocumentCombo->setVisible(false);
-        m_viewerToolbar->addWidget(m_compareDocumentCombo);
-        connect(m_compareDocumentCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
-                [this](int index)
-                {
-                    if (index < 0)
-                    {
-                        return;
-                    }
-                    QString rightId = m_compareDocumentCombo->itemData(index).toString();
-                    const QString leftId = comparisonActive()
-                                               ? m_compareLeftDocumentId
-                                               : m_activeDocumentId;
-                    if (rightId == QStringLiteral("duplicate"))
-                    {
-                        rightId = duplicateDocument(leftId);
-                    }
-                    if (rightId.isEmpty()
-                        || rightId == leftId
-                        || (comparisonActive() && rightId == m_compareRightDocumentId))
-                    {
-                        return;
-                    }
-                    if (comparisonActive())
-                    {
-                        endComparison();
-                    }
-                    setActiveDocument(leftId);
-                    {
-                        const QSignalBlocker blocker(m_compareAction);
-                        m_compareAction->setChecked(true);
-                    }
-                    if (!beginComparison(rightId))
-                    {
-                        const QSignalBlocker blocker(m_compareAction);
-                        m_compareAction->setChecked(false);
-                    }
-                });
-
-        m_linkFramesAction = m_viewerToolbar->addAction(tr("Link Frames"));
-        m_linkFramesAction->setCheckable(true);
-        m_linkFramesAction->setToolTip(tr("Keep both compared sequences on the same frame number"));
-        m_linkFramesAction->setVisible(false);
     }
 
     // Refreshes viewer controls when the active document or display state changes
     void ImageWorkspace::updateViewerToolbar()
     {
         PreviewWidget* preview = activePreviewWidget();
-        const ImageDocumentInfo activeDocument = document();
         m_fitToWindowAction->setEnabled(preview != nullptr);
         m_oneToOneAction->setEnabled(preview != nullptr);
         m_zoomCombo->setEnabled(preview != nullptr);
         m_dimensionAction->setEnabled(preview != nullptr);
-        const bool staticDocument = activeDocument.isValid();
-        m_compareSeparator->setVisible(staticDocument);
-        m_compareAction->setVisible(staticDocument);
-        m_compareAction->setEnabled(staticDocument);
-        m_compareDocumentCombo->setVisible(staticDocument);
-        m_compareDocumentCombo->setEnabled(staticDocument);
-        m_linkFramesAction->setVisible(staticDocument && comparisonActive());
         m_reset3dAction->setEnabled(
             preview && preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional);
         if (preview)
@@ -673,44 +427,14 @@ namespace scopeone::ui
             }
         }
 
-        {
-            const QSignalBlocker blocker(m_compareDocumentCombo);
-            m_compareDocumentCombo->clear();
-            const QString leftDocumentId = comparisonActive()
-                                               ? m_compareLeftDocumentId
-                                               : m_activeDocumentId;
-            if (!leftDocumentId.isEmpty())
-            {
-                const Document* left = findDocument(leftDocumentId);
-                m_compareDocumentCombo->addItem(
-                    left ? tr("Same sequence, independent frame") : tr("Duplicate current document"),
-                    QStringLiteral("duplicate"));
-                for (const auto& candidate : m_documents)
-                {
-                    if (candidate->id != leftDocumentId)
-                    {
-                        m_compareDocumentCombo->addItem(candidate->title, candidate->id);
-                    }
-                }
-                const int rightIndex = m_compareDocumentCombo->findData(
-                    comparisonActive() ? m_compareRightDocumentId : QStringLiteral("duplicate"));
-                m_compareDocumentCombo->setCurrentIndex(rightIndex >= 0 ? rightIndex : 0);
-            }
-        }
     }
 
     void ImageWorkspace::setLiveViewer(PreviewWidget* previewWidget)
     {
         m_livePreviewWidget = previewWidget;
-        connectViewer(previewWidget, {});
+        m_viewerLayout->addWidget(previewWidget, 1);
+        connectViewer(previewWidget);
         m_liveLayerKey = previewWidget->visibleLayerKeys().value(0);
-        if (m_liveTabIndex < 0)
-        {
-            m_liveTabIndex = m_viewerTabs->addTab(previewWidget, tr("Live Preview"));
-            m_viewerTabs->tabBar()->setTabButton(
-                m_liveTabIndex, QTabBar::RightSide, nullptr);
-            m_viewerTabs->setCurrentIndex(m_liveTabIndex);
-        }
         updateViewerToolbar();
     }
 
@@ -720,11 +444,6 @@ namespace scopeone::ui
         {
             return;
         }
-        if (comparisonActive())
-        {
-            endComparison();
-        }
-        m_viewerTabs->setCurrentIndex(m_liveTabIndex);
         if (m_activeDocumentId.isEmpty())
         {
             return;
@@ -739,16 +458,53 @@ namespace scopeone::ui
 
     void ImageWorkspace::setVisibleLayers(const QStringList& layerKeys, bool sideBySide)
     {
-        scopeone::core::ImageSceneModel* scene = activeSceneModel();
-        PreviewWidget* preview = activePreviewWidget();
+        Document* document = nullptr;
+        for (const QString& layerKey : layerKeys)
+        {
+            document = findDocumentByLayerKey(layerKey);
+            if (document)
+            {
+                break;
+            }
+        }
+        if (document)
+        {
+            setActiveDocument(document->id);
+        }
+        else
+        {
+            activateLiveViewer();
+        }
+
+        auto* scene = m_core->imageSceneModel();
+        auto* preview = m_livePreviewWidget;
         if (!scene || !preview)
         {
             return;
         }
         scene->setVisibleLayers(layerKeys);
+        syncActiveLayer();
         preview->setLayerLayoutMode(sideBySide
                                         ? PreviewWidget::LayerLayoutMode::SideBySide
                                         : PreviewWidget::LayerLayoutMode::Overlay);
+    }
+
+    void ImageWorkspace::setLayerSliceIndex(const QString& layerKey, int sliceIndex)
+    {
+        const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+        Document* document = findDocumentByLayerKey(layerKey);
+        if (!document || document->layerSourceId != sourceId)
+        {
+            m_core->setLayerSliceIndex(layerKey, sliceIndex);
+            return;
+        }
+        requestFrame(*document, sliceIndex);
+    }
+
+    int ImageWorkspace::layerSliceCount(const QString& layerKey) const
+    {
+        const Document* document = findDocumentByLayerKey(layerKey);
+        return document ? document->frameCount : m_core->layerSliceCount(layerKey);
     }
 
     QStringList ImageWorkspace::openSession(const std::shared_ptr<RecordingSessionData>& session,
@@ -795,22 +551,12 @@ namespace scopeone::ui
             document->session = session;
             document->cameraId = camera;
             document->frameCount = static_cast<int>(count);
-            document->activeLayerKey = scopeone::core::ScopeOneCore::staticLayerKey(camera);
-            document->page = new ImageDocumentPage(document->id,
-                                                   document->title,
-                                                   camera,
-                                                   session,
-                                                   session->experimentDocument(),
-                                                   document->frameCount,
-                                                   m_viewerTabs);
-            connectViewer(document->page->previewWidget(), document->id);
+            document->layerSourceId = QStringLiteral("gallery:%1_%2_%3")
+                                          .arg(sessionId, camera, document->id);
+            document->activeLayerKey = scopeone::core::ScopeOneCore::staticLayerKey(
+                document->layerSourceId);
             const QString id = document->id;
-            connect(document->page, &ImageDocumentPage::frameIndexRequested,
-                    this, &ImageWorkspace::requestDocumentFrame);
             m_documents.push_back(std::move(document));
-            const int tabIndex = m_viewerTabs->addTab(
-                m_documents.back()->page, compactViewerTitle(m_documents.back()->title));
-            m_viewerTabs->setTabToolTip(tabIndex, m_documents.back()->title);
             if (!requestFrame(*m_documents.back(), 0))
             {
                 closeDocument(id);
@@ -820,7 +566,29 @@ namespace scopeone::ui
         }
         if (!openedIds.isEmpty())
         {
-            activateDocument(openedIds.constLast());
+            QStringList layerKeys;
+            for (const QString& id : openedIds)
+            {
+                layerKeys.append(findDocument(id)->activeLayerKey);
+            }
+            m_core->imageSceneModel()->setVisibleLayers(
+                [this, &layerKeys]
+                {
+                    QStringList existing;
+                    for (const QString& layerKey : layerKeys)
+                    {
+                        if (m_core->imageSceneModel()->layerIds().contains(layerKey))
+                        {
+                            existing.append(layerKey);
+                        }
+                    }
+                    return existing;
+                }());
+            m_livePreviewWidget->setLayerLayoutMode(
+                layerKeys.size() > 1
+                    ? PreviewWidget::LayerLayoutMode::SideBySide
+                    : PreviewWidget::LayerLayoutMode::Overlay);
+            setActiveDocument(openedIds.constLast());
         }
         return openedIds;
     }
@@ -904,162 +672,46 @@ namespace scopeone::ui
 
     scopeone::core::ImageSceneModel* ImageWorkspace::sceneModel(const QString& documentId) const
     {
-        if (documentId.trimmed().isEmpty())
-        {
-            return m_core->imageSceneModel();
-        }
-        const Document* document = findDocument(documentId);
-        return document && document->page ? document->page->sceneModel() : nullptr;
+        Q_UNUSED(documentId);
+        return m_core->imageSceneModel();
     }
 
     PreviewWidget* ImageWorkspace::previewWidget(const QString& documentId) const
     {
-        if (documentId.trimmed().isEmpty())
-        {
-            return m_livePreviewWidget;
-        }
-        const Document* document = findDocument(documentId);
-        return document && document->page ? document->page->previewWidget() : nullptr;
+        Q_UNUSED(documentId);
+        return m_livePreviewWidget;
     }
 
     scopeone::core::ImageFrame ImageWorkspace::frameForLayer(const QString& layerKey) const
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->graphFrame(layerKey);
-        }
-        const Document* document = findDocument(m_activeDocumentId);
-        if (!document || !document->page
-            || !document->page->sceneModel()->layerIds().contains(layerKey))
-        {
-            return {};
-        }
-        return document->currentFrame;
+        return m_core->graphFrame(layerKey);
     }
 
     bool ImageWorkspace::histogram(
         const QString& layerKey,
         scopeone::core::ScopeOneCore::HistogramStats& stats) const
     {
-        return isLiveViewerActive()
-                   ? m_core->getLayerHistogram(layerKey, stats)
-                   : scopeone::core::ScopeOneCore::computeHistogramStats(frameForLayer(layerKey), stats);
+        return m_core->getLayerHistogram(layerKey, stats);
     }
 
     void ImageWorkspace::requestHistogram(const QString& layerKey)
     {
-        queueHistogramRequest(layerKey, false);
-    }
-
-    // Queues a static frame histogram without blocking the viewer
-    void ImageWorkspace::queueHistogramRequest(const QString& layerKey, bool applyAutoLevels)
-    {
-        if (isLiveViewerActive())
-        {
-            return;
-        }
-        const Document* document = findDocument(m_activeDocumentId);
-        if (!document || !document->currentFrame.isValid())
-        {
-            return;
-        }
-        m_histogramDocumentId = document->id;
-        m_histogramLayerKey = layerKey;
-        m_histogramFrameIndex = document->frameIndex;
-        m_histogramFrame = document->currentFrame;
-        m_histogramApplyAutoLevels = applyAutoLevels;
-        ++m_histogramGeneration;
-        startHistogramRequest();
-    }
-
-    void ImageWorkspace::startHistogramRequest()
-    {
-        if (m_histogramRunning || !m_histogramFrame.isValid())
-        {
-            return;
-        }
-        m_histogramRunning = true;
-        const QString documentId = m_histogramDocumentId;
-        const QString layerKey = m_histogramLayerKey;
-        const int frameIndex = m_histogramFrameIndex;
-        const bool applyAutoLevels = m_histogramApplyAutoLevels;
-        const quint64 generation = m_histogramGeneration;
-        const scopeone::core::ImageFrame frame = std::exchange(
-            m_histogramFrame, scopeone::core::ImageFrame{});
-        m_histogramApplyAutoLevels = false;
-        auto* watcher = new QFutureWatcher<scopeone::core::ScopeOneCore::HistogramStats>(this);
-        connect(watcher, &QFutureWatcherBase::finished, this,
-                [this, watcher, documentId, layerKey, frameIndex, applyAutoLevels, generation]()
-                {
-                    m_histogramRunning = false;
-                    const Document* document = findDocument(documentId);
-                    if (generation == m_histogramGeneration
-                        && document && documentId == m_activeDocumentId
-                        && document->frameIndex == frameIndex)
-                    {
-                        const auto stats = watcher->result();
-                        if (applyAutoLevels)
-                        {
-                            activeSceneModel()->setLayerAutoStretchEnabled(layerKey, false);
-                            activeSceneModel()->setLayerDisplayLevels(
-                                layerKey,
-                                stats.autoMinLevel,
-                                stats.autoMaxLevel,
-                                stats.maxValue);
-                        }
-                        emit histogramReady(layerKey, stats);
-                    }
-                    watcher->deleteLater();
-                    startHistogramRequest();
-                });
-        watcher->setFuture(QtConcurrent::run([frame]()
-        {
-            scopeone::core::ScopeOneCore::HistogramStats stats;
-            scopeone::core::ScopeOneCore::computeHistogramStats(frame, stats);
-            return stats;
-        }));
+        m_core->setActiveHistogramLayer(layerKey);
     }
 
     bool ImageWorkspace::autoLayerLevels(const QString& layerKey)
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->autoLayerLevels(layerKey);
-        }
-        if (!frameForLayer(layerKey).isValid())
-        {
-            return false;
-        }
-        queueHistogramRequest(layerKey, true);
-        return true;
+        return m_core->autoLayerLevels(layerKey);
     }
 
     bool ImageWorkspace::fullLayerLevels(const QString& layerKey)
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->fullLayerLevels(layerKey);
-        }
-        const scopeone::core::ImageFrame frame = frameForLayer(layerKey);
-        if (!frame.isValid())
-        {
-            return false;
-        }
-        activeSceneModel()->setLayerAutoStretchEnabled(layerKey, false);
-        return activeSceneModel()->setLayerDisplayLevels(layerKey, 0, frame.maxValue(), frame.maxValue());
+        return m_core->fullLayerLevels(layerKey);
     }
 
     bool ImageWorkspace::setLayerAutoStretchEnabled(const QString& layerKey, bool enabled)
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->setLayerAutoStretchEnabled(layerKey, enabled);
-        }
-        if (!activeSceneModel()->setLayerAutoStretchEnabled(layerKey, enabled))
-        {
-            return false;
-        }
-        return !enabled || autoLayerLevels(layerKey);
+        return m_core->setLayerAutoStretchEnabled(layerKey, enabled);
     }
 
     bool ImageWorkspace::layerAutoStretchEnabled(const QString& layerKey) const
@@ -1073,104 +725,53 @@ namespace scopeone::ui
                                      const QPoint& end,
                                      QVector<int>& values) const
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->getLineProfile(layerKey, start, end, values);
-        }
-        const scopeone::core::ImageFrame frame = frameForLayer(layerKey);
-        if (!frame.isValid())
-        {
-            return false;
-        }
-        const int count = qMax(qAbs(end.x() - start.x()), qAbs(end.y() - start.y())) + 1;
-        values.clear();
-        values.reserve(count);
-        for (int i = 0; i < count; ++i)
-        {
-            const double t = count == 1 ? 0.0 : static_cast<double>(i) / (count - 1);
-            const int x = qRound(start.x() + t * (end.x() - start.x()));
-            const int y = qRound(start.y() + t * (end.y() - start.y()));
-            if (x < 0 || y < 0 || x >= frame.width || y >= frame.height)
-            {
-                return false;
-            }
-            const uchar* row = reinterpret_cast<const uchar*>(frame.bytes.constData())
-                               + y * frame.stride;
-            values.append(frame.bytesPerPixel() == 1
-                              ? row[x]
-                              : reinterpret_cast<const quint16*>(row)[x]);
-        }
-        return !values.isEmpty();
+        return m_core->getLineProfile(layerKey, start, end, values);
     }
 
     bool ImageWorkspace::pixelValue(const QString& layerKey, const QPoint& point, int& value) const
     {
-        if (isLiveViewerActive())
-        {
-            return m_core->graphPixelValue(layerKey, point, value);
-        }
-        const scopeone::core::ImageFrame frame = frameForLayer(layerKey);
-        if (!frame.isValid() || point.x() < 0 || point.y() < 0
-            || point.x() >= frame.width || point.y() >= frame.height)
-        {
-            return false;
-        }
-        const uchar* row = reinterpret_cast<const uchar*>(frame.bytes.constData())
-                           + point.y() * frame.stride;
-        value = frame.bytesPerPixel() == 1
-                    ? row[point.x()]
-                    : reinterpret_cast<const quint16*>(row)[point.x()];
-        return true;
+        return m_core->graphPixelValue(layerKey, point, value);
     }
 
     double ImageWorkspace::pixelSizeUm(const QString& layerKey) const
     {
-        if (isLiveViewerActive())
+        const Document* document = findDocumentByLayerKey(layerKey);
+        if (!document)
         {
             return m_core->cameraPixelSizeUm(
                 scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey));
         }
-        const Document* document = findDocument(m_activeDocumentId);
-        return document ? document->session->cameraPixelSizeUm(document->cameraId) : 0.0;
+        return document->session->cameraPixelSizeUm(document->cameraId);
     }
 
     QString ImageWorkspace::activeLayerKey() const
     {
-        if (isLiveViewerActive())
+        const auto* scene = m_core->imageSceneModel();
+        if (!scene)
         {
-            const scopeone::core::ImageSceneModel* scene = activeSceneModel();
-            return scene && scene->visibleLayerIds().contains(m_liveLayerKey)
-                       ? m_liveLayerKey
-                       : scene ? scene->visibleLayerIds().value(0) : QString{};
+            return {};
         }
-        const Document* document = findDocument(m_activeDocumentId);
-        scopeone::core::ImageSceneModel* scene = activeSceneModel();
-        if (document && scene && scene->layerIds().contains(document->activeLayerKey))
+        if (scene->visibleLayerIds().contains(m_liveLayerKey))
         {
-            return document->activeLayerKey;
+            return m_liveLayerKey;
         }
-        return scene ? scene->visibleLayerIds().value(0) : QString{};
+        return scene->visibleLayerIds().value(0);
     }
 
     void ImageWorkspace::setActiveLayerKey(const QString& layerKey)
     {
         const QString normalizedLayerKey = layerKey.trimmed();
         const QString previousLayerKey = activeLayerKey();
-        if (isLiveViewerActive())
+        Document* document = findDocumentByLayerKey(normalizedLayerKey);
+        if (document)
         {
-            if (!activeSceneModel()->layerIds().contains(normalizedLayerKey))
-            {
-                return;
-            }
+            setActiveDocument(document->id);
             m_liveLayerKey = normalizedLayerKey;
         }
-        else if (Document* document = findDocument(m_activeDocumentId))
+        else if (m_core->imageSceneModel()->layerIds().contains(normalizedLayerKey))
         {
-            if (!activeSceneModel()->layerIds().contains(normalizedLayerKey))
-            {
-                return;
-            }
-            document->activeLayerKey = normalizedLayerKey;
+            activateLiveViewer();
+            m_liveLayerKey = normalizedLayerKey;
         }
         if (PreviewWidget* preview = activePreviewWidget())
         {
@@ -1184,35 +785,18 @@ namespace scopeone::ui
     }
 
     // Keeps the active layer aligned with the visible layers in one viewer
-    void ImageWorkspace::syncActiveLayer(const QString& documentId)
+    void ImageWorkspace::syncActiveLayer()
     {
-        scopeone::core::ImageSceneModel* scene = sceneModel(documentId);
-        if (!scene)
-        {
-            return;
-        }
-
-        const QString previousLayerKey = documentId == m_activeDocumentId
-                                             ? activeLayerKey()
-                                             : QString{};
+        scopeone::core::ImageSceneModel* scene = m_core->imageSceneModel();
+        const QString previousLayerKey = activeLayerKey();
         const QStringList visibleLayerKeys = scene->visibleLayerIds();
-        if (documentId.isEmpty())
+        if (!visibleLayerKeys.contains(m_liveLayerKey))
         {
-            if (!visibleLayerKeys.contains(m_liveLayerKey))
-            {
-                m_liveLayerKey = visibleLayerKeys.value(0);
-            }
-        }
-        else if (Document* document = findDocument(documentId))
-        {
-            if (!visibleLayerKeys.contains(document->activeLayerKey))
-            {
-                document->activeLayerKey = visibleLayerKeys.value(0);
-            }
+            m_liveLayerKey = visibleLayerKeys.value(0);
         }
 
         updateViewerToolbar();
-        if (documentId == m_activeDocumentId && previousLayerKey != activeLayerKey())
+        if (previousLayerKey != activeLayerKey())
         {
             emit activeLayerChanged(activeLayerKey());
         }
@@ -1227,21 +811,12 @@ namespace scopeone::ui
     bool ImageWorkspace::activateDocument(const QString& documentId)
     {
         Document* document = findDocument(documentId);
-        if (!document || !document->page)
+        if (!document)
         {
             return false;
         }
-        if (comparisonActive())
-        {
-            if (documentId == m_compareLeftDocumentId
-                || documentId == m_compareRightDocumentId)
-            {
-                setActiveDocument(documentId);
-                return true;
-            }
-            endComparison();
-        }
-        m_viewerTabs->setCurrentWidget(document->page);
+        setActiveDocument(documentId);
+        m_core->imageSceneModel()->setVisibleLayers({document->activeLayerKey});
         return true;
     }
 
@@ -1252,19 +827,6 @@ namespace scopeone::ui
             return;
         }
         m_activeDocumentId = documentId;
-        if (comparisonActive())
-        {
-            const Document* left = findDocument(m_compareLeftDocumentId);
-            const Document* right = findDocument(m_compareRightDocumentId);
-            const QString leftTitle = left ? left->title : QString{};
-            const QString rightTitle = right ? right->title : QString{};
-            m_compareLeftHost->setTitle(documentId == m_compareLeftDocumentId
-                                            ? tr("Active: %1").arg(leftTitle)
-                                            : leftTitle);
-            m_compareRightHost->setTitle(documentId == m_compareRightDocumentId
-                                             ? tr("Active: %1").arg(rightTitle)
-                                             : rightTitle);
-        }
         emit activeDocumentChanged(documentId);
         emit activeViewerChanged();
         emit activeLayerChanged(activeLayerKey());
@@ -1272,127 +834,10 @@ namespace scopeone::ui
         updateViewerToolbar();
     }
 
-    bool ImageWorkspace::comparisonActive() const
-    {
-        return !m_compareLeftDocumentId.isEmpty()
-               && !m_compareRightDocumentId.isEmpty();
-    }
-
-    bool ImageWorkspace::beginComparison(const QString& rightDocumentId)
-    {
-        Document* left = findDocument(m_activeDocumentId);
-        if (!left || comparisonActive())
-        {
-            return false;
-        }
-
-        QString rightId = rightDocumentId;
-        if (rightId.isEmpty())
-        {
-            for (const auto& candidate : m_documents)
-            {
-                if (candidate->id != left->id)
-                {
-                    rightId = candidate->id;
-                    break;
-                }
-            }
-        }
-        if (rightId.isEmpty())
-        {
-            rightId = duplicateDocument(left->id);
-        }
-        Document* right = findDocument(rightId);
-        if (!right || right == left)
-        {
-            return false;
-        }
-
-        m_compareLeftDocumentId = left->id;
-        m_compareRightDocumentId = right->id;
-        {
-            const QSignalBlocker blocker(m_viewerTabs);
-            const int leftIndex = m_viewerTabs->indexOf(left->page);
-            if (leftIndex >= 0)
-            {
-                m_viewerTabs->removeTab(leftIndex);
-            }
-            const int rightIndex = m_viewerTabs->indexOf(right->page);
-            if (rightIndex >= 0)
-            {
-                m_viewerTabs->removeTab(rightIndex);
-            }
-        }
-        m_compareLeftHost->layout()->addWidget(left->page);
-        m_compareRightHost->layout()->addWidget(right->page);
-        m_viewerStack->setCurrentWidget(m_compareWidget);
-        m_compareLeftHost->setTitle(tr("Active: %1").arg(left->title));
-        m_compareRightHost->setTitle(right->title);
-        updateViewerToolbar();
-        return true;
-    }
-
-    void ImageWorkspace::endComparison()
-    {
-        if (!comparisonActive())
-        {
-            return;
-        }
-        Document* left = findDocument(m_compareLeftDocumentId);
-        Document* right = findDocument(m_compareRightDocumentId);
-        if (left && left->page)
-        {
-            m_compareLeftHost->layout()->removeWidget(left->page);
-        }
-        if (right && right->page)
-        {
-            m_compareRightHost->layout()->removeWidget(right->page);
-        }
-        m_compareLeftDocumentId.clear();
-        m_compareRightDocumentId.clear();
-        rebuildViewerTabs();
-        m_viewerStack->setCurrentWidget(m_viewerTabs);
-        {
-            const QSignalBlocker blocker(m_compareAction);
-            m_compareAction->setChecked(false);
-        }
-        updateViewerToolbar();
-    }
-
-    void ImageWorkspace::rebuildViewerTabs()
-    {
-        const QSignalBlocker blocker(m_viewerTabs);
-        while (m_viewerTabs->count() > 0)
-        {
-            m_viewerTabs->removeTab(0);
-        }
-        m_liveTabIndex = m_livePreviewWidget
-                             ? m_viewerTabs->addTab(m_livePreviewWidget, tr("Live Preview"))
-                             : -1;
-        if (m_liveTabIndex >= 0)
-        {
-            m_viewerTabs->tabBar()->setTabButton(m_liveTabIndex, QTabBar::RightSide, nullptr);
-        }
-        for (const auto& document : m_documents)
-        {
-            const int tabIndex = m_viewerTabs->addTab(
-                document->page, compactViewerTitle(document->title));
-            m_viewerTabs->setTabToolTip(tabIndex, document->title);
-        }
-        if (Document* active = findDocument(m_activeDocumentId))
-        {
-            m_viewerTabs->setCurrentWidget(active->page);
-        }
-        else if (m_liveTabIndex >= 0)
-        {
-            m_viewerTabs->setCurrentIndex(m_liveTabIndex);
-        }
-    }
-
     bool ImageWorkspace::closeDocument(const QString& documentId)
     {
         Document* document = findDocument(documentId);
-        if (!document || !document->page)
+        if (!document)
         {
             return false;
         }
@@ -1430,7 +875,7 @@ namespace scopeone::ui
                 document->session,
                 document->cameraId,
                 options,
-                &document->page->sceneModel()->document()))
+                &m_core->imageSceneModel()->document()))
         {
             return false;
         }
@@ -1448,7 +893,7 @@ namespace scopeone::ui
             return;
         }
         const QString saveDir = QFileDialog::getExistingDirectory(
-            document->page,
+            m_viewerHost,
             tr("Select Dataset Folder"),
             QDir::homePath());
         if (saveDir.isEmpty())
@@ -1457,7 +902,7 @@ namespace scopeone::ui
         }
         bool accepted = false;
         QString baseName = QInputDialog::getText(
-                               document->page,
+                               m_viewerHost,
                                tr("Save Image Dataset As"),
                                tr("Dataset name and optional format suffix"),
                                QLineEdit::Normal,
@@ -1507,78 +952,14 @@ namespace scopeone::ui
         return it == m_documents.end() ? nullptr : it->get();
     }
 
-    ImageWorkspace::Document* ImageWorkspace::findDocumentByPage(QWidget* page) const
+    ImageWorkspace::Document* ImageWorkspace::findDocumentByLayerKey(const QString& layerKey) const
     {
         const auto it = std::find_if(m_documents.cbegin(), m_documents.cend(),
-                                     [page](const auto& document)
+                                     [&layerKey](const auto& document)
                                      {
-                                         return document->page == page;
+                                         return document->activeLayerKey == layerKey;
                                      });
         return it == m_documents.cend() ? nullptr : it->get();
-    }
-
-    QString ImageWorkspace::duplicateDocument(const QString& documentId)
-    {
-        const Document* source = findDocument(documentId);
-        if (!source || !source->session)
-        {
-            return {};
-        }
-        auto document = std::make_unique<Document>();
-        document->id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        document->title = tr("%1 Copy").arg(source->title);
-        document->session = source->session;
-        document->cameraId = source->cameraId;
-        document->frameCount = source->frameCount;
-        document->frameIndex = source->frameIndex;
-        document->requestedFrameIndex = source->frameIndex;
-        document->activeLayerKey = scopeone::core::ScopeOneCore::staticLayerKey(
-            document->cameraId);
-        document->page = new ImageDocumentPage(document->id,
-                                               document->title,
-                                               document->cameraId,
-                                               document->session,
-                                               document->session->experimentDocument(),
-                                               document->frameCount,
-                                               m_viewerTabs);
-        connectViewer(document->page->previewWidget(), document->id);
-        connect(document->page, &ImageDocumentPage::frameIndexRequested,
-                this, &ImageWorkspace::requestDocumentFrame);
-        const QString id = document->id;
-        m_documents.push_back(std::move(document));
-        const int tabIndex = m_viewerTabs->addTab(
-            m_documents.back()->page, compactViewerTitle(m_documents.back()->title));
-        m_viewerTabs->setTabToolTip(tabIndex, m_documents.back()->title);
-        if (!requestFrame(*m_documents.back(), source->frameIndex))
-        {
-            removeDocument(id);
-            return {};
-        }
-        emit documentsChanged();
-        return id;
-    }
-
-    void ImageWorkspace::requestDocumentFrame(const QString& documentId, int frameIndex)
-    {
-        Document* document = findDocument(documentId);
-        if (!document)
-        {
-            return;
-        }
-        requestFrame(*document, frameIndex);
-        if (!comparisonActive() || !m_linkFramesAction->isChecked())
-        {
-            return;
-        }
-        const QString peerId = documentId == m_compareLeftDocumentId
-                                   ? m_compareRightDocumentId
-                                   : documentId == m_compareRightDocumentId
-                                         ? m_compareLeftDocumentId
-                                         : QString{};
-        if (Document* peer = findDocument(peerId))
-        {
-            requestFrame(*peer, frameIndex);
-        }
     }
 
     bool ImageWorkspace::requestFrame(Document& document, int frameIndex)
@@ -1600,12 +981,6 @@ namespace scopeone::ui
 
     void ImageWorkspace::removeDocument(const QString& documentId)
     {
-        if (comparisonActive()
-            && (documentId == m_compareLeftDocumentId
-                || documentId == m_compareRightDocumentId))
-        {
-            endComparison();
-        }
         const auto it = std::find_if(m_documents.begin(), m_documents.end(),
                                      [&documentId](const auto& document)
                                      {
@@ -1627,23 +1002,11 @@ namespace scopeone::ui
                 m_core->cancelProcessingRequest(request.key());
             }
         }
-        const int tabIndex = m_viewerTabs->indexOf((*it)->page);
-        if (tabIndex >= 0)
-        {
-            m_viewerTabs->removeTab(tabIndex);
-        }
-        delete (*it)->page;
+        m_core->removeStaticFrame((*it)->layerSourceId);
         m_documents.erase(it);
         if (m_activeDocumentId == documentId)
         {
-            if (Document* active = findDocumentByPage(m_viewerTabs->currentWidget()))
-            {
-                m_activeDocumentId = active->id;
-            }
-            else
-            {
-                m_activeDocumentId.clear();
-            }
+            m_activeDocumentId.clear();
             emit activeDocumentChanged(m_activeDocumentId);
             emit activeViewerChanged();
             emit activeLayerChanged(activeLayerKey());
@@ -1652,19 +1015,8 @@ namespace scopeone::ui
         emit documentsChanged();
     }
 
-    void ImageWorkspace::connectViewer(PreviewWidget* preview, const QString& documentId)
+    void ImageWorkspace::connectViewer(PreviewWidget* preview)
     {
-        connect(preview, &PreviewWidget::activated, this, [this, documentId]()
-        {
-            if (documentId.isEmpty())
-            {
-                activateLiveViewer();
-            }
-            else
-            {
-                setActiveDocument(documentId);
-            }
-        });
         connect(preview, &PreviewWidget::measurementLineDrawn,
                 this, &ImageWorkspace::measurementLineDrawn);
         connect(preview, &PreviewWidget::measurementLineInspected,
@@ -1674,12 +1026,9 @@ namespace scopeone::ui
         connect(preview, &PreviewWidget::layerClicked,
                 this, [this](const QString& layerKey) { setActiveLayerKey(layerKey); });
         connect(preview, &PreviewWidget::mousePositionChanged,
-                this, [this, documentId](const QPoint& position)
+                this, [this](const QPoint& position)
                 {
-                    if (documentId == m_activeDocumentId)
-                    {
-                        emit mousePositionChanged(position);
-                    }
+                    emit mousePositionChanged(position);
                 });
         auto* scene = preview->sceneModel();
         connect(preview, &PreviewWidget::availableLayerKeysChanged,
@@ -1698,16 +1047,12 @@ namespace scopeone::ui
                     updateViewerToolbar();
                 });
         connect(scene, &scopeone::core::ImageSceneModel::layersChanged,
-                this, [this, documentId]() { syncActiveLayer(documentId); });
-        if (documentId.isEmpty())
-        {
-            return;
-        }
+                this, &ImageWorkspace::syncActiveLayer);
         connect(scene, &scopeone::core::ImageSceneModel::markupsChanged,
-                this, [this, documentId]()
+                this, [this]()
                 {
-                    Document* document = findDocument(documentId);
-                    if (document && documentId == m_activeDocumentId)
+                    Document* document = findDocument(m_activeDocumentId);
+                    if (document)
                     {
                         updateLineProfile(*document);
                     }
@@ -1716,9 +1061,10 @@ namespace scopeone::ui
 
     void ImageWorkspace::updateLineProfile(Document& document)
     {
-        for (const auto& markup : document.page->sceneModel()->markups())
+        for (const auto& markup : m_core->imageSceneModel()->markups())
         {
-            if (markup.role == scopeone::core::ImageSceneModel::MarkupRole::CrossSection)
+            if (markup.layerKey == activeLayerKey()
+                && markup.role == scopeone::core::ImageSceneModel::MarkupRole::CrossSection)
             {
                 QVector<int> values;
                 if (lineProfile(markup.layerKey, markup.start, markup.end, values))
@@ -1730,5 +1076,3 @@ namespace scopeone::ui
         }
     }
 }
-
-#include "ImageWorkspace.moc"

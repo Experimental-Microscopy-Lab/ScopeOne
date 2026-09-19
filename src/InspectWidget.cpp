@@ -204,7 +204,7 @@ namespace scopeone::ui
         connect(m_workspace, &ImageWorkspace::activeFrameChanged,
                 this, [this]()
                 {
-                    if (m_workspace->isLiveViewerActive() || currentLayerKey().isEmpty())
+                    if (currentLayerKey().isEmpty())
                     {
                         return;
                     }
@@ -214,33 +214,12 @@ namespace scopeone::ui
                 this, [this](const QString&)
                 {
                     const QString layerKey = currentLayerKey();
-                    if (m_workspace->isLiveViewerActive())
-                    {
-                        m_scopeonecore->setActiveHistogramLayer(layerKey);
-                    }
-                    else if (!layerKey.isEmpty())
+                    if (!layerKey.isEmpty())
                     {
                         m_workspace->requestHistogram(layerKey);
                     }
                     updateLayerVisibility();
                     updateControlsState();
-                });
-        connect(m_workspace, &ImageWorkspace::histogramReady,
-                this, [this](const QString& layerKey,
-                             const scopeone::core::ScopeOneCore::HistogramStats& stats)
-                {
-                    if (layerKey == currentLayerKey() && !m_workspace->isLiveViewerActive())
-                    {
-                        setLayerInspect(layerKey, stats);
-                        if (m_workspace->layerAutoStretchEnabled(layerKey))
-                        {
-                            m_sceneModel->setLayerDisplayLevels(
-                                layerKey,
-                                stats.autoMinLevel,
-                                stats.autoMaxLevel,
-                                stats.maxValue);
-                        }
-                    }
                 });
         connect(m_workspace, &ImageWorkspace::lineProfileUpdated,
                 this, &InspectWidget::setLayerCrossSectionProfile);
@@ -250,13 +229,7 @@ namespace scopeone::ui
     void InspectWidget::refreshActiveViewer()
     {
         saveViewerState();
-        const bool inspectLive = m_workspace->isLiveViewerActive();
         const QString viewerStateId = m_workspace->activeDocumentId();
-        if (m_inspectingLive && !inspectLive)
-        {
-            m_scopeonecore->setActiveHistogramLayer({});
-        }
-        m_inspectingLive = inspectLive;
         m_activeViewerStateId = viewerStateId;
         restoreViewerState();
         if (m_sceneModel)
@@ -295,11 +268,7 @@ namespace scopeone::ui
                     setAvailableLayers(m_sceneModel->layerIds());
                 });
         const QString layerKey = currentLayerKey();
-        if (m_workspace->isLiveViewerActive())
-        {
-            m_scopeonecore->setActiveHistogramLayer(layerKey);
-        }
-        else if (!layerKey.isEmpty())
+        if (!layerKey.isEmpty())
         {
             m_workspace->requestHistogram(layerKey);
         }
@@ -357,10 +326,7 @@ namespace scopeone::ui
 
     InspectWidget::~InspectWidget()
     {
-        if (m_workspace->isLiveViewerActive())
-        {
-            m_scopeonecore->setActiveHistogramLayer({});
-        }
+        m_scopeonecore->setActiveHistogramLayer({});
     }
 
     // Enable inspect controls when camera state changes
@@ -422,18 +388,15 @@ namespace scopeone::ui
 
         if (!currentLayerKey().isEmpty() && !m_availableLayerKeys.contains(currentLayerKey()))
         {
-            if (m_workspace->isLiveViewerActive())
-            {
-                m_scopeonecore->setActiveHistogramLayer({});
-            }
+            m_scopeonecore->setActiveHistogramLayer({});
             clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
 
-        if (m_workspace->isLiveViewerActive())
+        if (!currentLayerKey().isEmpty())
         {
-            m_scopeonecore->setActiveHistogramLayer(currentLayerKey());
+            m_workspace->requestHistogram(currentLayerKey());
         }
     }
 
@@ -455,10 +418,7 @@ namespace scopeone::ui
             && isLiveLayerKey(currentLayerKey())
             && !m_availableCameraIds.contains(currentLayerCameraId()))
         {
-            if (m_workspace->isLiveViewerActive())
-            {
-                m_scopeonecore->setActiveHistogramLayer({});
-            }
+            m_scopeonecore->setActiveHistogramLayer({});
             clearCrossSectionProfile();
         }
         updateLayerVisibility();

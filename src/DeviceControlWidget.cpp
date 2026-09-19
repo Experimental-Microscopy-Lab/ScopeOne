@@ -481,8 +481,6 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::refreshLayerHistogram);
         connect(m_workspace, &ImageWorkspace::activeViewerChanged,
                 this, &DeviceControlWidget::refreshLayerHistogram);
-        connect(m_workspace, &ImageWorkspace::histogramReady,
-                this, &DeviceControlWidget::onLayerHistogramReady);
         syncLayerSelection();
         refreshLayerHistogram();
     }
@@ -987,9 +985,17 @@ namespace scopeone::ui
         }
 
         int selectedRow = layerKeys.indexOf(previousLayerKey);
-        if (selectedRow < 0 && !layerKeys.isEmpty())
+        if (selectedRow < 0)
         {
-            selectedRow = 0;
+            const QStringList visibleLayerKeys = m_previewWidget->visibleLayerKeys();
+            for (const QString& visibleLayerKey : visibleLayerKeys)
+            {
+                selectedRow = layerKeys.indexOf(visibleLayerKey);
+                if (selectedRow >= 0)
+                {
+                    break;
+                }
+            }
         }
 
         if (selectedRow >= 0)
@@ -1344,22 +1350,15 @@ namespace scopeone::ui
             return;
         }
 
-        if (m_workspace->isLiveViewerActive())
+        scopeone::core::ScopeOneCore::HistogramStats stats;
+        if (m_workspace->histogram(layerKey, stats))
         {
-            scopeone::core::ScopeOneCore::HistogramStats stats;
-            if (m_scopeonecore->getLayerHistogram(layerKey, stats))
-            {
-                m_layerHistogramWidget->setStats(stats);
-            }
-            else
-            {
-                m_layerHistogramWidget->clear();
-            }
-            m_scopeonecore->setActiveHistogramLayer(layerKey);
-            return;
+            m_layerHistogramWidget->setStats(stats);
         }
-
-        m_layerHistogramWidget->clear();
+        else
+        {
+            m_layerHistogramWidget->clear();
+        }
         m_workspace->requestHistogram(layerKey);
     }
 

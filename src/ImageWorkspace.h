@@ -11,12 +11,10 @@
 
 class QAction;
 class QComboBox;
-class QGroupBox;
 class QLabel;
-class QStackedWidget;
 class QWidget;
-class QTabWidget;
 class QToolBar;
+class QVBoxLayout;
 
 namespace scopeone::core
 {
@@ -55,6 +53,8 @@ namespace scopeone::ui
         void setLiveViewer(PreviewWidget* previewWidget);
         void activateLiveViewer();
         void setVisibleLayers(const QStringList& layerKeys, bool sideBySide = false);
+        void setLayerSliceIndex(const QString& layerKey, int sliceIndex);
+        int layerSliceCount(const QString& layerKey) const;
 
         QStringList openSession(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
@@ -101,8 +101,6 @@ namespace scopeone::ui
         void viewDimensionModeChanged();
         void activeLayerChanged(const QString& layerKey);
         void activeFrameChanged();
-        void histogramReady(const QString& layerKey,
-                            const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void mousePositionChanged(const QPoint& widgetPos);
         void documentProcessingProgress(quint64 requestId, qint64 completed, qint64 total);
         void documentProcessingFinished(quint64 requestId,
@@ -126,58 +124,32 @@ namespace scopeone::ui
     private:
         struct Document;
         Document* findDocument(const QString& documentId) const;
-        Document* findDocumentByPage(QWidget* page) const;
-        QString duplicateDocument(const QString& documentId);
+        Document* findDocumentByLayerKey(const QString& layerKey) const;
         bool requestFrame(Document& document, int frameIndex);
-        void requestDocumentFrame(const QString& documentId, int frameIndex);
         void removeDocument(const QString& documentId);
-        void connectViewer(PreviewWidget* previewWidget, const QString& documentId);
+        void connectViewer(PreviewWidget* previewWidget);
         void setupViewerToolbar();
         void updateViewerToolbar();
         void setActiveDocument(const QString& documentId);
-        bool beginComparison(const QString& rightDocumentId = QString());
-        void endComparison();
-        void rebuildViewerTabs();
-        bool comparisonActive() const;
-        void syncActiveLayer(const QString& documentId);
+        void syncActiveLayer();
         void updateLineProfile(Document& document);
-        void queueHistogramRequest(const QString& layerKey, bool applyAutoLevels);
-        void startHistogramRequest();
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
         QWidget* m_viewerHost{nullptr};
+        QVBoxLayout* m_viewerLayout{nullptr};
         QToolBar* m_viewerToolbar{nullptr};
-        QStackedWidget* m_viewerStack{nullptr};
-        QTabWidget* m_viewerTabs{nullptr};
-        QWidget* m_compareWidget{nullptr};
-        QGroupBox* m_compareLeftHost{nullptr};
-        QGroupBox* m_compareRightHost{nullptr};
         QAction* m_fitToWindowAction{nullptr};
         QAction* m_oneToOneAction{nullptr};
-        QAction* m_compareSeparator{nullptr};
-        QAction* m_compareAction{nullptr};
-        QAction* m_linkFramesAction{nullptr};
         QAction* m_dimensionAction{nullptr};
         QAction* m_reset3dAction{nullptr};
         QComboBox* m_layoutCombo{nullptr};
         QComboBox* m_zoomCombo{nullptr};
-        QComboBox* m_compareDocumentCombo{nullptr};
-        int m_liveTabIndex{-1};
         PreviewWidget* m_livePreviewWidget{nullptr};
         std::vector<std::unique_ptr<Document>> m_documents;
         QString m_activeDocumentId;
-        QString m_compareLeftDocumentId;
-        QString m_compareRightDocumentId;
         QString m_liveLayerKey;
         QHash<quint64, QString> m_frameRequests;
         QHash<quint64, QString> m_processingRequests;
         QHash<QString, QString> m_saveRequests;
-        QString m_histogramDocumentId;
-        QString m_histogramLayerKey;
-        int m_histogramFrameIndex{-1};
-        scopeone::core::ImageFrame m_histogramFrame;
-        bool m_histogramApplyAutoLevels{false};
-        bool m_histogramRunning{false};
-        quint64 m_histogramGeneration{0};
     };
 }

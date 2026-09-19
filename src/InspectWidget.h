@@ -121,6 +121,5 @@ namespace scopeone::ui
         QString m_crossSectionLayerKey;
         QHash<QString, ViewerInspectState> m_viewerStates;
         QString m_activeViewerStateId;
-        bool m_inspectingLive{true};
     };
 }

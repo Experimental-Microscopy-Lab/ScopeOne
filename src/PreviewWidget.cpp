@@ -517,11 +517,12 @@ namespace scopeone::ui
 
     void PreviewWidget::setLayerSliceCount(const QString& layerKey, int sliceCount)
     {
-        m_layerSliceCounts.insert(layerKey, sliceCount);
+        const int normalizedSliceCount = qMax(1, sliceCount);
+        m_layerSliceCounts.insert(layerKey, normalizedSliceCount);
         m_layerSliceIndices.insert(layerKey,
                                    qBound(0,
                                           m_layerSliceIndices.value(layerKey),
-                                          sliceCount - 1));
+                                          normalizedSliceCount - 1));
         updateSliceBar();
     }
 

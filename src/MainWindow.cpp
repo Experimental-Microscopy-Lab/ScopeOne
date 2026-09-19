@@ -514,13 +514,13 @@ namespace scopeone::ui
                     const QString layerKey = m_previewWidget->setGraphStaticLayerFrame(sourceId, frame);
                     m_previewWidget->setLayerSliceCount(
                         layerKey,
-                        m_scopeonecore->layerSliceCount(layerKey));
+                        m_imageWorkspace->layerSliceCount(layerKey));
                     schedulePreviewCursorStatusRefresh();
                 });
         connect(m_previewWidget, &PreviewWidget::layerSliceIndexRequested,
                 this, [this](const QString& layerKey, int sliceIndex)
                 {
-                    m_scopeonecore->setLayerSliceIndex(layerKey, sliceIndex);
+                    m_imageWorkspace->setLayerSliceIndex(layerKey, sliceIndex);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::staticFrameRemoved,
                 this, [this](const QString& sourceId)
@@ -1047,16 +1047,6 @@ namespace scopeone::ui
 
     void MainWindow::showLayers(const QStringList& layerKeys, bool sideBySide)
     {
-        auto* activeScene = m_imageWorkspace->activeSceneModel();
-        const bool belongsToLiveScene = std::all_of(
-            layerKeys.cbegin(), layerKeys.cend(), [this](const QString& layerKey)
-            {
-                return m_imageSceneModel->layerIds().contains(layerKey);
-            });
-        if (belongsToLiveScene && activeScene != m_imageSceneModel)
-        {
-            m_imageWorkspace->activateLiveViewer();
-        }
         m_imageWorkspace->setVisibleLayers(layerKeys, sideBySide);
     }
 
