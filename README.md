@@ -4,12 +4,12 @@
 
 <p align="center">
   <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/actions/workflows/compile-check.yml"><img src="https://github.com/Experimental-Microscopy-Lab/ScopeOne/actions/workflows/compile-check.yml/badge.svg?branch=main" alt="Compile Check"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue.svg" alt="BSD 3-Clause License"></a>
   <!-- <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a> -->
 </p>
 
-ScopeOne is open-source microscopy control software built with C++ and Qt. Hardware is accessed through provider-independent device contracts; [Micro-Manager](https://micro-manager.org/) is the built-in provider, and isolated devices run through ScopeOne DriverHost processes.
-It retains compatibility with the Micro-Manager device ecosystem while allowing native vendor providers and adds a modular real-time image processing pipeline with support for background calibration, temporal filtering, FFT analysis, and more.
-
+ScopeOne is a high-performance open-source microscopy control platform built with C++ and Qt. It is designed to be an extensible platform for advanced microscopy applications, including multiple camera live imaging, on-the-fly image processing, and automated experiments.
+ It retains compatibility with the [Micro-Manager](https://micro-manager.org/) broad device ecosystem while allowing featuers like online image processing with GPU acceleration, deep learning inference and more.
 <p align="center">
   <img src="resources/Screenshot 2026-09-01 140040.png" width="720"><br>
   <sub> Graphical User Interface of ScopeOne</sub>
@@ -17,6 +17,19 @@ It retains compatibility with the Micro-Manager device ecosystem while allowing 
 
 As an open-source project, ScopeOne builds on existing community efforts to reduce duplicated work and provides an alternative that enriches the microscopy community. While the current development is conducted in close collaboration with the optics and biology teams within our laboratory, we aim to expand engagement with the broader research community to make the platform more practical, accessible, and universal. Any issues or pull requests are greatly appreciated！
 
+## ✨ New Features
+
+### Deep Learning Inference
+
+Deep learning is becoming an increasingly powerful tool for microscopy image restoration and analysis. ScopeOne allows users to import pre-trained AI models through the widely supported ONNX model format and apply them directly to live camera streams or recorded images. Models can run on either the CPU or GPU.
+
+<p align="center">
+  <img src="resources/ONNX.png" width="720"><br>
+  <sub>Real-time denoising demo using <a href="https://huggingface.co/qualcomm/DnCNN">DnCNN</a> at approximately 150 FPS for 256 × 256 images, tested on an NVIDIA RTX 4070 Ti</sub>
+</p>
+
+### GPU-Accelerated Online Image Processing
+Despite the deep learning, traditional image processing methods remain essential. GPU-accelerated image processing pipeline can be applied to live camera streams or recorded images, including filtering, background subtraction, FFT, and more. Users can customize image processing algorithms and parameters to suit their specific needs via the ScopeOne plugin system.
 ## 🚀 Quick Start
 
 ### For Users
