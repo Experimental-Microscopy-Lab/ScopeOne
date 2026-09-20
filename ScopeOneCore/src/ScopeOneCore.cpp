@@ -998,8 +998,8 @@ namespace scopeone::core
         CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
+        std::vector<std::unique_ptr<QLibrary>> processingExtensionLibraries;
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
-        std::unique_ptr<QLibrary> cudaLibrary;
         StageMosaicManager* stageMosaicManager{nullptr};
         internal::DaqDeviceManager* daqDeviceManager{nullptr};
         internal::SignalSourceManager* signalSourceManager{nullptr};
@@ -1255,24 +1255,27 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        const QString cudaLibraryPath = QDir(QCoreApplication::applicationDirPath())
-                                            .filePath(QStringLiteral("ScopeOneCuda"));
+        const QStringList processingExtensionNames{
+            QStringLiteral("ScopeOneCuda"),
+            QStringLiteral("ScopeOneInference")};
+        for (const QString& extensionName : processingExtensionNames)
         {
-            auto cudaLibrary = std::make_unique<QLibrary>(cudaLibraryPath);
-            if (cudaLibrary->load())
+            auto library = std::make_unique<QLibrary>(
+                QDir(QCoreApplication::applicationDirPath()).filePath(extensionName));
+            if (library->load())
             {
                 using RegisterProcessingModules = void (*)(ScopeOneCore*);
                 const auto registerProcessingModules =
                     reinterpret_cast<RegisterProcessingModules>(
-                        cudaLibrary->resolve("scopeone_register_processing_modules"));
+                        library->resolve("scopeone_register_processing_modules"));
                 if (registerProcessingModules)
                 {
                     registerProcessingModules(this);
-                    m_managers->cudaLibrary = std::move(cudaLibrary);
+                    m_managers->processingExtensionLibraries.push_back(std::move(library));
                 }
                 else
                 {
-                    cudaLibrary->unload();
+                    library->unload();
                 }
             }
         }

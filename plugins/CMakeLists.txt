@@ -23,6 +23,7 @@ endfunction()
 
 add_subdirectory(hardware)
 add_subdirectory(tools)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../ScopeOneInference ScopeOneInference)
 if (SCOPEONE_CUDA_NVCC_EXECUTABLE)
     set(CMAKE_CUDA_COMPILER "${SCOPEONE_CUDA_NVCC_EXECUTABLE}" CACHE FILEPATH
         "CUDA compiler selected by the environment" FORCE)

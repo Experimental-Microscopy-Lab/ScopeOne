@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 #include <QMutex>
 #include <QRect>
 #include <QTimer>
+#include <random>
 
 #include "scopeone/CameraProvider.h"
 #include "scopeone/HardwareProvider.h"
@@ -64,11 +66,13 @@ namespace scopeone::core
         enum class ImageMode
         {
             Gradient,
-            Hologram
+            Hologram,
+            Beads
         };
 
         bool accepts(const QString& cameraIdOrAll) const;
         ImageFrame makeFrame();
+        void rebuildBeadsImage();
         void updateTimerInterval();
 
         QString m_providerId;
@@ -77,8 +81,11 @@ namespace scopeone::core
         int m_sensorHeight{512};
         QRect m_roi;
         double m_exposureMs{10.0};
+        double m_gaussianNoiseSigma{0.0};
         ImageMode m_imageMode{ImageMode::Gradient};
+        QByteArray m_beadsImage;
         quint64 m_frameIndex{0};
+        std::mt19937 m_randomGenerator{std::random_device{}()};
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;
         QTimer m_timer;

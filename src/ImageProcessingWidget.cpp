@@ -9,6 +9,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -16,6 +19,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineF>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
@@ -25,6 +29,7 @@
 #include <QProgressBar>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -218,6 +223,62 @@ namespace scopeone::ui
             spinBox->setCorrectionMode(QAbstractSpinBox::CorrectToNearestValue);
         }
 
+        class FilePathEditor final : public QWidget
+        {
+        public:
+            FilePathEditor(const QString& path,
+                           const QString& fileFilter,
+                           std::function<void()> changed,
+                           QWidget* parent)
+                : QWidget(parent), m_fileFilter(fileFilter), m_changed(std::move(changed))
+            {
+                auto* layout = new QHBoxLayout(this);
+                layout->setContentsMargins(0, 0, 0, 0);
+                m_pathEdit = new QLineEdit(path, this);
+                auto* browseButton = new QPushButton(tr("Browse"), this);
+                setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+                setMaximumWidth(300);
+                browseButton->setFixedWidth(68);
+                layout->addWidget(m_pathEdit, 1);
+                layout->addWidget(browseButton);
+                connect(m_pathEdit, &QLineEdit::editingFinished, this, [this]()
+                {
+                    m_changed();
+                });
+                connect(browseButton, &QPushButton::clicked, this, [this]()
+                {
+                    QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                    const QString initialPath = m_pathEdit->text().isEmpty()
+                        ? settings.value(QStringLiteral("LastOnnxDirectory"), QDir::homePath()).toString()
+                        : m_pathEdit->text();
+                    const QString path = QFileDialog::getOpenFileName(
+                        this, tr("Select File"), initialPath, m_fileFilter);
+                    if (!path.isEmpty())
+                    {
+                        settings.setValue(QStringLiteral("LastOnnxDirectory"),
+                                          QFileInfo(path).absolutePath());
+                        m_pathEdit->setText(path);
+                        m_changed();
+                    }
+                });
+            }
+
+            QString path() const
+            {
+                return m_pathEdit->text();
+            }
+
+            void setPath(const QString& path)
+            {
+                m_pathEdit->setText(path);
+            }
+
+        private:
+            QLineEdit* m_pathEdit;
+            QString m_fileFilter;
+            std::function<void()> m_changed;
+        };
+
         class ModuleConfigWidget final : public QWidget
         {
         public:
@@ -290,6 +351,9 @@ namespace scopeone::ui
                         combo->setCurrentIndex(combo->findData(value));
                         break;
                     }
+                    case ProcessingParameterType::FilePath:
+                        static_cast<FilePathEditor*>(editor)->setPath(value.toString());
+                        break;
                     }
                 }
                 if (m_maskPreview)
@@ -347,6 +411,11 @@ namespace scopeone::ui
                             this, [this]() { apply(); });
                     return editor;
                 }
+                case ProcessingParameterType::FilePath:
+                    return new FilePathEditor(value.toString(),
+                                              descriptor.fileFilter,
+                                              [this]() { apply(); },
+                                              parent);
                 }
                 return new QWidget(parent);
             }
@@ -364,6 +433,8 @@ namespace scopeone::ui
                     return qobject_cast<QCheckBox*>(editor)->isChecked();
                 case ProcessingParameterType::Choice:
                     return qobject_cast<QComboBox*>(editor)->currentData();
+                case ProcessingParameterType::FilePath:
+                    return static_cast<FilePathEditor*>(editor)->path();
                 }
                 return {};
             }

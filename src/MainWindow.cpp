@@ -1838,11 +1838,17 @@ namespace scopeone::ui
     // Open image files as workspace documents
     void MainWindow::openImageDialog()
     {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QStringList filePaths = QFileDialog::getOpenFileNames(
             this,
             tr("Open Image"),
-            QString(),
+            settings.value(QStringLiteral("LastImageDirectory"), QDir::homePath()).toString(),
             tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
+        if (!filePaths.isEmpty())
+        {
+            settings.setValue(QStringLiteral("LastImageDirectory"),
+                              QFileInfo(filePaths.first()).absolutePath());
+        }
         openImages(filePaths);
     }
 
