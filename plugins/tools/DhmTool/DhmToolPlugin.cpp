@@ -297,7 +297,8 @@ namespace
                         const QString layerKey = m_layerComboBox->currentData().toString();
                         const ImageFrame frame = !layerKey.isEmpty()
                                                      ? m_context.core().graphFrame(layerKey)
-                                                     : m_context.currentFrame();
+                                                     : m_context.core().graphFrame(
+                                                           m_context.currentLayerKey());
                         if (frame.isValid())
                         {
                             m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
@@ -316,7 +317,7 @@ namespace
                         }
                     });
 
-            const ImageFrame frame = m_context.currentFrame();
+            const ImageFrame frame = m_context.core().graphFrame(m_context.currentLayerKey());
             if (frame.isValid())
             {
                 m_sourceId = frame.cameraId;
@@ -501,7 +502,8 @@ namespace
             const QString layerKey = m_layerComboBox->currentData().toString();
             const ImageFrame input = !layerKey.isEmpty()
                                           ? m_context.core().graphFrame(layerKey)
-                                          : m_context.currentFrame();
+                                          : m_context.core().graphFrame(
+                                                m_context.currentLayerKey());
             if (!input.isValid())
             {
                 m_status->setText(QStringLiteral("No hologram layer available"));
@@ -588,7 +590,7 @@ namespace
 
             const QString sourceId = result.outputFrame.cameraId;
             const QString displayName = outputName();
-            const ImageFrame stored = m_context.publishToolStreamFrame(
+            const ImageFrame stored = m_context.core().publishToolStreamFrame(
                 sourceId,
                 result.outputFrame,
                 displayName);

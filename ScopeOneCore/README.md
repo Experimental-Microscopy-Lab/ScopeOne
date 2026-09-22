@@ -116,9 +116,9 @@ Providers use ScopeOne logical device IDs and publish `ImageFrame` objects throu
 - `plugins/hardware` contains DAQ and signal source plugins alongside native `HardwareProvider` modules. The Core selects each plugin by its interface without linking DAQ vendor libraries into the application.
 - `ScanImageAssembler` is implemented in Core as a provider-independent 1D-to-2D reconstruction algorithm, while its public contract is owned by the SDK. The Core publishes reconstructed frames through the shared frame graph and Gallery session path.
 - `plugins/processing` contains `ProcessingPlugin` modules loaded by ScopeOneCore. A plugin publishes stable module IDs, parameter descriptors and factories. Built-in processing methods use the same registry.
-- `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. These receive a restricted UI context rather than direct access to `MainWindow` or `PreviewWidget`. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
+- `plugins/tools` contains optional desktop `ScopeOneToolPlugin` modules. They use the public `ScopeOneCore` service for data and hardware operations, while `ScopeOneToolContext` supplies desktop-only layer presentation and status operations. Built-in Scale, Stage Mosaic and Particle Detection tools use the same registry.
 
-External projects consume the exported `scopeone::PluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; incompatible manifests are rejected before the plugin instance is created.
+External projects consume the exported `scopeone::PluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; processing, tool and hardware contracts are versioned independently and incompatible manifests are rejected before the plugin instance is created.
 
 Hardware, processing, DAQ, signal-source and tool contracts are installed SDK APIs. Desktop tool plugins target the ScopeOne application UI contract exposed by the SDK.
 

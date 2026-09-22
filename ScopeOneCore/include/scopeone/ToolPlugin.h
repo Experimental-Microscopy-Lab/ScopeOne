@@ -3,7 +3,6 @@
 #include "scopeone/ScopeOneCore.h"
 
 #include <QList>
-#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QtPlugin>
@@ -35,13 +34,6 @@ namespace scopeone::ui
 
         virtual scopeone::core::ScopeOneCore& core() const = 0;
         virtual QString currentLayerKey() const = 0;
-        virtual scopeone::core::ImageFrame currentFrame() const = 0;
-        virtual double layerFrameRate(const QString& layerKey) const = 0;
-        virtual QMap<QString, double> layerFrameRates() const = 0;
-        virtual scopeone::core::ImageFrame publishToolStreamFrame(
-            const QString& sourceId,
-            const scopeone::core::ImageFrame& frame,
-            const QString& displayName = QString()) = 0;
         virtual void showLayers(const QStringList& layerKeys, bool sideBySide = false) = 0;
         virtual void showToolStatus(const QString& message, int timeoutMs = 5000) = 0;
         virtual void presentSession(
@@ -61,5 +53,5 @@ namespace scopeone::ui
     };
 }
 
-#define ScopeOneToolPlugin_iid "org.scopeone.ToolPlugin/1.0"
+#define ScopeOneToolPlugin_iid "org.scopeone.ToolPlugin/2.0"
 Q_DECLARE_INTERFACE(scopeone::ui::ScopeOneToolPlugin, ScopeOneToolPlugin_iid)
