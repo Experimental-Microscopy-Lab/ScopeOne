@@ -156,7 +156,7 @@ namespace scopeone::inference
 
     void OnnxInferenceModule::createSession()
     {
-        m_runtime = std::make_unique<OnnxRuntime>();
+        auto runtime = std::make_unique<OnnxRuntime>();
         SessionOptions options;
         options.provider = m_provider == 0
                                ? ExecutionProvider::Cpu
@@ -166,10 +166,10 @@ namespace scopeone::inference
 #else
         const std::filesystem::path path(m_modelPath.toStdString());
 #endif
-        m_session = std::make_unique<OnnxSession>(*m_runtime, path, options);
+        auto session = std::make_unique<OnnxSession>(*runtime, path, options);
 
-        const auto& inputs = m_session->inputs();
-        const auto& outputs = m_session->outputs();
+        const auto& inputs = session->inputs();
+        const auto& outputs = session->outputs();
         if (inputs.size() != 1)
         {
             throw std::runtime_error("ONNX image model must have exactly one input");
@@ -194,6 +194,8 @@ namespace scopeone::inference
         {
             throw std::runtime_error("ONNX image model output must have four dimensions");
         }
+        m_runtime = std::move(runtime);
+        m_session = std::move(session);
     }
 
     core::ProcessingResult OnnxInferenceModule::process(const core::ImageFrame& frame, int)

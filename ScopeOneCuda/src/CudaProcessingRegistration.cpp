@@ -1,13 +1,23 @@
 #include "CudaFrequencyFilterModule.h"
 #include "CudaGaussianBlurModule.h"
 
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ProcessingPlugin.h"
 
-extern "C" SCOPEONE_CUDA_EXPORT void scopeone_register_processing_modules(
-    scopeone::core::ScopeOneCore* core)
+#include <QObject>
+
+namespace scopeone::cuda_plugin
 {
-    core->registerProcessingModule(
-        {QStringLiteral("cuda.gaussian_blur"),
+    class CudaProcessingPlugin final : public QObject,
+                                       public core::ProcessingPlugin
+    {
+        Q_OBJECT
+        Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "../plugin.json")
+        Q_INTERFACES(scopeone::core::ProcessingPlugin)
+
+    public:
+        QList<core::ProcessingModuleDescriptor> processingModules() const override
+        {
+            return {{QStringLiteral("cuda.gaussian_blur"),
          QStringLiteral("CUDA Gaussian Blur"),
          1,
          {{QStringLiteral("kernel_size"),
@@ -26,53 +36,62 @@ extern "C" SCOPEONE_CUDA_EXPORT void scopeone_register_processing_modules(
            100.0,
            0.1,
            2}}},
-        []()
-        {
-            return std::make_unique<scopeone::cuda_plugin::CudaGaussianBlurModule>();
-        });
+                    {QStringLiteral("cuda.frequency_filter"),
+                     QStringLiteral("CUDA Frequency Filter"),
+                     1,
+                     {{QStringLiteral("output_mode"),
+                       QStringLiteral("Output"),
+                       core::ProcessingParameterType::Choice,
+                       2,
+                       0,
+                       2,
+                       1,
+                       0,
+                       {{QStringLiteral("Spectrum"), 0},
+                        {QStringLiteral("Filtered spectrum"), 1},
+                        {QStringLiteral("Filtered image"), 2}}},
+                      {QStringLiteral("min_feature_size"),
+                       QStringLiteral("Min feature size"),
+                       core::ProcessingParameterType::Real,
+                       2.0,
+                       0.0,
+                       1000.0,
+                       0.1,
+                       2},
+                      {QStringLiteral("max_feature_size"),
+                       QStringLiteral("Max feature size"),
+                       core::ProcessingParameterType::Real,
+                       10.0,
+                       0.0,
+                       1000.0,
+                       0.1,
+                       2},
+                      {QStringLiteral("filter_kind"),
+                       QStringLiteral("Filter kind"),
+                       core::ProcessingParameterType::Choice,
+                       0,
+                       0,
+                       1,
+                       1,
+                       0,
+                       {{QStringLiteral("Smooth"), 0},
+                        {QStringLiteral("Hard"), 1}}}}}};
+        }
 
-    core->registerProcessingModule(
-        {QStringLiteral("cuda.frequency_filter"),
-         QStringLiteral("CUDA Frequency Filter"),
-         1,
-         {{QStringLiteral("output_mode"),
-           QStringLiteral("Output"),
-           scopeone::core::ProcessingParameterType::Choice,
-           2,
-           0,
-           2,
-           1,
-           0,
-           {{QStringLiteral("Spectrum"), 0},
-            {QStringLiteral("Filtered spectrum"), 1},
-            {QStringLiteral("Filtered image"), 2}}},
-          {QStringLiteral("min_feature_size"),
-           QStringLiteral("Min feature size"),
-           scopeone::core::ProcessingParameterType::Real,
-           2.0,
-           0.0,
-           1000.0,
-           0.1,
-           2},
-          {QStringLiteral("max_feature_size"),
-           QStringLiteral("Max feature size"),
-           scopeone::core::ProcessingParameterType::Real,
-           10.0,
-           0.0,
-           1000.0,
-           0.1,
-           2},
-          {QStringLiteral("filter_kind"),
-           QStringLiteral("Filter kind"),
-           scopeone::core::ProcessingParameterType::Choice,
-           0,
-           0,
-           1,
-           1,
-           0,
-           {{QStringLiteral("Smooth"), 0}, {QStringLiteral("Hard"), 1}}}}},
-        []()
+        std::unique_ptr<core::ProcessingModule> createProcessingModule(
+            const QString& moduleId) override
         {
-            return std::make_unique<scopeone::cuda_plugin::CudaFrequencyFilterModule>();
-        });
+            if (moduleId == QStringLiteral("cuda.gaussian_blur"))
+            {
+                return std::make_unique<CudaGaussianBlurModule>();
+            }
+            if (moduleId == QStringLiteral("cuda.frequency_filter"))
+            {
+                return std::make_unique<CudaFrequencyFilterModule>();
+            }
+            return {};
+        }
+    };
 }
+
+#include "CudaProcessingRegistration.moc"

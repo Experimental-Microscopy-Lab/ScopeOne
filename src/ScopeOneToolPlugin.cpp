@@ -3,9 +3,7 @@
 
 #include <QAction>
 #include <QDialog>
-#include <QDir>
 #include <QFileInfo>
-#include <QLibrary>
 #include <QMenu>
 #include <QPluginLoader>
 #include <QPointer>
@@ -61,25 +59,17 @@ namespace scopeone::ui
     QStringList ToolRegistry::loadPlugins(const QString& directoryPath)
     {
         QStringList errors;
-        const QDir directory(directoryPath);
-        for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
+        for (const scopeone::core::DiscoveredPlugin& discovered :
+             scopeone::core::discoverPlugins(scopeone::core::PluginKind::Tool,
+                                             {directoryPath}))
         {
-            if (!QLibrary::isLibrary(file.absoluteFilePath()))
+            const QFileInfo file(discovered.path);
+            if (!discovered.error.isEmpty())
             {
+                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), discovered.error));
                 continue;
             }
-            auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
-            scopeone::core::PluginManifest manifest;
-            QString manifestError;
-            if (!scopeone::core::parsePluginManifest(
-                    loader->metaData().value(QStringLiteral("MetaData")).toObject(),
-                    scopeone::core::PluginKind::Tool,
-                    manifest,
-                    &manifestError))
-            {
-                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), manifestError));
-                continue;
-            }
+            auto loader = std::make_unique<QPluginLoader>(discovered.path);
             auto* plugin = qobject_cast<ScopeOneToolPlugin*>(loader->instance());
             if (!plugin)
             {

@@ -10,15 +10,9 @@
 #include "internal/SpatiotemporalBinningModule.h"
 #include "scopeone/PluginManifest.h"
 
-#include <QDir>
 #include <QFileInfo>
-#include <QLibrary>
 #include <QPluginLoader>
 #include <QSet>
-
-#ifdef Q_OS_WIN
-#    include <windows.h>
-#endif
 
 namespace scopeone::core::internal
 {
@@ -255,35 +249,17 @@ namespace scopeone::core::internal
     QStringList ProcessingModuleRegistry::loadPlugins(const QString& directoryPath)
     {
         QStringList errors;
-        const QDir directory(directoryPath);
-#ifdef Q_OS_WIN
-        SetDllDirectoryW(reinterpret_cast<LPCWSTR>(directoryPath.utf16()));
-#endif
-        for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
+        for (const DiscoveredPlugin& discovered :
+             discoverPlugins(PluginKind::Processing, {directoryPath}))
         {
-            if (!QLibrary::isLibrary(file.absoluteFilePath()))
+            const QFileInfo file(discovered.path);
+            if (!discovered.error.isEmpty())
             {
+                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), discovered.error));
                 continue;
             }
 
-            auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
-            const QJsonObject metadata = loader->metaData();
-            if (metadata.value(QStringLiteral("IID")).toString()
-                != QStringLiteral(ScopeOneProcessingPlugin_iid))
-            {
-                continue;
-            }
-            PluginManifest manifest;
-            QString manifestError;
-            if (!parsePluginManifest(
-                    metadata.value(QStringLiteral("MetaData")).toObject(),
-                    PluginKind::Processing,
-                    manifest,
-                    &manifestError))
-            {
-                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), manifestError));
-                continue;
-            }
+            auto loader = std::make_unique<QPluginLoader>(discovered.path);
             QObject* instance = loader->instance();
             auto* plugin = qobject_cast<ProcessingPlugin*>(instance);
             if (!plugin)

@@ -8,7 +8,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ToolPlugin.h"
 
-#include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
@@ -18,10 +17,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
-#include <QLibrary>
 #include <QMessageBox>
 #include <QPlainTextEdit>
-#include <QPluginLoader>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
@@ -38,99 +35,18 @@ namespace scopeone::ui
         constexpr int kStatusRole = Qt::UserRole + 2;
         constexpr int kMetadataRole = Qt::UserRole + 3;
 
-        struct DiscoveredPlugin
-        {
-            scopeone::core::PluginManifest manifest;
-            scopeone::core::PluginKind expectedKind{scopeone::core::PluginKind::Processing};
-            QString path;
-            QString interfaceId;
-            QJsonObject metadata;
-            QString error;
-        };
-
-        QStringList pluginInterfaceIds(scopeone::core::PluginKind kind);
+        using scopeone::core::DiscoveredPlugin;
 
         QList<DiscoveredPlugin> discoverPlugins()
         {
-            using scopeone::core::PluginKind;
-            const QList<std::pair<QString, PluginKind>> directories{
-                {QStringLiteral("processing"), PluginKind::Processing},
-                {QStringLiteral("tools"), PluginKind::Tool},
-                {QStringLiteral("hardware"), PluginKind::Hardware}
-            };
-            QList<DiscoveredPlugin> plugins;
-            const QStringList roots{
-                QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins")),
-                QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                    .filePath(QStringLiteral("plugins"))
-            };
-            for (const QString& rootPath : roots)
+            QList<DiscoveredPlugin> plugins = scopeone::core::discoverPlugins(
+                scopeone::core::PluginKind::Processing);
+            for (const scopeone::core::PluginKind kind :
+                 {scopeone::core::PluginKind::Tool, scopeone::core::PluginKind::Hardware})
             {
-                const QDir root(rootPath);
-                for (const auto& [directoryName, kind] : directories)
-                {
-                    const QDir directory(root.filePath(directoryName));
-                    for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
-                    {
-                        if (!QLibrary::isLibrary(file.absoluteFilePath()))
-                        {
-                            continue;
-                        }
-                        QPluginLoader loader(file.absoluteFilePath());
-                        DiscoveredPlugin plugin;
-                        plugin.expectedKind = kind;
-                        plugin.path = file.absoluteFilePath();
-                        const QJsonObject loaderMetadata = loader.metaData();
-                        plugin.interfaceId = loaderMetadata.value(QStringLiteral("IID")).toString();
-                        if (plugin.interfaceId.isEmpty())
-                        {
-                            continue;
-                        }
-                        plugin.metadata = loaderMetadata.value(QStringLiteral("MetaData")).toObject();
-                        scopeone::core::parsePluginManifest(
-                            plugin.metadata,
-                            kind,
-                            plugin.manifest,
-                            &plugin.error);
-                        if (plugin.error.isEmpty()
-                            && !pluginInterfaceIds(kind).contains(plugin.interfaceId))
-                        {
-                            plugin.error = QStringLiteral("plugin interface does not match its kind");
-                        }
-                        plugins.append(std::move(plugin));
-                    }
-                }
+                plugins.append(scopeone::core::discoverPlugins(kind));
             }
             return plugins;
-        }
-
-        QString settingsKey(const QString& pluginId, const QString& name)
-        {
-            return QStringLiteral("Plugins/%1/%2").arg(pluginId, name);
-        }
-
-        QString pluginDirectoryName(scopeone::core::PluginKind kind)
-        {
-            return kind == scopeone::core::PluginKind::Tool
-                       ? QStringLiteral("tools")
-                       : scopeone::core::pluginKindName(kind);
-        }
-
-        QStringList pluginInterfaceIds(scopeone::core::PluginKind kind)
-        {
-            switch (kind)
-            {
-            case scopeone::core::PluginKind::Processing:
-                return {QStringLiteral(ScopeOneProcessingPlugin_iid)};
-            case scopeone::core::PluginKind::Tool:
-                return {QStringLiteral(ScopeOneToolPlugin_iid)};
-            case scopeone::core::PluginKind::Hardware:
-                return {
-                    QStringLiteral(ScopeOneDriverHostProviderPlugin_iid),
-                    QStringLiteral(SCOPEONE_DAQ_DEVICE_PLUGIN_IID),
-                    QStringLiteral(SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID)};
-            }
-            return {};
         }
     }
 
@@ -156,11 +72,7 @@ namespace scopeone::ui
             }
 
             const QString id = plugin.manifest.id;
-            const QString enabledKey = settingsKey(id, QStringLiteral("enabled"));
-            const bool enabled = settings.contains(enabledKey)
-                                     ? settings.value(enabledKey).toBool()
-                                     : plugin.manifest.autoLoad;
-            if (!enabled)
+            if (!scopeone::core::pluginEnabled(plugin.manifest))
             {
                 continue;
             }
@@ -175,7 +87,7 @@ namespace scopeone::ui
                 continue;
             }
             const QVariantMap options = settings
-                                            .value(settingsKey(id, QStringLiteral("options")))
+                                            .value(scopeone::core::pluginSettingsKey(id, QStringLiteral("options")))
                                             .toMap();
             QString error;
             if (!core.registerDriverHostProvider(providerId, plugin.path, options, &error))
@@ -252,7 +164,8 @@ namespace scopeone::ui
             if (hardware && plugin.error.isEmpty())
             {
                 enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable);
-                const QString key = settingsKey(plugin.manifest.id, QStringLiteral("enabled"));
+                const QString key = scopeone::core::pluginSettingsKey(
+                    plugin.manifest.id, QStringLiteral("enabled"));
                 const bool checked = settings.contains(key)
                                          ? settings.value(key).toBool()
                                          : plugin.manifest.autoLoad;
@@ -304,73 +217,68 @@ namespace scopeone::ui
         }
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QJsonObject options = QJsonObject::fromVariantMap(
-            settings.value(settingsKey(id, QStringLiteral("options"))).toMap());
+            settings.value(scopeone::core::pluginSettingsKey(
+                               id, QStringLiteral("options"))).toMap());
         m_optionsEdit->setPlainText(QString::fromUtf8(
             QJsonDocument(options).toJson(QJsonDocument::Indented)));
     }
 
     void PluginManagerDialog::installPlugin()
     {
-        const QString sourcePath = QFileDialog::getOpenFileName(
-            this, tr("Install Plugin"), {}, tr("Plugin libraries (*.dll *.so *.dylib)"));
-        if (sourcePath.isEmpty())
+        const QString sourceDirectory = QFileDialog::getExistingDirectory(
+            this, tr("Install Plugin Package"));
+        if (sourceDirectory.isEmpty())
         {
             return;
         }
 
-        QPluginLoader loader(sourcePath);
-        const QJsonObject loaderMetadata = loader.metaData();
-        const QJsonObject metadata = loaderMetadata.value(QStringLiteral("MetaData")).toObject();
-        scopeone::core::PluginManifest manifest;
-        QString error;
-        bool valid = false;
+        QList<scopeone::core::DiscoveredPlugin> candidates;
         scopeone::core::PluginKind kind = scopeone::core::PluginKind::Processing;
-        for (const auto candidate : {scopeone::core::PluginKind::Processing,
-                                     scopeone::core::PluginKind::Tool,
-                                     scopeone::core::PluginKind::Hardware})
+        for (const auto candidateKind : {scopeone::core::PluginKind::Processing,
+                                         scopeone::core::PluginKind::Tool,
+                                         scopeone::core::PluginKind::Hardware})
         {
-            if (scopeone::core::parsePluginManifest(metadata, candidate, manifest, &error))
+            for (const auto& candidate :
+                 scopeone::core::discoverPlugins(candidateKind, {sourceDirectory}))
             {
-                kind = candidate;
-                valid = true;
-                break;
+                if (candidate.error.isEmpty())
+                {
+                    candidates.append(candidate);
+                    kind = candidateKind;
+                }
             }
         }
-        if (!valid)
-        {
-            QMessageBox::warning(this, tr("Plugin Manager"), error);
-            return;
-        }
-        if (!pluginInterfaceIds(kind).contains(loaderMetadata.value(QStringLiteral("IID")).toString()))
+        if (candidates.size() != 1)
         {
             QMessageBox::warning(this, tr("Plugin Manager"),
-                                 tr("The plugin interface does not match its declared type."));
+                                 tr("A plugin package must contain one plugin library."));
             return;
         }
 
         QDir userRoot(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
         const QString pluginDirectory = userRoot.filePath(
-            QStringLiteral("plugins/%1").arg(pluginDirectoryName(kind)));
+            QStringLiteral("plugins/%1").arg(scopeone::core::pluginDirectoryName(kind)));
         if (!QDir().mkpath(pluginDirectory))
         {
             QMessageBox::warning(this, tr("Plugin Manager"), tr("The plugin directory could not be created."));
             return;
         }
-        const QString destination = QDir(pluginDirectory).filePath(QFileInfo(sourcePath).fileName());
-        if (QFileInfo(sourcePath).canonicalFilePath() == QFileInfo(destination).canonicalFilePath())
+        if (QFileInfo(sourceDirectory).canonicalFilePath()
+            == QFileInfo(pluginDirectory).canonicalFilePath())
         {
             QMessageBox::information(this, tr("Plugin Manager"), tr("This plugin is already installed."));
             return;
         }
-        if (QFileInfo::exists(destination) && !QFile::remove(destination))
+        for (const QFileInfo& source : QDir(sourceDirectory).entryInfoList(QDir::Files))
         {
-            QMessageBox::warning(this, tr("Plugin Manager"), tr("The existing plugin could not be replaced."));
-            return;
-        }
-        if (!QFile::copy(sourcePath, destination))
-        {
-            QMessageBox::warning(this, tr("Plugin Manager"), tr("The plugin could not be installed."));
-            return;
+            const QString destination = QDir(pluginDirectory).filePath(source.fileName());
+            QFile::remove(destination);
+            if (!QFile::copy(source.absoluteFilePath(), destination))
+            {
+                QMessageBox::warning(this, tr("Plugin Manager"),
+                                     tr("The plugin package could not be installed."));
+                return;
+            }
         }
         refreshPlugins();
         QMessageBox::information(this, tr("Plugin Manager"),
@@ -414,13 +322,15 @@ namespace scopeone::ui
             const QString pluginId = pluginItem->data(kIdRole).toString();
             if (pluginKind == scopeone::core::PluginKind::Hardware && !pluginId.isEmpty())
             {
-                settings.setValue(settingsKey(pluginId, QStringLiteral("enabled")),
+                settings.setValue(scopeone::core::pluginSettingsKey(
+                                      pluginId, QStringLiteral("enabled")),
                                   pluginItem->checkState() == Qt::Checked);
             }
         }
         if (kind == scopeone::core::PluginKind::Hardware && !id.isEmpty())
         {
-            settings.setValue(settingsKey(id, QStringLiteral("options")), selectedOptions);
+            settings.setValue(scopeone::core::pluginSettingsKey(
+                                  id, QStringLiteral("options")), selectedOptions);
         }
         QMessageBox::information(this, tr("Plugin Manager"),
                                  tr("Plugin settings will take effect after ScopeOne restarts."));

@@ -156,5 +156,5 @@ namespace scopeone::core
     };
 }
 
-#define ScopeOneProcessingPlugin_iid "org.scopeone.ProcessingPlugin/1.0"
+#define ScopeOneProcessingPlugin_iid "org.scopeone.ProcessingPlugin/2.0"
 Q_DECLARE_INTERFACE(scopeone::core::ProcessingPlugin, ScopeOneProcessingPlugin_iid)
