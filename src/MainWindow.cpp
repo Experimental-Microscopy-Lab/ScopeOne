@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "scopeone/ScopeOneCore.h"
+#include "scopeone/PluginManifest.h"
 #include "AboutDialog.h"
 #include "InspectWidget.h"
 #include "ConsoleWidget.h"
@@ -997,18 +998,13 @@ namespace scopeone::ui
                 return new ParticleDetectionDialog(context, parent);
             });
 
-        const QString pluginDirectory = QDir(QCoreApplication::applicationDirPath())
-                                            .filePath(QStringLiteral("plugins/tools"));
-        for (const QString& error : m_toolRegistry->loadPlugins(pluginDirectory))
+        for (const QString& directory : scopeone::core::pluginDirectories(
+                 scopeone::core::PluginKind::Tool))
         {
-            qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
-        }
-        const QString userPluginDirectory =
-            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("plugins/tools"));
-        for (const QString& error : m_toolRegistry->loadPlugins(userPluginDirectory))
-        {
-            qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
+            for (const QString& error : m_toolRegistry->loadPlugins(directory))
+            {
+                qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
+            }
         }
     }
 
@@ -1020,29 +1016,6 @@ namespace scopeone::ui
     QString MainWindow::currentLayerKey() const
     {
         return m_imageWorkspace->activeLayerKey();
-    }
-
-    scopeone::core::ImageFrame MainWindow::currentFrame() const
-    {
-        return m_scopeonecore->graphFrame(currentLayerKey());
-    }
-
-    double MainWindow::layerFrameRate(const QString& layerKey) const
-    {
-        return m_scopeonecore->layerFrameRate(layerKey);
-    }
-
-    QMap<QString, double> MainWindow::layerFrameRates() const
-    {
-        return m_scopeonecore->layerFrameRates();
-    }
-
-    scopeone::core::ImageFrame MainWindow::publishToolStreamFrame(
-        const QString& sourceId,
-        const scopeone::core::ImageFrame& frame,
-        const QString& displayName)
-    {
-        return m_scopeonecore->publishToolStreamFrame(sourceId, frame, displayName);
     }
 
     void MainWindow::showLayers(const QStringList& layerKeys, bool sideBySide)

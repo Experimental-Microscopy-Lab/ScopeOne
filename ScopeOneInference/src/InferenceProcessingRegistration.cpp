@@ -1,20 +1,29 @@
 #include "OnnxInferenceModule.h"
 
-#include "scopeone/ScopeOneCore.h"
-#include "scopeone/inference/InferenceExport.h"
+#include "scopeone/ProcessingPlugin.h"
 
-extern "C" SCOPEONE_INFERENCE_EXPORT void scopeone_register_processing_modules(
-    scopeone::core::ScopeOneCore* core)
+#include <QObject>
+
+namespace scopeone::inference
 {
-    scopeone::core::ProcessingParameterDescriptor modelPath{
-        QStringLiteral("model_path"),
-        QStringLiteral("Model"),
-        scopeone::core::ProcessingParameterType::FilePath,
-        QString{}};
-    modelPath.fileFilter = QStringLiteral("ONNX models (*.onnx)");
+    class InferenceProcessingPlugin final : public QObject,
+                                            public core::ProcessingPlugin
+    {
+        Q_OBJECT
+        Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "../plugin.json")
+        Q_INTERFACES(scopeone::core::ProcessingPlugin)
 
-    core->registerProcessingModule(
-        {QStringLiteral("onnx_inference"),
+    public:
+        QList<core::ProcessingModuleDescriptor> processingModules() const override
+        {
+            core::ProcessingParameterDescriptor modelPath{
+                QStringLiteral("model_path"),
+                QStringLiteral("Model"),
+                core::ProcessingParameterType::FilePath,
+                QString{}};
+            modelPath.fileFilter = QStringLiteral("ONNX models (*.onnx)");
+
+            return {{QStringLiteral("onnx_inference"),
          QStringLiteral("ONNX Inference"),
          2,
          {modelPath,
@@ -71,9 +80,19 @@ extern "C" SCOPEONE_INFERENCE_EXPORT void scopeone_register_processing_modules(
            {},
            0,
            {{QStringLiteral("Image"), 0},
-            {QStringLiteral("Input - Output"), 1}}}}},
-        []()
+            {QStringLiteral("Input - Output"), 1}}}}}};
+        }
+
+        std::unique_ptr<core::ProcessingModule> createProcessingModule(
+            const QString& moduleId) override
         {
-            return std::make_unique<scopeone::inference::OnnxInferenceModule>();
-        });
+            if (moduleId == QStringLiteral("onnx_inference"))
+            {
+                return std::make_unique<OnnxInferenceModule>();
+            }
+            return {};
+        }
+    };
 }
+
+#include "InferenceProcessingRegistration.moc"

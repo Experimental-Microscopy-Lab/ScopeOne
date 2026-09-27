@@ -4,5 +4,6 @@
   "version": "1.0.0",
   "scopeOneApi": 1,
   "kind": "hardware",
-  "providerId": "pmt.simulator"
+  "providerId": "pmt.simulator",
+  "autoLoad": true
 }

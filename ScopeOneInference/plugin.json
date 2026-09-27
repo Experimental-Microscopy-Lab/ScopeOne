@@ -1,0 +1,7 @@
+{
+  "id": "scopeone.inference",
+  "name": "ScopeOne Inference Processing",
+  "version": "1.0.0",
+  "scopeOneApi": 2,
+  "kind": "processing"
+}

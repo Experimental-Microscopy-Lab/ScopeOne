@@ -2,6 +2,6 @@
   "id": "example.tool",
   "name": "Example Tool",
   "version": "1.0.0",
-  "scopeOneApi": 1,
+  "scopeOneApi": 2,
   "kind": "tool"
 }

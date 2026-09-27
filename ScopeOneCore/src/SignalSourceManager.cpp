@@ -1,13 +1,9 @@
 #include "internal/SignalSourceManager.h"
 #include "scopeone/PluginManifest.h"
 
-#include <QCoreApplication>
 #include <QDebug>
-#include <QDir>
 #include <QFileInfo>
-#include <QLibrary>
 #include <QPluginLoader>
-#include <QStandardPaths>
 
 #include <algorithm>
 #include <cmath>
@@ -229,58 +225,47 @@ namespace scopeone::core::internal
 
     void SignalSourceManager::loadPlugins()
     {
-        const QStringList directories = {
-            QDir(QCoreApplication::applicationDirPath())
-                .filePath(QStringLiteral("plugins/hardware")),
-            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("plugins/hardware"))};
-
-        for (const QString& path : directories)
+        for (const DiscoveredPlugin& discovered : discoverPlugins(PluginKind::Hardware))
         {
-            const QDir directory(path);
-            for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
+            if (discovered.interfaceId != QStringLiteral(SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID))
             {
-                if (!QLibrary::isLibrary(file.absoluteFilePath()))
-                {
-                    continue;
-                }
-                auto loader = std::make_unique<QPluginLoader>(file.absoluteFilePath());
-                PluginManifest manifest;
-                QString manifestError;
-                if (!parsePluginManifest(
-                        loader->metaData().value(QStringLiteral("MetaData")).toObject(),
-                        PluginKind::Hardware,
-                        manifest,
-                        &manifestError))
-                {
-                    qWarning().noquote()
-                        << QStringLiteral("Failed to load signal source plugin %1: %2")
-                               .arg(file.fileName(), manifestError);
-                    continue;
-                }
-                auto* plugin = qobject_cast<SignalSourcePlugin*>(loader->instance());
-                if (!plugin)
-                {
-                    qWarning().noquote()
-                        << QStringLiteral("Failed to load signal source plugin %1: %2")
-                               .arg(file.fileName(), loader->errorString());
-                    continue;
-                }
-
-                for (const SignalSourceDescriptor& descriptor : plugin->signalSources())
-                {
-                    const QString sourceId = descriptor.id.trimmed();
-                    if (sourceId.isEmpty() || m_descriptors.contains(sourceId))
-                    {
-                        continue;
-                    }
-                    m_descriptors.insert(sourceId, descriptor);
-                    m_plugins.insert(sourceId, plugin);
-                    m_states.insert(sourceId, SignalSourceState::Idle);
-                    m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
-                }
-                m_loaders.push_back(std::move(loader));
+                continue;
             }
+            const QFileInfo file(discovered.path);
+            if (!discovered.error.isEmpty())
+            {
+                qWarning().noquote()
+                    << QStringLiteral("Failed to load signal source plugin %1: %2")
+                           .arg(file.fileName(), discovered.error);
+                continue;
+            }
+            if (!pluginEnabled(discovered.manifest))
+            {
+                continue;
+            }
+            auto loader = std::make_unique<QPluginLoader>(discovered.path);
+            auto* plugin = qobject_cast<SignalSourcePlugin*>(loader->instance());
+            if (!plugin)
+            {
+                qWarning().noquote()
+                    << QStringLiteral("Failed to load signal source plugin %1: %2")
+                           .arg(file.fileName(), loader->errorString());
+                continue;
+            }
+
+            for (const SignalSourceDescriptor& descriptor : plugin->signalSources())
+            {
+                const QString sourceId = descriptor.id.trimmed();
+                if (sourceId.isEmpty() || m_descriptors.contains(sourceId))
+                {
+                    continue;
+                }
+                m_descriptors.insert(sourceId, descriptor);
+                m_plugins.insert(sourceId, plugin);
+                m_states.insert(sourceId, SignalSourceState::Idle);
+                m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
+            }
+            m_loaders.push_back(std::move(loader));
         }
     }
 

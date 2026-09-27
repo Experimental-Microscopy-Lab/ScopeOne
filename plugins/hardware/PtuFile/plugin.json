@@ -3,5 +3,6 @@
   "name": "PicoQuant PTU Source",
   "version": "1.0.0",
   "scopeOneApi": 1,
-  "kind": "hardware"
+  "kind": "hardware",
+  "autoLoad": true
 }

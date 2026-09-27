@@ -1,5 +1,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
+#include "scopeone/PluginManifest.h"
 #include "scopeone/ScanImageAssembler.h"
 
 #include "internal/AcquisitionEngine.h"
@@ -28,7 +29,6 @@
 #include <QList>
 #include <QMetaObject>
 #include <QMutex>
-#include <QLibrary>
 #include <QStringList>
 #include <QSysInfo>
 #include <QStandardPaths>
@@ -998,7 +998,6 @@ namespace scopeone::core
         CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
-        std::vector<std::unique_ptr<QLibrary>> processingExtensionLibraries;
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
         StageMosaicManager* stageMosaicManager{nullptr};
         internal::DaqDeviceManager* daqDeviceManager{nullptr};
@@ -1255,36 +1254,13 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        const QStringList processingExtensionNames{
-            QStringLiteral("ScopeOneCuda"),
-            QStringLiteral("ScopeOneInference")};
-        for (const QString& extensionName : processingExtensionNames)
+        QStringList allProcessingPluginErrors;
+        for (const QString& directory :
+             scopeone::core::pluginDirectories(scopeone::core::PluginKind::Processing))
         {
-            auto library = std::make_unique<QLibrary>(
-                QDir(QCoreApplication::applicationDirPath()).filePath(extensionName));
-            if (library->load())
-            {
-                using RegisterProcessingModules = void (*)(ScopeOneCore*);
-                const auto registerProcessingModules =
-                    reinterpret_cast<RegisterProcessingModules>(
-                        library->resolve("scopeone_register_processing_modules"));
-                if (registerProcessingModules)
-                {
-                    registerProcessingModules(this);
-                    m_managers->processingExtensionLibraries.push_back(std::move(library));
-                }
-                else
-                {
-                    library->unload();
-                }
-            }
+            allProcessingPluginErrors.append(
+                m_managers->processingModuleRegistry->loadPlugins(directory));
         }
-        const QStringList processingPluginErrors = m_managers->processingModuleRegistry->loadPlugins(
-            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("plugins/processing")));
-        QStringList allProcessingPluginErrors = processingPluginErrors;
-        allProcessingPluginErrors.append(m_managers->processingModuleRegistry->loadPlugins(
-            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("plugins/processing"))));
         for (const QString& error : allProcessingPluginErrors)
         {
             qWarning().noquote() << QStringLiteral("Failed to load processing plugin %1").arg(error);

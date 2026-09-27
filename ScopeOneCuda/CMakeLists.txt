@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+set(CMAKE_AUTOMOC ON)
 
 set(SCOPEONE_CUDA_VERSION 1.0.0)
 
@@ -13,6 +14,7 @@ add_library(ScopeOneCuda SHARED
         src/CudaGaussianBlurModule.cpp
         src/CudaGaussianBlurModule.h
         src/CudaProcessingRegistration.cpp
+        plugin.json
         src/CudaRealImageModule.cpp
         src/GpuComplexFrame.cpp
         src/GpuRealFrame.cpp
@@ -29,10 +31,11 @@ set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING
         "Target CUDA architectures")
 set_target_properties(ScopeOneCuda PROPERTIES
         EXPORT_NAME Cuda
+        PREFIX ""
         CUDA_SEPARABLE_COMPILATION OFF
         CUDA_ARCHITECTURES "${SCOPEONE_CUDA_ARCHITECTURES}"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/processing"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/processing"
 )
 
 target_compile_features(ScopeOneCuda PUBLIC cxx_std_20)
@@ -58,20 +61,20 @@ if (WIN32)
         add_custom_command(TARGET ScopeOneCuda POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${_dll}"
-                "$<TARGET_FILE_DIR:ScopeOneCuda>"
+                "${CMAKE_BINARY_DIR}/plugins/processing"
         )
     endforeach ()
 endif ()
 
 install(TARGETS ScopeOneCuda
         EXPORT ScopeOneCudaTargets
-        RUNTIME DESTINATION "."
-        LIBRARY DESTINATION "."
+        RUNTIME DESTINATION "plugins/processing"
+        LIBRARY DESTINATION "plugins/processing"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 if (SCOPEONE_CUDA_RUNTIME_DLLS)
-    install(FILES ${SCOPEONE_CUDA_RUNTIME_DLLS} DESTINATION ".")
+    install(FILES ${SCOPEONE_CUDA_RUNTIME_DLLS} DESTINATION "plugins/processing")
 endif ()
 install(EXPORT ScopeOneCudaTargets
         FILE ScopeOneCudaTargets.cmake

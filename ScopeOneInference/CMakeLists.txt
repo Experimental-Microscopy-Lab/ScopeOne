@@ -8,6 +8,7 @@ endif ()
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+set(CMAKE_AUTOMOC ON)
 
 set(ONNXRUNTIME_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/../ScopeOneCore/external/onnxruntime-win-x64-gpu_cuda12-1.30.0"
@@ -34,6 +35,7 @@ add_library(ScopeOneInference SHARED
     src/OnnxInferenceModule.cpp
     src/OnnxInferenceModule.h
     src/InferenceProcessingRegistration.cpp
+    plugin.json
     include/scopeone/inference/ExecutionProvider.h
     include/scopeone/inference/InferenceExport.h
     include/scopeone/inference/OnnxRuntime.h
@@ -44,8 +46,9 @@ add_library(scopeone::Inference ALIAS ScopeOneInference)
 
 set_target_properties(ScopeOneInference PROPERTIES
     EXPORT_NAME Inference
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    PREFIX ""
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/processing"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/processing"
 )
 target_compile_features(ScopeOneInference PUBLIC cxx_std_20)
 target_compile_definitions(ScopeOneInference PRIVATE SCOPEONE_INFERENCE_EXPORTS)
@@ -73,20 +76,20 @@ if (WIN32)
     add_custom_command(TARGET ScopeOneInference POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${ONNXRUNTIME_DLLS}
-            "$<TARGET_FILE_DIR:ScopeOneInference>"
+            "${CMAKE_BINARY_DIR}/plugins/processing"
         COMMAND_EXPAND_LISTS
     )
 endif ()
 
 install(TARGETS ScopeOneInference
     EXPORT ScopeOneInferenceTargets
-    RUNTIME DESTINATION "."
-    LIBRARY DESTINATION "."
+    RUNTIME DESTINATION "plugins/processing"
+    LIBRARY DESTINATION "plugins/processing"
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 if (ONNXRUNTIME_DLLS)
-    install(FILES ${ONNXRUNTIME_DLLS} DESTINATION ".")
+    install(FILES ${ONNXRUNTIME_DLLS} DESTINATION "plugins/processing")
 endif ()
 install(EXPORT ScopeOneInferenceTargets
     FILE ScopeOneInferenceTargets.cmake
