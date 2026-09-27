@@ -119,6 +119,12 @@ qt_add_executable(ScopeOne
 qt_add_executable(ScopeOneMcpServer
         src/ScopeOneMcpServer.cpp
 )
+if (UNIX AND NOT APPLE)
+    set_target_properties(ScopeOne PROPERTIES
+            BUILD_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN/lib"
+    )
+endif ()
 target_link_libraries(ScopeOne PRIVATE
         scopeone::ScopeOneCore
         Qt::Widgets

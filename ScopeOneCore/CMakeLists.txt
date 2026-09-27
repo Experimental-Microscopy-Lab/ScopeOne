@@ -172,6 +172,12 @@ add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
 add_library(ScopeOnePluginSDK INTERFACE)
 add_library(scopeone::PluginSDK ALIAS ScopeOnePluginSDK)
+if (UNIX AND NOT APPLE)
+    set_target_properties(ScopeWriter ScopeOneCore PROPERTIES
+            BUILD_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN"
+    )
+endif ()
 set_target_properties(ScopeOnePluginSDK PROPERTIES EXPORT_NAME PluginSDK)
 target_link_libraries(ScopeOnePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
 target_include_directories(ScopeOnePluginSDK INTERFACE
@@ -244,6 +250,12 @@ add_custom_command(TARGET ScopeOneCore POST_BUILD
 add_executable(ScopeOne_DriverHost
         src/DriverHostMain.cpp
 )
+if (UNIX AND NOT APPLE)
+    set_target_properties(ScopeOne_DriverHost PROPERTIES
+            BUILD_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN/../lib"
+    )
+endif ()
 target_link_libraries(ScopeOne_DriverHost
         ScopeOneCore
         MMCore

@@ -141,6 +141,21 @@ namespace scopeone::core::internal
             QString frameInfoPath;
         };
 
+        QString cameraOutputDir(const QString& outputDir,
+                                const QString& cameraId,
+                                bool splitByCamera)
+        {
+            return splitByCamera ? QDir(outputDir).filePath(cameraId) : outputDir;
+        }
+
+        QString metadataLinkForOutput(const QString& outputDir,
+                                      const QString& metadataFileName,
+                                      const QString& outputPath)
+        {
+            return QDir(QFileInfo(outputPath).absolutePath())
+                .relativeFilePath(QDir(outputDir).filePath(metadataFileName));
+        }
+
         QString buildSessionFilePath(const QString& dir,
                                      const QString& baseName,
                                      const QString& cameraId,
@@ -234,13 +249,15 @@ namespace scopeone::core::internal
         CameraOutputPaths buildCameraOutputPaths(const QString& outputDir,
                                                  const QString& baseName,
                                                  const QString& cameraId,
-                                                 const ExperimentPlan& plan)
+                                                 const ExperimentPlan& plan,
+                                                 bool splitByCamera)
         {
             CameraOutputPaths paths;
-            paths.rawPath = buildSessionFilePath(outputDir,
-                                                baseName,
-                                                cameraId,
-                                                recordingExtension(plan.format));
+            const QString fileDir = cameraOutputDir(outputDir, cameraId, splitByCamera);
+            paths.rawPath = buildSessionFilePath(fileDir,
+                                                 baseName,
+                                                 QString(),
+                                                 recordingExtension(plan.format));
             if (plan.format == scopeone::core::RecordingFormat::OmeTiff
                 && plan.positions.size() > 1)
             {
@@ -248,11 +265,11 @@ namespace scopeone::core::internal
             }
             if (requiresFrameInfo(plan.format))
             {
-                paths.frameInfoPath = buildSessionFilePath(outputDir,
-                                                           baseName,
-                                                           cameraId,
-                                                           QStringLiteral(".csv"),
-                                                           QStringLiteral("_frameinfo"));
+                paths.frameInfoPath = buildSessionFilePath(fileDir,
+                                                            baseName,
+                                                            QString(),
+                                                            QStringLiteral(".csv"),
+                                                            QStringLiteral("_frameinfo"));
             }
             return paths;
         }
@@ -367,6 +384,12 @@ namespace scopeone::core::internal
         // Resolves the output directory reported for a completed session
         QString savedSessionOutputDir(const ScopeOneCore::RecordingSessionData& session)
         {
+            const auto& plan = session.capturePlan();
+            if (!plan.saveDir.trimmed().isEmpty() && !plan.baseName.trimmed().isEmpty())
+            {
+                return sessionOutputDir(plan.saveDir, plan.baseName);
+            }
+
             for (auto it = session.outputFiles().constBegin(); it != session.outputFiles().constEnd(); ++it)
             {
                 const QString path = !it.value().rawPath.isEmpty()
@@ -378,11 +401,6 @@ namespace scopeone::core::internal
                 }
             }
 
-            const auto& plan = session.capturePlan();
-            if (!plan.saveDir.trimmed().isEmpty() && !plan.baseName.trimmed().isEmpty())
-            {
-                return sessionOutputDir(plan.saveDir, plan.baseName);
-            }
             return {};
         }
 
@@ -985,6 +1003,7 @@ namespace scopeone::core::internal
             setWriterStatus(RecordingWriterPhase::Failed, outputError);
             return false;
         }
+        const bool splitByCamera = m_captureState.activeCameraIds.size() > 1;
         for (const QString& cameraId : m_captureState.activeCameraIds)
         {
             auto output = std::make_shared<CameraOutput>();
@@ -992,9 +1011,16 @@ namespace scopeone::core::internal
             const CameraOutputPaths paths = buildCameraOutputPaths(outputInfo.outputDir,
                                                                    plan.baseName,
                                                                    cameraId,
-                                                                   plan);
+                                                                   plan,
+                                                                   splitByCamera);
+            if (splitByCamera)
+            {
+                QDir().mkpath(QFileInfo(paths.rawPath).absolutePath());
+            }
             output->rawPath = paths.rawPath;
-            output->metadataFileName = outputInfo.metadataFileName;
+            output->metadataFileName = metadataLinkForOutput(outputInfo.outputDir,
+                                                              outputInfo.metadataFileName,
+                                                              paths.rawPath);
             output->acquisitionStartTimestampNs = acquisitionStartTimestampNs;
             output->cameraProperties = m_activeSession->experimentDocument()
                                            .deviceProperties.value(cameraId).toObject();
@@ -2276,7 +2302,16 @@ namespace scopeone::core::internal
             return updateSessionResult(*session, QStringLiteral("Error: %1").arg(errorMessage), false);
         };
         QHash<QString, RecordingFileManifest> completedOutputs;
+        QStringList outputCameraIds;
         for (const QString& cameraId : session->cameraIds())
+        {
+            if (inputSession->recordedFrameCount(cameraId) > 0)
+            {
+                outputCameraIds.append(cameraId);
+            }
+        }
+        const bool splitByCamera = outputCameraIds.size() > 1;
+        for (const QString& cameraId : outputCameraIds)
         {
             const qint64 frameCount = inputSession->recordedFrameCount(cameraId);
             if (frameCount <= 0 || frameCount > (std::numeric_limits<int>::max)())
@@ -2309,10 +2344,18 @@ namespace scopeone::core::internal
             const CameraOutputPaths paths = buildCameraOutputPaths(outputInfo.outputDir,
                                                                    capturePlan.baseName,
                                                                    cameraId,
-                                                                   capturePlan);
+                                                                   capturePlan,
+                                                                   splitByCamera);
+            if (splitByCamera)
+            {
+                QDir().mkpath(QFileInfo(paths.rawPath).absolutePath());
+            }
+            const QString metadataLink = metadataLinkForOutput(outputInfo.outputDir,
+                                                               outputInfo.metadataFileName,
+                                                               paths.rawPath);
             if (!rawSaver.startStackRaw(paths.rawPath,
                                         paths.frameInfoPath,
-                                        outputInfo.metadataFileName,
+                                        metadataLink,
                                         capturePlan.format,
                                         firstImageFrame.width,
                                         firstImageFrame.height,
