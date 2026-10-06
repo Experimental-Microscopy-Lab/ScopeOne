@@ -107,6 +107,25 @@ namespace scopeone::core
                 return fail(errorMessage,
                             QStringLiteral("%1 must not end with a period").arg(path));
             }
+            if (name.endsWith(QLatin1Char(' ')))
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1 must not end with a space").arg(path));
+            }
+            const QString deviceName = name.section(QLatin1Char('.'), 0, 0).toUpper();
+            if (deviceName == QStringLiteral("CON")
+                || deviceName == QStringLiteral("PRN")
+                || deviceName == QStringLiteral("AUX")
+                || deviceName == QStringLiteral("NUL")
+                || (deviceName.size() == 4
+                    && (deviceName.startsWith(QStringLiteral("COM"))
+                        || deviceName.startsWith(QStringLiteral("LPT")))
+                    && deviceName.at(3).isDigit()
+                    && deviceName.at(3) != QLatin1Char('0')))
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1 is a reserved Windows device name").arg(path));
+            }
             return true;
         }
 
@@ -900,12 +919,13 @@ namespace scopeone::core
                 {
                     return false;
                 }
-                if (cameraIds.contains(cameraId))
+                const QString normalizedCameraId = cameraId.toCaseFolded();
+                if (cameraIds.contains(normalizedCameraId))
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1 duplicates camera ID '%2'").arg(cameraPath, cameraId));
                 }
-                cameraIds.insert(cameraId);
+                cameraIds.insert(normalizedCameraId);
             }
 
             if (plan.format != RecordingFormat::OmeTiff

@@ -864,12 +864,18 @@ namespace scopeone::ui
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
+                    QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                    const QString lastSaveDirectory = settings.value(
+                        QStringLiteral("LastSaveDirectory"), QDir::homePath()).toString();
                     const QString saveDir = QFileDialog::getExistingDirectory(
-                        this, tr("Select Dataset Folder"), QDir::homePath());
+                        this,
+                        tr("Select Dataset Folder"),
+                        QDir(lastSaveDirectory).exists() ? lastSaveDirectory : QDir::homePath());
                     if (saveDir.isEmpty())
                     {
                         return;
                     }
+                    settings.setValue(QStringLiteral("LastSaveDirectory"), saveDir);
 
                     bool accepted = false;
                     QString baseName = QInputDialog::getText(

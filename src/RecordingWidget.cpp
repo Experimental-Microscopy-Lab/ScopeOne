@@ -225,7 +225,12 @@ namespace scopeone::ui
         connect(m_startStopButton, &QPushButton::clicked, this, &RecordingWidget::onStartStopClicked);
         connect(m_burstModeCheck, &QCheckBox::toggled, this, [this]() { updateUiState(); });
         connect(m_detectorCombo, &QComboBox::currentTextChanged, this, [this]() { updateUiState(); });
-        connect(m_saveDirLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
+        connect(m_saveDirLineEdit, &QLineEdit::textChanged, this,
+                [this]()
+                {
+                    setLastSaveDirectory(m_saveDirLineEdit->text().trimmed());
+                    updateUiState();
+                });
         connect(m_fileNameLineEdit, &QLineEdit::textChanged, this, [this]() { updateUiState(); });
         connect(m_formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this]() { updateUiState(); });
@@ -677,7 +682,6 @@ namespace scopeone::ui
         QString dir = QFileDialog::getExistingDirectory(this, "Select Save Directory", startDir);
         if (dir.isEmpty()) return;
         m_saveDirLineEdit->setText(dir);
-        setLastSaveDirectory(dir);
     }
 
     // Generates a timestamp based recording name
@@ -901,7 +905,6 @@ namespace scopeone::ui
             qWarning().noquote() << "Save directory is empty";
             return false;
         }
-
         QString baseName = normalizedBaseName();
         if (baseName.isEmpty())
         {

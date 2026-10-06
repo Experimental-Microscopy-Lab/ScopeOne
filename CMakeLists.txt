@@ -122,7 +122,7 @@ qt_add_executable(ScopeOneMcpServer
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeOne PROPERTIES
             BUILD_RPATH "$ORIGIN"
-            INSTALL_RPATH "$ORIGIN/lib"
+            INSTALL_RPATH "$ORIGIN/${CMAKE_INSTALL_LIBDIR}"
     )
 endif ()
 target_link_libraries(ScopeOne PRIVATE
@@ -209,6 +209,18 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
             ${SCOPEONE_CORE_RUNTIME_FILES}
             "$<TARGET_FILE_DIR:ScopeOne>"
             COMMAND_EXPAND_LISTS
+    )
+endif ()
+
+if (UNIX AND NOT APPLE)
+    file(GLOB SCOPEONE_CORE_SHARED_LIBRARIES
+            LIST_DIRECTORIES false
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
+    )
+    install(FILES
+            ${SCOPEONE_CORE_SHARED_LIBRARIES}
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     )
 endif ()
 
