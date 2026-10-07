@@ -12,8 +12,6 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSignalBlocker>
-#include <QSlider>
 #include <QVBoxLayout>
 #include <QtMath>
 #include <QtGlobal>
@@ -615,66 +613,9 @@ namespace scopeone::ui
         infoGroup.layerKey = normalizedLayerKey;
         infoGroup.groupBox = group;
 
-        auto* slidersLayout = new QHBoxLayout();
-
-        auto* minLabel = new QLabel(QStringLiteral("Min:"), group);
-        auto* minSlider = new QSlider(Qt::Horizontal, group);
-        minSlider->setRange(0, 255);
-        minSlider->setValue(0);
-        minSlider->setMinimumWidth(100);
-        auto* minSliderValueLabel = new QLabel(QStringLiteral("0"), group);
-        minSliderValueLabel->setMinimumWidth(50);
-        minSliderValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
-        auto* maxLabel = new QLabel(QStringLiteral("Max:"), group);
-        auto* maxSlider = new QSlider(Qt::Horizontal, group);
-        maxSlider->setRange(0, 255);
-        maxSlider->setValue(255);
-        maxSlider->setMinimumWidth(100);
-        auto* maxSliderValueLabel = new QLabel(QStringLiteral("255"), group);
-        maxSliderValueLabel->setMinimumWidth(50);
-        maxSliderValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
-        slidersLayout->addWidget(minLabel);
-        slidersLayout->addWidget(minSlider, 1);
-        slidersLayout->addWidget(minSliderValueLabel);
-        slidersLayout->addWidget(maxLabel);
-        slidersLayout->addWidget(maxSlider, 1);
-        slidersLayout->addWidget(maxSliderValueLabel);
-        layout->addLayout(slidersLayout);
-
-        infoGroup.minSlider = minSlider;
-        infoGroup.maxSlider = maxSlider;
-        infoGroup.minSliderValueLabel = minSliderValueLabel;
-        infoGroup.maxSliderValueLabel = maxSliderValueLabel;
         layout->addWidget(createStatisticsGroup(infoGroup));
         m_layerInfoGroups.insert(normalizedLayerKey, infoGroup);
         m_contentLayout->insertWidget(m_contentLayout->count() - 1, group);
-
-        connect(minSlider, &QSlider::valueChanged, this,
-                [this, normalizedLayerKey, minSlider, maxSlider, minSliderValueLabel](int value)
-                {
-                    if (value >= maxSlider->value())
-                    {
-                        QSignalBlocker blocker(minSlider);
-                        minSlider->setValue(maxSlider->value() - 1);
-                        value = maxSlider->value() - 1;
-                    }
-                    minSliderValueLabel->setText(QString::number(value));
-                    onLayerSliderChanged(normalizedLayerKey, value, maxSlider->value());
-                });
-        connect(maxSlider, &QSlider::valueChanged, this,
-                [this, normalizedLayerKey, minSlider, maxSlider, maxSliderValueLabel](int value)
-                {
-                    if (value <= minSlider->value())
-                    {
-                        QSignalBlocker blocker(maxSlider);
-                        maxSlider->setValue(minSlider->value() + 1);
-                        value = minSlider->value() + 1;
-                    }
-                    maxSliderValueLabel->setText(QString::number(value));
-                    onLayerSliderChanged(normalizedLayerKey, minSlider->value(), value);
-                });
 
         return group;
     }
@@ -754,7 +695,6 @@ namespace scopeone::ui
         {
             return;
         }
-        LayerInfoGroup& infoGroup = it.value();
 
         LayerInspectState& state = getOrCreateLayerState(normalizedLayerKey);
         state.stats = stats;
@@ -764,25 +704,6 @@ namespace scopeone::ui
             return;
         }
 
-        scopeone::core::DocumentLayer layer;
-        if (!m_sceneModel || !m_sceneModel->findLayer(normalizedLayerKey, layer))
-        {
-            return;
-        }
-
-        const int maxValue = qMax(1, layer.display.levelDomainMax);
-        const int displayMin = qBound(0, layer.display.levelMin, maxValue - 1);
-        const int displayMax = qBound(displayMin + 1, layer.display.levelMax, maxValue);
-        infoGroup.minSlider->setRange(0, maxValue);
-        infoGroup.maxSlider->setRange(0, maxValue);
-        {
-            QSignalBlocker minBlocker(infoGroup.minSlider);
-            QSignalBlocker maxBlocker(infoGroup.maxSlider);
-            infoGroup.minSlider->setValue(displayMin);
-            infoGroup.maxSlider->setValue(displayMax);
-        }
-        infoGroup.minSliderValueLabel->setText(QString::number(displayMin));
-        infoGroup.maxSliderValueLabel->setText(QString::number(displayMax));
         updateStatisticsDisplay(normalizedLayerKey, stats);
         updateControlsState();
     }
@@ -840,16 +761,6 @@ namespace scopeone::ui
                                        && m_availableLayerKeys.contains(layerKey);
         m_drawMeasurementLineButton->setEnabled(annotationEnabled);
         m_clearMeasurementLinesButton->setEnabled(annotationEnabled);
-
-        for (auto it = m_layerInfoGroups.begin(); it != m_layerInfoGroups.end(); ++it)
-        {
-            LayerInfoGroup& infoGroup = it.value();
-            const auto stateIt = m_layerStates.constFind(infoGroup.layerKey);
-            const bool hasStats = stateIt != m_layerStates.constEnd() && stateIt.value().hasStats;
-            const bool isActiveLayer = infoGroup.layerKey == layerKey;
-            infoGroup.minSlider->setEnabled(hasStats && isActiveLayer);
-            infoGroup.maxSlider->setEnabled(hasStats && isActiveLayer);
-        }
     }
 
     // Shows inspect controls for the selected preview layer
@@ -881,24 +792,6 @@ namespace scopeone::ui
             it = m_layerStates.insert(layerKey, state);
         }
         return it.value();
-    }
-
-    // Apply manual display range changes from layer sliders
-    void InspectWidget::onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue)
-    {
-        auto stateIt = m_layerStates.find(layerKey);
-        if (stateIt == m_layerStates.end())
-        {
-            return;
-        }
-        const LayerInspectState& state = stateIt.value();
-        if (!state.hasStats)
-        {
-            return;
-        }
-        m_workspace->setLayerAutoStretchEnabled(layerKey, false);
-        m_sceneModel->setLayerDisplayLevels(
-            layerKey, minValue, maxValue, qMax(1, state.stats.maxValue));
     }
 
     QString InspectWidget::currentLayerCameraId() const

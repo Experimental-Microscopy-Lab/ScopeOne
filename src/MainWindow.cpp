@@ -63,6 +63,8 @@ namespace scopeone::ui
     namespace
     {
         constexpr qsizetype kMaxRecentConfigurations = 8;
+        // Bump when dock widgets change so stale saved layouts are ignored
+        constexpr int kWindowLayoutVersion = 1;
 
         // Build raw layer keys for all camera ids
         QStringList rawLayerKeys(const QStringList& cameraIds)
@@ -298,6 +300,7 @@ namespace scopeone::ui
         setWindowTitle("ScopeOne");
         setMinimumSize(1366, 768);
         resize(1600, 900);
+        restoreWindowLayout();
     }
 
     // Confirm what to do with unsaved gallery sessions
@@ -307,6 +310,24 @@ namespace scopeone::ui
         {
             event->ignore();
             return;
+        }
+
+        saveWindowLayout();
+
+        // Core shutdown stops and finalizes the recording; confirm before cutting it short
+        if (m_scopeonecore->isRecording())
+        {
+            const QMessageBox::StandardButton recordingReply = QMessageBox::warning(
+                this,
+                tr("Recording in Progress"),
+                tr("A recording is still running. Stop the recording and close ScopeOne?"),
+                QMessageBox::Yes | QMessageBox::Cancel,
+                QMessageBox::Cancel);
+            if (recordingReply != QMessageBox::Yes)
+            {
+                event->ignore();
+                return;
+            }
         }
 
         const auto unsavedSessions = m_imageGalleryWidget->unsavedSessions();
@@ -963,6 +984,17 @@ namespace scopeone::ui
         {
             return m_imageWorkspace->pixelSizeUm(layerKey);
         });
+        // Remember the scale bar choice across launches
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            m_previewWidget->setScaleBarVisible(
+                settings.value(QStringLiteral("View/scaleBarVisible"), true).toBool());
+        }
+        connect(m_previewWidget, &PreviewWidget::scaleBarVisibilityChanged, this, [](bool visible)
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            settings.setValue(QStringLiteral("View/scaleBarVisible"), visible);
+        });
         setCentralWidget(m_imageWorkspace->viewerHost());
         setupTools();
 
@@ -1241,6 +1273,11 @@ namespace scopeone::ui
 
         viewMenu->addSeparator();
         m_dockWidgetsMenu = viewMenu->addMenu(tr("&Dock Widgets"));
+        auto* resetLayoutAction = viewMenu->addAction(tr("&Reset Layout"));
+        connect(resetLayoutAction, &QAction::triggered, this, [this]()
+        {
+            restoreState(m_defaultWindowState, kWindowLayoutVersion);
+        });
 
         auto* togglePreviewAction = new QAction(tr("Toggle Live Preview"), this);
         togglePreviewAction->setShortcut(QKeySequence(Qt::Key_Space));
@@ -1342,26 +1379,36 @@ namespace scopeone::ui
         m_imageProcessingWidget = new ImageProcessingWidget(m_scopeonecore, m_imageWorkspace, this);
 
         m_controlDockWidget = new QDockWidget(tr("Control"), this);
+
+        m_controlDockWidget->setObjectName(QStringLiteral("ControlDock"));
         m_controlDockWidget->setWidget(m_deviceControlWidget->hardwareControlsWidget());
         m_controlDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
         addDockWidget(Qt::RightDockWidgetArea, m_controlDockWidget);
 
         m_viewDockWidget = new QDockWidget(tr("View"), this);
+
+        m_viewDockWidget->setObjectName(QStringLiteral("ViewDock"));
         m_viewDockWidget->setWidget(m_deviceControlWidget->imageControlsWidget());
         m_viewDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
         tabifyDockWidget(m_controlDockWidget, m_viewDockWidget);
 
         m_analyzeDockWidget = new QDockWidget(tr("Analyze"), this);
+
+        m_analyzeDockWidget->setObjectName(QStringLiteral("AnalyzeDock"));
         m_analyzeDockWidget->setWidget(m_inspectWidget);
         m_analyzeDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
         tabifyDockWidget(m_controlDockWidget, m_analyzeDockWidget);
 
         m_processDockWidget = new QDockWidget(tr("Process"), this);
+
+        m_processDockWidget->setObjectName(QStringLiteral("ProcessDock"));
         m_processDockWidget->setWidget(m_imageProcessingWidget);
         m_processDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
         tabifyDockWidget(m_controlDockWidget, m_processDockWidget);
 
         m_consoleDockWidget = new QDockWidget(tr("Console"), this);
+
+        m_consoleDockWidget->setObjectName(QStringLiteral("ConsoleDock"));
         m_consoleWidget = new ConsoleWidget(m_consoleDockWidget);
         m_consoleDockWidget->setWidget(m_consoleWidget);
         m_consoleDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
@@ -1379,6 +1426,7 @@ namespace scopeone::ui
     void MainWindow::setupPropertyBrowser()
     {
         m_propertyDockWidget = new QDockWidget(tr("Properties"), this);
+        m_propertyDockWidget->setObjectName(QStringLiteral("PropertiesDock"));
         m_propertyDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
 
         m_propertyBrowser = new DevicePropertyWidget(m_scopeonecore, this);
@@ -1388,6 +1436,8 @@ namespace scopeone::ui
         addDockWidget(Qt::LeftDockWidgetArea, m_propertyDockWidget);
 
         m_configPresetDockWidget = new QDockWidget(tr("Configs"), this);
+
+        m_configPresetDockWidget->setObjectName(QStringLiteral("ConfigsDock"));
         m_configPresetDockWidget->setWidget(m_configPresetWidget);
         m_configPresetDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
     }
@@ -1396,6 +1446,7 @@ namespace scopeone::ui
     void MainWindow::setupRecording()
     {
         m_recordingDockWidget = new QDockWidget(tr("Recording"), this);
+        m_recordingDockWidget->setObjectName(QStringLiteral("RecordingDock"));
         m_recordingDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
 
         m_recordingWidget = new RecordingWidget(m_scopeonecore, this);
@@ -1409,6 +1460,7 @@ namespace scopeone::ui
     void MainWindow::setupImageGallery()
     {
         m_imageGalleryDockWidget = new QDockWidget(tr("Image Gallery"), this);
+        m_imageGalleryDockWidget->setObjectName(QStringLiteral("ImageGalleryDock"));
         m_imageGalleryDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
         m_imageGalleryDockWidget->setFeatures(QDockWidget::DockWidgetMovable |
             QDockWidget::DockWidgetFloatable |
@@ -1519,6 +1571,29 @@ namespace scopeone::ui
         addDock(m_analyzeDockWidget, QStringLiteral("Analyze"));
         addDock(m_processDockWidget, QStringLiteral("Process"));
         addDock(m_consoleDockWidget, QStringLiteral("Console"));
+    }
+
+    // Restore the saved window geometry and dock layout
+    void MainWindow::restoreWindowLayout()
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        restoreGeometry(settings.value(QStringLiteral("MainWindow/geometry")).toByteArray());
+        const QByteArray savedState = settings.value(QStringLiteral("MainWindow/state")).toByteArray();
+
+        // Dock sizes are only valid once the window is shown, so capture the default layout then
+        QTimer::singleShot(0, this, [this, savedState]()
+        {
+            m_defaultWindowState = saveState(kWindowLayoutVersion);
+            restoreState(savedState, kWindowLayoutVersion);
+        });
+    }
+
+    // Save the window geometry and dock layout for the next launch
+    void MainWindow::saveWindowLayout() const
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        settings.setValue(QStringLiteral("MainWindow/geometry"), saveGeometry());
+        settings.setValue(QStringLiteral("MainWindow/state"), saveState(kWindowLayoutVersion));
     }
 
     // Push loaded camera ids into every dependent panel

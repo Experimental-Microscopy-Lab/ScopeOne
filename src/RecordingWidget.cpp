@@ -308,6 +308,10 @@ namespace scopeone::ui
                 {
                     m_isRecording = recording;
                     m_startStopButton->setText(recording ? "Stop" : "Start");
+                    m_startStopButton->setStyleSheet(recording
+                                                         ? QStringLiteral(
+                                                             "QPushButton { background-color: #c0392b; color: white; font-weight: bold; }")
+                                                         : QString());
                     if (recording)
                     {
                         m_storageStatusTimer->start();
@@ -642,16 +646,23 @@ namespace scopeone::ui
         statusLayout->addWidget(m_burstCountLabel, 1, 1);
         statusLayout->addWidget(m_writerStatusLabel, 2, 0, 1, 2);
         statusLayout->addWidget(m_storageStatusLabel, 3, 0, 1, 2);
-        contentLayout->addWidget(statusGroup);
 
         m_startStopButton = new QPushButton("Start", this);
         m_startStopButton->setMinimumHeight(28);
-        contentLayout->addWidget(m_startStopButton);
 
         contentLayout->addStretch(1);
 
         scrollArea->setWidget(content);
-        mainLayout->addWidget(scrollArea);
+        mainLayout->addWidget(scrollArea, 1);
+
+        // Keep status and Start/Stop visible below the scrolling settings
+        auto* footer = new QWidget(this);
+        auto* footerLayout = new QVBoxLayout(footer);
+        footerLayout->setContentsMargins(6, 6, 6, 6);
+        footerLayout->setSpacing(6);
+        footerLayout->addWidget(statusGroup);
+        footerLayout->addWidget(m_startStopButton);
+        mainLayout->addWidget(footer);
     }
 
     // Updates available detector choices
