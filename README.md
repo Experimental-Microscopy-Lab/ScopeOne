@@ -118,7 +118,7 @@ Build Core, plugins, and GUI with the repository script:
 
 When migrating an existing build, use `--clean --configure` once to replace the old CMake caches. Later builds only need `.\scripts\build.ps1`.
 
-The root `vcpkg.json` pins Qt and OpenCV. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux`, `arm64-osx`, or another supported host triplet. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, ONNX Runtime, and ScopeWriter retain their existing dependency setup.
+The root `vcpkg.json` pins Qt and OpenCV. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux-dynamic`, `arm64-osx-dynamic`, or another supported host triplet. Linux and macOS use the dynamic triplets so Qt is shared between the GUI, ScopeOneCore, and plugins. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, ONNX Runtime, and ScopeWriter retain their existing dependency setup.
 
 For a direct Core CMake configure:
 
@@ -150,14 +150,16 @@ Linux:
 ```bash
 sudo apt install \
   git subversion build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja-build curl zip unzip libboost-all-dev \
-  libgl1-mesa-dev libegl1-mesa-dev libx11-dev libx11-xcb-dev libxext-dev \
-  libxfixes-dev libxi-dev libxrender-dev libxcb1-dev libxcb-cursor-dev libxcb-util-dev \
-  libxcb-glx0-dev libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev \
-  libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev libxcb-shm0-dev \
-  libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev libxcb-xkb-dev \
-  libxkbcommon-dev libxkbcommon-x11-dev
+  pkg-config ninja-build curl zip unzip libboost-all-dev
+sudo apt install --no-upgrade \
+  libgl-dev libegl-dev libopengl-dev libx11-dev libx11-xcb-dev libxrender-dev \
+  libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-image0-dev \
+  libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev \
+  libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xkb-dev libxcb-xinput-dev \
+  libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
 ```
+
+The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system. It uses the glvnd `libgl-dev`/`libegl-dev` packages instead of `libgl1-mesa-dev`/`libegl1-mesa-dev`, so `--no-upgrade` can install it without upgrading the installed Mesa drivers.
 
 macOS:
 

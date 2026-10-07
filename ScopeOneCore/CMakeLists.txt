@@ -168,6 +168,7 @@ if (UNIX AND NOT APPLE)
     set_target_properties(ScopeWriter ScopeOneCore PROPERTIES
             BUILD_RPATH "$ORIGIN"
             INSTALL_RPATH "$ORIGIN"
+            INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()
 set_target_properties(ScopeOnePluginSDK PROPERTIES EXPORT_NAME PluginSDK)
@@ -247,7 +248,8 @@ add_executable(ScopeOne_DriverHost
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeOne_DriverHost PROPERTIES
             BUILD_RPATH "$ORIGIN"
-            INSTALL_RPATH "$ORIGIN/../lib"
+            INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN"
+            INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()
 target_link_libraries(ScopeOne_DriverHost

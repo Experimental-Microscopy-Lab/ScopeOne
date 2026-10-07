@@ -42,10 +42,10 @@ esac
 
 case "$(uname -m)" in
   x86_64|amd64)
-    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo x64-linux || echo x64-osx)"
+    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo x64-linux-dynamic || echo x64-osx-dynamic)"
     ;;
   aarch64|arm64)
-    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo arm64-linux || echo arm64-osx)"
+    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo arm64-linux-dynamic || echo arm64-osx-dynamic)"
     ;;
   *)
     echo "Unsupported host architecture: $(uname -m)" >&2
@@ -58,6 +58,7 @@ VCPKG_ARGS=(
   "-DVCPKG_MANIFEST_DIR=$ROOT_DIR"
   "-DVCPKG_INSTALLED_DIR=$ROOT_DIR/vcpkg_installed"
   "-DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET"
+  "-DVCPKG_HOST_TRIPLET=$VCPKG_TRIPLET"
   "-DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON"
 )
 
