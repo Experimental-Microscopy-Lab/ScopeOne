@@ -1,0 +1,46 @@
+{
+  "name": "scopeone",
+  "builtin-baseline": "434307da09bc05b2c86996dccc8b2351fc0d5d37",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["fs", "intrinsics", "jpeg", "png", "thread", "tiff", "webp"]
+    },
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["concurrent", "dnslookup", "gui", "harfbuzz", "jpeg", "network", "opengl", "png", "thread", "widgets"]
+    },
+    {
+      "name": "qtsvg",
+      "default-features": false
+    },
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["windeployqt"],
+      "platform": "windows"
+    },
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["egl", "fontconfig", "xcb", "xcb-xlib", "xrender"],
+      "platform": "linux"
+    }
+  ],
+  "overrides": [
+    {
+      "name": "opencv4",
+      "version": "4.14.0"
+    },
+    {
+      "name": "qtbase",
+      "version": "6.11.2"
+    },
+    {
+      "name": "qtsvg",
+      "version": "6.11.2"
+    }
+  ]
+}

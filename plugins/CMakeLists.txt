@@ -6,7 +6,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(ScopeOneCore CONFIG REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc)
+find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgcodecs imgproc)
 find_program(SCOPEONE_CUDA_NVCC_EXECUTABLE nvcc)
 
 function(scopeone_add_plugin target kind)

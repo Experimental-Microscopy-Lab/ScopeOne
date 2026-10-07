@@ -55,8 +55,7 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 
 - [CMake](https://cmake.org/download/) 4.1.0
 - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
-- [Qt](https://www.qt.io/development/download-qt-installer-oss) 6.9.1 (msvc2022_64)
-- OpenCV 4.12.0
+- [vcpkg](https://github.com/microsoft/vcpkg) for Qt 6.11.2 and OpenCV 4.14.0
 - mmCoreAndDevices
 
 Clone ScopeOne and initialize all submodules with:
@@ -79,7 +78,6 @@ ScopeOne/
     include/scopeone/      Core API and external plugin contracts
     external/
       mmCoreAndDevices/
-      opencv-4.12.0/
       ScopeWriter/
 ```
 
@@ -102,22 +100,38 @@ The Image Processing panel can process all live cameras or one selected camera. 
 
 **Windows Build Steps:**
 
-1. Build and install `ScopeOneCore`:
+Set up vcpkg once outside the ScopeOne repository:
 
 ```powershell
-cmake -S ScopeOneCore -B ScopeOneCore/build
-cmake --build ScopeOneCore/build --config Release --parallel
-cmake --install ScopeOneCore/build --config Release
+git clone https://github.com/microsoft/vcpkg.git C:/dev/vcpkg
+C:/dev/vcpkg/bootstrap-vcpkg.bat
+$env:VCPKG_ROOT = "C:/dev/vcpkg"
 ```
 
-2. Build the GUI application:
+For an existing vcpkg checkout, run `git -C $env:VCPKG_ROOT pull --ff-only` and rerun its `bootstrap-vcpkg.bat` before migrating.
+
+Build Core, plugins, and GUI with the repository script:
 
 ```powershell
-cmake -S . -B build
-cmake --build build --config Release --parallel
+.\scripts\build.ps1 --configure
 ```
 
-3. Run:
+When migrating an existing build, use `--clean --configure` once to replace the old CMake caches. Later builds only need `.\scripts\build.ps1`.
+
+The root `vcpkg.json` pins Qt and OpenCV. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux`, `arm64-osx`, or another supported host triplet. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, ONNX Runtime, and ScopeWriter retain their existing dependency setup.
+
+For a direct Core CMake configure:
+
+```powershell
+cmake -S ScopeOneCore -B ScopeOneCore/build `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  "-DVCPKG_MANIFEST_DIR=$PWD" `
+  "-DVCPKG_INSTALLED_DIR=$PWD/vcpkg_installed" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows `
+  -DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON
+```
+
+Run the built application:
 
 ```powershell
 .\build\Release\ScopeOne.exe
@@ -125,18 +139,24 @@ cmake --build build --config Release --parallel
 
 **Linux and macOS Build Steps (experimental):**
 
-Linux and macOS use the same native build flow. Use the top-level `micro-manager` repository to configure the native build, then compile `MMDevice`, `MMCore`, and the required device adapters. Create a symlink so ScopeOne can find the `mmCoreAndDevices` tree at the path expected by the current CMake files.
+Linux and macOS use vcpkg for Qt and OpenCV. Install and bootstrap vcpkg, set `VCPKG_ROOT`, then use the build script. The script selects the triplet from the host operating system and architecture. Micro-Manager is still built from its checkout because its native core and device adapters are not vcpkg dependencies.
 
-Run `./scripts/build-unix.sh` from the ScopeOne repository root on Linux or macOS to automate the complete sequence below.
+Run `./scripts/build-unix.sh` from the ScopeOne repository root on Linux or macOS. Add `--clean` once when migrating an existing system-package build.
 
-1. Install common build dependencies.
+1. Install common build dependencies and vcpkg.
 
 Linux:
 
 ```bash
 sudo apt install \
   git subversion build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config libboost-all-dev qt6-base-dev libopencv-dev libtiff-dev zlib1g-dev
+  pkg-config ninja-build curl zip unzip libboost-all-dev \
+  libgl1-mesa-dev libegl1-mesa-dev libx11-dev libx11-xcb-dev libxext-dev \
+  libxfixes-dev libxi-dev libxrender-dev libxcb1-dev libxcb-cursor-dev libxcb-util-dev \
+  libxcb-glx0-dev libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev \
+  libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev libxcb-shm0-dev \
+  libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev
 ```
 
 macOS:
@@ -145,8 +165,16 @@ macOS:
 xcode-select --install
 brew install \
   git subversion cmake autoconf automake libtool autoconf-archive \
-  pkg-config boost qt opencv libtiff zlib
+  pkg-config ninja boost
 ```
+
+```bash
+git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+"$HOME/vcpkg/bootstrap-vcpkg.sh"
+export VCPKG_ROOT="$HOME/vcpkg"
+```
+
+For an existing build made with system Qt or OpenCV, pass `--clean` once to remove its CMake caches. Linux still needs system X11 and OpenGL development headers for Qt's desktop platform integration; these are not a system Qt installation.
 
 2. Clone Micro-Manager and create the `mmCoreAndDevices` symlink:
 
@@ -184,20 +212,11 @@ make -C mmCoreAndDevices/DeviceAdapters/DemoCamera -j4
 make -C mmCoreAndDevices/DeviceAdapters/Utilities -j4
 ```
 
-6. Build and install `ScopeOneCore`:
+6. Build and install `ScopeOneCore` and the GUI:
 
 ```bash
 cd /path/to/ScopeOne
-cmake -S ScopeOneCore -B ScopeOneCore/build -DCMAKE_BUILD_TYPE=Release
-cmake --build ScopeOneCore/build --parallel
-cmake --install ScopeOneCore/build
-```
-
-7. Build the GUI application:
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+./scripts/build-unix.sh
 ```
 
 The Linux or macOS executable is expected at:

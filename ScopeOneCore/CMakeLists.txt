@@ -11,15 +11,13 @@ include(CMakePackageConfigHelpers)
 if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
     set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install" CACHE PATH "Install path" FORCE)
 endif ()
-if (WIN32)
-    list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64")
-endif ()
 
 set(MMCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/mmCoreAndDevices")
 set(MMCORE_INCLUDE_DIR "${MMCORE_DIR}/MMCore")
 set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
 
 find_package(Qt6 COMPONENTS Core Gui Network Concurrent REQUIRED)
+find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
 
 set(SCOPEWRITER_BUILD_TESTS OFF)
 add_subdirectory(external/ScopeWriter)
@@ -29,15 +27,11 @@ set(CMAKE_AUTOMOC ON)
 if (WIN32)
     set(MMCORE_BIN_DIR "${MMCORE_DIR}/build/Release/x64")
 
-    set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv-4.12.0/build")
-
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-    set(SCOPEONE_OPENCV_LIBRARIES opencv_world)
-
     file(GLOB MMCORE_RUNTIME_DLLS "${MMCORE_BIN_DIR}/*.dll")
+    file(GLOB VCPKG_RUNTIME_DLLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/*.dll")
 
     set(SCOPEONE_RUNTIME_DLLS
-            $<TARGET_FILE:opencv_world>
+            ${VCPKG_RUNTIME_DLLS}
             ${MMCORE_RUNTIME_DLLS}
     )
 
@@ -48,11 +42,9 @@ if (WIN32)
         endif ()
     endforeach ()
 else ()
-    # Linux/Unix: use system OpenCV and link the MMCore static libraries
+    # Linux/Unix: link the MMCore static libraries
     # built from the sibling micro-manager checkout (symlinked into
     # external/mmCoreAndDevices). No runtime DLLs to stage.
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-    set(SCOPEONE_OPENCV_LIBRARIES ${OpenCV_LIBS})
     set(MMCORE_BIN_DIR "")
 
     add_library(MMCore STATIC IMPORTED GLOBAL)
@@ -192,7 +184,9 @@ target_link_libraries(ScopeOneCore
         MMCore
         Qt::Network
         Qt::Concurrent
-        ${SCOPEONE_OPENCV_LIBRARIES}
+        opencv_core
+        opencv_imgproc
+        opencv_imgcodecs
         ScopeWriter::ScopeWriter
 )
 target_compile_definitions(ScopeOneCore PRIVATE

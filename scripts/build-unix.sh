@@ -7,6 +7,19 @@ EXTERNAL_DIR="$CORE_DIR/external"
 MM_REPO_DIR="$EXTERNAL_DIR/micro-manager"
 MMCORE_LINK="$EXTERNAL_DIR/mmCoreAndDevices"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
+CLEAN=false
+
+for argument in "$@"; do
+  case "$argument" in
+    --clean) CLEAN=true ;;
+    *) echo "Unknown option: $argument" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "${VCPKG_ROOT:-}" || ! -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]]; then
+  echo "Set VCPKG_ROOT to a bootstrapped vcpkg checkout." >&2
+  exit 1
+fi
 
 case "$(uname -s)" in
   Linux*)
@@ -27,9 +40,34 @@ case "$(uname -s)" in
     ;;
 esac
 
+case "$(uname -m)" in
+  x86_64|amd64)
+    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo x64-linux || echo x64-osx)"
+    ;;
+  aarch64|arm64)
+    VCPKG_TRIPLET="$([[ "$PLATFORM_NAME" == "Linux" ]] && echo arm64-linux || echo arm64-osx)"
+    ;;
+  *)
+    echo "Unsupported host architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+VCPKG_ARGS=(
+  "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+  "-DVCPKG_MANIFEST_DIR=$ROOT_DIR"
+  "-DVCPKG_INSTALLED_DIR=$ROOT_DIR/vcpkg_installed"
+  "-DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET"
+  "-DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON"
+)
+
 JOBS="${JOBS:-$DEFAULT_JOBS}"
 DEMO_ADAPTER="$MMCORE_LINK/DeviceAdapters/DemoCamera/.libs/$DEMO_ADAPTER_NAME"
 UTILITIES_ADAPTER="$MMCORE_LINK/DeviceAdapters/Utilities/.libs/$UTILITIES_ADAPTER_NAME"
+
+if [[ "$CLEAN" == true ]]; then
+  rm -rf "$CORE_DIR/build" "$ROOT_DIR/build"
+fi
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -87,12 +125,12 @@ step "Building required Micro-Manager components"
 )
 
 step "Building and installing ScopeOneCore"
-run cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+run cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "${VCPKG_ARGS[@]}"
 run cmake --build "$CORE_DIR/build" --parallel "$JOBS"
 run cmake --install "$CORE_DIR/build"
 
 step "Building ScopeOne GUI"
-run cmake -S "$ROOT_DIR" -B "$ROOT_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+run cmake -S "$ROOT_DIR" -B "$ROOT_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "${VCPKG_ARGS[@]}"
 run cmake --build "$ROOT_DIR/build" --parallel "$JOBS"
 
 step "Copying demo adapters"

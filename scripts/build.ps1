@@ -217,6 +217,7 @@ function Import-MsvcEnvironment {
     $env:CXX = "cl.exe"
 }
 
+$scopeOneVcpkgRoot = $env:VCPKG_ROOT
 Import-MsvcEnvironment
 
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
@@ -243,6 +244,28 @@ $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 $pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
+
+$vcpkgConfigureArgs = @()
+if ($env:OS -eq "Windows_NT" -and $target -ne "scopewriter") {
+    if (-not $scopeOneVcpkgRoot) {
+        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
+    }
+    $vcpkgToolchain = Join-Path $scopeOneVcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+    if (-not (Test-Path $vcpkgToolchain)) {
+        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
+    }
+    $vcpkgConfigureArgs = @(
+        "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
+        "-DVCPKG_MANIFEST_DIR=$repoRoot",
+        "-DVCPKG_INSTALLED_DIR=$(Join-Path $repoRoot 'vcpkg_installed')",
+        "-DVCPKG_TARGET_TRIPLET=x64-windows",
+        "-DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON",
+        "-UTiff_DIR",
+        "-UOpenCV_DIR",
+        "-UQt6*_DIR",
+        "-UWINDEPLOYQT_EXECUTABLE"
+    )
+}
 
 if ($clean) {
     if ($target -eq "scopewriter") {
@@ -397,7 +420,7 @@ if ($target -in @("all", "core")) {
             $coreConfigureArgs += "-DCMAKE_INSTALL_PREFIX=$coreInstallDir"
         }
 
-        $coreConfigureArgs += $coreConfigureOption
+        $coreConfigureArgs += $vcpkgConfigureArgs + $coreConfigureOption
 
         Invoke-Step `
             -Label "Configuring ScopeOneCore" `
@@ -444,17 +467,7 @@ if ($target -in @("all", "plugins")) {
             "-DCMAKE_PREFIX_PATH=$coreInstallDir",
             "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
         )
-        $coreQt6Dir = Get-CMakeCacheValue -CachePath $coreCachePath -Key "Qt6_DIR"
-        if ($coreQt6Dir) {
-            $pluginConfigureArgs += "-DQt6_DIR=$coreQt6Dir"
-        }
-        $coreOpenCvDir = Get-CMakeCacheValue -CachePath $coreCachePath -Key "OpenCV_DIR"
-        if (-not $coreOpenCvDir) {
-            $coreOpenCvDir = Join-Path $coreSourceDir "external\opencv-4.12.0\build"
-        }
-        if ($coreOpenCvDir) {
-            $pluginConfigureArgs += "-DOpenCV_DIR=$coreOpenCvDir"
-        }
+        $pluginConfigureArgs += $vcpkgConfigureArgs
         if ($env:CUDA_PATH) {
             $pluginConfigureArgs += @("-T", "cuda=$env:CUDA_PATH")
         }
@@ -512,7 +525,7 @@ if ($target -in @("all", "gui")) {
             "-S", $guiSourceDir,
             "-B", $guiBuildDir,
             "-DScopeOneCore_ROOT=$coreInstallDir"
-        ) + $guiConfigureOption
+        ) + $vcpkgConfigureArgs + $guiConfigureOption
 
         Invoke-Step `
             -Label "Configuring ScopeOne GUI" `
