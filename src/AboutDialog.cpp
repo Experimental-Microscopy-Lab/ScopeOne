@@ -61,8 +61,7 @@ namespace scopeone::ui
         const QString coreVersion = scopeone::core::ScopeOneCore::getVersion();
         const QString mmCoreVersion = scopeone::core::ScopeOneCore::getMMCoreVersion();
         const QString openCvVersion = scopeone::core::ScopeOneCore::getOpenCVVersion();
-        const QString libTiffVersion = scopeone::core::ScopeOneCore::getLibTiffVersion();
-        const QString zlibVersion = scopeone::core::ScopeOneCore::getZlibVersion();
+        const QString scopeWriterVersion = scopeone::core::ScopeOneCore::getScopeWriterVersion();
         const QString commit = QStringLiteral(SCOPEONE_GIT_COMMIT);
         const QString platformInfo = QString("%1, %2")
             .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture());
@@ -79,9 +78,8 @@ namespace scopeone::ui
 <tr><td><b>MMCore</b></td><td>%4</td></tr>
 <tr><td><b>Qt</b></td><td>%5</td></tr>
 <tr><td><b>OpenCV</b></td><td>%6</td></tr>
-<tr><td><b>libtiff</b></td><td>%7</td></tr>
-<tr><td><b>zlib</b></td><td>%8</td></tr>
-<tr><td><b>Platform</b></td><td>%9</td></tr>
+<tr><td><b>ScopeWriter</b></td><td>%7</td></tr>
+<tr><td><b>Platform</b></td><td>%8</td></tr>
 </table>
 
 <h3>Links</h3>
@@ -103,8 +101,7 @@ Licensed under the BSD 3-Clause License.
                  mmCoreVersion.toHtmlEscaped(),
                  QString::fromLatin1(qVersion()).toHtmlEscaped(),
                  openCvVersion.toHtmlEscaped(),
-                 libTiffVersion.toHtmlEscaped(),
-                 zlibVersion.toHtmlEscaped(),
+                 scopeWriterVersion.toHtmlEscaped(),
                  platformInfo.toHtmlEscaped()));
     }
 
