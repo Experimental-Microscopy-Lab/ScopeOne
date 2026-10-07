@@ -127,8 +127,7 @@ cmake -S ScopeOneCore -B ScopeOneCore/build `
   "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   "-DVCPKG_MANIFEST_DIR=$PWD" `
   "-DVCPKG_INSTALLED_DIR=$PWD/vcpkg_installed" `
-  -DVCPKG_TARGET_TRIPLET=x64-windows `
-  -DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON
+  -DVCPKG_TARGET_TRIPLET=x64-windows
 ```
 
 Run the built application:

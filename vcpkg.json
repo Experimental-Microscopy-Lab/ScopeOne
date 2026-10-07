@@ -2,6 +2,7 @@
   "name": "scopeone",
   "builtin-baseline": "434307da09bc05b2c86996dccc8b2351fc0d5d37",
   "dependencies": [
+    "crc32c",
     {
       "name": "opencv4",
       "default-features": false,
@@ -16,6 +17,13 @@
       "name": "qtsvg",
       "default-features": false
     },
+    {
+      "name": "tiff",
+      "default-features": false,
+      "features": ["zip"]
+    },
+    "zlib",
+    "zstd",
     {
       "name": "qtbase",
       "default-features": false,

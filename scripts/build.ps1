@@ -246,7 +246,8 @@ $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 $pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
 
 $vcpkgConfigureArgs = @()
-if ($env:OS -eq "Windows_NT" -and $target -ne "scopewriter") {
+$writerVcpkgArgs = @()
+if ($env:OS -eq "Windows_NT") {
     if (-not $scopeOneVcpkgRoot) {
         throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
     }
@@ -254,12 +255,21 @@ if ($env:OS -eq "Windows_NT" -and $target -ne "scopewriter") {
     if (-not (Test-Path $vcpkgToolchain)) {
         throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
     }
+}
+if ($env:OS -eq "Windows_NT" -and $target -eq "scopewriter") {
+    # Standalone ScopeWriter installs its own vcpkg.json dependencies and ships their DLLs
+    $writerVcpkgArgs = @(
+        "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
+        "-DVCPKG_TARGET_TRIPLET=x64-windows",
+        "-DX_VCPKG_APPLOCAL_DEPS_INSTALL=ON"
+    )
+}
+elseif ($env:OS -eq "Windows_NT") {
     $vcpkgConfigureArgs = @(
         "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
         "-DVCPKG_MANIFEST_DIR=$repoRoot",
         "-DVCPKG_INSTALLED_DIR=$(Join-Path $repoRoot 'vcpkg_installed')",
         "-DVCPKG_TARGET_TRIPLET=x64-windows",
-        "-DCMAKE_DISABLE_FIND_PACKAGE_Tiff=ON",
         "-UTiff_DIR",
         "-UOpenCV_DIR",
         "-UQt6*_DIR",
@@ -336,7 +346,7 @@ if ($target -eq "scopewriter") {
             "-B", $writerBuildDir,
             "-DCMAKE_INSTALL_PREFIX=$writerInstallDir",
             "-DSCOPEWRITER_BUILD_TESTS=ON"
-        ) + $writerGeneratorArgs) `
+        ) + $writerVcpkgArgs + $writerGeneratorArgs) `
         -WorkingDirectory $repoRoot
 
     Invoke-Step `
