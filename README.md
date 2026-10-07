@@ -55,7 +55,7 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 
 - [CMake](https://cmake.org/download/) 4.1.0
 - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
-- [vcpkg](https://github.com/microsoft/vcpkg) for Qt 6.11.2 and OpenCV 4.14.0
+- [vcpkg](https://github.com/microsoft/vcpkg) for Qt 6.11.2, OpenCV 4.14.0, and ScopeWriter's libtiff, zlib, zstd and crc32c
 - mmCoreAndDevices
 
 Clone ScopeOne and initialize all submodules with:
@@ -138,11 +138,9 @@ Run the built application:
 
 **Linux and macOS Build Steps (experimental):**
 
-Linux and macOS use vcpkg for Qt and OpenCV. Install and bootstrap vcpkg, set `VCPKG_ROOT`, then use the build script. The script selects the triplet from the host operating system and architecture. Micro-Manager is still built from its checkout because its native core and device adapters are not vcpkg dependencies.
+Linux and macOS use vcpkg for Qt, OpenCV, and ScopeWriter's dependencies. Micro-Manager is built from its own checkout because its native core and device adapters are not vcpkg dependencies.
 
-Run `./scripts/build-unix.sh` from the ScopeOne repository root on Linux or macOS. Add `--clean` once when migrating an existing system-package build.
-
-1. Install common build dependencies and vcpkg.
+1. Install the system build tools.
 
 Linux:
 
@@ -158,7 +156,7 @@ sudo apt install --no-upgrade \
   libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
 ```
 
-The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system. It uses the glvnd `libgl-dev`/`libegl-dev` packages instead of `libgl1-mesa-dev`/`libegl1-mesa-dev`, so `--no-upgrade` can install it without upgrading the installed Mesa drivers.
+The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system; it is not a system Qt installation. It uses the glvnd `libgl-dev`/`libegl-dev` packages instead of `libgl1-mesa-dev`/`libegl1-mesa-dev`, so `--no-upgrade` can install it without upgrading the installed Mesa drivers.
 
 macOS:
 
@@ -169,82 +167,25 @@ brew install \
   pkg-config ninja boost
 ```
 
+2. Install and bootstrap vcpkg:
+
 ```bash
 git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
 "$HOME/vcpkg/bootstrap-vcpkg.sh"
 export VCPKG_ROOT="$HOME/vcpkg"
 ```
 
-For an existing build made with system Qt or OpenCV, pass `--clean` once to remove its CMake caches. Linux still needs system X11 and OpenGL development headers for Qt's desktop platform integration; these are not a system Qt installation.
-
-2. Clone Micro-Manager and create the `mmCoreAndDevices` symlink:
+3. Build from the ScopeOne repository root:
 
 ```bash
-cd /path/to/ScopeOne/ScopeOneCore
-mkdir -p external
-cd external
-
-git clone --recurse-submodules https://github.com/micro-manager/micro-manager.git micro-manager
-ln -s micro-manager/mmCoreAndDevices mmCoreAndDevices
-
-cd micro-manager
-git submodule update --init --recursive
-```
-
-3. Configure Micro-Manager without the Java application layer:
-
-```bash
-./autogen.sh
-./configure --without-java --enable-static
-```
-
-4. Build the native core components:
-
-```bash
-# Adjust `-j4` to match your CPU cores
-make -C mmCoreAndDevices/MMDevice -j4
-make -C mmCoreAndDevices/MMCore -j4
-```
-
-5. Build the adapters required by the demo configuration. You can build additional adapters as needed.
-
-```bash
-make -C mmCoreAndDevices/DeviceAdapters/DemoCamera -j4
-make -C mmCoreAndDevices/DeviceAdapters/Utilities -j4
-```
-
-6. Build and install `ScopeOneCore` and the GUI:
-
-```bash
-cd /path/to/ScopeOne
 ./scripts/build-unix.sh
 ```
 
-The Linux or macOS executable is expected at:
+The script initializes the submodules, clones Micro-Manager into `ScopeOneCore/external/micro-manager` and links `mmCoreAndDevices`, builds MMDevice, MMCore and the DemoCamera and Utilities adapters, builds and installs ScopeOneCore, builds the GUI, and copies the demo adapters next to the executable. It selects the `x64-linux-dynamic`, `arm64-linux-dynamic`, `x64-osx-dynamic`, or `arm64-osx-dynamic` triplet from the host. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`).
 
-```text
-build/ScopeOne
-```
+Pass `--clean` once when migrating from a build that used system Qt or OpenCV, or from an earlier static `x64-linux` triplet build.
 
-To run `config/MMConfig_demo.cfg`, copy its runtime adapters next to the ScopeOne executable.
-
-Linux:
-
-```bash
-cp -L \
-  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera.so.0 \
-  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/Utilities/.libs/libmmgr_dal_Utilities.so.0 \
-  build/
-```
-
-macOS uses an extensionless Mach-O bundle rather than the static `.a` file:
-
-```bash
-cp \
-  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/DemoCamera/.libs/libmmgr_dal_DemoCamera \
-  ScopeOneCore/external/mmCoreAndDevices/DeviceAdapters/Utilities/.libs/libmmgr_dal_Utilities \
-  build/
-```
+The executable is `build/ScopeOne`, and `config/MMConfig_demo.cfg` runs with the copied demo adapters. It loads Qt and OpenCV from `vcpkg_installed/<triplet>/lib`, so run it from the build tree; there is no Linux or macOS deployment step yet.
 
 ## 🤖 Automation and AI Agents
 
