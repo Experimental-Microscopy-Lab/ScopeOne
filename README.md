@@ -81,7 +81,7 @@ ScopeOne/
       ScopeWriter/
 ```
 
-ScopeWriter contains its filesystem Zarr V3 writer and carries libtiff, zlib, zstd and crc32c under its own `third_party` directory. It builds these dependencies from source without downloading packages during CMake configuration.
+ScopeWriter contains its filesystem Zarr V3 writer. It uses libtiff, zlib, zstd and crc32c from vcpkg; ScopeOne lists them in its root `vcpkg.json`, and ScopeWriter declares the same dependencies in its own `vcpkg.json` for standalone builds.
 
 ### Plugin layout
 
@@ -118,7 +118,7 @@ Build Core, plugins, and GUI with the repository script:
 
 When migrating an existing build, use `--clean --configure` once to replace the old CMake caches. Later builds only need `.\scripts\build.ps1`.
 
-The root `vcpkg.json` pins Qt and OpenCV. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux-dynamic`, `arm64-osx-dynamic`, or another supported host triplet. Linux and macOS use the dynamic triplets so Qt is shared between the GUI, ScopeOneCore, and plugins. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, ONNX Runtime, and ScopeWriter retain their existing dependency setup.
+The root `vcpkg.json` pins Qt and OpenCV and provides ScopeWriter's libtiff, zlib, zstd and crc32c. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux-dynamic`, `arm64-osx-dynamic`, or another supported host triplet. Linux and macOS use the dynamic triplets so Qt is shared between the GUI, ScopeOneCore, and plugins. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, and ONNX Runtime retain their existing dependency setup.
 
 For a direct Core CMake configure:
 
