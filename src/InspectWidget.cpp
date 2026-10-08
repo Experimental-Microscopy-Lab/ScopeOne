@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QList>
+#include <QLocale>
 #include <QPainter>
 #include <QPalette>
 #include <QPushButton>
@@ -623,28 +624,39 @@ namespace scopeone::ui
     // Create labels for per layer image statistics
     QWidget* InspectWidget::createStatisticsGroup(LayerInfoGroup& infoGroup)
     {
-        auto* group = new QGroupBox(QStringLiteral("Image Statistics"), this);
+        auto* group = new QWidget(this);
         auto* layout = new QGridLayout(group);
+        layout->setContentsMargins(0, 0, 0, 0);
+        // Right-aligned values with a fixed minimum width keep the grid steady during live updates
+        const int valueMinWidth = group->fontMetrics().horizontalAdvance(QStringLiteral("65535.0")) + 4;
+        const auto makeValueLabel = [group, valueMinWidth](const QString& text)
+        {
+            auto* label = new QLabel(text, group);
+            label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            label->setMinimumWidth(valueMinWidth);
+            return label;
+        };
 
         layout->addWidget(new QLabel(QStringLiteral("Mean:"), group), 0, 0);
-        auto* meanLabel = new QLabel(QStringLiteral("0.0"), group);
+        auto* meanLabel = makeValueLabel(QStringLiteral("0.0"));
         layout->addWidget(meanLabel, 0, 1);
 
         layout->addWidget(new QLabel(QStringLiteral("Min:"), group), 0, 2);
-        auto* minLabel = new QLabel(QStringLiteral("0"), group);
+        auto* minLabel = makeValueLabel(QStringLiteral("0"));
         layout->addWidget(minLabel, 0, 3);
 
         layout->addWidget(new QLabel(QStringLiteral("Max:"), group), 1, 0);
-        auto* maxLabel = new QLabel(QStringLiteral("0"), group);
+        auto* maxLabel = makeValueLabel(QStringLiteral("0"));
         layout->addWidget(maxLabel, 1, 1);
 
         layout->addWidget(new QLabel(QStringLiteral("Std Dev:"), group), 1, 2);
-        auto* stdDevLabel = new QLabel(QStringLiteral("0.0"), group);
+        auto* stdDevLabel = makeValueLabel(QStringLiteral("0.0"));
         layout->addWidget(stdDevLabel, 1, 3);
 
         layout->addWidget(new QLabel(QStringLiteral("Pixels:"), group), 2, 0);
-        auto* pixelCountLabel = new QLabel(QStringLiteral("0"), group);
-        layout->addWidget(pixelCountLabel, 2, 1, 1, 3);
+        auto* pixelCountLabel = makeValueLabel(QStringLiteral("0"));
+        layout->addWidget(pixelCountLabel, 2, 1);
+        layout->setColumnStretch(4, 1);
 
         infoGroup.meanLabel = meanLabel;
         infoGroup.minLabel = minLabel;
@@ -735,7 +747,7 @@ namespace scopeone::ui
             infoGroup.stdDevLabel->setText(QString::number(stats.stdDev, 'f', 1));
         }
 
-        infoGroup.pixelCountLabel->setText(QString::number(stats.totalPixels));
+        infoGroup.pixelCountLabel->setText(QLocale().toString(static_cast<qlonglong>(stats.totalPixels)));
     }
 
     // Enable controls according to live camera and selected layer state

@@ -45,6 +45,12 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Size a push button to its text instead of the style's minimum button width
+        void fitButtonToText(QPushButton* button)
+        {
+            button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 20);
+        }
+
         // Formats exposure with compact decimal precision
         QString formatExposureMs(double exposureMs)
         {
@@ -703,21 +709,21 @@ namespace scopeone::ui
         m_layerMoveUpButton = new QPushButton(QStringLiteral("Up"), m_layerSettingsGroup);
         m_layerMoveDownButton = new QPushButton(QStringLiteral("Down"), m_layerSettingsGroup);
         m_layerRemoveButton = new QPushButton(QStringLiteral("Remove"), m_layerSettingsGroup);
-        m_layerRemoveButton->setMaximumWidth(68);
         auto* openImageButton = new QPushButton(QStringLiteral("Open..."), m_layerSettingsGroup);
-        openImageButton->setMaximumWidth(68);
+        fitButtonToText(m_layerMoveUpButton);
+        fitButtonToText(m_layerMoveDownButton);
+        fitButtonToText(m_layerRemoveButton);
+        fitButtonToText(openImageButton);
 
         m_layerOpacitySpinBox = new QSpinBox(m_layerSettingsGroup);
         m_layerOpacitySpinBox->setRange(0, 100);
         m_layerOpacitySpinBox->setSuffix(QStringLiteral("%"));
-        m_layerOpacitySpinBox->setFixedWidth(58);
         m_layerOpacitySpinBox->setKeyboardTracking(false);
 
         m_layerGammaSpinBox = new QDoubleSpinBox(m_layerSettingsGroup);
         m_layerGammaSpinBox->setRange(0.2, 2.0);
         m_layerGammaSpinBox->setDecimals(2);
         m_layerGammaSpinBox->setSingleStep(0.02);
-        m_layerGammaSpinBox->setFixedWidth(64);
         m_layerGammaSpinBox->setKeyboardTracking(false);
 
         m_layerColormapComboBox = new QComboBox(m_layerSettingsGroup);
@@ -752,28 +758,25 @@ namespace scopeone::ui
         m_alignXSpinBox = new QSpinBox(transformGroup);
         m_alignXSpinBox->setRange(-1000, 1000);
         m_alignXSpinBox->setValue(0);
-        m_alignXSpinBox->setFixedWidth(64);
         m_alignXSpinBox->setKeyboardTracking(false);
 
         auto* alignYLabel = new QLabel("Y offset:", transformGroup);
         m_alignYSpinBox = new QSpinBox(transformGroup);
         m_alignYSpinBox->setRange(-1000, 1000);
         m_alignYSpinBox->setValue(0);
-        m_alignYSpinBox->setFixedWidth(64);
         m_alignYSpinBox->setKeyboardTracking(false);
 
         auto* alignZoomLabel = new QLabel("Scale:", transformGroup);
         m_alignZoomSpinBox = new QSpinBox(transformGroup);
         m_alignZoomSpinBox->setRange(10, 500);
         m_alignZoomSpinBox->setValue(100);
-        m_alignZoomSpinBox->setFixedWidth(58);
         m_alignZoomSpinBox->setToolTip("Source camera display scale percent");
         m_alignZoomSpinBox->setKeyboardTracking(false);
 
         m_alignFlipXCheckBox = new QCheckBox("Flip X", transformGroup);
         m_alignFlipYCheckBox = new QCheckBox("Flip Y", transformGroup);
         auto* alignResetButton = new QPushButton("Reset", transformGroup);
-        alignResetButton->setMaximumWidth(50);
+        fitButtonToText(alignResetButton);
         alignResetButton->setToolTip("Reset offset and flip");
 
         transformLayout->addWidget(alignXLabel, 0, 0);
@@ -1490,7 +1493,7 @@ namespace scopeone::ui
         xyColumn->addLayout(xyDeviceLayout);
 
         QGridLayout* xyStepLayout = new QGridLayout();
-        xyStepLayout->addWidget(new QLabel("> (um):"), 0, 0);
+        xyStepLayout->addWidget(new QLabel(QStringLiteral("Step (µm):")), 0, 0);
         m_xyStepLineEdit = new QLineEdit(QStringLiteral("10.0"));
         m_xyStepLineEdit->setMinimumWidth(80);
         {
@@ -1501,7 +1504,7 @@ namespace scopeone::ui
         }
         xyStepLayout->addWidget(m_xyStepLineEdit, 0, 1);
 
-        xyStepLayout->addWidget(new QLabel(">> (um):"), 1, 0);
+        xyStepLayout->addWidget(new QLabel(QStringLiteral("Big step (µm):")), 1, 0);
         m_xyBigStepLineEdit = new QLineEdit(QStringLiteral("100.0"));
         m_xyBigStepLineEdit->setMinimumWidth(80);
         {
@@ -1537,15 +1540,24 @@ namespace scopeone::ui
         setArrowSize(m_xyBigDownButton);
         setArrowSize(m_xyBigLeftButton);
         setArrowSize(m_xyBigRightButton);
+        m_xyUpButton->setToolTip(QStringLiteral("Move +Y by step"));
+        m_xyDownButton->setToolTip(QStringLiteral("Move -Y by step"));
+        m_xyLeftButton->setToolTip(QStringLiteral("Move -X by step"));
+        m_xyRightButton->setToolTip(QStringLiteral("Move +X by step"));
+        m_xyBigUpButton->setToolTip(QStringLiteral("Move +Y by big step"));
+        m_xyBigDownButton->setToolTip(QStringLiteral("Move -Y by big step"));
+        m_xyBigLeftButton->setToolTip(QStringLiteral("Move -X by big step"));
+        m_xyBigRightButton->setToolTip(QStringLiteral("Move +X by big step"));
+        // Wide enough for the largest expected coordinate so positions are never clipped
+        const int positionLabelWidth = fontMetrics().horizontalAdvance(QStringLiteral("X: -000000.00")) + 8;
         QWidget* xyCenterWidget = new QWidget();
-        xyCenterWidget->setFixedWidth(60);
         QVBoxLayout* xyCenterLayout = new QVBoxLayout(xyCenterWidget);
         xyCenterLayout->setContentsMargins(0, 0, 0, 0);
         xyCenterLayout->setSpacing(2);
         m_xPosLabel = new QLabel("X: N/A");
         m_yPosLabel = new QLabel("Y: N/A");
-        m_xPosLabel->setFixedWidth(60);
-        m_yPosLabel->setFixedWidth(60);
+        m_xPosLabel->setMinimumWidth(positionLabelWidth);
+        m_yPosLabel->setMinimumWidth(positionLabelWidth);
         m_xPosLabel->setAlignment(Qt::AlignCenter);
         m_yPosLabel->setAlignment(Qt::AlignCenter);
         xyCenterLayout->addWidget(m_xPosLabel);
@@ -1579,7 +1591,7 @@ namespace scopeone::ui
         zColumn->addLayout(zDeviceLayout);
 
         QGridLayout* zStepLayout = new QGridLayout();
-        zStepLayout->addWidget(new QLabel("> (um):"), 0, 0);
+        zStepLayout->addWidget(new QLabel(QStringLiteral("Step (µm):")), 0, 0);
         m_zStepLineEdit = new QLineEdit(QStringLiteral("1.0"));
         m_zStepLineEdit->setMinimumWidth(80);
         {
@@ -1590,7 +1602,7 @@ namespace scopeone::ui
         }
         zStepLayout->addWidget(m_zStepLineEdit, 0, 1);
 
-        zStepLayout->addWidget(new QLabel(">> (um):"), 1, 0);
+        zStepLayout->addWidget(new QLabel(QStringLiteral("Big step (µm):")), 1, 0);
         m_zBigStepLineEdit = new QLineEdit(QStringLiteral("10.0"));
         m_zBigStepLineEdit->setMinimumWidth(80);
         {
@@ -1612,10 +1624,14 @@ namespace scopeone::ui
         setArrowSize(m_zDownButton);
         setArrowSize(m_zBigUpButton);
         setArrowSize(m_zBigDownButton);
+        m_zUpButton->setToolTip(QStringLiteral("Move +Z by step"));
+        m_zDownButton->setToolTip(QStringLiteral("Move -Z by step"));
+        m_zBigUpButton->setToolTip(QStringLiteral("Move +Z by big step"));
+        m_zBigDownButton->setToolTip(QStringLiteral("Move -Z by big step"));
         zButtonsLayout->addWidget(m_zBigUpButton);
         zButtonsLayout->addWidget(m_zUpButton);
         m_zPosLabel = new QLabel("Z: N/A");
-        m_zPosLabel->setFixedWidth(60);
+        m_zPosLabel->setMinimumWidth(positionLabelWidth);
         m_zPosLabel->setAlignment(Qt::AlignCenter);
         zButtonsLayout->addWidget(m_zPosLabel);
         zButtonsLayout->addWidget(m_zDownButton);
@@ -1793,8 +1809,8 @@ namespace scopeone::ui
             double y = 0.0;
             if (m_scopeonecore->readXYPosition(xyLabel, x, y))
             {
-                m_xPosLabel->setText(QString("X: %1").arg(QString::number(x, 'f', 4)));
-                m_yPosLabel->setText(QString("Y: %1").arg(QString::number(y, 'f', 4)));
+                m_xPosLabel->setText(QString("X: %1").arg(QString::number(x, 'f', 2)));
+                m_yPosLabel->setText(QString("Y: %1").arg(QString::number(y, 'f', 2)));
             }
             else
             {
@@ -1813,7 +1829,7 @@ namespace scopeone::ui
             double z = 0.0;
             if (m_scopeonecore->readZPosition(zLabel, z))
             {
-                m_zPosLabel->setText(QString("Z: %1").arg(QString::number(z, 'f', 4)));
+                m_zPosLabel->setText(QString("Z: %1").arg(QString::number(z, 'f', 2)));
             }
             else
             {

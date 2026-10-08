@@ -184,10 +184,8 @@ namespace scopeone::ui
                                     QStringLiteral("DEBUG"),
                                     QStringLiteral("WARNING"),
                                     QStringLiteral("ERROR")});
-        m_filterComboBox->setFixedWidth(80);
 
         auto* clearButton = new QPushButton(tr("Clear"), this);
-        clearButton->setFixedWidth(50);
         connect(clearButton, &QPushButton::clicked, this, &ConsoleWidget::clearMessages);
 
         row1Layout->addWidget(m_searchInput, 1);
@@ -230,7 +228,6 @@ namespace scopeone::ui
                            "border: 1px solid #495057; padding: 3px 6px; }"));
 
         auto* runButton = new QPushButton(tr("Run"), this);
-        runButton->setFixedWidth(64);
         connect(runButton, &QPushButton::clicked, this,
                 [this]() { executeCommand(m_commandInput->text()); });
 

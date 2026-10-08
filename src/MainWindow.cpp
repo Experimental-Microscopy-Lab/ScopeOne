@@ -1088,8 +1088,8 @@ namespace scopeone::ui
         m_statusMessageLabel = new QLabel(tr("Ready"), this);
         configureStatusLabel(m_statusMessageLabel, 260, 0, tr("Latest operation message"));
 
-        m_statusCursorLabel = new QLabel(tr("x=- y=- value=-"), this);
-        configureStatusLabel(m_statusCursorLabel, 260, 260, tr("Pixel readout"));
+        m_statusCursorLabel = new QLabel(tr("X: -  Y: - | -"), this);
+        configureStatusLabel(m_statusCursorLabel, 260, 480, tr("Pixel readout"));
 
         m_statusPreviewLabel = new QLabel(tr("Preview: Idle"), this);
         configureStatusLabel(m_statusPreviewLabel, 100, 130, tr("Preview state"));
@@ -1740,13 +1740,16 @@ namespace scopeone::ui
 
     void MainWindow::setCursorStatus(const QString& text)
     {
-        const QString statusText = text.trimmed().isEmpty() ? tr("x=- y=- value=-") : text;
-        setStatusLabelText(m_statusCursorLabel, statusText, statusText);
+        const QString statusText = text.trimmed().isEmpty() ? tr("X: -  Y: - | -") : text;
+        // Elide long multi-layer readouts; the tooltip keeps the full text
+        const int textWidth = m_statusCursorLabel->maximumWidth() - 16;
+        const QString shownText = m_statusCursorLabel->fontMetrics().elidedText(statusText, Qt::ElideRight, textWidth);
+        setStatusLabelText(m_statusCursorLabel, shownText, statusText);
     }
 
     void MainWindow::clearCursorStatus()
     {
-        const QString statusText = tr("x=- y=- value=-");
+        const QString statusText = tr("X: -  Y: - | -");
         const QString tooltip = tr("Pixel readout");
         setStatusLabelText(m_statusCursorLabel, statusText, tooltip);
     }

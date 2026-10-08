@@ -142,7 +142,7 @@ namespace scopeone::ui
             const QImage scaled = image.scaled(QSize(48, 48), Qt::KeepAspectRatio,
                                                 Qt::SmoothTransformation);
             QPixmap pixmap(48, 48);
-            pixmap.fill(QColor(QStringLiteral("#1c2229")));
+            pixmap.fill(Qt::transparent);
             QPainter painter(&pixmap);
             painter.drawImage((48 - scaled.width()) / 2, (48 - scaled.height()) / 2, scaled);
             return QIcon(pixmap);
@@ -299,9 +299,9 @@ namespace scopeone::ui
         m_sessionList->setTextElideMode(Qt::ElideRight);
         m_sessionList->setContextMenuPolicy(Qt::CustomContextMenu);
         m_sessionList->setStyleSheet(QStringLiteral(
-            "QListWidget { border: 1px solid #3a424b; border-radius: 4px; padding: 2px; }"
+            "QListWidget { border: 1px solid palette(mid); border-radius: 4px; padding: 2px; }"
             "QListWidget::item { padding: 6px; border-radius: 4px; }"
-            "QListWidget::item:selected { background: #31485d; }"));
+            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"));
         layout->addWidget(m_sessionList, 1);
 
         auto* buttonLayout = new QHBoxLayout();

@@ -50,6 +50,12 @@ namespace scopeone::ui
         using ProcessingParameterDescriptor = scopeone::core::ProcessingParameterDescriptor;
         using ProcessingParameterType = scopeone::core::ProcessingParameterType;
 
+        // Size a push button to its text instead of the style's minimum button width
+        void fitButtonToText(QPushButton* button)
+        {
+            button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 20);
+        }
+
         class MaskPreviewWidget final : public QWidget
         {
         public:
@@ -76,10 +82,11 @@ namespace scopeone::ui
             void paintEvent(QPaintEvent*) override
             {
                 QPainter painter(this);
-                painter.fillRect(rect(), QColor(24, 27, 31));
+                const QColor background = palette().color(QPalette::Base);
+                painter.fillRect(rect(), background);
                 painter.setRenderHint(QPainter::Antialiasing);
                 const QRectF area = plotArea();
-                painter.setPen(QColor(82, 88, 96));
+                painter.setPen(palette().color(QPalette::Mid));
                 painter.drawLine(area.center().x(), area.top(), area.center().x(), area.bottom());
                 painter.drawLine(area.left(), area.center().y(), area.right(), area.center().y());
 
@@ -105,7 +112,7 @@ namespace scopeone::ui
                     {
                         const double inner = m_parameters.value(QStringLiteral("inner_size")).toDouble()
                                               * area.width();
-                        painter.setBrush(QColor(24, 27, 31));
+                        painter.setBrush(background);
                         painter.drawEllipse(QRectF(-inner / 2.0, -inner / 2.0, inner, inner));
                     }
                 }
@@ -238,7 +245,7 @@ namespace scopeone::ui
                 auto* browseButton = new QPushButton(tr("Browse"), this);
                 setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
                 setMaximumWidth(300);
-                browseButton->setFixedWidth(68);
+                fitButtonToText(browseButton);
                 layout->addWidget(m_pathEdit, 1);
                 layout->addWidget(browseButton);
                 connect(m_pathEdit, &QLineEdit::editingFinished, this, [this]()
@@ -760,15 +767,15 @@ namespace scopeone::ui
         {
             m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
         }
-        controls->addWidget(m_moduleTypeCombo);
+        controls->addWidget(m_moduleTypeCombo, 1);
         m_addModuleButton = new QPushButton(tr("Add"), group);
         m_removeModuleButton = new QPushButton(tr("Remove"), group);
         m_moveModuleUpButton = new QPushButton(tr("Up"), group);
         m_moveModuleDownButton = new QPushButton(tr("Down"), group);
-        m_addModuleButton->setFixedWidth(52);
-        m_moveModuleUpButton->setFixedWidth(42);
-        m_moveModuleDownButton->setFixedWidth(52);
-        m_removeModuleButton->setFixedWidth(64);
+        fitButtonToText(m_addModuleButton);
+        fitButtonToText(m_removeModuleButton);
+        fitButtonToText(m_moveModuleUpButton);
+        fitButtonToText(m_moveModuleDownButton);
         connect(m_addModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onAddModuleClicked);
         connect(m_removeModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onRemoveModuleClicked);
         connect(m_moveModuleUpButton, &QPushButton::clicked,
