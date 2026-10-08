@@ -1,7 +1,6 @@
 #pragma once
 
 #include "scopeone/ImageSceneModel.h"
-#include "scopeone/RoiAnalysis.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QFutureWatcher>
@@ -28,6 +27,16 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
+        // Pixel statistics of the selected rectangle or line
+        struct SelectionStatistics
+        {
+            qint64 pixelCount{0};
+            double mean{0.0};
+            double stdDev{0.0};
+            int minValue{0};
+            int maxValue{0};
+        };
+
         struct LayerInspectState
         {
             QString layerKey;
@@ -108,7 +117,7 @@ namespace scopeone::ui
         QLabel* m_selectionMaxLabel{nullptr};
         InspectCrossSectionWidget* m_crossSectionWidget{nullptr};
         QTimer* m_selectionRefreshTimer{nullptr};
-        QFutureWatcher<scopeone::core::RoiStatistics>* m_selectionStatsWatcher{nullptr};
+        QFutureWatcher<SelectionStatistics>* m_selectionStatsWatcher{nullptr};
         QString m_selectionStatsMarkupId;
         bool m_selectionStatsPending{false};
         bool m_cameraInitialized{false};

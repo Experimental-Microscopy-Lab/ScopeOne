@@ -102,7 +102,6 @@ set(SCOPEONE_UI_HEADERS
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
         src/ScopeOneToolPlugin.h
-        src/AnalysisTool.h
 )
 
 if (WIN32)

@@ -1,6 +1,6 @@
 #include "InspectWidget.h"
 #include "ImageWorkspace.h"
-#include "scopeone/RoiAnalysis.h"
+#include "PreviewWidget.h"
 #include "scopeone/ImageSceneModel.h"
 
 #include <QFrame>
@@ -19,7 +19,9 @@
 #include <QVBoxLayout>
 #include <QtMath>
 #include <QtGlobal>
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace scopeone::ui
 {
@@ -48,6 +50,76 @@ namespace scopeone::ui
                 .arg(active ? QStringLiteral("Active Layer") : QStringLiteral("Layer"),
                      cameraId,
                      inspectLayerSourceLabel(layerKey));
+        }
+
+        int framePixelValue(const scopeone::core::ImageFrame& frame, int x, int y)
+        {
+            const char* row = frame.bytes.constData() + static_cast<qint64>(y) * frame.stride;
+            if (frame.isMono16())
+            {
+                quint16 value = 0;
+                std::memcpy(&value, row + static_cast<qint64>(x) * 2, sizeof(value));
+                return value;
+            }
+            return static_cast<unsigned char>(row[x]);
+        }
+
+        // Pixel statistics inside a rectangle, or along a line, of one mono frame
+        InspectWidget::SelectionStatistics measureSelection(const scopeone::core::ImageFrame& frame,
+                                                            const scopeone::core::ImageSceneModel::Markup& markup)
+        {
+            InspectWidget::SelectionStatistics stats;
+            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
+            {
+                return stats;
+            }
+            const QRect bounds(0, 0, frame.width, frame.height);
+            double sum = 0.0;
+            double sumSquares = 0.0;
+            const auto add = [&](int x, int y)
+            {
+                const int value = framePixelValue(frame, x, y);
+                stats.minValue = stats.pixelCount == 0 ? value : std::min(stats.minValue, value);
+                stats.maxValue = stats.pixelCount == 0 ? value : std::max(stats.maxValue, value);
+                ++stats.pixelCount;
+                sum += value;
+                sumSquares += static_cast<double>(value) * value;
+            };
+
+            if (markup.type == scopeone::core::DocumentMarkupType::Line)
+            {
+                const QPoint delta = markup.end - markup.start;
+                const int steps = std::max(std::abs(delta.x()), std::abs(delta.y()));
+                for (int step = 0; step <= steps; ++step)
+                {
+                    const double t = steps == 0 ? 0.0 : static_cast<double>(step) / steps;
+                    const int x = static_cast<int>(std::lround(markup.start.x() + t * delta.x()));
+                    const int y = static_cast<int>(std::lround(markup.start.y() + t * delta.y()));
+                    if (bounds.contains(x, y))
+                    {
+                        add(x, y);
+                    }
+                }
+            }
+            else
+            {
+                const QRect area = markup.rect.normalized().intersected(bounds);
+                for (int y = area.top(); y <= area.bottom(); ++y)
+                {
+                    for (int x = area.left(); x <= area.right(); ++x)
+                    {
+                        add(x, y);
+                    }
+                }
+            }
+
+            if (stats.pixelCount > 0)
+            {
+                stats.mean = sum / static_cast<double>(stats.pixelCount);
+                stats.stdDev = std::sqrt(std::max(0.0, sumSquares / static_cast<double>(stats.pixelCount)
+                                                       - stats.mean * stats.mean));
+            }
+            return stats;
         }
 
         // Check whether a preview layer can use live core inspection
@@ -523,25 +595,28 @@ namespace scopeone::ui
         m_selectionRefreshTimer->setSingleShot(true);
         m_selectionRefreshTimer->setInterval(16);
         connect(m_selectionRefreshTimer, &QTimer::timeout, this, &InspectWidget::refreshSelection);
-        m_selectionStatsWatcher = new QFutureWatcher<scopeone::core::RoiStatistics>(this);
-        connect(m_selectionStatsWatcher, &QFutureWatcher<scopeone::core::RoiStatistics>::finished,
+        m_selectionStatsWatcher = new QFutureWatcher<SelectionStatistics>(this);
+        connect(m_selectionStatsWatcher, &QFutureWatcher<SelectionStatistics>::finished,
                 this, &InspectWidget::applySelectionStats);
 
         // Clicking the checked tool again returns to plain selection
-        const auto toggleTool = [this](AnalysisTool tool, bool checked)
+        const auto setTool = [this](PreviewWidget::AnalysisTool tool)
         {
-            m_workspace->setAnalysisTool(checked ? tool : AnalysisTool::Select);
+            m_rectangleToolButton->setChecked(tool == PreviewWidget::AnalysisTool::Rectangle);
+            m_lineToolButton->setChecked(tool == PreviewWidget::AnalysisTool::Line);
+            if (PreviewWidget* preview = m_workspace->activePreviewWidget())
+            {
+                preview->setAnalysisTool(tool);
+            }
         };
-        connect(m_rectangleToolButton, &QPushButton::clicked, this,
-                [toggleTool](bool checked) { toggleTool(AnalysisTool::Rectangle, checked); });
-        connect(m_lineToolButton, &QPushButton::clicked, this,
-                [toggleTool](bool checked) { toggleTool(AnalysisTool::Line, checked); });
-        connect(m_workspace, &ImageWorkspace::analysisToolChanged, this,
-                [this](AnalysisTool tool)
-                {
-                    m_rectangleToolButton->setChecked(tool == AnalysisTool::Rectangle);
-                    m_lineToolButton->setChecked(tool == AnalysisTool::Line);
-                });
+        connect(m_rectangleToolButton, &QPushButton::clicked, this, [setTool](bool checked)
+        {
+            setTool(checked ? PreviewWidget::AnalysisTool::Rectangle : PreviewWidget::AnalysisTool::Select);
+        });
+        connect(m_lineToolButton, &QPushButton::clicked, this, [setTool](bool checked)
+        {
+            setTool(checked ? PreviewWidget::AnalysisTool::Line : PreviewWidget::AnalysisTool::Select);
+        });
         connect(m_deleteSelectionButton, &QPushButton::clicked, this, [this]()
         {
             scopeone::core::ImageSceneModel::Markup markup;
@@ -745,18 +820,11 @@ namespace scopeone::ui
             m_selectionStatsPending = true;
             return;
         }
-        scopeone::core::RoiShape shape;
-        shape.type = markup.type;
-        shape.start = markup.start;
-        shape.end = markup.end;
-        shape.rect = markup.rect.normalized();
         const scopeone::core::ImageFrame frame = m_workspace->frameForLayer(markup.layerKey);
         m_selectionStatsMarkupId = markup.id;
-        m_selectionStatsWatcher->setFuture(QtConcurrent::run([frame, shape]()
+        m_selectionStatsWatcher->setFuture(QtConcurrent::run([frame, markup]()
         {
-            scopeone::core::RoiStatistics stats;
-            scopeone::core::measureRoi(frame, shape, stats);
-            return stats;
+            return measureSelection(frame, markup);
         }));
     }
 
@@ -765,11 +833,11 @@ namespace scopeone::ui
     {
         scopeone::core::ImageSceneModel::Markup markup;
         const bool current = selectedMarkup(markup) && markup.id == m_selectionStatsMarkupId;
-        const scopeone::core::RoiStatistics stats = m_selectionStatsWatcher->result();
+        const SelectionStatistics stats = m_selectionStatsWatcher->result();
         if (current)
         {
-            m_selectionStatsWidget->setVisible(stats.hasData());
-            if (stats.hasData())
+            m_selectionStatsWidget->setVisible(stats.pixelCount > 0);
+            if (stats.pixelCount > 0)
             {
                 m_selectionMeanLabel->setText(QString::number(stats.mean, 'f', 1));
                 m_selectionStdDevLabel->setText(QString::number(stats.stdDev, 'f', 1));
@@ -807,11 +875,7 @@ namespace scopeone::ui
     // Geometry of one shape in pixels and calibrated units
     QStringList InspectWidget::selectionSummary(const scopeone::core::ImageSceneModel::Markup& markup) const
     {
-        scopeone::core::RoiShape shape;
-        shape.type = markup.type;
-        shape.start = markup.start;
-        shape.end = markup.end;
-        shape.rect = markup.rect.normalized();
+        const QRect rect = markup.rect.normalized();
 
         // Calibrated values follow the layer's pixel to sensor transform and the camera pixel size
         const double pixelSizeUm = m_workspace->pixelSizeUm(markup.layerKey);
@@ -844,16 +908,16 @@ namespace scopeone::ui
         else
         {
             lines.append(QStringLiteral("X %1   Y %2   W %3   H %4")
-                             .arg(shape.rect.x()).arg(shape.rect.y())
-                             .arg(shape.rect.width()).arg(shape.rect.height()));
+                             .arg(rect.x()).arg(rect.y())
+                             .arg(rect.width()).arg(rect.height()));
             QString area = QStringLiteral("Area %1 px")
-                               .arg(QLocale().toString(static_cast<qlonglong>(shape.rect.width()) * shape.rect.height()));
+                               .arg(QLocale().toString(static_cast<qlonglong>(rect.width()) * rect.height()));
             if (calibrated)
             {
                 const double scale = std::abs(layer.pixelToSensor.m11 * layer.pixelToSensor.m22
                                               - layer.pixelToSensor.m12 * layer.pixelToSensor.m21);
                 area += QStringLiteral("  ·  %1 µm²")
-                            .arg(static_cast<double>(shape.rect.width()) * shape.rect.height()
+                            .arg(static_cast<double>(rect.width()) * rect.height()
                                      * scale * pixelSizeUm * pixelSizeUm,
                                  0, 'f', 3);
             }

@@ -19,7 +19,6 @@
 #include <QVector2D>
 #include <functional>
 #include <vector>
-#include "AnalysisTool.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
@@ -48,7 +47,7 @@ namespace scopeone::ui
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
         enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
-        using AnalysisTool = scopeone::ui::AnalysisTool;
+        enum class AnalysisTool { Select, Rectangle, Line };
 
         struct PreviewInteractionTarget
         {
