@@ -3,6 +3,7 @@
 #include "scopeone/ScopeOneCore.h"
 #include "ScopeOneToolPlugin.h"
 
+#include <QByteArray>
 #include <QMainWindow>
 #include <QPointer>
 #include <QPoint>
@@ -76,6 +77,8 @@ namespace scopeone::ui
         void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
+        void restoreWindowLayout();
+        void saveWindowLayout() const;
         void syncCameraState();
         void applyLoadedCameraState(const QStringList& cameraIds);
         void applyNoCameraState();
@@ -150,6 +153,7 @@ namespace scopeone::ui
 
         QMenu* m_recentConfigurationsMenu{nullptr};
         QMenu* m_dockWidgetsMenu{nullptr};
+        QByteArray m_defaultWindowState;
 
         QAction* m_toggleDimensionAction{nullptr};
         QAction* m_toggle3dColorbarAction{nullptr};

@@ -1145,6 +1145,11 @@ namespace scopeone::core
     }
 
     // Return the ScopeWriter libtiff version
+    QString ScopeOneCore::getScopeWriterVersion()
+    {
+        return QString::fromStdString(scopewriter::version());
+    }
+
     QString ScopeOneCore::getLibTiffVersion()
     {
         return QString::fromStdString(scopewriter::libTiffVersion());

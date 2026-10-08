@@ -18,7 +18,7 @@ jobs:
   compile:
     name: Compile
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Check out ScopeOne
@@ -39,15 +39,20 @@ jobs:
             autoconf-archive \
             pkg-config \
             libboost-all-dev \
-            libopencv-dev \
-            libtiff-dev \
-            zlib1g-dev
+            ninja-build curl zip unzip \
+            libgl-dev libegl-dev libopengl-dev libx11-dev libx11-xcb-dev libxrender-dev \
+            libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-image0-dev \
+            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev \
+            libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xkb-dev libxcb-xinput-dev \
+            libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.11.0'
-          cache: true
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
+          git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+          "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash

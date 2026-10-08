@@ -519,6 +519,7 @@ namespace scopeone::core
         static QString getVersion();
         static QString getMMCoreVersion();
         static QString getOpenCVVersion();
+        static QString getScopeWriterVersion();
         static QString getLibTiffVersion();
         static QString getZlibVersion();
         static QString rawLayerKey(const QString& cameraId);

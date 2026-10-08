@@ -33,9 +33,11 @@
 !/CMakeLists.txt
 !/README.md
 !/VERSION
+!/vcpkg.json
 
 !/.gitignore
 
 /build/
+/vcpkg_installed/
 /ref/
 **/.DS_Store

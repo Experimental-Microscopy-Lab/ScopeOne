@@ -683,8 +683,11 @@ namespace scopeone::ui
             QStringLiteral("Update display levels continuously as images arrive"));
 
         auto* layerHistogramLogCheckBox = new QCheckBox(QStringLiteral("Log scale"), layerHistogramGroup);
-        histogramLayout->addWidget(m_layerAutoStretchCheckBox);
-        histogramLayout->addWidget(layerHistogramLogCheckBox);
+        auto* histogramOptionsLayout = new QHBoxLayout();
+        histogramOptionsLayout->addWidget(m_layerAutoStretchCheckBox);
+        histogramOptionsLayout->addWidget(layerHistogramLogCheckBox);
+        histogramOptionsLayout->addStretch(1);
+        histogramLayout->addLayout(histogramOptionsLayout);
         connect(layerHistogramLogCheckBox, &QCheckBox::toggled,
                 m_layerHistogramWidget, &LayerHistogramWidget::setLogScale);
 
@@ -1451,8 +1454,10 @@ namespace scopeone::ui
         {
             emit snapRequested(m_currentTarget);
         });
-        layout->addWidget(m_previewToggleButton, row, 0);
-        layout->addWidget(m_snapButton, row, 1);
+        QHBoxLayout* previewLayout = new QHBoxLayout();
+        previewLayout->addWidget(m_previewToggleButton, 1);
+        previewLayout->addWidget(m_snapButton, 1);
+        layout->addLayout(previewLayout, row, 0, 1, 2);
 
         QHBoxLayout* roiLayout = new QHBoxLayout();
         m_drawROIButton = new QPushButton("Draw ROI", group);
@@ -1932,6 +1937,10 @@ namespace scopeone::ui
         m_previewToggleButton->setText(m_previewRunning
                                            ? QStringLiteral("Stop Preview")
                                            : QStringLiteral("Start Preview"));
+        m_previewToggleButton->setStyleSheet(m_previewRunning && canControlHardware
+                                                 ? QStringLiteral(
+                                                     "QPushButton { background-color: #c0392b; color: white; font-weight: bold; }")
+                                                 : QString());
         const bool hasRoiTarget = !roiCameraTarget().isEmpty();
         m_drawROIButton->setEnabled(canControlHardware && hasRoiTarget);
         m_halfROIButton->setEnabled(canControlHardware && hasRoiTarget);

@@ -12,7 +12,6 @@
 class QGroupBox;
 class QLabel;
 class QPushButton;
-class QSlider;
 class QVBoxLayout;
 
 namespace scopeone::ui
@@ -63,10 +62,6 @@ namespace scopeone::ui
         {
             QString layerKey;
             QGroupBox* groupBox{nullptr};
-            QSlider* minSlider{nullptr};
-            QSlider* maxSlider{nullptr};
-            QLabel* minSliderValueLabel{nullptr};
-            QLabel* maxSliderValueLabel{nullptr};
             QLabel* meanLabel{nullptr};
             QLabel* minLabel{nullptr};
             QLabel* maxLabel{nullptr};
@@ -98,7 +93,6 @@ namespace scopeone::ui
         void restoreViewerState();
         QString currentLayerKey() const;
         LayerInspectState& getOrCreateLayerState(const QString& layerKey);
-        void onLayerSliderChanged(const QString& layerKey, int minValue, int maxValue);
         QString currentLayerCameraId() const;
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
