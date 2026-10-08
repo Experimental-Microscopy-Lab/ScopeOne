@@ -19,6 +19,7 @@
 #include <QVector2D>
 #include <functional>
 #include <vector>
+#include "AnalysisTool.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
@@ -47,6 +48,7 @@ namespace scopeone::ui
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
         enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
+        using AnalysisTool = scopeone::ui::AnalysisTool;
 
         struct PreviewInteractionTarget
         {
@@ -107,9 +109,8 @@ namespace scopeone::ui
         QString activeLayerKey() const { return m_activeLayerKey; }
         void setPixelSizeCallback(std::function<double(const QString&)> callback);
         void startROIDrawing(const QString& cameraId);
-        void startMeasurementLineDrawingForLayer(const QString& layerKey);
-        void startCrossSectionDrawingForLayer(const QString& layerKey);
-        void clearCrossSection();
+        void setAnalysisTool(AnalysisTool tool);
+        AnalysisTool analysisTool() const { return m_analysisTool; }
 
         bool interactionTargetAt(const QPoint& widgetPos,
                                  PreviewInteractionTarget& outTarget,
@@ -143,11 +144,6 @@ signals:
                       int height,
                       int sourceRoiX,
                       int sourceRoiY);
-        void measurementLineDrawn(const QString& layerKey, const QPoint& start, const QPoint& end);
-        void measurementLineInspected(const QString& layerKey,
-                                      const QPoint& start,
-                                      const QPoint& end);
-        void measurementLineCleared();
         void imageFilesDropped(const QStringList& filePaths);
 
     protected:
@@ -177,6 +173,20 @@ signals:
             RectTopRight,
             RectBottomLeft,
             RectBottomRight,
+        };
+
+        // What a shape being dragged on the canvas will become when released
+        enum class DraftPurpose { None, Selection, CameraRoi };
+
+        struct ShapeDraft
+        {
+            DraftPurpose purpose{DraftPurpose::None};
+            ImageSceneModel::MarkupType type{ImageSceneModel::MarkupType::Rect};
+            QString sourceId;
+            QString layerKey;
+            QPoint start;
+            QPoint end;
+            bool dragging{false};
         };
 
         struct LayerDisplaySettings
@@ -309,23 +319,8 @@ signals:
         QMap<QString, CachedTexture> m_textureCache;
 
 
-        bool m_roiDrawingMode{false};
-        QString m_roiTargetCameraId;
-        QString m_roiTargetLayerKey;
-        QPoint m_roiStart;
-        QPoint m_roiEnd;
-        bool m_roiDragging{false};
-        bool m_crossSectionDrawingMode{false};
-        QString m_crossSectionTargetSourceId;
-        QString m_crossSectionTargetLayerKey;
-        QPoint m_crossSectionStart;
-        QPoint m_crossSectionEnd;
-        bool m_crossSectionDragging{false};
-        bool m_measurementLineDrawingMode{false};
-        QString m_measurementLineTargetLayerKey;
-        QPoint m_measurementLineStart;
-        QPoint m_measurementLineEnd;
-        bool m_measurementLineDragging{false};
+        AnalysisTool m_analysisTool{AnalysisTool::Select};
+        ShapeDraft m_draft;
         QString m_dragMarkupId;
         ImageSceneModel::Markup m_dragMarkupOriginal;
         QPoint m_dragMarkupStartImagePos;
@@ -445,9 +440,11 @@ signals:
 
         GLuint getOrCreateTexture(const QString& key, int width, int height, GLenum internalFormat);
         void cleanupTextureCache();
-        void cancelROIDrawing();
-        void cancelMeasurementLineDrawing();
-        void cancelCrossSectionDrawing();
+        void cancelDraft();
+        void finishDraft();
+        bool draftImageMarkup(ImageSceneModel::Markup& outMarkup,
+                              FrameSourceState* outFrameState = nullptr) const;
+        void restoreToolCursor();
         void updateSliceBar();
         void updateSliceBarGeometry();
         Camera3dState& cameraForLayer(const QString& layerKey);

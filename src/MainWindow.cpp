@@ -657,69 +657,6 @@ namespace scopeone::ui
                     }
                 });
 
-        connect(m_inspectWidget, &InspectWidget::requestDrawCrossSectionLayer,
-                this, [this](const QString& layerKey)
-                {
-                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
-                    {
-                        preview->startCrossSectionDrawingForLayer(layerKey);
-                        showStatusMessage(tr("Drag a line on the preview"), 5000);
-                    }
-                });
-
-        connect(m_inspectWidget, &InspectWidget::requestClearCrossSection,
-                this, [this]()
-                {
-                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
-                    {
-                        preview->clearCrossSection();
-                    }
-                });
-
-        connect(m_inspectWidget, &InspectWidget::requestDrawMeasurementLine,
-                this, [this](const QString& layerKey)
-                {
-                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
-                    {
-                        preview->startMeasurementLineDrawingForLayer(layerKey);
-                        showStatusMessage(tr("Drag a line on the preview"), 5000);
-                    }
-                });
-        connect(m_inspectWidget, &InspectWidget::requestClearMeasurementLines,
-                this, [this](const QString& layerKey)
-                {
-                    if (auto* sceneModel = m_imageWorkspace->activeSceneModel())
-                    {
-                        sceneModel->clearRole(
-                            ImageSceneModel::MarkupRole::Measurement, layerKey);
-                    }
-                    m_inspectWidget->clearMeasurementLine();
-                });
-        connect(m_imageWorkspace, &ImageWorkspace::measurementLineDrawn,
-                this, [this](const QString& layerKey, const QPoint& start, const QPoint& end)
-                {
-                    if (auto* sceneModel = m_imageWorkspace->activeSceneModel())
-                    {
-                        const QString markupId = sceneModel->createLine(
-                            layerKey,
-                            start,
-                            end,
-                            QString(),
-                            ImageSceneModel::MarkupRole::Measurement);
-                        sceneModel->selectOnly(markupId);
-                        showMeasurementLine(layerKey, start, end);
-                    }
-                });
-        connect(m_imageWorkspace, &ImageWorkspace::measurementLineInspected,
-                this, [this](const QString& layerKey,
-                             const QPoint& start,
-                             const QPoint& end)
-                {
-                    showMeasurementLine(layerKey, start, end);
-                });
-        connect(m_imageWorkspace, &ImageWorkspace::measurementLineCleared,
-                m_inspectWidget, &InspectWidget::clearMeasurementLine);
-
         connect(m_imageProcessingWidget, &ImageProcessingWidget::processingStarted,
                 this, [this]()
                 {
@@ -1414,6 +1351,7 @@ namespace scopeone::ui
         m_consoleDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
         tabifyDockWidget(m_controlDockWidget, m_consoleDockWidget);
         m_controlDockWidget->raise();
+
     }
 
     // Install the Qt message sink for the embedded console
@@ -1641,12 +1579,10 @@ namespace scopeone::ui
                            tr("Preview: Idle"),
                            tr("Preview is idle"));
         clearCursorStatus();
-        m_previewWidget->clearCrossSection();
         m_deviceControlWidget->setControlTargets({});
         m_deviceControlWidget->onCameraInitialized(false);
         m_inspectWidget->setAvailableCameras({});
         m_inspectWidget->onCameraInitialized(false);
-        m_inspectWidget->clearCrossSectionProfile();
 
         m_recordingWidget->setAvailableCameras({});
         m_toolRegistry->updateActions();
@@ -1822,26 +1758,6 @@ namespace scopeone::ui
         {
             m_cursorRefreshTimer->start();
         }
-    }
-
-    // Display a line measurement using the layer to sensor transform
-    void MainWindow::showMeasurementLine(const QString& layerKey,
-                                         const QPoint& start,
-                                         const QPoint& end)
-    {
-        double actualLengthUm = 0.0;
-        const double pixelSizeUm = m_imageWorkspace->pixelSizeUm(layerKey);
-        scopeone::core::DocumentLayer layer;
-        if (pixelSizeUm > 0.0
-            && m_imageWorkspace->activeSceneModel()->findLayer(layerKey, layer))
-        {
-            const QPointF sensorStart = layer.pixelToSensor.map(QPointF(start));
-            const QPointF sensorEnd = layer.pixelToSensor.map(QPointF(end));
-            actualLengthUm = std::hypot(sensorEnd.x() - sensorStart.x(),
-                                        sensorEnd.y() - sensorStart.y())
-                * pixelSizeUm;
-        }
-        m_inspectWidget->setMeasurementLine(layerKey, start, end, actualLengthUm);
     }
 
     // Edit persistent application settings

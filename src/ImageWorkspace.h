@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AnalysisTool.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QHash>
@@ -84,6 +85,8 @@ namespace scopeone::ui
         double pixelSizeUm(const QString& layerKey) const;
         QString activeLayerKey() const;
         void setActiveLayerKey(const QString& layerKey);
+        AnalysisTool analysisTool() const { return m_analysisTool; }
+        void setAnalysisTool(AnalysisTool tool);
         scopeone::core::ImageSceneModel* sceneModel(const QString& documentId) const;
         PreviewWidget* previewWidget(const QString& documentId) const;
         scopeone::core::ImageFrame currentFrame(const QString& documentId = QString()) const;
@@ -112,13 +115,7 @@ namespace scopeone::ui
         void sessionAvailable(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
             const QString& title);
-        void measurementLineDrawn(const QString& layerKey,
-                                  const QPoint& start,
-                                  const QPoint& end);
-        void measurementLineInspected(const QString& layerKey,
-                                      const QPoint& start,
-                                      const QPoint& end);
-        void measurementLineCleared();
+        void analysisToolChanged(AnalysisTool tool);
         void lineProfileUpdated(const QString& layerKey, const QVector<int>& values);
 
     private:
@@ -142,6 +139,7 @@ namespace scopeone::ui
         QAction* m_oneToOneAction{nullptr};
         QAction* m_dimensionAction{nullptr};
         QAction* m_reset3dAction{nullptr};
+        AnalysisTool m_analysisTool{AnalysisTool::Select};
         QComboBox* m_layoutCombo{nullptr};
         QComboBox* m_zoomCombo{nullptr};
         PreviewWidget* m_livePreviewWidget{nullptr};

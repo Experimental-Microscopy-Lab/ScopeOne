@@ -95,9 +95,6 @@ namespace scopeone::ui
         void refreshPreviewCursorStatus();
         void schedulePreviewCursorStatusRefresh();
         void updateDimensionViewActions();
-        void showMeasurementLine(const QString& layerKey,
-                                 const QPoint& start,
-                                 const QPoint& end);
         void handlePreviewMousePosition(const QPoint& pos);
         void handleRoiDrawn(const QString& cameraId,
                             int x,

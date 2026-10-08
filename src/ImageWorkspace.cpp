@@ -393,6 +393,21 @@ namespace scopeone::ui
 
     }
 
+    // Applies one shape tool to the viewer shared by live and document images
+    void ImageWorkspace::setAnalysisTool(AnalysisTool tool)
+    {
+        if (m_analysisTool == tool)
+        {
+            return;
+        }
+        m_analysisTool = tool;
+        if (m_livePreviewWidget)
+        {
+            m_livePreviewWidget->setAnalysisTool(tool);
+        }
+        emit analysisToolChanged(tool);
+    }
+
     // Refreshes viewer controls when the active document or display state changes
     void ImageWorkspace::updateViewerToolbar()
     {
@@ -1022,12 +1037,7 @@ namespace scopeone::ui
 
     void ImageWorkspace::connectViewer(PreviewWidget* preview)
     {
-        connect(preview, &PreviewWidget::measurementLineDrawn,
-                this, &ImageWorkspace::measurementLineDrawn);
-        connect(preview, &PreviewWidget::measurementLineInspected,
-                this, &ImageWorkspace::measurementLineInspected);
-        connect(preview, &PreviewWidget::measurementLineCleared,
-                this, &ImageWorkspace::measurementLineCleared);
+        preview->setAnalysisTool(m_analysisTool);
         connect(preview, &PreviewWidget::layerClicked,
                 this, [this](const QString& layerKey) { setActiveLayerKey(layerKey); });
         connect(preview, &PreviewWidget::mousePositionChanged,

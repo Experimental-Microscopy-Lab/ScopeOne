@@ -78,6 +78,7 @@ set(CORE_SOURCES
         src/MicroManagerProvider.cpp
         src/SimulatorProvider.cpp
         src/ImageSceneModel.cpp
+        src/RoiAnalysis.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
         src/ParticleAnalysis.cpp
@@ -129,6 +130,7 @@ set(CORE_HEADERS
         internal/CameraRuntimeControl.h
         include/scopeone/SimulatorProvider.h
         include/scopeone/ImageSceneModel.h
+        include/scopeone/RoiAnalysis.h
         internal/HardwareRuntime.h
         internal/MicroManagerProvider.h
         internal/MMCoreManager.h

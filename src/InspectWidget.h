@@ -1,7 +1,10 @@
 #pragma once
 
+#include "scopeone/ImageSceneModel.h"
+#include "scopeone/RoiAnalysis.h"
 #include "scopeone/ScopeOneCore.h"
 
+#include <QFutureWatcher>
 #include <QHash>
 #include <QPoint>
 #include <QString>
@@ -12,6 +15,7 @@
 class QGroupBox;
 class QLabel;
 class QPushButton;
+class QTimer;
 class QVBoxLayout;
 
 namespace scopeone::ui
@@ -42,20 +46,8 @@ namespace scopeone::ui
         void setLayerInspect(const QString& layerKey,
                              const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void clearLayerInspect(const QString& layerKey);
-        void clearCrossSectionProfile();
-        void setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values);
-        void setMeasurementLine(const QString& layerKey,
-                                const QPoint& start,
-                                const QPoint& end,
-                                double actualLengthUm);
-        void clearMeasurementLine();
         void refreshActiveViewer();
-
-    signals:
-        void requestDrawCrossSectionLayer(const QString& layerKey);
-        void requestClearCrossSection();
-        void requestDrawMeasurementLine(const QString& layerKey);
-        void requestClearMeasurementLines(const QString& layerKey);
+        void refreshSelection();
 
     private:
         struct LayerInfoGroup
@@ -72,10 +64,6 @@ namespace scopeone::ui
         struct ViewerInspectState
         {
             QHash<QString, LayerInspectState> layerStates;
-            QString crossSectionLayerKey;
-            QVector<int> crossSectionValues;
-            QString measurementLayerKey;
-            QString measurementInfo;
         };
 
         void setupUI();
@@ -94,6 +82,11 @@ namespace scopeone::ui
         QString currentLayerKey() const;
         LayerInspectState& getOrCreateLayerState(const QString& layerKey);
         QString currentLayerCameraId() const;
+        bool selectedMarkup(scopeone::core::ImageSceneModel::Markup& outMarkup) const;
+        QStringList selectionSummary(const scopeone::core::ImageSceneModel::Markup& markup) const;
+        void scheduleSelectionRefresh();
+        void requestSelectionStats(const scopeone::core::ImageSceneModel::Markup& markup);
+        void applySelectionStats();
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         ImageWorkspace* m_workspace{nullptr};
@@ -104,15 +97,21 @@ namespace scopeone::ui
         QHash<QString, LayerInspectState> m_layerStates;
         QStringList m_availableLayerKeys;
         QStringList m_availableCameraIds;
-        QPushButton* m_drawMeasurementLineButton{nullptr};
-        QPushButton* m_clearMeasurementLinesButton{nullptr};
-        QLabel* m_measurementInfoLabel{nullptr};
+        QPushButton* m_rectangleToolButton{nullptr};
+        QPushButton* m_lineToolButton{nullptr};
+        QPushButton* m_deleteSelectionButton{nullptr};
+        QLabel* m_selectionInfoLabel{nullptr};
+        QWidget* m_selectionStatsWidget{nullptr};
+        QLabel* m_selectionMeanLabel{nullptr};
+        QLabel* m_selectionStdDevLabel{nullptr};
+        QLabel* m_selectionMinLabel{nullptr};
+        QLabel* m_selectionMaxLabel{nullptr};
         InspectCrossSectionWidget* m_crossSectionWidget{nullptr};
-        QPushButton* m_drawCrossSectionButton{nullptr};
-        QPushButton* m_clearCrossSectionButton{nullptr};
+        QTimer* m_selectionRefreshTimer{nullptr};
+        QFutureWatcher<scopeone::core::RoiStatistics>* m_selectionStatsWatcher{nullptr};
+        QString m_selectionStatsMarkupId;
+        bool m_selectionStatsPending{false};
         bool m_cameraInitialized{false};
-        QString m_measurementLayerKey;
-        QString m_crossSectionLayerKey;
         QHash<QString, ViewerInspectState> m_viewerStates;
         QString m_activeViewerStateId;
     };

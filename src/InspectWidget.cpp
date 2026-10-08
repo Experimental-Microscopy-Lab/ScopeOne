@@ -1,5 +1,6 @@
 #include "InspectWidget.h"
 #include "ImageWorkspace.h"
+#include "scopeone/RoiAnalysis.h"
 #include "scopeone/ImageSceneModel.h"
 
 #include <QFrame>
@@ -12,6 +13,8 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPushButton>
+#include <QTimer>
+#include <QtConcurrent>
 #include <QScrollArea>
 #include <QVBoxLayout>
 #include <QtMath>
@@ -97,7 +100,7 @@ namespace scopeone::ui
             if (m_values.isEmpty())
             {
                 painter.setPen(colors.color(QPalette::PlaceholderText));
-                painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("No cross section"));
+                painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("Draw a line to plot its profile"));
                 return;
             }
 
@@ -195,9 +198,41 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerAnalysisCleared,
                 this, &InspectWidget::clearLayerInspect);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::layerLineProfileUpdated,
-                this, &InspectWidget::setLayerCrossSectionProfile);
+                this, [this](const QString& layerKey, const QVector<int>& values)
+                {
+                    m_crossSectionWidget->setProfile(layerKey, values);
+                });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::lineProfileCleared,
-                this, &InspectWidget::clearCrossSectionProfile);
+                this, [this]() { m_crossSectionWidget->clear(); });
+        connect(m_workspace, &ImageWorkspace::lineProfileUpdated,
+                this, [this](const QString& layerKey, const QVector<int>& values)
+                {
+                    m_crossSectionWidget->setProfile(layerKey, values);
+                });
+        // Re-measure the selection whenever its layer shows a new frame, at the line profile rate
+        const auto refreshForLayer = [this](const QString& layerKey)
+        {
+            scopeone::core::ImageSceneModel::Markup markup;
+            if (selectedMarkup(markup) && markup.layerKey == layerKey)
+            {
+                scheduleSelectionRefresh();
+            }
+        };
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewRawFrameReady, this,
+                [refreshForLayer](const scopeone::core::ImageFrame& frame)
+                {
+                    refreshForLayer(scopeone::core::ScopeOneCore::rawLayerKey(frame.cameraId));
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewProcessedFrameReady, this,
+                [refreshForLayer](const scopeone::core::ImageFrame& frame)
+                {
+                    refreshForLayer(scopeone::core::ScopeOneCore::processedLayerKey(frame.cameraId));
+                });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::previewToolFrameReady, this,
+                [refreshForLayer](const scopeone::core::ImageFrame& frame)
+                {
+                    refreshForLayer(scopeone::core::ScopeOneCore::toolLayerKey(frame.cameraId));
+                });
         connect(m_workspace, &ImageWorkspace::activeViewerChanged,
                 this, &InspectWidget::refreshActiveViewer);
         connect(m_workspace, &ImageWorkspace::activeFrameChanged,
@@ -208,6 +243,7 @@ namespace scopeone::ui
                         return;
                     }
                     m_workspace->requestHistogram(currentLayerKey());
+                    scheduleSelectionRefresh();
                 });
         connect(m_workspace, &ImageWorkspace::activeLayerChanged,
                 this, [this](const QString&)
@@ -220,8 +256,6 @@ namespace scopeone::ui
                     updateLayerVisibility();
                     updateControlsState();
                 });
-        connect(m_workspace, &ImageWorkspace::lineProfileUpdated,
-                this, &InspectWidget::setLayerCrossSectionProfile);
         refreshActiveViewer();
     }
 
@@ -266,6 +300,8 @@ namespace scopeone::ui
                 {
                     setAvailableLayers(m_sceneModel->layerIds());
                 });
+        connect(m_sceneModel, &scopeone::core::ImageSceneModel::markupsChanged,
+                this, &InspectWidget::scheduleSelectionRefresh);
         const QString layerKey = currentLayerKey();
         if (!layerKey.isEmpty())
         {
@@ -279,48 +315,19 @@ namespace scopeone::ui
                 updateLayerInspect(it.key(), it->stats);
             }
         }
-        updateControlsState();
+        refreshSelection();
     }
 
     void InspectWidget::saveViewerState()
     {
-        ViewerInspectState& state = m_viewerStates[m_activeViewerStateId];
-        state.layerStates = m_layerStates;
-        state.crossSectionLayerKey = m_crossSectionLayerKey;
-        state.crossSectionValues = m_crossSectionWidget->values();
-        state.measurementLayerKey = m_measurementLayerKey;
-        state.measurementInfo = m_measurementInfoLabel->text();
+        m_viewerStates[m_activeViewerStateId].layerStates = m_layerStates;
     }
 
     void InspectWidget::restoreViewerState()
     {
         const auto it = m_viewerStates.constFind(m_activeViewerStateId);
-        if (it == m_viewerStates.constEnd())
-        {
-            m_layerStates.clear();
-            m_crossSectionLayerKey.clear();
-            m_crossSectionWidget->clear();
-            m_measurementLayerKey.clear();
-            m_measurementInfoLabel->clear();
-            m_measurementInfoLabel->hide();
-            return;
-        }
-
-        const ViewerInspectState& state = it.value();
-        m_layerStates = state.layerStates;
-        m_crossSectionLayerKey = state.crossSectionLayerKey;
-        if (state.crossSectionLayerKey.isEmpty() || state.crossSectionValues.isEmpty())
-        {
-            m_crossSectionWidget->clear();
-        }
-        else
-        {
-            m_crossSectionWidget->setProfile(
-                state.crossSectionLayerKey, state.crossSectionValues);
-        }
-        m_measurementLayerKey = state.measurementLayerKey;
-        m_measurementInfoLabel->setText(state.measurementInfo);
-        m_measurementInfoLabel->setVisible(!state.measurementInfo.isEmpty());
+        m_layerStates = it == m_viewerStates.constEnd() ? QHash<QString, LayerInspectState>{}
+                                                        : it->layerStates;
     }
 
     InspectWidget::~InspectWidget()
@@ -333,11 +340,6 @@ namespace scopeone::ui
     {
         m_cameraInitialized = initialized;
         updateControlsState();
-
-        if (!initialized)
-        {
-            clearCrossSectionProfile();
-        }
     }
 
     // Remove inspect state for layers that are no longer available
@@ -375,20 +377,9 @@ namespace scopeone::ui
             addLayerInfo(key);
         }
 
-        if (!m_crossSectionLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_crossSectionLayerKey))
-        {
-            clearCrossSectionProfile();
-            emit requestClearCrossSection();
-        }
-        if (!m_measurementLayerKey.isEmpty() && !m_availableLayerKeys.contains(m_measurementLayerKey))
-        {
-            clearMeasurementLine();
-        }
-
         if (!currentLayerKey().isEmpty() && !m_availableLayerKeys.contains(currentLayerKey()))
         {
             m_scopeonecore->setActiveHistogramLayer({});
-            clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
@@ -404,21 +395,11 @@ namespace scopeone::ui
     {
         m_availableCameraIds = cameraIds;
 
-        if (!m_crossSectionLayerKey.isEmpty()
-            && isLiveLayerKey(m_crossSectionLayerKey)
-            && !m_availableCameraIds.contains(
-                scopeone::core::ScopeOneCore::sourceIdFromLayerKey(m_crossSectionLayerKey)))
-        {
-            clearCrossSectionProfile();
-            emit requestClearCrossSection();
-        }
-
         if (!currentLayerKey().isEmpty()
             && isLiveLayerKey(currentLayerKey())
             && !m_availableCameraIds.contains(currentLayerCameraId()))
         {
             m_scopeonecore->setActiveHistogramLayer({});
-            clearCrossSectionProfile();
         }
         updateLayerVisibility();
         updateControlsState();
@@ -453,80 +434,14 @@ namespace scopeone::ui
 
         m_layerStates.remove(trimmedLayerKey);
         removeLayerInfo(trimmedLayerKey);
-        if (currentLayerKey() == trimmedLayerKey)
-        {
-            clearCrossSectionProfile();
-        }
-        if (m_measurementLayerKey == trimmedLayerKey)
-        {
-            clearMeasurementLine();
-        }
+        scheduleSelectionRefresh();
         updateLayerVisibility();
         updateControlsState();
     }
 
-    // Clear the cross section plot
-    void InspectWidget::clearCrossSectionProfile()
-    {
-        m_crossSectionLayerKey.clear();
-        m_crossSectionWidget->clear();
-    }
 
-    // Display one line measurement for the inspected layer
-    void InspectWidget::setMeasurementLine(const QString& layerKey,
-                                           const QPoint& start,
-                                           const QPoint& end,
-                                           double actualLengthUm)
-    {
-        m_measurementLayerKey = layerKey.trimmed();
-        const double dx = static_cast<double>(end.x() - start.x());
-        const double dy = static_cast<double>(end.y() - start.y());
-        const double lengthPixels = std::hypot(dx, dy);
-        double angleDegrees = std::atan2(-dy, dx) * 180.0 / 3.14159265358979323846;
-        if (angleDegrees < 0.0)
-        {
-            angleDegrees += 360.0;
-        }
 
-        QStringList lines{
-            QStringLiteral("Layer: %1").arg(m_measurementLayerKey),
-            QStringLiteral("Start: (%1, %2)").arg(start.x()).arg(start.y()),
-            QStringLiteral("Angle: %1°").arg(angleDegrees, 0, 'f', 1),
-            QStringLiteral("Length: %1 px").arg(lengthPixels, 0, 'f', 2)
-        };
-        if (actualLengthUm > 0.0)
-        {
-            lines.append(QStringLiteral("Actual: %1 µm")
-                             .arg(actualLengthUm, 0, 'f', 3));
-        }
-        else
-        {
-            lines.append(QStringLiteral("Scale: not calibrated"));
-        }
-        m_measurementInfoLabel->setText(lines.join('\n'));
-        m_measurementInfoLabel->show();
-    }
 
-    // Clear the current line measurement display
-    void InspectWidget::clearMeasurementLine()
-    {
-        m_measurementLayerKey.clear();
-        m_measurementInfoLabel->clear();
-        m_measurementInfoLabel->hide();
-    }
-
-    // Display a freshly computed cross section profile for one layer
-    void InspectWidget::setLayerCrossSectionProfile(const QString& layerKey, const QVector<int>& values)
-    {
-        const QString trimmedLayerKey = layerKey.trimmed();
-        if (trimmedLayerKey.isEmpty() || trimmedLayerKey != currentLayerKey())
-        {
-            return;
-        }
-
-        m_crossSectionLayerKey = trimmedLayerKey;
-        m_crossSectionWidget->setProfile(trimmedLayerKey, values);
-    }
 
     // Build the scrollable inspect panel
     void InspectWidget::setupUI()
@@ -548,56 +463,92 @@ namespace scopeone::ui
         contentLayout->setSpacing(8);
         contentLayout->setContentsMargins(5, 5, 5, 5);
 
-        auto* annotationGroup = new QGroupBox(QStringLiteral("Annotation"), contentContainer);
-        auto* annotationLayout = new QVBoxLayout(annotationGroup);
-        auto* annotationButtons = new QHBoxLayout();
-        m_drawMeasurementLineButton = new QPushButton(QStringLiteral("Measure Line"), annotationGroup);
-        m_clearMeasurementLinesButton = new QPushButton(QStringLiteral("Clear"), annotationGroup);
-        annotationButtons->addWidget(m_drawMeasurementLineButton);
-        annotationButtons->addWidget(m_clearMeasurementLinesButton);
-        annotationLayout->addLayout(annotationButtons);
-        m_measurementInfoLabel = new QLabel(annotationGroup);
-        m_measurementInfoLabel->hide();
-        annotationLayout->addWidget(m_measurementInfoLabel);
-        contentLayout->addWidget(annotationGroup);
+        // Selection: shape tools and what the selected shape covers
+        auto* selectionGroup = new QGroupBox(QStringLiteral("Selection"), contentContainer);
+        auto* selectionLayout = new QVBoxLayout(selectionGroup);
+        auto* toolButtons = new QHBoxLayout();
+        m_rectangleToolButton = new QPushButton(QStringLiteral("Rectangle"), selectionGroup);
+        m_rectangleToolButton->setToolTip(QStringLiteral("Drag on the image to draw a rectangle"));
+        m_lineToolButton = new QPushButton(QStringLiteral("Line"), selectionGroup);
+        m_lineToolButton->setToolTip(QStringLiteral("Drag on the image to draw a line and plot its profile"));
+        m_deleteSelectionButton = new QPushButton(QStringLiteral("Delete"), selectionGroup);
+        m_deleteSelectionButton->setToolTip(QStringLiteral("Delete the selected shape (Del)"));
+        for (QPushButton* button : {m_rectangleToolButton, m_lineToolButton})
+        {
+            button->setCheckable(true);
+            toolButtons->addWidget(button);
+        }
+        toolButtons->addStretch();
+        toolButtons->addWidget(m_deleteSelectionButton);
+        selectionLayout->addLayout(toolButtons);
+        m_selectionInfoLabel = new QLabel(selectionGroup);
+        m_selectionInfoLabel->setTextFormat(Qt::PlainText);
+        m_selectionInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        m_selectionInfoLabel->setWordWrap(true);
+        selectionLayout->addWidget(m_selectionInfoLabel);
 
-        auto* crossSectionGroup = new QGroupBox(QStringLiteral("Cross Section"), contentContainer);
-        auto* crossSectionLayout = new QVBoxLayout(crossSectionGroup);
-        auto* crossSectionButtons = new QHBoxLayout();
-        m_drawCrossSectionButton = new QPushButton(QStringLiteral("Intensity Profile"), crossSectionGroup);
-        m_clearCrossSectionButton = new QPushButton(QStringLiteral("Clear Profile"), crossSectionGroup);
-        crossSectionButtons->addWidget(m_drawCrossSectionButton);
-        crossSectionButtons->addWidget(m_clearCrossSectionButton);
-        crossSectionButtons->addStretch();
-        crossSectionLayout->addLayout(crossSectionButtons);
-        m_crossSectionWidget = new InspectCrossSectionWidget(crossSectionGroup);
-        crossSectionLayout->addWidget(m_crossSectionWidget);
-        contentLayout->addWidget(crossSectionGroup);
+        // Live values sit in fixed right-aligned cells so changing digits do not shift the text
+        m_selectionStatsWidget = new QWidget(selectionGroup);
+        auto* statsLayout = new QGridLayout(m_selectionStatsWidget);
+        statsLayout->setContentsMargins(0, 0, 0, 0);
+        const int valueWidth = m_selectionStatsWidget->fontMetrics().horizontalAdvance(QStringLiteral("65535.0")) + 4;
+        const auto addValue = [this, statsLayout, valueWidth](const QString& name, int row, int column)
+        {
+            statsLayout->addWidget(new QLabel(name, m_selectionStatsWidget), row, column);
+            auto* value = new QLabel(m_selectionStatsWidget);
+            value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            value->setMinimumWidth(valueWidth);
+            statsLayout->addWidget(value, row, column + 1);
+            return value;
+        };
+        m_selectionMeanLabel = addValue(QStringLiteral("Mean:"), 0, 0);
+        m_selectionStdDevLabel = addValue(QStringLiteral("Std Dev:"), 0, 2);
+        m_selectionMinLabel = addValue(QStringLiteral("Min:"), 1, 0);
+        m_selectionMaxLabel = addValue(QStringLiteral("Max:"), 1, 2);
+        statsLayout->setColumnStretch(4, 1);
+        selectionLayout->addWidget(m_selectionStatsWidget);
+        contentLayout->addWidget(selectionGroup);
+
+        // Profile: intensity along the selected line
+        auto* profileGroup = new QGroupBox(QStringLiteral("Profile"), contentContainer);
+        auto* profileLayout = new QVBoxLayout(profileGroup);
+        m_crossSectionWidget = new InspectCrossSectionWidget(profileGroup);
+        profileLayout->addWidget(m_crossSectionWidget);
+        contentLayout->addWidget(profileGroup);
 
         contentLayout->addStretch();
 
-        connect(m_drawCrossSectionButton, &QPushButton::clicked, this, [this]()
+        // Selection follows mouse drags and live frames; coalesce to the line profile refresh rate
+        m_selectionRefreshTimer = new QTimer(this);
+        m_selectionRefreshTimer->setSingleShot(true);
+        m_selectionRefreshTimer->setInterval(16);
+        connect(m_selectionRefreshTimer, &QTimer::timeout, this, &InspectWidget::refreshSelection);
+        m_selectionStatsWatcher = new QFutureWatcher<scopeone::core::RoiStatistics>(this);
+        connect(m_selectionStatsWatcher, &QFutureWatcher<scopeone::core::RoiStatistics>::finished,
+                this, &InspectWidget::applySelectionStats);
+
+        // Clicking the checked tool again returns to plain selection
+        const auto toggleTool = [this](AnalysisTool tool, bool checked)
         {
-            if (currentLayerKey().isEmpty())
+            m_workspace->setAnalysisTool(checked ? tool : AnalysisTool::Select);
+        };
+        connect(m_rectangleToolButton, &QPushButton::clicked, this,
+                [toggleTool](bool checked) { toggleTool(AnalysisTool::Rectangle, checked); });
+        connect(m_lineToolButton, &QPushButton::clicked, this,
+                [toggleTool](bool checked) { toggleTool(AnalysisTool::Line, checked); });
+        connect(m_workspace, &ImageWorkspace::analysisToolChanged, this,
+                [this](AnalysisTool tool)
+                {
+                    m_rectangleToolButton->setChecked(tool == AnalysisTool::Rectangle);
+                    m_lineToolButton->setChecked(tool == AnalysisTool::Line);
+                });
+        connect(m_deleteSelectionButton, &QPushButton::clicked, this, [this]()
+        {
+            scopeone::core::ImageSceneModel::Markup markup;
+            if (selectedMarkup(markup))
             {
-                return;
+                m_sceneModel->remove(markup.id);
             }
-            m_crossSectionLayerKey = currentLayerKey();
-            emit requestDrawCrossSectionLayer(currentLayerKey());
-        });
-        connect(m_clearCrossSectionButton, &QPushButton::clicked, this, [this]()
-        {
-            clearCrossSectionProfile();
-            emit requestClearCrossSection();
-        });
-        connect(m_drawMeasurementLineButton, &QPushButton::clicked, this, [this]()
-        {
-            emit requestDrawMeasurementLine(currentLayerKey());
-        });
-        connect(m_clearMeasurementLinesButton, &QPushButton::clicked, this, [this]()
-        {
-            emit requestClearMeasurementLines(
-                m_measurementLayerKey.isEmpty() ? currentLayerKey() : m_measurementLayerKey);
         });
 
         scrollArea->setWidget(contentContainer);
@@ -750,29 +701,165 @@ namespace scopeone::ui
         infoGroup.pixelCountLabel->setText(QLocale().toString(static_cast<qlonglong>(stats.totalPixels)));
     }
 
-    // Enable controls according to live camera and selected layer state
+    // Enable controls according to the current selection
     void InspectWidget::updateControlsState()
     {
-        const QString layerKey = currentLayerKey();
-        const auto currentState = m_layerStates.constFind(layerKey);
-        const bool currentLayerHasStats = currentState != m_layerStates.constEnd() && currentState.value().hasStats;
-        const bool liveCrossSectionEnabled = m_cameraInitialized
-                                             && isLiveLayerKey(layerKey)
-                                             && m_availableCameraIds.contains(currentLayerCameraId());
-        const bool toolCrossSectionEnabled = scopeone::core::ScopeOneCore::isToolLayerKey(layerKey)
-                                             && currentLayerHasStats;
-        const bool staticCrossSectionEnabled = scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
-                                               && currentLayerHasStats;
-        const bool crossSectionEnabled = !layerKey.isEmpty()
-                                         && (liveCrossSectionEnabled
-                                             || toolCrossSectionEnabled
-                                             || staticCrossSectionEnabled);
-        m_drawCrossSectionButton->setEnabled(crossSectionEnabled);
-        m_clearCrossSectionButton->setEnabled(m_cameraInitialized || !layerKey.isEmpty());
-        const bool annotationEnabled = !layerKey.isEmpty()
-                                       && m_availableLayerKeys.contains(layerKey);
-        m_drawMeasurementLineButton->setEnabled(annotationEnabled);
-        m_clearMeasurementLinesButton->setEnabled(annotationEnabled);
+        scopeone::core::ImageSceneModel::Markup markup;
+        m_deleteSelectionButton->setEnabled(selectedMarkup(markup));
+    }
+
+    void InspectWidget::scheduleSelectionRefresh()
+    {
+        if (!m_selectionRefreshTimer->isActive())
+        {
+            m_selectionRefreshTimer->start();
+        }
+    }
+
+    // Re-measure the selected shape and update the selection and profile views
+    void InspectWidget::refreshSelection()
+    {
+        scopeone::core::ImageSceneModel::Markup markup;
+        const bool hasSelection = selectedMarkup(markup);
+        m_selectionInfoLabel->setText(
+            hasSelection ? selectionSummary(markup).join(QLatin1Char('\n'))
+                         : QStringLiteral("Choose Rectangle or Line, then drag on the image."));
+
+        if (hasSelection)
+        {
+            requestSelectionStats(markup);
+        }
+        else
+        {
+            m_selectionStatsMarkupId.clear();
+            m_selectionStatsWidget->hide();
+        }
+        updateControlsState();
+    }
+
+    // Measure the selection on a worker thread; while one runs, only remember that another is due
+    void InspectWidget::requestSelectionStats(const scopeone::core::ImageSceneModel::Markup& markup)
+    {
+        if (m_selectionStatsWatcher->isRunning())
+        {
+            m_selectionStatsPending = true;
+            return;
+        }
+        scopeone::core::RoiShape shape;
+        shape.type = markup.type;
+        shape.start = markup.start;
+        shape.end = markup.end;
+        shape.rect = markup.rect.normalized();
+        const scopeone::core::ImageFrame frame = m_workspace->frameForLayer(markup.layerKey);
+        m_selectionStatsMarkupId = markup.id;
+        m_selectionStatsWatcher->setFuture(QtConcurrent::run([frame, shape]()
+        {
+            scopeone::core::RoiStatistics stats;
+            scopeone::core::measureRoi(frame, shape, stats);
+            return stats;
+        }));
+    }
+
+    // Show finished statistics if they still belong to the selected shape, then catch up
+    void InspectWidget::applySelectionStats()
+    {
+        scopeone::core::ImageSceneModel::Markup markup;
+        const bool current = selectedMarkup(markup) && markup.id == m_selectionStatsMarkupId;
+        const scopeone::core::RoiStatistics stats = m_selectionStatsWatcher->result();
+        if (current)
+        {
+            m_selectionStatsWidget->setVisible(stats.hasData());
+            if (stats.hasData())
+            {
+                m_selectionMeanLabel->setText(QString::number(stats.mean, 'f', 1));
+                m_selectionStdDevLabel->setText(QString::number(stats.stdDev, 'f', 1));
+                m_selectionMinLabel->setText(QString::number(stats.minValue));
+                m_selectionMaxLabel->setText(QString::number(stats.maxValue));
+            }
+        }
+        if (m_selectionStatsPending)
+        {
+            m_selectionStatsPending = false;
+            if (selectedMarkup(markup))
+            {
+                requestSelectionStats(markup);
+            }
+        }
+    }
+
+    bool InspectWidget::selectedMarkup(scopeone::core::ImageSceneModel::Markup& outMarkup) const
+    {
+        if (!m_sceneModel)
+        {
+            return false;
+        }
+        for (const scopeone::core::ImageSceneModel::Markup& markup : m_sceneModel->markups())
+        {
+            if (markup.selected)
+            {
+                outMarkup = markup;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Geometry of one shape in pixels and calibrated units
+    QStringList InspectWidget::selectionSummary(const scopeone::core::ImageSceneModel::Markup& markup) const
+    {
+        scopeone::core::RoiShape shape;
+        shape.type = markup.type;
+        shape.start = markup.start;
+        shape.end = markup.end;
+        shape.rect = markup.rect.normalized();
+
+        // Calibrated values follow the layer's pixel to sensor transform and the camera pixel size
+        const double pixelSizeUm = m_workspace->pixelSizeUm(markup.layerKey);
+        scopeone::core::DocumentLayer layer;
+        const bool calibrated = pixelSizeUm > 0.0
+            && m_sceneModel
+            && m_sceneModel->findLayer(markup.layerKey, layer);
+
+        QStringList lines{markup.layerKey};
+        if (markup.type == scopeone::core::DocumentMarkupType::Line)
+        {
+            const double dx = markup.end.x() - markup.start.x();
+            const double dy = markup.end.y() - markup.start.y();
+            const double angle = qRadiansToDegrees(std::atan2(-dy, dx));
+            lines.append(QStringLiteral("Start (%1, %2)   End (%3, %4)")
+                             .arg(markup.start.x()).arg(markup.start.y())
+                             .arg(markup.end.x()).arg(markup.end.y()));
+            QString length = QStringLiteral("Length %1 px").arg(std::hypot(dx, dy), 0, 'f', 2);
+            if (calibrated)
+            {
+                const QPointF sensorStart = layer.pixelToSensor.map(QPointF(markup.start));
+                const QPointF sensorEnd = layer.pixelToSensor.map(QPointF(markup.end));
+                length += QStringLiteral("  ·  %1 µm")
+                              .arg(std::hypot(sensorEnd.x() - sensorStart.x(),
+                                              sensorEnd.y() - sensorStart.y()) * pixelSizeUm,
+                                   0, 'f', 3);
+            }
+            lines.append(length + QStringLiteral("   Angle %1°").arg(angle < 0.0 ? angle + 360.0 : angle, 0, 'f', 1));
+        }
+        else
+        {
+            lines.append(QStringLiteral("X %1   Y %2   W %3   H %4")
+                             .arg(shape.rect.x()).arg(shape.rect.y())
+                             .arg(shape.rect.width()).arg(shape.rect.height()));
+            QString area = QStringLiteral("Area %1 px")
+                               .arg(QLocale().toString(static_cast<qlonglong>(shape.rect.width()) * shape.rect.height()));
+            if (calibrated)
+            {
+                const double scale = std::abs(layer.pixelToSensor.m11 * layer.pixelToSensor.m22
+                                              - layer.pixelToSensor.m12 * layer.pixelToSensor.m21);
+                area += QStringLiteral("  ·  %1 µm²")
+                            .arg(static_cast<double>(shape.rect.width()) * shape.rect.height()
+                                     * scale * pixelSizeUm * pixelSizeUm,
+                                 0, 'f', 3);
+            }
+            lines.append(area);
+        }
+        return lines;
     }
 
     // Shows inspect controls for the selected preview layer
