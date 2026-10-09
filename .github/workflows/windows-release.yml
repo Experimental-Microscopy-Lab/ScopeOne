@@ -1,0 +1,210 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
+  BOOST_VERSION: 1.86.0
+  CUDA_VERSION: 12.8.1
+  ONNXRUNTIME_PACKAGE: onnxruntime-win-x64-gpu_cuda12-1.30.0
+  ONNXRUNTIME_VERSION: 1.30.0
+
+jobs:
+  package:
+    name: Package
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -TotalCount 1).Trim()
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v${{ steps.version.outputs.version }}" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release v${{ steps.version.outputs.version }} already exists. Update VERSION first."
+          }
+          exit 0
+
+      - name: Set up MSVC
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
+            }
+          }
+
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $vcpkgRoot = "$env:RUNNER_TEMP\scopeone-vcpkg"
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          git -C $vcpkgRoot checkout $baseline
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $binaryCache = "$env:RUNNER_TEMP\vcpkg-binary-cache"
+          New-Item -ItemType Directory -Force -Path $binaryCache | Out-Null
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\vcpkg-binary-cache
+          key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-x64-windows-
+
+      - name: Cache Boost
+        id: boost-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\boost
+          key: boost-${{ env.BOOST_VERSION }}-vc143-x64
+
+      - name: Build Boost for SerialManager
+        if: steps.boost-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $name = "boost_$($env:BOOST_VERSION -replace '\.', '_')"
+          $archive = "$env:RUNNER_TEMP\$name.7z"
+          Invoke-WebRequest "https://archives.boost.io/release/$env:BOOST_VERSION/source/$name.7z" -OutFile $archive
+          7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+          Push-Location "$env:RUNNER_TEMP\$name"
+          .\bootstrap.bat
+          if ($LASTEXITCODE -ne 0) { throw "Boost bootstrap failed." }
+          .\b2 --with-thread --with-chrono --with-date_time --with-system toolset=msvc-14.3 address-model=64 architecture=x86 link=static runtime-link=shared threading=multi variant=release -j4 stage
+          if ($LASTEXITCODE -ne 0) { throw "Boost build failed." }
+          Pop-Location
+          $boostRoot = "$env:RUNNER_TEMP\boost"
+          New-Item -ItemType Directory -Force -Path $boostRoot | Out-Null
+          Move-Item "$env:RUNNER_TEMP\$name\boost" "$boostRoot\boost"
+          Move-Item "$env:RUNNER_TEMP\$name\stage\lib" "$boostRoot\lib"
+
+      - name: Build Micro-Manager core and adapters
+        shell: pwsh
+        run: |
+          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
+          git init $mm
+          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
+          git -C $mm checkout FETCH_HEAD
+          $boostRoot = "$env:RUNNER_TEMP\boost"
+          $properties = @(
+            "/p:Configuration=Release",
+            "/p:Platform=x64",
+            "/p:SolutionDir=$mm\",
+            "/p:MM_BOOST_INCLUDEDIR=$boostRoot",
+            "/p:MM_BOOST_LIBDIR=$boostRoot\lib",
+            "/m",
+            "/nologo",
+            "/v:minimal"
+          )
+          foreach ($project in @(
+            "MMCore\MMCore.vcxproj",
+            "DeviceAdapters\DemoCamera\DemoCamera.vcxproj",
+            "DeviceAdapters\Utilities\Utilities.vcxproj",
+            "DeviceAdapters\SerialManager\SerialManager.vcxproj"
+          )) {
+            msbuild "$mm\$project" @properties
+            if ($LASTEXITCODE -ne 0) { throw "Building $project failed." }
+          }
+          Get-ChildItem "$mm\build\Release\x64" -File | Select-Object Name, Length
+
+      - name: Install CUDA
+        shell: pwsh
+        run: |
+          $redist = "https://developer.download.nvidia.com/compute/cuda/redist"
+          $manifest = Invoke-RestMethod "$redist/redistrib_$env:CUDA_VERSION.json"
+          $cudaPath = "$env:RUNNER_TEMP\cuda"
+          $short = ($env:CUDA_VERSION -split '\.')[0..1] -join '.'
+          foreach ($component in @("cuda_nvcc", "cuda_cudart", "cuda_cccl", "libcufft", "visual_studio_integration")) {
+            $relativePath = $manifest.$component.'windows-x86_64'.relative_path
+            $archive = "$env:RUNNER_TEMP\$component.zip"
+            Invoke-WebRequest "$redist/$relativePath" -OutFile $archive
+            $extracted = "$env:RUNNER_TEMP\$component"
+            Expand-Archive $archive -DestinationPath $extracted
+            $root = Get-ChildItem $extracted -Directory | Select-Object -First 1
+            $destination = if ($component -eq "visual_studio_integration") { "$cudaPath\extras" } else { $cudaPath }
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Copy-Item "$($root.FullName)\*" $destination -Recurse -Force
+          }
+          if (-not (Test-Path "$cudaPath\bin\nvcc.exe")) { throw "nvcc was not found in $cudaPath." }
+          "CUDA_PATH=$cudaPath" >> $env:GITHUB_ENV
+          "CUDA_PATH_V$($short -replace '\.', '_')=$cudaPath" >> $env:GITHUB_ENV
+          "$cudaPath\bin" >> $env:GITHUB_PATH
+
+      - name: Download ONNX Runtime
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP\$env:ONNXRUNTIME_PACKAGE.zip"
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ONNXRUNTIME_VERSION/$env:ONNXRUNTIME_PACKAGE.zip" -OutFile $archive
+          Expand-Archive $archive -DestinationPath "$env:GITHUB_WORKSPACE\ScopeOneCore\external"
+
+      - name: Set up NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+
+      - name: Build and package
+        shell: pwsh
+        run: .\scripts\build.ps1 --configure --package
+
+      - name: Collect packages
+        id: packages
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $files = @("build\ScopeOne-$version-win-x64.exe", "build\ScopeOne-$version-win-x64.zip")
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "Missing package $file." }
+            Get-Item $file | Select-Object Name, Length
+          }
+
+      - name: Upload packages
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ScopeOne-${{ steps.version.outputs.version }}-win-x64
+          path: build/ScopeOne-${{ steps.version.outputs.version }}-win-x64.zip
+          retention-days: 7
+
+      - name: Publish release
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          gh release create "v$version" `
+            "build\ScopeOne-$version-win-x64.exe" `
+            "build\ScopeOne-$version-win-x64.zip" `
+            --target $env:GITHUB_SHA `
+            --title "v$version" `
+            --notes ""
+          if ($LASTEXITCODE -ne 0) { throw "Publishing v$version failed." }
