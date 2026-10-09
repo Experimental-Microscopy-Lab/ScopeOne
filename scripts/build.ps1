@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $target = "all"
 $coreConfigureOption = @()
 $guiConfigureOption = @()
+$pluginConfigureOption = @()
 $coreBuildOption = @()
 $guiBuildOption = @()
 $configure = $false
@@ -40,6 +41,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         }
         { $_ -in @("--guiConfigureOption", "-guiConfigureOption") } {
             $guiConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
+            continue
+        }
+        { $_ -in @("--pluginConfigureOption", "-pluginConfigureOption") } {
+            $pluginConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
             continue
         }
         { $_ -in @("--coreBuildOption", "-coreBuildOption") } {
@@ -312,7 +317,7 @@ $needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Pa
 $pluginBuildFilesExist = (Test-Path (Join-Path $pluginBuildDir "ALL_BUILD.vcxproj")) -or
     (Test-Path (Join-Path $pluginBuildDir "build.ninja")) -or
     (Test-Path (Join-Path $pluginBuildDir "Makefile"))
-$needPluginConfigure = $configure -or -not (Test-Path $pluginCachePath) -or
+$needPluginConfigure = $configure -or $pluginConfigureOption.Count -gt 0 -or -not (Test-Path $pluginCachePath) -or
     -not $pluginBuildFilesExist
 $pluginCachedInstallPrefix = Normalize-CMakePath (
     Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_INSTALL_PREFIX")
@@ -477,7 +482,7 @@ if ($target -in @("all", "plugins")) {
             "-DCMAKE_PREFIX_PATH=$coreInstallDir",
             "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
         )
-        $pluginConfigureArgs += $vcpkgConfigureArgs
+        $pluginConfigureArgs += $vcpkgConfigureArgs + $pluginConfigureOption
         if ($env:CUDA_PATH) {
             $pluginConfigureArgs += @("-T", "cuda=$env:CUDA_PATH")
         }
@@ -572,7 +577,7 @@ if ($target -in @("all", "gui")) {
 
 $guiExe = Join-Path $guiBuildDir "$config\ScopeOne.exe"
 $packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "ScopeOne-*-win-x64.zip" -or $_.Name -like "ScopeOne-*-win-x64.exe" } |
+    Where-Object { $_.Name -like "ScopeOne-*-win-x64*.zip" -or $_.Name -like "ScopeOne-*-win-x64*.exe" } |
     Sort-Object LastWriteTime -Descending
 
 Write-Step "Summary"

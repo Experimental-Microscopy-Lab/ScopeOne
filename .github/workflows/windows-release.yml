@@ -2,6 +2,11 @@ name: Windows Release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub Release for the version in VERSION
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -19,9 +24,20 @@ env:
 
 jobs:
   package:
-    name: Package
+    name: Package (${{ matrix.variant }})
     runs-on: windows-2022
     timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard
+            gpu: false
+            suffix: ""
+          - variant: gpu
+            gpu: true
+            suffix: "-gpu"
 
     steps:
       - name: Check out ScopeOne
@@ -37,7 +53,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Check release tag
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,6 +150,7 @@ jobs:
           Get-ChildItem "$mm\build\Release\x64" -File | Select-Object Name, Length
 
       - name: Install CUDA
+        if: matrix.gpu
         shell: pwsh
         run: |
           $redist = "https://developer.download.nvidia.com/compute/cuda/redist"
@@ -157,6 +174,7 @@ jobs:
           "$cudaPath\bin" >> $env:GITHUB_PATH
 
       - name: Download ONNX Runtime
+        if: matrix.gpu
         shell: pwsh
         run: |
           $archive = "$env:RUNNER_TEMP\$env:ONNXRUNTIME_PACKAGE.zip"
@@ -173,38 +191,71 @@ jobs:
 
       - name: Build and package
         shell: pwsh
-        run: .\scripts\build.ps1 --configure --package
+        run: |
+          $options = @()
+          if ("${{ matrix.gpu }}" -eq "true") {
+            $options += @("--guiConfigureOption", "-DSCOPEONE_PACKAGE_VARIANT=gpu")
+          }
+          else {
+            $options += @(
+              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF",
+              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_INFERENCE=OFF"
+            )
+          }
+          .\scripts\build.ps1 --configure --package @options
 
-      - name: Collect packages
-        id: packages
+      - name: Check packages
         shell: pwsh
         run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $files = @("build\ScopeOne-$version-win-x64.exe", "build\ScopeOne-$version-win-x64.zip")
-          foreach ($file in $files) {
+          $name = "ScopeOne-${{ steps.version.outputs.version }}-win-x64${{ matrix.suffix }}"
+          foreach ($file in @("build\$name.exe", "build\$name.zip")) {
             if (-not (Test-Path $file)) { throw "Missing package $file." }
             Get-Item $file | Select-Object Name, Length
           }
+          $listing = 7z l "build\$name.zip"
+          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime|ScopeOneInference")
+          if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA or ONNX Runtime files." }
+          if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA or ONNX Runtime files." }
 
       - name: Upload packages
-        if: github.event_name != 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: ScopeOne-${{ steps.version.outputs.version }}-win-x64
-          path: build/ScopeOne-${{ steps.version.outputs.version }}-win-x64.zip
-          retention-days: 7
+          name: ScopeOne-${{ steps.version.outputs.version }}-win-x64${{ matrix.suffix }}
+          path: |
+            build/ScopeOne-${{ steps.version.outputs.version }}-win-x64${{ matrix.suffix }}.exe
+            build/ScopeOne-${{ steps.version.outputs.version }}-win-x64${{ matrix.suffix }}.zip
+          compression-level: 0
+          retention-days: ${{ inputs.publish && 1 || 7 }}
+
+  release:
+    name: Publish release
+    needs: package
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "version=$(head -n 1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ScopeOne-${{ steps.version.outputs.version }}-win-x64*
+          path: packages
+          merge-multiple: true
 
       - name: Publish release
-        if: github.event_name == 'workflow_dispatch'
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = "${{ steps.version.outputs.version }}"
-          gh release create "v$version" `
-            "build\ScopeOne-$version-win-x64.exe" `
-            "build\ScopeOne-$version-win-x64.zip" `
-            --target $env:GITHUB_SHA `
-            --title "v$version" `
+          ls -l packages
+          gh release create "v${{ steps.version.outputs.version }}" packages/* \
+            --target "$GITHUB_SHA" \
+            --title "v${{ steps.version.outputs.version }}" \
             --notes ""
-          if ($LASTEXITCODE -ne 0) { throw "Publishing v$version failed." }
