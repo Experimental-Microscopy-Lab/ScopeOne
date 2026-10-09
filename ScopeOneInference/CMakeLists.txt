@@ -19,14 +19,16 @@ find_path(ONNXRUNTIME_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
     PATHS "${ONNXRUNTIME_ROOT}/include"
     NO_DEFAULT_PATH
-    REQUIRED
 )
 find_library(ONNXRUNTIME_LIBRARY
     NAMES onnxruntime
     PATHS "${ONNXRUNTIME_ROOT}/lib"
     NO_DEFAULT_PATH
-    REQUIRED
 )
+if (NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+    message(STATUS "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}; skipping ScopeOneInference")
+    return()
+endif ()
 
 add_library(ScopeOneInference SHARED
     src/OnnxInternal.h
