@@ -2,9 +2,6 @@ name: Windows Release
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feature/windows-release
 
 permissions:
   contents: write
