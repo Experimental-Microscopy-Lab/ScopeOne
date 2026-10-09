@@ -139,16 +139,24 @@ jobs:
       - name: Install CUDA
         shell: pwsh
         run: |
+          $redist = "https://developer.download.nvidia.com/compute/cuda/redist"
+          $manifest = Invoke-RestMethod "$redist/redistrib_$env:CUDA_VERSION.json"
+          $cudaPath = "$env:RUNNER_TEMP\cuda"
           $short = ($env:CUDA_VERSION -split '\.')[0..1] -join '.'
-          $installer = "$env:RUNNER_TEMP\cuda_network.exe"
-          Invoke-WebRequest "https://developer.download.nvidia.com/compute/cuda/$env:CUDA_VERSION/network_installers/cuda_${env:CUDA_VERSION}_windows_network.exe" -OutFile $installer
-          $components = @("nvcc", "crt", "nvvm", "cudart", "cufft", "cufft_dev", "visual_studio_integration") | ForEach-Object { "${_}_$short" }
-          $process = Start-Process $installer -ArgumentList (@("-s") + $components) -Wait -PassThru
-          $cudaPath = "$env:ProgramFiles\NVIDIA GPU Computing Toolkit\CUDA\v$short"
-          if (-not (Test-Path "$cudaPath\bin\nvcc.exe")) {
-            throw "CUDA installation failed with exit code $($process.ExitCode)."
+          foreach ($component in @("cuda_nvcc", "cuda_cudart", "cuda_cccl", "libcufft", "visual_studio_integration")) {
+            $relativePath = $manifest.$component.'windows-x86_64'.relative_path
+            $archive = "$env:RUNNER_TEMP\$component.zip"
+            Invoke-WebRequest "$redist/$relativePath" -OutFile $archive
+            $extracted = "$env:RUNNER_TEMP\$component"
+            Expand-Archive $archive -DestinationPath $extracted
+            $root = Get-ChildItem $extracted -Directory | Select-Object -First 1
+            $destination = if ($component -eq "visual_studio_integration") { "$cudaPath\extras" } else { $cudaPath }
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Copy-Item "$($root.FullName)\*" $destination -Recurse -Force
           }
+          if (-not (Test-Path "$cudaPath\bin\nvcc.exe")) { throw "nvcc was not found in $cudaPath." }
           "CUDA_PATH=$cudaPath" >> $env:GITHUB_ENV
+          "CUDA_PATH_V$($short -replace '\.', '_')=$cudaPath" >> $env:GITHUB_ENV
           "$cudaPath\bin" >> $env:GITHUB_PATH
 
       - name: Download ONNX Runtime
