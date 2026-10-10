@@ -935,6 +935,8 @@ namespace scopeone::core
         scopewriter::DatasetFrame stored;
         std::string datasetError;
         if (!scopewriter::datasetFrame(location, stored, datasetError)
+            || (stored.pixelType != scopewriter::PixelType::UInt8
+                && stored.pixelType != scopewriter::PixelType::UInt16)
             || stored.metadata.stride > static_cast<std::size_t>(
                 (std::numeric_limits<int>::max)())
             || stored.bytes.size() > static_cast<std::size_t>(
