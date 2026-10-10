@@ -470,6 +470,13 @@ namespace scopeone::ui
         formatLayout->addWidget(new QLabel("Level:", this), 1, 1);
         formatLayout->addWidget(m_compressionLevelSpin, 1, 2);
 
+        m_pyramidCheck = new QCheckBox("Resolution pyramid", this);
+        m_pyramidCheck->setChecked(false);
+        m_pyramidCheck->setToolTip(
+            "OME-Zarr only. Adds half-resolution levels so large images open quickly "
+            "in viewers such as napari. Uses about one third more disk space.");
+        formatLayout->addWidget(m_pyramidCheck, 2, 0, 1, 3);
+
         contentLayout->addWidget(formatGroup);
 
         auto* mdaGroup = new QGroupBox("MDA (Time / Z / XY)", this);
@@ -736,6 +743,10 @@ namespace scopeone::ui
             m_formatCombo->currentData().toInt() == static_cast<int>(scopeone::core::RecordingFormat::Binary);
         m_compressionCheck->setEnabled(editingEnabled && !binaryFormat);
         m_compressionLevelSpin->setEnabled(editingEnabled && !binaryFormat && m_compressionCheck->isChecked());
+        m_pyramidCheck->setEnabled(
+            editingEnabled
+            && m_formatCombo->currentData().toInt()
+                == static_cast<int>(scopeone::core::RecordingFormat::OmeZarr));
         m_framesSpin->setEnabled(editingEnabled);
         m_burstModeCheck->setEnabled(editingEnabled);
         m_burstCountSpin->setEnabled(editingEnabled && burstEnabled);
@@ -933,6 +944,8 @@ namespace scopeone::ui
         plan.enableCompression =
             plan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
         plan.compressionLevel = m_compressionLevelSpin->value();
+        plan.enablePyramid = plan.format == scopeone::core::RecordingFormat::OmeZarr
+            && m_pyramidCheck->isChecked();
         plan.framesPerBurst = m_framesSpin->value();
         plan.burstMode = m_burstModeCheck->isChecked();
         plan.targetBursts = plan.burstMode ? m_burstCountSpin->value() : 1;
@@ -1010,6 +1023,8 @@ namespace scopeone::ui
         capturedPlan.enableCompression =
             capturedPlan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
         capturedPlan.compressionLevel = m_compressionLevelSpin->value();
+        capturedPlan.enablePyramid = capturedPlan.format == scopeone::core::RecordingFormat::OmeZarr
+            && m_pyramidCheck->isChecked();
         capturedPlan.saveDir = m_saveDirLineEdit->text().trimmed();
         const QString captureBase = normalizedBaseName().isEmpty() ? buildTimestampBaseName() : normalizedBaseName();
         capturedPlan.baseName = captureBase + QStringLiteral("_capture_")

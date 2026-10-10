@@ -95,6 +95,8 @@ namespace scopeone::core
         bool streamToDisk{true};
         bool enableCompression{false};
         int compressionLevel{6};
+        // Write OME-Zarr resolution levels so large images open quickly in viewers
+        bool enablePyramid{false};
         int framesPerBurst{1};
         bool burstMode{false};
         int targetBursts{1};

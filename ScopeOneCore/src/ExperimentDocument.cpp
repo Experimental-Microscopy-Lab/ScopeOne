@@ -129,6 +129,17 @@ namespace scopeone::core
             return true;
         }
 
+        // Copy of an object without fields that older documents do not have
+        QJsonObject withoutOptionalFields(QJsonObject object,
+                                          std::initializer_list<QString> fields)
+        {
+            for (const QString& field : fields)
+            {
+                object.remove(field);
+            }
+            return object;
+        }
+
         bool checkObjectFields(const QJsonObject& object,
                                std::initializer_list<QString> fields,
                                const QString& path,
@@ -948,6 +959,11 @@ namespace scopeone::core
                 return fail(errorMessage,
                             QStringLiteral("%1.enableCompression is only supported for OME-Zarr or TIFF-based recording").arg(path));
             }
+            if (plan.enablePyramid && plan.format != RecordingFormat::OmeZarr)
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.enablePyramid is only supported for OME-Zarr recording").arg(path));
+            }
             if (plan.framesPerBurst < 1)
             {
                 return fail(errorMessage,
@@ -1646,6 +1662,10 @@ namespace scopeone::core
             object.insert(QStringLiteral("streamToDisk"), plan.streamToDisk);
             object.insert(QStringLiteral("enableCompression"), plan.enableCompression);
             object.insert(QStringLiteral("compressionLevel"), plan.compressionLevel);
+            if (plan.enablePyramid)
+            {
+                object.insert(QStringLiteral("enablePyramid"), true);
+            }
             object.insert(QStringLiteral("framesPerBurst"), plan.framesPerBurst);
             object.insert(QStringLiteral("burstMode"), plan.burstMode);
             object.insert(QStringLiteral("targetBursts"), plan.targetBursts);
@@ -1806,7 +1826,7 @@ namespace scopeone::core
                                        const QString& path,
                                        QString* errorMessage)
         {
-            if (!checkObjectFields(object,
+            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("enablePyramid")}),
                                    {QStringLiteral("schemaVersion"),
                                     QStringLiteral("experimentId"),
                                     QStringLiteral("cameraIds"),
@@ -1892,6 +1912,12 @@ namespace scopeone::core
                             parsed.compressionLevel,
                             path,
                             errorMessage)
+                || (object.contains(QStringLiteral("enablePyramid"))
+                    && !readBool(object,
+                                 QStringLiteral("enablePyramid"),
+                                 parsed.enablePyramid,
+                                 path,
+                                 errorMessage))
                 || !readInt(object,
                             QStringLiteral("framesPerBurst"),
                             parsed.framesPerBurst,

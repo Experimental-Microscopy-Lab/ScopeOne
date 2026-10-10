@@ -61,6 +61,7 @@ namespace scopeone::ui
         QPushButton* m_autoNameButton{nullptr};
         QCheckBox* m_compressionCheck{nullptr};
         QSpinBox* m_compressionLevelSpin{nullptr};
+        QCheckBox* m_pyramidCheck{nullptr};
         QComboBox* m_formatCombo{nullptr};
 
         QSpinBox* m_framesSpin{nullptr};

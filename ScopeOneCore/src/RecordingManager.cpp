@@ -418,6 +418,7 @@ namespace scopeone::core::internal
             {
                 bool useDeflate{true};
                 int zipQuality{6};
+                bool pyramid{false};
             };
 
             // Closes any active writer before releasing backend resources
@@ -555,6 +556,7 @@ namespace scopeone::core::internal
                     }
                     settings.enableCompression = tiff.useDeflate;
                     settings.compressionLevel = tiff.zipQuality;
+                    settings.zarrPyramidLevels = tiff.pyramid ? 0 : 1;
 
                     auto writer = std::make_unique<scopewriter::Writer>();
                     if (!writer->open(settings))
@@ -873,6 +875,7 @@ namespace scopeone::core::internal
         m_captureState.format = plan.format;
         m_captureState.enableCompression = plan.enableCompression;
         m_captureState.compressionLevel = plan.compressionLevel;
+        m_captureState.enablePyramid = plan.enablePyramid;
         m_captureState.framesPerBurst = plan.framesPerBurst;
         m_captureState.targetBursts = plan.targetBursts;
         m_captureState.burstMode = plan.burstMode;
@@ -1243,6 +1246,7 @@ namespace scopeone::core::internal
             SaveBackend::TiffOptions tiffOpts;
             tiffOpts.useDeflate = m_captureState.enableCompression;
             tiffOpts.zipQuality = m_captureState.compressionLevel;
+            tiffOpts.pyramid = m_captureState.enablePyramid;
 
             auto newBackend = std::make_unique<SaveBackend>();
             if (!newBackend->startStackRaw(output.rawPath,
@@ -2323,6 +2327,7 @@ namespace scopeone::core::internal
             SaveBackend::TiffOptions tiffOpts;
             tiffOpts.useDeflate = capturePlan.enableCompression;
             tiffOpts.zipQuality = capturePlan.compressionLevel;
+            tiffOpts.pyramid = capturePlan.enablePyramid;
 
             const ImageFrame firstImageFrame = inputSession->imageFrameAt(cameraId, 0);
             if (!firstImageFrame.isValid())

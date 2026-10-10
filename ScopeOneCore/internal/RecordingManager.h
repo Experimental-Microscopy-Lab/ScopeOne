@@ -140,6 +140,7 @@ namespace scopeone::core::internal
             bool streamToDisk{true};
             bool enableCompression{false};
             int compressionLevel{6};
+            bool enablePyramid{false};
             quint64 generation{0};
         };
 
