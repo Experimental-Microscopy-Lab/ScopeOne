@@ -256,15 +256,8 @@ jobs:
         run: |
           ls -l packages
           cat > notes.md <<'NOTES'
-          ## Which package should I download?
-
-          | Package | Choose it if | Includes |
-          |---|---|---|
-          | **Standard** (`win-x64`) | You do not need GPU processing or deep learning inference | Live imaging, recording, Micro-Manager devices, CPU image processing, plugins |
-          | **GPU** (`win-x64-gpu`) | You have an NVIDIA GPU and want GPU acceleration | Everything in Standard, plus CUDA image processing and ONNX deep learning inference |
-
-          - The GPU package is about 10 times larger. It needs an NVIDIA GPU with a recent driver. GPU inference also needs CUDA 12 cuBLAS and cuDNN 9 installed.
-          - `.exe` is an installer and `.zip` is a portable copy. Both packages install to the same folder, so install only one of them.
+          - **Standard** (`win-x64`): live imaging, recording and image processing on CPU.
+          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference. Needs an NVIDIA GPU.
           NOTES
           gh release create "v${{ steps.version.outputs.version }}" packages/* \
             --target "$GITHUB_SHA" \
