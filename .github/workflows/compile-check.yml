@@ -57,3 +57,66 @@ jobs:
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
         run: ./scripts/build-unix.sh
+
+  compile-windows:
+    name: Compile (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    env:
+      # Keep in sync with windows-release.yml
+      MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
+            }
+          }
+
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $vcpkgRoot = "$env:RUNNER_TEMP\scopeone-vcpkg"
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          git -C $vcpkgRoot checkout $baseline
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $binaryCache = "$env:RUNNER_TEMP\vcpkg-binary-cache"
+          New-Item -ItemType Directory -Force -Path $binaryCache | Out-Null
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\vcpkg-binary-cache
+          key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-x64-windows-
+
+      - name: Build MMCore
+        shell: pwsh
+        run: |
+          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
+          git init $mm
+          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
+          git -C $mm checkout FETCH_HEAD
+          msbuild "$mm\MMCore\MMCore.vcxproj" /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$mm\" /m /nologo /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "Building MMCore failed." }
+          if (-not (Test-Path "$mm\build\Release\x64\MMCore.lib")) { throw "MMCore.lib was not produced." }
+
+      - name: Compile Core, plugins and GUI
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1 --configure `
+            --pluginConfigureOption -DSCOPEONE_ENABLE_CUDA=OFF `
+            --pluginConfigureOption -DSCOPEONE_ENABLE_INFERENCE=OFF
