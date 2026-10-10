@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish a GitHub Release for the version in VERSION
+        description: Publish a GitHub Release for the version of the last commit
         type: boolean
         default: true
 
@@ -49,7 +49,8 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $version = (Get-Content VERSION -TotalCount 1).Trim()
+          $version = (cmake "-DSCOPEONE_ROOT=$PWD" -P ScopeOneCore/cmake/ScopeOneVersion.cmake).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+$') { throw "Could not resolve the version." }
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Check release tag
@@ -60,7 +61,7 @@ jobs:
         run: |
           gh release view "v${{ steps.version.outputs.version }}" 2>$null
           if ($LASTEXITCODE -eq 0) {
-            throw "Release v${{ steps.version.outputs.version }} already exists. Update VERSION first."
+            throw "Release v${{ steps.version.outputs.version }} already exists. The version follows the date of the last commit, so only one release is possible per day."
           }
           exit 0
 
@@ -240,7 +241,7 @@ jobs:
       - name: Read version
         id: version
         shell: bash
-        run: echo "version=$(head -n 1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cmake -DSCOPEONE_ROOT="$PWD" -P ScopeOneCore/cmake/ScopeOneVersion.cmake)" >> "$GITHUB_OUTPUT"
 
       - name: Download packages
         uses: actions/download-artifact@v8
