@@ -124,6 +124,8 @@ namespace scopeone::core::internal
         {
             QStringList activeCameraIds;
             QHash<QString, quint64> lastFrameIndex;
+            // Frames queued before the recording began are not part of it
+            bool awaitingFrameBarrier{false};
             QHash<QString, qint64> framesCapturedThisBurst;
             QHash<QString, qint64> framesCapturedTotal;
             bool isRecording{false};

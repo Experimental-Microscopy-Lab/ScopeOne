@@ -881,6 +881,7 @@ namespace scopeone::core::internal
         m_captureState.burstMode = plan.burstMode;
         m_captureState.burstIntervalMs = plan.burstIntervalMs;
         m_captureState.streamToDisk = plan.streamToDisk;
+        m_captureState.awaitingFrameBarrier = false;
         m_captureState.lastFrameIndex.clear();
         m_captureState.framesCapturedThisBurst.clear();
         m_captureState.framesCapturedTotal.clear();
@@ -1365,6 +1366,19 @@ namespace scopeone::core::internal
                 qWarning().noquote() << "Failed to enable all-frame camera delivery";
                 return false;
             }
+
+            // Preview frames sent before delivery was switched are still queued behind this
+            // call and arrive with the sparse indices of preview delivery. A queued marker
+            // sits behind all of them, so frames are accepted only once it has run.
+            m_captureState.awaitingFrameBarrier = true;
+            const quint64 generation = m_captureState.generation;
+            QMetaObject::invokeMethod(this, [this, generation]()
+            {
+                if (generation == m_captureState.generation)
+                {
+                    m_captureState.awaitingFrameBarrier = false;
+                }
+            }, Qt::QueuedConnection);
         }
         resetSessionState(plan, deviceProperties, cameraPixelSizesUm);
 
@@ -1758,6 +1772,7 @@ namespace scopeone::core::internal
     {
         if (!m_captureState.isRecording) return false;
         if (!packet.frame.isValid()) return false;
+        if (m_captureState.awaitingFrameBarrier) return false;
         const QString cameraId = packet.frame.cameraId.trimmed();
         if (cameraId.isEmpty()) return false;
         if (!m_captureState.activeCameraIds.contains(cameraId)) return false;
