@@ -52,7 +52,16 @@ jobs:
           git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
           git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
           "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
           echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-scopeone-ubuntu-24.04-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-ubuntu-24.04-
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
