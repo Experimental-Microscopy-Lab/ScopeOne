@@ -866,7 +866,9 @@ namespace scopeone::core
         void layerFrameRateChanged(const QString& layerKey, double fps);
         void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);
 
-    private:
+     private:
+        static bool planNeedsMdaEvents(const ExperimentPlan& plan);
+        bool checkPlanHardware(const ExperimentPlan& plan, QString* errorMessage) const;
         struct Managers;
 
         enum class FrameGraphStream

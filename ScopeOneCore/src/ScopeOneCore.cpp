@@ -4892,7 +4892,7 @@ namespace scopeone::core
                                        ? cameraPixelSizeUm(planSnapshot.cameraIds.first())
                                        : 0.0;
 
-        const bool useMda = !planSnapshot.positions.empty() || !planSnapshot.zPositions.empty();
+        const bool useMda = planNeedsMdaEvents(planSnapshot);
         QStringList suspendedPreviewIds;
         if (useMda)
         {
@@ -4990,6 +4990,49 @@ namespace scopeone::core
     }
 
     // Start one validated document through the shared recording lifecycle
+    // Whether the plan needs an event for every image rather than a stream of preview frames
+    bool ScopeOneCore::planNeedsMdaEvents(const ExperimentPlan& plan)
+    {
+        return !plan.positions.empty() || !plan.zPositions.empty() || !plan.channels.empty()
+            || !plan.timeIntervalsMs.empty();
+    }
+
+    // Rejects a plan that asks for hardware the loaded configuration does not have, before
+    // anything moves
+    bool ScopeOneCore::checkPlanHardware(const ExperimentPlan& plan, QString* errorMessage) const
+    {
+        const auto fail = [errorMessage](const QString& message)
+        {
+            if (errorMessage) *errorMessage = message;
+            return false;
+        };
+        if (!plan.channels.empty())
+        {
+            if (!availableConfigGroups().contains(plan.channelGroup))
+            {
+                return fail(QStringLiteral("Channel group '%1' is not in the loaded configuration")
+                                .arg(plan.channelGroup));
+            }
+            const QStringList presets = availableConfigs(plan.channelGroup);
+            for (const ChannelSetting& channel : plan.channels)
+            {
+                if (!presets.contains(channel.preset))
+                {
+                    return fail(QStringLiteral("Channel preset '%1' is not in group '%2'")
+                                    .arg(channel.preset, plan.channelGroup));
+                }
+            }
+        }
+        if (plan.autofocus)
+        {
+            if (!m_managers->hardwareRuntime || !m_managers->hardwareRuntime->hasAutofocus())
+            {
+                return fail(QStringLiteral("Autofocus is enabled but no autofocus device is selected"));
+            }
+        }
+        return true;
+    }
+
     bool ScopeOneCore::startExperiment(const ExperimentDocument& document,
                                        QString* errorMessage)
     {
@@ -5051,6 +5094,10 @@ namespace scopeone::core
             }
             return false;
         }
+        if (!checkPlanHardware(document.plan, errorMessage))
+        {
+            return false;
+        }
         if (!processingRecipesEqual(processingRecipe(), document.plan.processing)
             && !applyProcessingRecipe(document.plan.processing, errorMessage))
         {
@@ -5058,7 +5105,7 @@ namespace scopeone::core
         }
 
         QStringList startedPreviewCameraIds;
-        const bool useMda = !document.plan.positions.empty() || !document.plan.zPositions.empty();
+        const bool useMda = planNeedsMdaEvents(document.plan);
         if (!useMda)
         {
             const QStringList runningCameraIds = runningPreviewCameraIds();
