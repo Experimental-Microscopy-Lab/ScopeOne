@@ -6,6 +6,7 @@
 #include <QJsonParseError>
 #include <QMetaType>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -1150,6 +1151,12 @@ namespace scopeone::core
                         return fail(errorMessage,
                                     QStringLiteral("%1.zOffsetUm must be a finite number").arg(channelPath));
                     }
+                    if (!channel.color.isEmpty()
+                        && !QRegularExpression(QStringLiteral("^#[0-9A-Fa-f]{6}$")).match(channel.color).hasMatch())
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.color must be empty or like #RRGGBB").arg(channelPath));
+                    }
                     if (!channel.cameraId.isEmpty() && !plan.cameraIds.contains(channel.cameraId))
                     {
                         return fail(errorMessage,
@@ -1916,6 +1923,10 @@ namespace scopeone::core
                     channelObject.insert(QStringLiteral("zOffsetUm"), channel.zOffsetUm);
                     channelObject.insert(QStringLiteral("zStack"), channel.zStack);
                     channelObject.insert(QStringLiteral("skipFrames"), channel.skipFrames);
+                    if (!channel.color.isEmpty())
+                    {
+                        channelObject.insert(QStringLiteral("color"), channel.color);
+                    }
                     if (!channel.cameraId.isEmpty())
                     {
                         channelObject.insert(QStringLiteral("cameraId"), channel.cameraId);
@@ -1938,6 +1949,14 @@ namespace scopeone::core
             {
                 object.insert(QStringLiteral("autofocus"), true);
                 object.insert(QStringLiteral("autofocusEveryFrames"), plan.autofocusEveryFrames);
+            }
+            if (plan.hardwareSequencing)
+            {
+                object.insert(QStringLiteral("hardwareSequencing"), true);
+            }
+            if (!plan.comment.isEmpty())
+            {
+                object.insert(QStringLiteral("comment"), plan.comment);
             }
             if (plan.keepShutterOpenSlices)
             {
@@ -1962,7 +1981,7 @@ namespace scopeone::core
                                  const QString& path,
                                  QString* errorMessage)
         {
-            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("cameraId")}),
+            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("cameraId"), QStringLiteral("color")}),
                                    {QStringLiteral("preset"),
                                     QStringLiteral("exposureMs"),
                                     QStringLiteral("zOffsetUm"),
@@ -1980,7 +1999,9 @@ namespace scopeone::core
                 || !readBool(object, QStringLiteral("zStack"), parsed.zStack, path, errorMessage)
                 || !readInt(object, QStringLiteral("skipFrames"), parsed.skipFrames, path, errorMessage)
                 || (object.contains(QStringLiteral("cameraId"))
-                    && !readString(object, QStringLiteral("cameraId"), parsed.cameraId, path, errorMessage)))
+                    && !readString(object, QStringLiteral("cameraId"), parsed.cameraId, path, errorMessage))
+                || (object.contains(QStringLiteral("color"))
+                    && !readString(object, QStringLiteral("color"), parsed.color, path, errorMessage)))
             {
                 return false;
             }
@@ -2136,7 +2157,9 @@ namespace scopeone::core
                                                           QStringLiteral("keepShutterOpenChannels"),
                                                           QStringLiteral("timeIntervalsMs"),
                                                           QStringLiteral("autofocus"),
-                                                          QStringLiteral("autofocusEveryFrames")}),
+                                                          QStringLiteral("autofocusEveryFrames"),
+                                                          QStringLiteral("hardwareSequencing"),
+                                                          QStringLiteral("comment")}),
                                    {QStringLiteral("schemaVersion"),
                                     QStringLiteral("experimentId"),
                                     QStringLiteral("cameraIds"),
@@ -2403,6 +2426,19 @@ namespace scopeone::core
                     }
                     parsed.timeIntervalsMs.push_back(value.toDouble());
                 }
+            }
+            parsed.hardwareSequencing = false;
+            parsed.comment.clear();
+            if ((object.contains(QStringLiteral("hardwareSequencing"))
+                 && !readBool(object,
+                              QStringLiteral("hardwareSequencing"),
+                              parsed.hardwareSequencing,
+                              path,
+                              errorMessage))
+                || (object.contains(QStringLiteral("comment"))
+                    && !readString(object, QStringLiteral("comment"), parsed.comment, path, errorMessage)))
+            {
+                return false;
             }
             parsed.keepShutterOpenSlices = false;
             parsed.keepShutterOpenChannels = false;
@@ -4082,6 +4118,10 @@ namespace scopeone::core
         appendEvents(0);
         markShutterBlocks(plan, events);
         markAutofocus(plan, events);
+        for (AcquisitionEvent& event : events)
+        {
+            event.hardwareSequencing = plan.hardwareSequencing;
+        }
         return events;
     }
 

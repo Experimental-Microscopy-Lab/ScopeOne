@@ -7,6 +7,7 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include "scopeone/HardwareCapabilities.h"
 #include <QStringList>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -50,6 +51,11 @@ namespace scopeone::core
         bool zStack{true};
         // Images this channel at every (skipFrames + 1)th time point
         int skipFrames{0};
+        // Display colour of the channel as #RRGGBB. Empty leaves the choice to the viewer.
+        QString color;
+        // The device properties that the preset sets, read from the hardware when the
+        // acquisition starts and stored with the images. Not part of the experiment document.
+        std::vector<ConfigSetting> presetSettings;
         // Camera that takes this channel. Empty uses every camera of the plan. The other
         // cameras leave the planes of the channel empty.
         QString cameraId;
@@ -149,6 +155,13 @@ namespace scopeone::core
         // positions that follow are shifted by the distance the autofocus moved the focus.
         bool autofocus{false};
         int autofocusEveryFrames{0};
+        // Let the hardware time the Z slices: the focus device steps through its positions on
+        // the triggers of the camera, which takes the slices in one sequence acquisition. It is
+        // used for the slices of a block where the focus device and the camera both support
+        // sequences, and the slices are taken one by one otherwise.
+        bool hardwareSequencing{false};
+        // Free text that is stored with the acquisition
+        QString comment;
         QString saveDir;
         QString baseName;
         QString metadataFileName;
@@ -186,6 +199,8 @@ namespace scopeone::core
         bool closeShutterAfter{false};
         // The autofocus runs before this event
         bool autofocusBefore{false};
+        // The Z slices of the plan may be taken in one hardware sequence. Derived from the plan.
+        bool hardwareSequencing{false};
     };
 
     struct FrameRecord

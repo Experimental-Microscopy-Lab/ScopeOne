@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "scopeone/ImageFrame.h"
 
@@ -87,6 +88,22 @@ namespace scopeone::core::internal
         virtual bool captureEventFrame(const QString& cameraId,
                                        scopeone::core::ImageFrame& frame,
                                        int timeoutMs);
+        virtual bool supportsEventSequence(const QString& cameraId) const
+        {
+            (void)cameraId;
+            return false;
+        }
+        virtual bool captureEventSequence(const QString& cameraId,
+                                          int count,
+                                          std::vector<scopeone::core::ImageFrame>& frames,
+                                          int timeoutMs)
+        {
+            (void)cameraId;
+            (void)count;
+            (void)frames;
+            (void)timeoutMs;
+            return false;
+        }
 
         virtual bool setRecordingFrameDeliveryEnabled(bool enabled);
         virtual bool setHighRateFrameDeliveryEnabled(bool enabled);

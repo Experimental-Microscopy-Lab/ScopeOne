@@ -3,6 +3,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <vector>
+
 #include "scopeone/scopeone_sdk_export.h"
 
 namespace scopeone::core
@@ -87,10 +89,28 @@ namespace scopeone::core
         virtual QString stateLabel(const QString& deviceId, long state) const = 0;
     };
 
+    // One device property that a configuration preset sets
+    struct ConfigSetting
+    {
+        QString device;
+        QString property;
+        QString value;
+    };
+
     class SCOPEONE_SDK_EXPORT ConfigurationProvider
     {
     public:
         virtual ~ConfigurationProvider();
+
+        // The device properties that applying a preset sets. Empty when the provider cannot
+        // tell, which is not an error.
+        virtual std::vector<ConfigSetting> configSettings(const QString& groupName,
+                                                          const QString& configName) const
+        {
+            (void)groupName;
+            (void)configName;
+            return {};
+        }
 
         virtual QStringList availableConfigGroups() const = 0;
         virtual QStringList availableConfigs(const QString& groupName) const = 0;

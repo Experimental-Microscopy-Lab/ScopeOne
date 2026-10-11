@@ -48,6 +48,12 @@ namespace scopeone::ui
         void syncOrderList();
         void refreshChannelGroups();
         QComboBox* makeChannelCameraCombo(const QString& selected);
+        QPushButton* makeChannelColorButton(const QString& color);
+        void addListedPosition(const QString& label, double x, double y, const QString& z);
+        void fillPositionListFromGrid();
+        void loadPositionList();
+        void savePositionList();
+        static void showChannelColor(QPushButton* button, const QString& color);
         void loadChannelPresets();
         void moveChannelRow(int delta);
         std::vector<scopeone::core::ChannelSetting> usedChannels() const;
@@ -85,6 +91,15 @@ namespace scopeone::ui
         QSpinBox* m_mdaAutofocusEverySpin{nullptr};
         QCheckBox* m_keepShutterSlicesCheck{nullptr};
         QCheckBox* m_keepShutterChannelsCheck{nullptr};
+        QTableWidget* m_positionTable{nullptr};
+        QPushButton* m_positionMarkButton{nullptr};
+        QPushButton* m_positionRemoveButton{nullptr};
+        QPushButton* m_positionClearButton{nullptr};
+        QPushButton* m_positionFromGridButton{nullptr};
+        QPushButton* m_positionLoadButton{nullptr};
+        QPushButton* m_positionSaveButton{nullptr};
+        QCheckBox* m_hardwareSequencingCheck{nullptr};
+        QLineEdit* m_commentLineEdit{nullptr};
         QCheckBox* m_mdaEnableChannelCheck{nullptr};
         QComboBox* m_channelGroupCombo{nullptr};
         QTableWidget* m_channelTable{nullptr};

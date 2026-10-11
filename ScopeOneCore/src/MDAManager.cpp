@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <algorithm>
+#include <functional>
 #include <future>
 #include <utility>
 #include <vector>
@@ -115,8 +116,9 @@ namespace scopeone::core::internal
         SequenceState state;
         captureInitialState(events, state);
 
-        for (const AcquisitionEvent& event : events)
+        for (int index = 0; index < events.size();)
         {
+            const AcquisitionEvent& event = events.at(index);
             const qint64 targetMs = event.minimumStartTimeMs - sequenceOriginMs;
             while (timer.elapsed() < targetMs)
             {
@@ -139,29 +141,69 @@ namespace scopeone::core::internal
                 return;
             }
 
-            MDAOutput output;
-            output.event = event;
-            output.startedTimestampNs = currentTimestampNs();
+            // Z slices that the hardware can time are taken in one sequence
+            QList<MDAOutput> outputs;
             QString errorMessage;
-            output.succeeded = setupEvent(event, state, &errorMessage)
-                && openShutter(event, state, &errorMessage)
-                && execEvent(event, output, &errorMessage);
-            closeShutter(event, state);
-            output.completedTimestampNs = currentTimestampNs();
-            output.errorMessage = output.succeeded
-                                      ? QString()
-                                      : (errorMessage.isEmpty()
-                                             ? QStringLiteral("Failed to execute acquisition event")
-                                             : errorMessage);
-            emit eventFinished(output);
-
-            if (!output.succeeded)
+            int consumed = 1;
+            const int sequenceLength = hardwareSequenceLength(events, index);
+            std::vector<PropertySequence> channelSequences;
+            const int channelLength = sequenceLength > 1 ? 1 : channelSequenceLength(events, index, channelSequences);
+            bool handled = false;
+            if (sequenceLength > 1 || channelLength > 1)
             {
-                restoreInitialState(state);
-                m_running.store(false);
-                emit sequenceError(output.errorMessage);
+                const int length = sequenceLength > 1 ? sequenceLength : channelLength;
+                handled = sequenceLength > 1
+                    ? execHardwareSequence(events, index, length, state, outputs, &errorMessage)
+                    : execChannelSequence(events, index, length, channelSequences, state, outputs, &errorMessage);
+                if (handled)
+                {
+                    consumed = length;
+                }
+                else
+                {
+                    // Fall back to taking the images one by one
+                    qWarning().noquote()
+                        << "Hardware sequence not used:" << errorMessage;
+                    errorMessage.clear();
+                    outputs.clear();
+                }
+            }
+            if (!handled)
+            {
+                MDAOutput output;
+                output.event = event;
+                output.startedTimestampNs = currentTimestampNs();
+                output.succeeded = setupEvent(event, state, &errorMessage)
+                    && openShutter(event, state, &errorMessage)
+                    && execEvent(event, output, &errorMessage);
+                closeShutter(event, state);
+                output.completedTimestampNs = currentTimestampNs();
+                output.errorMessage = output.succeeded
+                                          ? QString()
+                                          : (errorMessage.isEmpty()
+                                                 ? QStringLiteral("Failed to execute acquisition event")
+                                                 : errorMessage);
+                outputs.push_back(std::move(output));
+            }
+
+            bool failed = false;
+            for (const MDAOutput& output : outputs)
+            {
+                emit eventFinished(output);
+                if (!output.succeeded)
+                {
+                    restoreInitialState(state);
+                    m_running.store(false);
+                    emit sequenceError(output.errorMessage);
+                    failed = true;
+                    break;
+                }
+            }
+            if (failed)
+            {
                 return;
             }
+            index += consumed;
         }
 
         restoreInitialState(state);
@@ -466,6 +508,275 @@ namespace scopeone::core::internal
         }
         state.zKnown = true;
         state.z = after;
+        return true;
+    }
+
+    // Finds the Z slices of one channel at one position that the hardware can take in a single
+    // sequence: events that only differ in their Z position, taken by a camera that can run
+    // a sequence acquisition, with a focus device that can step through its own sequence
+    int MDAManager::hardwareSequenceLength(const QList<AcquisitionEvent>& events, int first) const
+    {
+        const AcquisitionEvent& head = events.at(first);
+        if (!head.hardwareSequencing || !head.hasZ || head.autofocusBefore
+            || head.cameraIds.size() != 1 || !m_cameraProvider || !m_stageProvider
+            || !m_acquisitionHardware
+            || !m_cameraProvider->supportsEventSequence(head.cameraIds.first()))
+        {
+            return 1;
+        }
+        int length = 1;
+        while (first + length < events.size())
+        {
+            const AcquisitionEvent& next = events.at(first + length);
+            const AcquisitionEvent& previous = events.at(first + length - 1);
+            if (next.timeIndex != head.timeIndex || next.positionIndex != head.positionIndex
+                || next.channelIndex != head.channelIndex || next.channelPreset != head.channelPreset
+                || next.exposureMs != head.exposureMs || next.cameraIds != head.cameraIds
+                || next.minimumStartTimeMs != head.minimumStartTimeMs || !next.hasZ
+                || next.autofocusBefore || next.x != head.x || next.y != head.y
+                || next.zIndex != previous.zIndex + 1)
+            {
+                break;
+            }
+            ++length;
+        }
+        if (length < 2)
+        {
+            return 1;
+        }
+        const QString focus = m_stageProvider->defaultZStage();
+        const long capacity = focus.isEmpty() ? 0 : m_acquisitionHardware->focusSequenceCapacity(focus);
+        return capacity >= length ? length : 1;
+    }
+
+    // Takes the Z slices of a block in one sequence. The focus device is moved to the first
+    // slice, armed with the others, and the camera then takes all of them.
+    bool MDAManager::execHardwareSequence(const QList<AcquisitionEvent>& events,
+                                          int first,
+                                          int count,
+                                          SequenceState& state,
+                                          QList<MDAOutput>& outputs,
+                                          QString* errorMessage)
+    {
+        const AcquisitionEvent& head = events.at(first);
+        const QString focus = m_stageProvider->defaultZStage();
+
+        // Moves everything but the slices into place, and the focus to the first slice
+        if (!setupEvent(head, state, errorMessage))
+        {
+            return false;
+        }
+
+        // The slices follow the autofocus result of their position, like single events
+        const double shift = state.focusShift.value(head.positionIndex, 0.0);
+        std::vector<double> positions;
+        positions.reserve(static_cast<std::size_t>(count));
+        for (int index = 0; index < count; ++index)
+        {
+            positions.push_back(events.at(first + index).z + shift);
+        }
+
+        const bool captured = captureSequencedBlock(
+            events, first, count, state, outputs,
+            [&](QString* error)
+            {
+                return m_acquisitionHardware->startFocusSequence(focus, positions, error);
+            },
+            [&]() { m_acquisitionHardware->stopFocusSequence(focus); },
+            errorMessage);
+        if (!captured)
+        {
+            // The focus device is somewhere along the sequence now
+            state.zKnown = false;
+            return false;
+        }
+        // The focus device ends on the last position of the sequence
+        state.zKnown = true;
+        state.z = positions.back();
+        return true;
+    }
+
+    // Finds the channels of one Z slice that the hardware can take in a single sequence:
+    // events that only differ in their channel, whose presets differ in properties that can
+    // step through their values on triggers
+    int MDAManager::channelSequenceLength(const QList<AcquisitionEvent>& events,
+                                          int first,
+                                          std::vector<PropertySequence>& sequences) const
+    {
+        sequences.clear();
+        const AcquisitionEvent& head = events.at(first);
+        if (!head.hardwareSequencing || head.channelPreset.isEmpty() || head.autofocusBefore
+            || head.cameraIds.size() != 1 || !m_cameraProvider || !m_acquisitionHardware
+            || !m_configurationProvider
+            || !m_cameraProvider->supportsEventSequence(head.cameraIds.first()))
+        {
+            return 1;
+        }
+        int length = 1;
+        while (first + length < events.size())
+        {
+            const AcquisitionEvent& next = events.at(first + length);
+            const AcquisitionEvent& previous = events.at(first + length - 1);
+            if (next.timeIndex != head.timeIndex || next.positionIndex != head.positionIndex
+                || next.zIndex != head.zIndex || next.z != head.z || next.hasZ != head.hasZ
+                || next.zOffsetUm != head.zOffsetUm || next.exposureMs != head.exposureMs
+                || next.cameraIds != head.cameraIds || next.channelGroup != head.channelGroup
+                || next.channelPreset.isEmpty() || next.channelIndex <= previous.channelIndex
+                || next.minimumStartTimeMs != head.minimumStartTimeMs || next.autofocusBefore
+                || next.x != head.x || next.y != head.y)
+            {
+                break;
+            }
+            ++length;
+        }
+        if (length < 2)
+        {
+            return 1;
+        }
+
+        // The properties that the presets set, and what differs between the channels
+        std::vector<std::vector<scopeone::core::ConfigSetting>> presets;
+        for (int index = 0; index < length; ++index)
+        {
+            presets.push_back(m_configurationProvider->configSettings(
+                head.channelGroup, events.at(first + index).channelPreset));
+            if (presets.back().size() != presets.front().size())
+            {
+                return 1;
+            }
+        }
+        for (const scopeone::core::ConfigSetting& reference : presets.front())
+        {
+            PropertySequence sequence;
+            sequence.device = reference.device;
+            sequence.property = reference.property;
+            bool differs = false;
+            for (const auto& preset : presets)
+            {
+                const auto found = std::find_if(preset.begin(), preset.end(),
+                    [&reference](const scopeone::core::ConfigSetting& setting)
+                    {
+                        return setting.device == reference.device && setting.property == reference.property;
+                    });
+                if (found == preset.end())
+                {
+                    return 1;
+                }
+                differs = differs || found->value != reference.value;
+                sequence.values.push_back(found->value);
+            }
+            if (!differs)
+            {
+                continue;
+            }
+            // The core and the camera cannot be stepped by triggers
+            if (reference.device == QLatin1String("Core")
+                || m_acquisitionHardware->propertySequenceCapacity(reference.device, reference.property) < length)
+            {
+                return 1;
+            }
+            sequences.push_back(std::move(sequence));
+        }
+        if (sequences.empty())
+        {
+            return 1;
+        }
+        return length;
+    }
+
+    // Takes the channels of one Z slice in one sequence. The first channel is applied as
+    // usual, and the properties that differ between the channels step on the triggers.
+    bool MDAManager::execChannelSequence(const QList<AcquisitionEvent>& events,
+                                         int first,
+                                         int count,
+                                         const std::vector<PropertySequence>& sequences,
+                                         SequenceState& state,
+                                         QList<MDAOutput>& outputs,
+                                         QString* errorMessage)
+    {
+        if (!setupEvent(events.at(first), state, errorMessage))
+        {
+            return false;
+        }
+        const bool captured = captureSequencedBlock(
+            events, first, count, state, outputs,
+            [&](QString* error) { return m_acquisitionHardware->startPropertySequences(sequences, error); },
+            [&]() { m_acquisitionHardware->stopPropertySequences(sequences); },
+            errorMessage);
+        // The properties are left on the last channel or have wrapped around, so the next
+        // event applies its preset again
+        state.channelGroup.clear();
+        state.channelPreset.clear();
+        return captured;
+    }
+
+    // Arms the hardware, takes the images in one camera sequence and turns them into outputs
+    bool MDAManager::captureSequencedBlock(const QList<AcquisitionEvent>& events,
+                                           int first,
+                                           int count,
+                                           SequenceState& state,
+                                           QList<MDAOutput>& outputs,
+                                           const std::function<bool(QString*)>& arm,
+                                           const std::function<void()>& disarm,
+                                           QString* errorMessage)
+    {
+        const AcquisitionEvent& head = events.at(first);
+        const AcquisitionEvent& last = events.at(first + count - 1);
+        const QString cameraId = head.cameraIds.first();
+        const quint64 startedNs = currentTimestampNs();
+
+        if (!openShutter(head, state, errorMessage))
+        {
+            return false;
+        }
+        QString error;
+        if (!arm(&error))
+        {
+            closeShutter(last, state);
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Failed to start the hardware sequence: %1").arg(error);
+            }
+            return false;
+        }
+        std::vector<ImageFrame> frames;
+        const int timeoutMs = static_cast<int>((std::max)(10000.0, head.exposureMs * count * 4.0 + 5000.0));
+        const bool captured = m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs)
+            && static_cast<int>(frames.size()) == count;
+        disarm();
+        closeShutter(last, state);
+        if (!captured)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Failed to capture the image sequence");
+            return false;
+        }
+
+        if (!state.reportedSequence)
+        {
+            state.reportedSequence = true;
+            qInfo().noquote() << QStringLiteral("Taking %1 images in hardware sequences").arg(count);
+        }
+        const quint64 completedNs = currentTimestampNs();
+        for (int index = 0; index < count; ++index)
+        {
+            MDAOutput output;
+            output.event = events.at(first + index);
+            output.startedTimestampNs = startedNs;
+            output.completedTimestampNs = completedNs;
+            ImageFrame& frame = frames[static_cast<std::size_t>(index)];
+            frame.cameraId = cameraId;
+            if (!frame.isValid())
+            {
+                output.succeeded = false;
+                output.errorMessage = QStringLiteral("Empty frame from camera: %1").arg(cameraId);
+            }
+            else
+            {
+                output.succeeded = true;
+                output.frames.insert(cameraId, std::move(frame));
+            }
+            outputs.push_back(std::move(output));
+        }
         return true;
     }
 

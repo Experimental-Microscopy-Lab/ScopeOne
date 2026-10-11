@@ -66,6 +66,11 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
                                int timeoutMs) override;
+        bool supportsEventSequence(const QString& cameraId) const override;
+        bool captureEventSequence(const QString& cameraId,
+                                  int count,
+                                  std::vector<scopeone::core::ImageFrame>& frames,
+                                  int timeoutMs) override;
         void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
         bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
                                               bool enabled) override;
@@ -112,6 +117,8 @@ namespace scopeone::core::internal
         QStringList availableConfigGroups() const override;
         QStringList availableConfigs(const QString& groupName) const override;
         QString currentConfig(const QString& groupName) const override;
+        std::vector<scopeone::core::ConfigSetting> configSettings(
+            const QString& groupName, const QString& configName) const override;
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage) override;
@@ -121,6 +128,15 @@ namespace scopeone::core::internal
         bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
         bool hasAutofocus() const override;
         bool runAutofocus(QString* errorMessage = nullptr) override;
+        long focusSequenceCapacity(const QString& focusDevice) const override;
+        bool startFocusSequence(const QString& focusDevice,
+                                const std::vector<double>& positions,
+                                QString* errorMessage = nullptr) override;
+        void stopFocusSequence(const QString& focusDevice) override;
+        long propertySequenceCapacity(const QString& device, const QString& property) const override;
+        bool startPropertySequences(const std::vector<PropertySequence>& sequences,
+                                    QString* errorMessage = nullptr) override;
+        void stopPropertySequences(const std::vector<PropertySequence>& sequences) override;
 
     private:
         bool isCamera(const QString& deviceId) const;

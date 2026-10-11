@@ -534,9 +534,18 @@ namespace scopeone::core::internal
                     }
                     for (const ChannelSetting& channel : plan.channels)
                     {
-                        settings.channels.push_back(scopewriter::ChannelMetadata{
-                            .name = channel.preset.toStdString()
-                        });
+                        scopewriter::ChannelMetadata metadata;
+                        metadata.name = channel.preset.toStdString();
+                        if (channel.color.size() == 7 && channel.color.startsWith(QLatin1Char('#')))
+                        {
+                            bool ok = false;
+                            const quint32 rgb = channel.color.mid(1).toUInt(&ok, 16);
+                            if (ok)
+                            {
+                                metadata.colorRGB = rgb;
+                            }
+                        }
+                        settings.channels.push_back(metadata);
                     }
                     settings.positions.reserve(static_cast<std::size_t>(settings.positionCount));
                     if (plan.positions.empty())
@@ -559,6 +568,11 @@ namespace scopeone::core::internal
                             });
                         }
                     }
+                    if (!plan.comment.isEmpty())
+                    {
+                        // Like the comments of the Micro-Manager summary metadata
+                        settings.metadata["scopeone.acquisition"]["Comment"] = plan.comment.toStdString();
+                    }
                     if (!plan.channels.empty())
                     {
                         // Channel setup as Micro-Manager's summary metadata keeps it
@@ -577,6 +591,13 @@ namespace scopeone::core::internal
                             if (!channel.cameraId.isEmpty())
                             {
                                 channelInfo[prefix + "Camera"] = channel.cameraId.toStdString();
+                            }
+                            // The device properties that the preset sets
+                            for (const auto& setting : channel.presetSettings)
+                            {
+                                channelInfo[prefix + "Setting." + setting.device.toStdString()
+                                            + "." + setting.property.toStdString()]
+                                    = setting.value.toStdString();
                             }
                         }
                     }
@@ -1371,6 +1392,15 @@ namespace scopeone::core::internal
         {
             qWarning().noquote() << errorMessage;
             return false;
+        }
+
+        if (m_configurationProvider)
+        {
+            for (ChannelSetting& channel : plan.channels)
+            {
+                channel.presetSettings = m_configurationProvider->configSettings(plan.channelGroup,
+                                                                                 channel.preset);
+            }
         }
 
         const bool usesMda = planUsesMda(plan);

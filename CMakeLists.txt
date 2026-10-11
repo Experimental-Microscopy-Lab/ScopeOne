@@ -77,6 +77,7 @@ set(SCOPEONE_UI_SOURCES
         src/PluginManagerDialog.cpp
         src/DeviceControlWidget.cpp
         src/RecordingWidget.cpp
+        src/PositionListFile.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
@@ -98,6 +99,7 @@ set(SCOPEONE_UI_HEADERS
         src/PluginManagerDialog.h
         src/DeviceControlWidget.h
         src/RecordingWidget.h
+        src/PositionListFile.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h

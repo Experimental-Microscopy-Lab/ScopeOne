@@ -8,6 +8,8 @@
 #include <QThreadPool>
 #include <QtGlobal>
 #include <atomic>
+#include <functional>
+#include <vector>
 #include "internal/AcquisitionHardware.h"
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/CameraProvider.h"
@@ -84,9 +86,43 @@ namespace scopeone::core::internal
             // The shutter is held open between events, which needs the automatic shutter off
             bool holdShutter{false};
             bool shutterOpen{false};
+            // Whether the first hardware sequence of the run was reported
+            bool reportedSequence{false};
         };
 
         bool runAutofocus(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
+        // Number of events from the given one on that make one hardware sequence of Z slices,
+        // or 1 when the event is taken on its own
+        int hardwareSequenceLength(const QList<AcquisitionEvent>& events, int first) const;
+        bool execHardwareSequence(const QList<AcquisitionEvent>& events,
+                                  int first,
+                                  int count,
+                                  SequenceState& state,
+                                  QList<MDAOutput>& outputs,
+                                  QString* errorMessage);
+        // Same for the channels of one Z slice, when the properties that differ between the
+        // presets of the channels can step through their values by themselves. The values
+        // of those properties on each trigger are returned in sequences.
+        int channelSequenceLength(const QList<AcquisitionEvent>& events,
+                                  int first,
+                                  std::vector<PropertySequence>& sequences) const;
+        bool execChannelSequence(const QList<AcquisitionEvent>& events,
+                                 int first,
+                                 int count,
+                                 const std::vector<PropertySequence>& sequences,
+                                 SequenceState& state,
+                                 QList<MDAOutput>& outputs,
+                                 QString* errorMessage);
+        // Takes the images of the events in one camera sequence while armed hardware
+        // advances, and turns them into one output per event
+        bool captureSequencedBlock(const QList<AcquisitionEvent>& events,
+                                   int first,
+                                   int count,
+                                   SequenceState& state,
+                                   QList<MDAOutput>& outputs,
+                                   const std::function<bool(QString*)>& arm,
+                                   const std::function<void()>& disarm,
+                                   QString* errorMessage);
         bool openShutter(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         void closeShutter(const AcquisitionEvent& event, SequenceState& state);
 

@@ -397,17 +397,20 @@ A plan can image several channels, like the multi-dimensional acquisition of Mic
 - `zStack: false` images the channel only at the middle Z position, and `skipFrames: n` only at every (n + 1)th time point.
 - The channels become the channel axis of the OME-TIFF and OME-Zarr output and are named after their presets. Planes that are not acquired because of `zStack` or `skipFrames` stay empty.
 
+- `color` (`#RRGGBB`, optional) sets the display colour of the channel, which is written to the `Color` of the OME channel.
 - A channel may set `cameraId` to be imaged by that camera only. It must be one of the cameras of the plan, and the other cameras leave the planes of the channel empty.
-- The channel setup is also stored in the `scopeone.channels` metadata of the OME output (group, preset, exposure, Z offset, Z stack, skip, camera).
+- The channel setup is also stored in the `scopeone.channels` metadata of the OME output (group, preset, exposure, Z offset, Z stack, skip, camera, and the device properties that each preset sets as `Channel<i>.Setting.<device>.<property>`).
 
 #### Positions, timing, shutter and autofocus
 
 These plan fields are optional and follow the Micro-Manager acquisition engine:
 
-- `positions[i].label` names a position (default `Pos<i+1>`; labels must be unique) and `positions[i].z` is the focus of that position. The Z positions of the plan are then offsets from the position focus.
+- `positions[i].label` names a position (default `Position <i+1>`; labels must be unique) and `positions[i].z` is the focus of that position. The Z positions of the plan are then offsets from the position focus.
 - `timeIntervalsMs` lists one interval per gap between time points (`framesPerBurst - 1` values) and replaces `mdaIntervalMs`; the two cannot be combined.
 - `keepShutterOpenSlices` / `keepShutterOpenChannels` keep the shutter open between the Z slices or the channels of one block instead of opening it for each image. The shutter state is restored when the run ends.
 - `autofocus` runs the autofocus device of the core before the first image of every position at a time point (every `autofocusEveryFrames`-th time point when that is above 1). Z positions that follow are shifted by the distance the autofocus moved the focus.
+- `hardwareSequencing` takes the Z slices of one position and channel in a single sequence: the focus device steps through its positions on the triggers of the camera, which runs one sequence acquisition. It is used where the focus device reports a hardware sequence long enough for the slices and the camera is a native single camera, and the slices are taken one by one otherwise. The channels of one Z slice are sequenced the same way when the properties that differ between their presets (a filter wheel, for example) can step through their values on triggers, which needs `Channel` to be the fastest axis.
+- `comment` is free text that is stored with the acquisition (`scopeone.acquisition` metadata).
 - Exposure, XY and Z are sent only when they change, and the stage positions, the channel preset and the shutter are restored when the run ends.
 
 Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes modules supplied by installed processing plugins.

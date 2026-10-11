@@ -447,6 +447,21 @@ namespace scopeone::core::internal
         return provider && provider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
+    bool HardwareRuntime::supportsEventSequence(const QString& cameraId) const
+    {
+        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        return provider && provider->supportsEventSequence(cameraId);
+    }
+
+    bool HardwareRuntime::captureEventSequence(const QString& cameraId,
+                                               int count,
+                                               std::vector<ImageFrame>& frames,
+                                               int timeoutMs)
+    {
+        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        return provider && provider->captureEventSequence(cameraId, count, frames, timeoutMs);
+    }
+
     QList<QPair<CameraRuntimeControl*, QStringList>> HardwareRuntime::runtimeControlsFor(
         const QStringList& cameraIds) const
     {
@@ -793,6 +808,14 @@ namespace scopeone::core::internal
         return provider ? provider->availableConfigs(groupName) : QStringList{};
     }
 
+    std::vector<scopeone::core::ConfigSetting> HardwareRuntime::configSettings(
+        const QString& groupName, const QString& configName) const
+    {
+        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
+        return provider ? provider->configSettings(groupName, configName)
+                        : std::vector<scopeone::core::ConfigSetting>{};
+    }
+
     QString HardwareRuntime::currentConfig(const QString& groupName) const
     {
         ConfigurationProvider* provider = configurationProviderForGroup(groupName);
@@ -866,6 +889,65 @@ namespace scopeone::core::internal
     {
         AcquisitionHardware* hardware = acquisitionHardware();
         return hardware && hardware->hasAutofocus();
+    }
+
+    long HardwareRuntime::propertySequenceCapacity(const QString& device, const QString& property) const
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        return hardware ? hardware->propertySequenceCapacity(device, property) : 0;
+    }
+
+    bool HardwareRuntime::startPropertySequences(const std::vector<PropertySequence>& sequences,
+                                                 QString* errorMessage)
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Acquisition hardware not available");
+            }
+            return false;
+        }
+        return hardware->startPropertySequences(sequences, errorMessage);
+    }
+
+    void HardwareRuntime::stopPropertySequences(const std::vector<PropertySequence>& sequences)
+    {
+        if (AcquisitionHardware* hardware = acquisitionHardware())
+        {
+            hardware->stopPropertySequences(sequences);
+        }
+    }
+
+    long HardwareRuntime::focusSequenceCapacity(const QString& focusDevice) const
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        return hardware ? hardware->focusSequenceCapacity(focusDevice) : 0;
+    }
+
+    bool HardwareRuntime::startFocusSequence(const QString& focusDevice,
+                                             const std::vector<double>& positions,
+                                             QString* errorMessage)
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Acquisition hardware not available");
+            }
+            return false;
+        }
+        return hardware->startFocusSequence(focusDevice, positions, errorMessage);
+    }
+
+    void HardwareRuntime::stopFocusSequence(const QString& focusDevice)
+    {
+        if (AcquisitionHardware* hardware = acquisitionHardware())
+        {
+            hardware->stopFocusSequence(focusDevice);
+        }
     }
 
     bool HardwareRuntime::runAutofocus(QString* errorMessage)

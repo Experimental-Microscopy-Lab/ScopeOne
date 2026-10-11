@@ -95,6 +95,11 @@ namespace scopeone::core::internal
             bool isPreviewRunning(const QString& cameraId) const override;
             void setFrameDeliveryPaused(bool paused) override;
             bool captureEventFrame(const QString& cameraId, ImageFrame& frame, int timeoutMs) override;
+            bool supportsEventSequence(const QString& cameraId) const override;
+            bool captureEventSequence(const QString& cameraId,
+                                      int count,
+                                      std::vector<ImageFrame>& frames,
+                                      int timeoutMs) override;
 
         protected:
             bool hasRunningCamera() const override { return m_running; }
@@ -143,6 +148,9 @@ namespace scopeone::core::internal
             bool m_running{false};
             bool m_frameDeliveryPaused{false};
             // The live sequence was stopped to capture an acquisition event
+            // Builds a frame from the pixels of the current image buffer of the core
+            bool makeEventFrame(const void* pixels, ImageFrame& frame);
+
             std::atomic<bool> m_sequenceSuspended{false};
             std::atomic<quint64> m_lastFrameIndex{0};
             quint64 m_streamGeneration{0};
@@ -510,6 +518,171 @@ namespace scopeone::core::internal
             setWorkerPaused(paused);
         }
 
+        bool NativeCameraBackend::makeEventFrame(const void* pixels, ImageFrame& frame)
+        {
+            const std::string camera = m_cameraId.toStdString();
+            const unsigned width = m_core->getImageWidth();
+            const unsigned height = m_core->getImageHeight();
+            const unsigned bytesPerPixel = m_core->getBytesPerPixel();
+            const qint64 stride = static_cast<qint64>(width) * bytesPerPixel;
+            const qint64 payloadByteCount = stride * height;
+            if (!pixels
+                || (bytesPerPixel != 1 && bytesPerPixel != 2)
+                || width > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                || stride > (std::numeric_limits<int>::max)()
+                || payloadByteCount <= 0)
+            {
+                return false;
+        }
+
+            ImageFrame captured;
+            captured.cameraId = m_cameraId;
+            captured.width = static_cast<int>(width);
+            captured.height = static_cast<int>(height);
+            captured.stride = static_cast<int>(stride);
+            captured.pixelFormat = bytesPerPixel == 2 ? ImagePixelFormat::Mono16
+                                                      : ImagePixelFormat::Mono8;
+            int bitsPerSample = static_cast<int>(bytesPerPixel) * 8;
+            try
+            {
+                bitsPerSample = static_cast<int>(m_core->getImageBitDepth());
+        }
+            catch (const CMMError&)
+            {
+        }
+            captured.bitsPerSample =
+                ImageFrame::normalizedBitsPerSample(captured.pixelFormat, bitsPerSample);
+            captured.sourceRoiWidth = captured.width;
+            captured.sourceRoiHeight = captured.height;
+            try
+            {
+                m_core->getROI(camera.c_str(),
+                               captured.sourceRoiX,
+                               captured.sourceRoiY,
+                               captured.sourceRoiWidth,
+                               captured.sourceRoiHeight);
+        }
+            catch (const CMMError&)
+            {
+                captured.sourceRoiX = 0;
+                captured.sourceRoiY = 0;
+                captured.sourceRoiWidth = captured.width;
+                captured.sourceRoiHeight = captured.height;
+        }
+            captured.frameIndex = m_lastFrameIndex.fetch_add(1, std::memory_order_relaxed) + 1;
+            captured.timestampNs =
+                static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            captured.bytes = QByteArray(reinterpret_cast<const char*>(pixels),
+                                        static_cast<qsizetype>(payloadByteCount));
+            if (!captured.isValid())
+            {
+                return false;
+        }
+            frame = std::move(captured);
+            return true;
+        }
+
+        bool NativeCameraBackend::supportsEventSequence(const QString& cameraId) const
+        {
+            return m_core && matchesCamera(cameraId);
+        }
+
+        // Takes a series of images in one sequence acquisition of the camera. The images come
+        // from the circular buffer of the core, so the camera times them itself and can
+        // trigger a stage that steps through a sequence of positions.
+        bool NativeCameraBackend::captureEventSequence(const QString& cameraId,
+                                                       int count,
+                                                       std::vector<ImageFrame>& frames,
+                                                       int timeoutMs)
+        {
+            frames.clear();
+            if (!m_core || !matchesCamera(cameraId) || count < 1)
+            {
+                return false;
+            }
+            const std::string camera = m_cameraId.toStdString();
+            bool started = false;
+            const auto stop = [&]()
+            {
+                try
+                {
+                    if (started && m_core->isSequenceRunning(camera.c_str()))
+                    {
+                        m_core->stopSequenceAcquisition(camera.c_str());
+                    }
+                }
+                catch (const CMMError&)
+                {
+                }
+            };
+            try
+            {
+                if (m_core->isSequenceRunning())
+                {
+                    m_core->stopSequenceAcquisition();
+                    m_sequenceSuspended.store(true);
+                }
+                m_core->setCameraDevice(camera.c_str());
+                m_core->initializeCircularBuffer();
+                m_core->clearCircularBuffer();
+                m_core->startSequenceAcquisition(count, 0.0, true);
+                started = true;
+
+                QElapsedTimer timer;
+                timer.start();
+                frames.reserve(static_cast<std::size_t>(count));
+                while (static_cast<int>(frames.size()) < count)
+                {
+                    if (m_core->getRemainingImageCount() > 0)
+                    {
+                        const void* pixels = m_core->popNextImage();
+                        ImageFrame frame;
+                        if (!makeEventFrame(pixels, frame))
+                        {
+                            stop();
+                            return false;
+                        }
+                        frames.push_back(std::move(frame));
+                        continue;
+                    }
+                    if (!m_core->isSequenceRunning(camera.c_str()))
+                    {
+                        break;
+                    }
+                    if (timer.elapsed() > timeoutMs)
+                    {
+                        qWarning().noquote()
+                            << QString("Timed out waiting for the image sequence of '%1'").arg(m_cameraId);
+                        stop();
+                        return false;
+                    }
+                    QThread::msleep(1);
+                }
+                // The last images may arrive between the last check and the end of the sequence
+                while (static_cast<int>(frames.size()) < count && m_core->getRemainingImageCount() > 0)
+                {
+                    ImageFrame frame;
+                    if (!makeEventFrame(m_core->popNextImage(), frame))
+                    {
+                        stop();
+                        return false;
+                    }
+                    frames.push_back(std::move(frame));
+                }
+                stop();
+                return static_cast<int>(frames.size()) == count;
+            }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote()
+                    << QString("Failed to capture an image sequence from '%1': %2")
+                       .arg(m_cameraId, QString::fromStdString(error.getMsg()));
+                stop();
+                return false;
+            }
+        }
+
         // Takes one image for an acquisition event. A running live sequence is stopped first,
         // because its buffer holds images taken before the settings of the event were applied.
         bool NativeCameraBackend::captureEventFrame(const QString& cameraId,
@@ -533,66 +706,7 @@ namespace scopeone::core::internal
                 m_core->setCameraDevice(camera.c_str());
                 m_core->snapImage();
                 const void* pixels = m_core->getImage();
-                const unsigned width = m_core->getImageWidth();
-                const unsigned height = m_core->getImageHeight();
-                const unsigned bytesPerPixel = m_core->getBytesPerPixel();
-                const qint64 stride = static_cast<qint64>(width) * bytesPerPixel;
-                const qint64 payloadByteCount = stride * height;
-                if (!pixels
-                    || (bytesPerPixel != 1 && bytesPerPixel != 2)
-                    || width > static_cast<unsigned>((std::numeric_limits<int>::max)())
-                    || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
-                    || stride > (std::numeric_limits<int>::max)()
-                    || payloadByteCount <= 0)
-                {
-                    return false;
-                }
-
-                ImageFrame captured;
-                captured.cameraId = m_cameraId;
-                captured.width = static_cast<int>(width);
-                captured.height = static_cast<int>(height);
-                captured.stride = static_cast<int>(stride);
-                captured.pixelFormat = bytesPerPixel == 2 ? ImagePixelFormat::Mono16
-                                                          : ImagePixelFormat::Mono8;
-                int bitsPerSample = static_cast<int>(bytesPerPixel) * 8;
-                try
-                {
-                    bitsPerSample = static_cast<int>(m_core->getImageBitDepth());
-                }
-                catch (const CMMError&)
-                {
-                }
-                captured.bitsPerSample =
-                    ImageFrame::normalizedBitsPerSample(captured.pixelFormat, bitsPerSample);
-                captured.sourceRoiWidth = captured.width;
-                captured.sourceRoiHeight = captured.height;
-                try
-                {
-                    m_core->getROI(camera.c_str(),
-                                   captured.sourceRoiX,
-                                   captured.sourceRoiY,
-                                   captured.sourceRoiWidth,
-                                   captured.sourceRoiHeight);
-                }
-                catch (const CMMError&)
-                {
-                    captured.sourceRoiX = 0;
-                    captured.sourceRoiY = 0;
-                    captured.sourceRoiWidth = captured.width;
-                    captured.sourceRoiHeight = captured.height;
-                }
-                captured.frameIndex = m_lastFrameIndex.fetch_add(1, std::memory_order_relaxed) + 1;
-                captured.timestampNs =
-                    static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-                captured.bytes = QByteArray(reinterpret_cast<const char*>(pixels),
-                                            static_cast<qsizetype>(payloadByteCount));
-                if (!captured.isValid())
-                {
-                    return false;
-                }
-                frame = std::move(captured);
-                return true;
+                return makeEventFrame(pixels, frame);
             }
             catch (const CMMError& error)
             {

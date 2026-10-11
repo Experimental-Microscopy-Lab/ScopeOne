@@ -1,6 +1,9 @@
 #include "RecordingWidget.h"
+#include "PositionListFile.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QCheckBox>
+#include <QAction>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
@@ -610,6 +613,78 @@ namespace scopeone::ui
         yRowLayout->addWidget(m_mdaYCountSpin);
         mdaLayout->addRow("Y:", yRowLayout);
 
+        // A list of stage positions, like the position list of Micro-Manager. When it has
+        // entries it is used instead of the grid.
+        m_positionTable = new QTableWidget(0, 4, this);
+        m_positionTable->setHorizontalHeaderLabels({"Label", "X (µm)", "Y (µm)", "Z (µm)"});
+        m_positionTable->horizontalHeader()->setStretchLastSection(true);
+        m_positionTable->verticalHeader()->setVisible(false);
+        m_positionTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_positionTable->setFixedHeight(120);
+        m_positionTable->setToolTip(
+            "Stage positions to image. When the list has entries it is used instead of the grid. "
+            "An empty Z keeps the focus where it is.");
+        m_positionMarkButton = new QPushButton("Mark", this);
+        m_positionMarkButton->setToolTip("Add the current stage position");
+        m_positionRemoveButton = new QPushButton("Remove", this);
+        m_positionClearButton = new QPushButton("Clear", this);
+        m_positionFromGridButton = new QPushButton("From grid", this);
+        m_positionFromGridButton->setToolTip("Fill the list with the positions of the grid");
+        m_positionLoadButton = new QPushButton("Load…", this);
+        m_positionSaveButton = new QPushButton("Save…", this);
+        auto* positionButtons = new QVBoxLayout();
+        for (QPushButton* button : {m_positionMarkButton, m_positionRemoveButton, m_positionClearButton,
+                                    m_positionFromGridButton, m_positionLoadButton, m_positionSaveButton})
+        {
+            button->setMaximumWidth(80);
+            positionButtons->addWidget(button);
+        }
+        positionButtons->addStretch();
+        auto* positionLayout = new QHBoxLayout();
+        positionLayout->addWidget(m_positionTable, 1);
+        positionLayout->addLayout(positionButtons);
+        mdaLayout->addRow("Positions:", positionLayout);
+        connect(m_positionMarkButton, &QPushButton::clicked, this, [this]()
+        {
+            double x = 0.0;
+            double y = 0.0;
+            if (!m_scopeonecore->readXYPosition(m_scopeonecore->currentXYStageDevice(), x, y))
+            {
+                qWarning().noquote() << "Cannot read the XY position";
+                return;
+            }
+            double z = 0.0;
+            const bool hasZ = m_scopeonecore->readZPosition(m_scopeonecore->currentFocusDevice(), z);
+            addListedPosition(QStringLiteral("Pos%1").arg(m_positionTable->rowCount() + 1),
+                              x,
+                              y,
+                              hasZ ? QString::number(z, 'f', 3) : QString());
+            updateUiState();
+        });
+        connect(m_positionRemoveButton, &QPushButton::clicked, this, [this]()
+        {
+            const auto rows = m_positionTable->selectionModel()->selectedRows();
+            QList<int> indexes;
+            for (const QModelIndex& index : rows)
+            {
+                indexes.push_back(index.row());
+            }
+            std::sort(indexes.begin(), indexes.end(), std::greater<int>());
+            for (int row : indexes)
+            {
+                m_positionTable->removeRow(row);
+            }
+            updateUiState();
+        });
+        connect(m_positionClearButton, &QPushButton::clicked, this, [this]()
+        {
+            m_positionTable->setRowCount(0);
+            updateUiState();
+        });
+        connect(m_positionFromGridButton, &QPushButton::clicked, this, [this]() { fillPositionListFromGrid(); });
+        connect(m_positionLoadButton, &QPushButton::clicked, this, [this]() { loadPositionList(); });
+        connect(m_positionSaveButton, &QPushButton::clicked, this, [this]() { savePositionList(); });
+
         auto* autofocusLayout = new QHBoxLayout();
         m_mdaAutofocusCheck = new QCheckBox("Autofocus", this);
         m_mdaAutofocusCheck->setToolTip(QStringLiteral(
@@ -632,9 +707,9 @@ namespace scopeone::ui
             "Configuration group whose presets are the channels"));
         mdaLayout->addRow("Group:", m_channelGroupCombo);
 
-        m_channelTable = new QTableWidget(0, 7, this);
+        m_channelTable = new QTableWidget(0, 8, this);
         m_channelTable->setHorizontalHeaderLabels(
-            {"Use", "Preset", "Exposure (ms)", "Z offset (µm)", "Z stack", "Skip", "Camera"});
+            {"Use", "Preset", "Exposure (ms)", "Z offset (µm)", "Z stack", "Skip", "Camera", "Color"});
         m_channelTable->horizontalHeaderItem(6)->setToolTip(
             QStringLiteral("Camera that images this channel. All uses every selected camera."));
         m_channelTable->horizontalHeaderItem(2)->setToolTip(
@@ -669,6 +744,14 @@ namespace scopeone::ui
         m_keepShutterChannelsCheck = new QCheckBox("Keep the shutter open between channels", this);
         mdaLayout->addRow("", m_keepShutterSlicesCheck);
         mdaLayout->addRow("", m_keepShutterChannelsCheck);
+        m_hardwareSequencingCheck = new QCheckBox("Use hardware sequencing for Z stacks", this);
+        m_hardwareSequencingCheck->setToolTip(
+            "Let the focus device step through the Z positions on the camera triggers. "
+            "Used where the focus device and the camera support sequences.");
+        mdaLayout->addRow("", m_hardwareSequencingCheck);
+        m_commentLineEdit = new QLineEdit(this);
+        m_commentLineEdit->setPlaceholderText("Stored with the acquisition");
+        mdaLayout->addRow("Comment:", m_commentLineEdit);
 
         m_mdaOrderList = new QListWidget(this);
         m_mdaOrderList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -869,9 +952,21 @@ namespace scopeone::ui
         m_mdaYStepSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
         m_mdaYCountSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
         m_mdaZRelativeCheck->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        {
+            const bool listEnabled = editingEnabled && m_mdaEnableXYCheck->isChecked();
+            m_positionTable->setEnabled(listEnabled);
+            m_positionMarkButton->setEnabled(listEnabled);
+            m_positionRemoveButton->setEnabled(listEnabled && m_positionTable->rowCount() > 0);
+            m_positionClearButton->setEnabled(listEnabled && m_positionTable->rowCount() > 0);
+            m_positionFromGridButton->setEnabled(listEnabled);
+            m_positionLoadButton->setEnabled(listEnabled);
+            m_positionSaveButton->setEnabled(listEnabled && m_positionTable->rowCount() > 0);
+        }
         m_mdaAutofocusCheck->setEnabled(editingEnabled);
         m_mdaAutofocusEverySpin->setEnabled(editingEnabled && m_mdaAutofocusCheck->isChecked());
         m_keepShutterSlicesCheck->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_hardwareSequencingCheck->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_commentLineEdit->setEnabled(editingEnabled);
         m_keepShutterChannelsCheck->setEnabled(
             editingEnabled && m_mdaEnableChannelCheck->isChecked() && usedChannels().size() > 1);
         m_mdaEnableChannelCheck->setEnabled(editingEnabled);
@@ -968,10 +1063,11 @@ namespace scopeone::ui
         {
             const qint64 burstCount = m_burstModeCheck->isChecked() ? m_burstCountSpin->value() : 1;
             const qint64 zCount = m_mdaEnableZCheck->isChecked() ? m_mdaZCountSpin->value() : 1;
-            const qint64 positionCount = m_mdaEnableXYCheck->isChecked()
-                                               ? static_cast<qint64>(m_mdaXCountSpin->value())
-                                                   * m_mdaYCountSpin->value()
-                                               : 1;
+            const qint64 positionCount = !m_mdaEnableXYCheck->isChecked()
+                ? 1
+                : m_positionTable->rowCount() > 0
+                    ? static_cast<qint64>(m_positionTable->rowCount())
+                    : static_cast<qint64>(m_mdaXCountSpin->value()) * m_mdaYCountSpin->value();
             const qint64 channelCount = m_mdaEnableChannelCheck->isChecked()
                 ? static_cast<qint64>((std::max<size_t>)(1, usedChannels().size()))
                 : 1;
@@ -1099,10 +1195,42 @@ namespace scopeone::ui
             }
         }
         plan.keepShutterOpenSlices = m_mdaEnableZCheck->isChecked() && m_keepShutterSlicesCheck->isChecked();
+        plan.hardwareSequencing = m_mdaEnableZCheck->isChecked() && m_hardwareSequencingCheck->isChecked();
+        plan.comment = m_commentLineEdit->text().trimmed();
         plan.autofocus = m_mdaAutofocusCheck->isChecked();
         plan.autofocusEveryFrames = plan.autofocus ? m_mdaAutofocusEverySpin->value() : 0;
 
-        if (m_mdaEnableXYCheck->isChecked())
+        if (m_mdaEnableXYCheck->isChecked() && m_positionTable->rowCount() > 0)
+        {
+            for (int row = 0; row < m_positionTable->rowCount(); ++row)
+            {
+                const auto text = [this, row](int column)
+                {
+                    const QTableWidgetItem* item = m_positionTable->item(row, column);
+                    return item ? item->text().trimmed() : QString();
+                };
+                bool xOk = false;
+                bool yOk = false;
+                const double x = text(1).toDouble(&xOk);
+                const double y = text(2).toDouble(&yOk);
+                if (!xOk || !yOk)
+                {
+                    qWarning().noquote() << QStringLiteral("Position %1 has no valid X and Y").arg(row + 1);
+                    return false;
+                }
+                bool zOk = false;
+                const double z = text(3).toDouble(&zOk);
+                if (!text(3).isEmpty() && !zOk)
+                {
+                    qWarning().noquote() << QStringLiteral("Position %1 has an invalid Z").arg(row + 1);
+                    return false;
+                }
+                plan.positions.push_back(QPointF(x, y));
+                plan.positionLabels.push_back(text(0).isEmpty() ? QStringLiteral("Pos%1").arg(row + 1) : text(0));
+                plan.positionZ.push_back(zOk ? std::optional<double>(z) : std::nullopt);
+            }
+        }
+        else if (m_mdaEnableXYCheck->isChecked())
         {
             const int xCount = qMax(1, m_mdaXCountSpin->value());
             const int yCount = qMax(1, m_mdaYCountSpin->value());
@@ -1192,6 +1320,108 @@ namespace scopeone::ui
         return true;
     }
 
+    // Adds one row to the position list
+    void RecordingWidget::addListedPosition(const QString& label, double x, double y, const QString& z)
+    {
+        const int row = m_positionTable->rowCount();
+        m_positionTable->insertRow(row);
+        m_positionTable->setItem(row, 0, new QTableWidgetItem(label));
+        m_positionTable->setItem(row, 1, new QTableWidgetItem(QString::number(x, 'f', 3)));
+        m_positionTable->setItem(row, 2, new QTableWidgetItem(QString::number(y, 'f', 3)));
+        m_positionTable->setItem(row, 3, new QTableWidgetItem(z));
+    }
+
+    // Replaces the list with the positions of the XY grid
+    void RecordingWidget::fillPositionListFromGrid()
+    {
+        m_positionTable->setRowCount(0);
+        for (int yIndex = 0; yIndex < qMax(1, m_mdaYCountSpin->value()); ++yIndex)
+        {
+            for (int xIndex = 0; xIndex < qMax(1, m_mdaXCountSpin->value()); ++xIndex)
+            {
+                addListedPosition(QStringLiteral("Pos-1-%1_%2")
+                                      .arg(xIndex, 3, 10, QLatin1Char('0'))
+                                      .arg(yIndex, 3, 10, QLatin1Char('0')),
+                                  m_mdaXStartSpin->value() + xIndex * m_mdaXStepSpin->value(),
+                                  m_mdaYStartSpin->value() + yIndex * m_mdaYStepSpin->value(),
+                                  QString());
+            }
+        }
+        updateUiState();
+    }
+
+    // Loads a Micro-Manager position list into the list
+    void RecordingWidget::loadPositionList()
+    {
+        const QString path = QFileDialog::getOpenFileName(this,
+                                                          QStringLiteral("Load position list"),
+                                                          m_saveDirLineEdit->text(),
+                                                          QStringLiteral("Position lists (*.pos *.json *.txt);;All files (*)"));
+        if (path.isEmpty())
+        {
+            return;
+        }
+        QList<scopeone::gui::ListedPosition> positions;
+        QString error;
+        if (!scopeone::gui::PositionListFile::load(path, positions, &error))
+        {
+            qWarning().noquote() << QStringLiteral("Failed to load the position list: %1").arg(error);
+            return;
+        }
+        m_positionTable->setRowCount(0);
+        for (int index = 0; index < positions.size(); ++index)
+        {
+            const auto& position = positions.at(index);
+            addListedPosition(position.label.isEmpty() ? QStringLiteral("Pos%1").arg(index + 1) : position.label,
+                              position.x,
+                              position.y,
+                              position.z ? QString::number(*position.z, 'f', 3) : QString());
+        }
+        updateUiState();
+    }
+
+    // Saves the list as a Micro-Manager position list
+    void RecordingWidget::savePositionList()
+    {
+        const QString path = QFileDialog::getSaveFileName(this,
+                                                          QStringLiteral("Save position list"),
+                                                          m_saveDirLineEdit->text() + QStringLiteral("/positions.pos"),
+                                                          QStringLiteral("Position lists (*.pos)"));
+        if (path.isEmpty())
+        {
+            return;
+        }
+        QList<scopeone::gui::ListedPosition> positions;
+        for (int row = 0; row < m_positionTable->rowCount(); ++row)
+        {
+            const auto text = [this, row](int column)
+            {
+                const QTableWidgetItem* item = m_positionTable->item(row, column);
+                return item ? item->text().trimmed() : QString();
+            };
+            scopeone::gui::ListedPosition position;
+            position.label = text(0);
+            position.x = text(1).toDouble();
+            position.y = text(2).toDouble();
+            bool zOk = false;
+            const double z = text(3).toDouble(&zOk);
+            if (zOk)
+            {
+                position.z = z;
+            }
+            positions.push_back(position);
+        }
+        QString error;
+        if (!scopeone::gui::PositionListFile::save(path,
+                                                   positions,
+                                                   m_scopeonecore->currentXYStageDevice(),
+                                                   m_scopeonecore->currentFocusDevice(),
+                                                   &error))
+        {
+            qWarning().noquote() << QStringLiteral("Failed to save the position list: %1").arg(error);
+        }
+    }
+
     // Camera choice of one channel: every selected camera, or one of them
     QComboBox* RecordingWidget::makeChannelCameraCombo(const QString& selected)
     {
@@ -1201,6 +1431,41 @@ namespace scopeone::ui
         const int index = combo->findText(selected);
         combo->setCurrentIndex(index < 0 ? 0 : index);
         return combo;
+    }
+
+    // Shows the colour of a channel on its button
+    void RecordingWidget::showChannelColor(QPushButton* button, const QString& color)
+    {
+        button->setProperty("channelColor", color);
+        button->setText(color.isEmpty() ? QStringLiteral("Auto") : color);
+        button->setStyleSheet(color.isEmpty()
+            ? QString()
+            : QStringLiteral("QPushButton { background-color: %1; color: %2; }")
+                  .arg(color, QColor(color).lightness() < 128 ? QStringLiteral("white")
+                                                               : QStringLiteral("black")));
+    }
+
+    // Colour choice of one channel. Auto leaves the colour to the viewer.
+    QPushButton* RecordingWidget::makeChannelColorButton(const QString& color)
+    {
+        auto* button = new QPushButton(m_channelTable);
+        showChannelColor(button, color);
+        connect(button, &QPushButton::clicked, this, [this, button]()
+        {
+            const QString current = button->property("channelColor").toString();
+            const QColor chosen = QColorDialog::getColor(current.isEmpty() ? QColor(Qt::white) : QColor(current),
+                                                         this,
+                                                         QStringLiteral("Channel color"));
+            if (chosen.isValid())
+            {
+                showChannelColor(button, chosen.name(QColor::HexRgb));
+            }
+        });
+        auto* reset = new QAction(QStringLiteral("Auto"), button);
+        connect(reset, &QAction::triggered, button, [button]() { showChannelColor(button, QString()); });
+        button->addAction(reset);
+        button->setContextMenuPolicy(Qt::ActionsContextMenu);
+        return button;
     }
 
     // Lists the configuration groups of the loaded hardware as channel groups
@@ -1257,6 +1522,10 @@ namespace scopeone::ui
                     ? QString()
                     : combo->currentText();
             }
+            if (const auto* colorButton = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7)))
+            {
+                entry.setting.color = colorButton->property("channelColor").toString();
+            }
             previous.insert(entry.setting.preset, entry);
             previousOrder.append(entry.setting.preset);
         }
@@ -1310,6 +1579,7 @@ namespace scopeone::ui
                 m_channelTable->setItem(row, 4, zStack);
                 m_channelTable->setItem(row, 5, skip);
                 m_channelTable->setCellWidget(row, 6, makeChannelCameraCombo(entry.setting.cameraId));
+                m_channelTable->setCellWidget(row, 7, makeChannelColorButton(entry.setting.color));
             }
         }
         syncOrderList();
@@ -1333,6 +1603,14 @@ namespace scopeone::ui
                 QTableWidgetItem* second = m_channelTable->takeItem(target, column);
                 m_channelTable->setItem(row, column, second);
                 m_channelTable->setItem(target, column, first);
+            }
+            auto* firstColor = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7));
+            auto* secondColor = qobject_cast<QPushButton*>(m_channelTable->cellWidget(target, 7));
+            if (firstColor && secondColor)
+            {
+                const QString color = firstColor->property("channelColor").toString();
+                showChannelColor(firstColor, secondColor->property("channelColor").toString());
+                showChannelColor(secondColor, color);
             }
             auto* firstCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6));
             auto* secondCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(target, 6));
@@ -1369,6 +1647,10 @@ namespace scopeone::ui
                 {
                     channel.cameraId = combo->currentText();
                 }
+            }
+            if (const auto* colorButton = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7)))
+            {
+                channel.color = colorButton->property("channelColor").toString();
             }
             channels.push_back(channel);
         }
