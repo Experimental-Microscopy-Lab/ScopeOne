@@ -94,6 +94,7 @@ namespace scopeone::core::internal
             bool stopPreviewFor(const QString& cameraId) override;
             bool isPreviewRunning(const QString& cameraId) const override;
             void setFrameDeliveryPaused(bool paused) override;
+            bool captureEventFrame(const QString& cameraId, ImageFrame& frame, int timeoutMs) override;
 
         protected:
             bool hasRunningCamera() const override { return m_running; }
@@ -141,6 +142,8 @@ namespace scopeone::core::internal
             double m_exposureMs{10.0};
             bool m_running{false};
             bool m_frameDeliveryPaused{false};
+            // The live sequence was stopped to capture an acquisition event
+            std::atomic<bool> m_sequenceSuspended{false};
             std::atomic<quint64> m_lastFrameIndex{0};
             quint64 m_streamGeneration{0};
             quint64 m_activeGeneration{0};
@@ -487,7 +490,117 @@ namespace scopeone::core::internal
                 return;
             }
             m_frameDeliveryPaused = paused;
+            if (!paused && m_sequenceSuspended.exchange(false) && m_running && m_core)
+            {
+                try
+                {
+                    if (!m_core->isSequenceRunning())
+                    {
+                        m_core->setCameraDevice(m_cameraId.toStdString().c_str());
+                        m_core->startContinuousSequenceAcquisition(0.0);
+                    }
+                }
+                catch (const CMMError& error)
+                {
+                    qWarning().noquote()
+                        << QString("Failed to resume the live view of '%1': %2")
+                           .arg(m_cameraId, QString::fromStdString(error.getMsg()));
+                }
+            }
             setWorkerPaused(paused);
+        }
+
+        // Takes one image for an acquisition event. A running live sequence is stopped first,
+        // because its buffer holds images taken before the settings of the event were applied.
+        bool NativeCameraBackend::captureEventFrame(const QString& cameraId,
+                                                    ImageFrame& frame,
+                                                    int timeoutMs)
+        {
+            (void)timeoutMs;
+            if (!m_core || !matchesCamera(cameraId))
+            {
+                return false;
+            }
+            try
+            {
+                const std::string camera = m_cameraId.toStdString();
+                // The camera device cannot be selected while a sequence is running
+                if (m_core->isSequenceRunning())
+                {
+                    m_core->stopSequenceAcquisition();
+                    m_sequenceSuspended.store(true);
+                }
+                m_core->setCameraDevice(camera.c_str());
+                m_core->snapImage();
+                const void* pixels = m_core->getImage();
+                const unsigned width = m_core->getImageWidth();
+                const unsigned height = m_core->getImageHeight();
+                const unsigned bytesPerPixel = m_core->getBytesPerPixel();
+                const qint64 stride = static_cast<qint64>(width) * bytesPerPixel;
+                const qint64 payloadByteCount = stride * height;
+                if (!pixels
+                    || (bytesPerPixel != 1 && bytesPerPixel != 2)
+                    || width > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                    || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
+                    || stride > (std::numeric_limits<int>::max)()
+                    || payloadByteCount <= 0)
+                {
+                    return false;
+                }
+
+                ImageFrame captured;
+                captured.cameraId = m_cameraId;
+                captured.width = static_cast<int>(width);
+                captured.height = static_cast<int>(height);
+                captured.stride = static_cast<int>(stride);
+                captured.pixelFormat = bytesPerPixel == 2 ? ImagePixelFormat::Mono16
+                                                          : ImagePixelFormat::Mono8;
+                int bitsPerSample = static_cast<int>(bytesPerPixel) * 8;
+                try
+                {
+                    bitsPerSample = static_cast<int>(m_core->getImageBitDepth());
+                }
+                catch (const CMMError&)
+                {
+                }
+                captured.bitsPerSample =
+                    ImageFrame::normalizedBitsPerSample(captured.pixelFormat, bitsPerSample);
+                captured.sourceRoiWidth = captured.width;
+                captured.sourceRoiHeight = captured.height;
+                try
+                {
+                    m_core->getROI(camera.c_str(),
+                                   captured.sourceRoiX,
+                                   captured.sourceRoiY,
+                                   captured.sourceRoiWidth,
+                                   captured.sourceRoiHeight);
+                }
+                catch (const CMMError&)
+                {
+                    captured.sourceRoiX = 0;
+                    captured.sourceRoiY = 0;
+                    captured.sourceRoiWidth = captured.width;
+                    captured.sourceRoiHeight = captured.height;
+                }
+                captured.frameIndex = m_lastFrameIndex.fetch_add(1, std::memory_order_relaxed) + 1;
+                captured.timestampNs =
+                    static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+                captured.bytes = QByteArray(reinterpret_cast<const char*>(pixels),
+                                            static_cast<qsizetype>(payloadByteCount));
+                if (!captured.isValid())
+                {
+                    return false;
+                }
+                frame = std::move(captured);
+                return true;
+            }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote()
+                    << QString("Failed to capture an event frame from '%1': %2")
+                       .arg(m_cameraId, QString::fromStdString(error.getMsg()));
+                return false;
+            }
         }
 
         bool NativeCameraBackend::resolvePrimaryCameraId(const QString& cameraIdOrAll, QString& cameraId) const
@@ -893,6 +1006,7 @@ namespace scopeone::core::internal
         {
             ++m_streamGeneration;
             m_activeGeneration = 0;
+            m_sequenceSuspended.store(false);
 
             bool workerStopped = !m_worker || !m_streamThread.isRunning();
             if (m_worker && m_streamThread.isRunning())
