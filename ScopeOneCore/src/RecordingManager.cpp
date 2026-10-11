@@ -86,6 +86,16 @@ namespace scopeone::core::internal
             {
                 return 0.0;
             }
+            if (!plan.timeIntervalsMs.empty())
+            {
+                const bool uniform = std::all_of(plan.timeIntervalsMs.begin(),
+                                                 plan.timeIntervalsMs.end(),
+                                                 [&plan](double interval)
+                                                 {
+                                                     return interval == plan.timeIntervalsMs.front();
+                                                 });
+                return uniform ? plan.timeIntervalsMs.front() : 0.0;
+            }
             return plan.mdaIntervalMs > 0.0 ? plan.mdaIntervalMs : 0.0;
         }
 
@@ -491,15 +501,9 @@ namespace scopeone::core::internal
                     settings.positionCount = (std::max)(1, static_cast<int>(plan.positions.size()));
                     settings.timeCount = (std::max)(1, plan.framesPerBurst)
                         * (plan.burstMode ? (std::max)(1, plan.targetBursts) : 1);
-                    settings.channelCount = 1;
+                    settings.channelCount = (std::max)(1, static_cast<int>(plan.channels.size()));
                     settings.zCount = (std::max)(1, static_cast<int>(plan.zPositions.size()));
-                    const auto timeAxis = std::find(plan.order.begin(),
-                                                    plan.order.end(),
-                                                    RecordingAxis::Time);
-                    const auto zAxis = std::find(plan.order.begin(),
-                                                 plan.order.end(),
-                                                 RecordingAxis::Z);
-                    settings.acquisitionOrder = zAxis < timeAxis ? "ZTC" : "TZC";
+                    settings.acquisitionOrder = omeAcquisitionOrder(plan).toStdString();
                     settings.physicalSizeXUm = physicalSizeXUm;
                     settings.physicalSizeYUm = physicalSizeYUm;
                     settings.timeIncrementMs = uniformTimeIncrementMs(plan);
@@ -522,9 +526,18 @@ namespace scopeone::core::internal
                     settings.acquisitionStartTimestampNs = acquisitionStartTimestampNs;
                     settings.imageName = imageName.toStdString();
                     settings.creator = "ScopeOne";
-                    settings.channels.push_back(scopewriter::ChannelMetadata{
-                        .name = settings.imageName
-                    });
+                    if (plan.channels.empty())
+                    {
+                        settings.channels.push_back(scopewriter::ChannelMetadata{
+                            .name = settings.imageName
+                        });
+                    }
+                    for (const ChannelSetting& channel : plan.channels)
+                    {
+                        settings.channels.push_back(scopewriter::ChannelMetadata{
+                            .name = channel.preset.toStdString()
+                        });
+                    }
                     settings.positions.reserve(static_cast<std::size_t>(settings.positionCount));
                     if (plan.positions.empty())
                     {
@@ -538,10 +551,33 @@ namespace scopeone::core::internal
                         {
                             const auto& position = plan.positions[index];
                             settings.positions.push_back(scopewriter::PositionMetadata{
-                                .name = "Position " + std::to_string(index + 1),
+                                .name = positionName(plan, static_cast<int>(index)).toStdString(),
                                 .xUm = position.x(),
-                                .yUm = position.y()
+                                .yUm = position.y(),
+                                .zUm = index < plan.positionZ.size() ? plan.positionZ[index]
+                                                                     : std::nullopt
                             });
+                        }
+                    }
+                    if (!plan.channels.empty())
+                    {
+                        // Channel setup as Micro-Manager's summary metadata keeps it
+                        auto& channelInfo = settings.metadata["scopeone.channels"];
+                        channelInfo["ChannelGroup"] = plan.channelGroup.toStdString();
+                        for (std::size_t index = 0; index < plan.channels.size(); ++index)
+                        {
+                            const ChannelSetting& channel = plan.channels[index];
+                            const std::string prefix = "Channel" + std::to_string(index) + ".";
+                            channelInfo[prefix + "Preset"] = channel.preset.toStdString();
+                            channelInfo[prefix + "ExposureMs"] = std::to_string(
+                                channel.exposureMs > 0.0 ? channel.exposureMs : plan.exposureMs);
+                            channelInfo[prefix + "ZOffsetUm"] = std::to_string(channel.zOffsetUm);
+                            channelInfo[prefix + "ZStack"] = channel.zStack ? "true" : "false";
+                            channelInfo[prefix + "SkipFrames"] = std::to_string(channel.skipFrames);
+                            if (!channel.cameraId.isEmpty())
+                            {
+                                channelInfo[prefix + "Camera"] = channel.cameraId.toStdString();
+                            }
                         }
                     }
                     double value = 0.0;
@@ -605,6 +641,7 @@ namespace scopeone::core::internal
                             * (std::max)(1, m_omePlan.framesPerBurst)
                         + event->timeIndex;
                     metadata.z = event->zIndex;
+                    metadata.c = event->channelIndex;
                     metadata.exposureMs = event->exposureMs;
                     if (event->hasXY)
                     {
@@ -859,7 +896,9 @@ namespace scopeone::core::internal
     // Returns whether spatial axes require explicit MDA events
     bool RecordingManager::planUsesMda(const ExperimentPlan& plan) const
     {
-        return !plan.positions.empty() || !plan.zPositions.empty();
+        // Anything that sets up the hardware between images needs an event for every image
+        return !plan.positions.empty() || !plan.zPositions.empty() || !plan.channels.empty()
+            || !plan.timeIntervalsMs.empty();
     }
 
     // Returns whether native preview recording uses the requested frame interval
@@ -2054,6 +2093,8 @@ namespace scopeone::core::internal
         }
         m_mdaState.manager->setCameraProvider(m_cameraProvider);
         m_mdaState.manager->setStageProvider(m_stageProvider);
+        m_mdaState.manager->setConfigurationProvider(m_configurationProvider);
+        m_mdaState.manager->setAcquisitionHardware(m_acquisitionHardware);
 
         if (m_cameraRuntimeControl)
         {

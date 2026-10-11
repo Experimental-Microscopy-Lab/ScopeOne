@@ -909,4 +909,108 @@ namespace scopeone::core::internal
             return false;
         }
     }
+
+    bool MicroManagerProvider::autoShutter(bool& enabled, QString* errorMessage) const
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            enabled = m_core->getAutoShutter();
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::setAutoShutter(bool enabled, QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->setAutoShutter(enabled);
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::setCoreShutterOpen(bool open, QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->setShutterOpen(open);
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::hasAutofocus() const
+    {
+        try
+        {
+            return m_core && !m_core->getAutoFocusDevice().empty();
+        }
+        catch (const CMMError&)
+        {
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::runAutofocus(QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->fullFocus();
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
 }

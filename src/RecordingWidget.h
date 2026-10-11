@@ -15,6 +15,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QListWidget;
+class QTableWidget;
 class QTimer;
 
 namespace scopeone::ui
@@ -45,6 +46,11 @@ namespace scopeone::ui
         void updateStorageStatusText(qint64 availableBytes);
         void moveOrderItem(int delta);
         void syncOrderList();
+        void refreshChannelGroups();
+        QComboBox* makeChannelCameraCombo(const QString& selected);
+        void loadChannelPresets();
+        void moveChannelRow(int delta);
+        std::vector<scopeone::core::ChannelSetting> usedChannels() const;
         QString getLastSaveDirectory() const;
         void setLastSaveDirectory(const QString& path);
         QString buildTimestampBaseName() const;
@@ -74,6 +80,16 @@ namespace scopeone::ui
         QDoubleSpinBox* m_mdaZStepSpin{nullptr};
         QSpinBox* m_mdaZCountSpin{nullptr};
         QCheckBox* m_mdaEnableXYCheck{nullptr};
+        QCheckBox* m_mdaZRelativeCheck{nullptr};
+        QCheckBox* m_mdaAutofocusCheck{nullptr};
+        QSpinBox* m_mdaAutofocusEverySpin{nullptr};
+        QCheckBox* m_keepShutterSlicesCheck{nullptr};
+        QCheckBox* m_keepShutterChannelsCheck{nullptr};
+        QCheckBox* m_mdaEnableChannelCheck{nullptr};
+        QComboBox* m_channelGroupCombo{nullptr};
+        QTableWidget* m_channelTable{nullptr};
+        QPushButton* m_channelUpButton{nullptr};
+        QPushButton* m_channelDownButton{nullptr};
         QDoubleSpinBox* m_mdaXStartSpin{nullptr};
         QDoubleSpinBox* m_mdaXStepSpin{nullptr};
         QSpinBox* m_mdaXCountSpin{nullptr};

@@ -4,6 +4,7 @@
 
 #include <memory>
 
+#include "internal/AcquisitionHardware.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
 #include "internal/CameraRuntimeControl.h"
@@ -18,6 +19,7 @@ namespace scopeone::core::internal
                                        public ShutterProvider,
                                        public StateProvider,
                                        public ConfigurationProvider,
+                                       public AcquisitionHardware,
                                        public CameraRuntimeControl
     {
     public:
@@ -113,6 +115,12 @@ namespace scopeone::core::internal
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage) override;
+
+        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const override;
+        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr) override;
+        bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
+        bool hasAutofocus() const override;
+        bool runAutofocus(QString* errorMessage = nullptr) override;
 
     private:
         bool isCamera(const QString& deviceId) const;

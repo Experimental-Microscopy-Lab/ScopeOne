@@ -19,6 +19,8 @@ namespace scopeone::core
     namespace
     {
         constexpr quint64 kMaximumJsonEventCount = static_cast<quint64>((std::numeric_limits<int>::max)());
+        constexpr int kMaximumChannelCount = 64;
+        constexpr int kMaximumChannelSkipFrames = 1000000;
 
         bool fail(QString* errorMessage, const QString& message)
         {
@@ -727,6 +729,11 @@ namespace scopeone::core
                 axis = RecordingAxis::XY;
                 return true;
             }
+            if (name == QStringLiteral("Channel"))
+            {
+                axis = RecordingAxis::Channel;
+                return true;
+            }
             return false;
         }
 
@@ -885,7 +892,24 @@ namespace scopeone::core
                 return fail(errorMessage,
                             QStringLiteral("%1 expands to too many acquisition events").arg(path));
             }
-            const quint64 timeAndZ = timeCount * zCount;
+            quint64 timeAndZ = timeCount * zCount;
+            if (!plan.channels.empty())
+            {
+                // Each channel images its own share of the time points and Z positions
+                timeAndZ = 0;
+                for (const ChannelSetting& channel : plan.channels)
+                {
+                    const quint64 skip = static_cast<quint64>((std::max)(0, channel.skipFrames));
+                    const quint64 channelTimes = (timeCount + skip) / (skip + 1);
+                    const quint64 channelZ = channel.zStack ? zCount : 1u;
+                    if (channelTimes != 0 && channelZ > kMaximumJsonEventCount / channelTimes)
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1 expands to too many acquisition events").arg(path));
+                    }
+                    timeAndZ += channelTimes * channelZ;
+                }
+            }
             if (timeAndZ != 0 && positionCount > kMaximumJsonEventCount / timeAndZ)
             {
                 return fail(errorMessage,
@@ -1008,7 +1032,8 @@ namespace scopeone::core
             for (size_t index = 0; index < plan.order.size(); ++index)
             {
                 const RecordingAxis axis = plan.order.at(index);
-                if (axis != RecordingAxis::Time && axis != RecordingAxis::Z && axis != RecordingAxis::XY)
+                if (axis != RecordingAxis::Time && axis != RecordingAxis::Z && axis != RecordingAxis::XY
+                    && axis != RecordingAxis::Channel)
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1.order[%2] is invalid").arg(path).arg(index));
@@ -1028,7 +1053,38 @@ namespace scopeone::core
             {
                 return fail(errorMessage, QStringLiteral("%1.order must contain Time").arg(path));
             }
-            if (plan.mdaIntervalMs > 0.0
+            if (plan.autofocusEveryFrames < 0 || plan.autofocusEveryFrames > kMaximumChannelSkipFrames)
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.autofocusEveryFrames must be between 0 and %2")
+                                .arg(path)
+                                .arg(kMaximumChannelSkipFrames));
+            }
+            if (!plan.timeIntervalsMs.empty())
+            {
+                if (plan.mdaIntervalMs > 0.0)
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.mdaIntervalMs must be 0 when timeIntervalsMs is used").arg(path));
+                }
+                if (plan.timeIntervalsMs.size() != static_cast<size_t>((std::max)(0, plan.framesPerBurst - 1)))
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.timeIntervalsMs must contain framesPerBurst - 1 entries").arg(path));
+                }
+                for (size_t index = 0; index < plan.timeIntervalsMs.size(); ++index)
+                {
+                    const double interval = plan.timeIntervalsMs.at(index);
+                    if (!isFinite(interval) || interval < 0.0)
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.timeIntervalsMs[%2] must be a finite non-negative number")
+                                        .arg(path)
+                                        .arg(index));
+                    }
+                }
+            }
+            if ((plan.mdaIntervalMs > 0.0 || !plan.timeIntervalsMs.empty())
                 && plan.framesPerBurst > 1
                 && plan.order.front() != RecordingAxis::Time)
             {
@@ -1047,6 +1103,68 @@ namespace scopeone::core
                 return fail(errorMessage,
                             QStringLiteral("%1.order must contain XY when positions is not empty").arg(path));
             }
+            if (!plan.channels.empty())
+            {
+                if (!axes.contains(static_cast<int>(RecordingAxis::Channel)))
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.order must contain Channel when channels is not empty").arg(path));
+                }
+                if (plan.channelGroup.trimmed().isEmpty())
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.channelGroup must name a configuration group when channels is not empty")
+                                    .arg(path));
+                }
+                if (plan.channels.size() > static_cast<size_t>(kMaximumChannelCount))
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.channels contains too many entries").arg(path));
+                }
+                QSet<QString> presets;
+                for (size_t index = 0; index < plan.channels.size(); ++index)
+                {
+                    const ChannelSetting& channel = plan.channels.at(index);
+                    const QString channelPath = elementPath(memberPath(path, QStringLiteral("channels")),
+                                                            static_cast<qsizetype>(index));
+                    if (channel.preset.trimmed().isEmpty())
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.preset must not be empty").arg(channelPath));
+                    }
+                    if (presets.contains(channel.preset))
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.preset '%2' is listed more than once")
+                                        .arg(channelPath, channel.preset));
+                    }
+                    presets.insert(channel.preset);
+                    if (!isFinite(channel.exposureMs) || channel.exposureMs < 0.0)
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.exposureMs must be a finite non-negative number")
+                                        .arg(channelPath));
+                    }
+                    if (!isFinite(channel.zOffsetUm))
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.zOffsetUm must be a finite number").arg(channelPath));
+                    }
+                    if (!channel.cameraId.isEmpty() && !plan.cameraIds.contains(channel.cameraId))
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.cameraId '%2' is not in the plan")
+                                        .arg(channelPath, channel.cameraId));
+                    }
+                    if (channel.skipFrames < 0 || channel.skipFrames > kMaximumChannelSkipFrames)
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.skipFrames must be between 0 and %2")
+                                        .arg(channelPath)
+                                        .arg(kMaximumChannelSkipFrames));
+                    }
+                }
+            }
 
             if (plan.positions.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
             {
@@ -1061,6 +1179,41 @@ namespace scopeone::core
                                 QStringLiteral("%1.positions[%2] must contain finite coordinates")
                                     .arg(path)
                                     .arg(index));
+                }
+            }
+            if (!plan.positionLabels.empty() && plan.positionLabels.size() != plan.positions.size())
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.positions must give a label to every position or to none").arg(path));
+            }
+            if (!plan.positionZ.empty() && plan.positionZ.size() != plan.positions.size())
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.positions must give a Z to every position or to none").arg(path));
+            }
+            for (size_t index = 0; index < plan.positionZ.size(); ++index)
+            {
+                if (plan.positionZ.at(index) && !isFinite(*plan.positionZ.at(index)))
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.positions[%2].z must be finite").arg(path).arg(index));
+                }
+            }
+            if (!plan.positionLabels.empty())
+            {
+                QSet<QString> names;
+                for (size_t index = 0; index < plan.positions.size(); ++index)
+                {
+                    const QString name = positionName(plan, static_cast<int>(index));
+                    if (names.contains(name))
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.positions[%2] repeats the name '%3'")
+                                        .arg(path)
+                                        .arg(index)
+                                        .arg(name));
+                    }
+                    names.insert(name);
                 }
             }
             if (plan.zPositions.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
@@ -1287,7 +1440,52 @@ namespace scopeone::core
                 }
             }
 
-            if (plan.zPositions.empty())
+            const ChannelSetting* channel = nullptr;
+            if (plan.channels.empty())
+            {
+                if (event.channelIndex != 0 || !event.channelGroup.isEmpty() || !event.channelPreset.isEmpty()
+                    || event.zOffsetUm != 0.0)
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1 must not reference a channel for a plan without channels")
+                                    .arg(path));
+                }
+            }
+            else
+            {
+                if (event.channelIndex < 0 || static_cast<size_t>(event.channelIndex) >= plan.channels.size())
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.channelIndex does not reference a plan channel").arg(path));
+                }
+                channel = &plan.channels.at(static_cast<size_t>(event.channelIndex));
+                if (event.channelGroup != plan.channelGroup || event.channelPreset != channel->preset)
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1 channel does not match plan.channels[%2]")
+                                    .arg(path)
+                                    .arg(event.channelIndex));
+                }
+                // With a Z position the offset is part of it, otherwise it is kept apart
+                const bool hasFocus = !plan.zPositions.empty()
+                    || (event.positionIndex >= 0
+                        && static_cast<size_t>(event.positionIndex) < plan.positionZ.size()
+                        && plan.positionZ.at(static_cast<size_t>(event.positionIndex)).has_value());
+                const double expectedOffset = hasFocus ? 0.0 : channel->zOffsetUm;
+                if (!isFinite(event.zOffsetUm) || event.zOffsetUm != expectedOffset)
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.zOffsetUm does not match plan.channels[%2]")
+                                    .arg(path)
+                                    .arg(event.channelIndex));
+                }
+            }
+
+            const std::optional<double> positionFocus =
+                event.positionIndex >= 0 && static_cast<size_t>(event.positionIndex) < plan.positionZ.size()
+                    ? plan.positionZ.at(static_cast<size_t>(event.positionIndex))
+                    : std::nullopt;
+            if (plan.zPositions.empty() && !positionFocus)
             {
                 if (event.hasZ || event.zIndex != 0 || event.z != 0.0)
                 {
@@ -1300,13 +1498,17 @@ namespace scopeone::core
             {
                 if (!event.hasZ
                     || event.zIndex < 0
-                    || static_cast<size_t>(event.zIndex) >= plan.zPositions.size())
+                    || (plan.zPositions.empty() ? event.zIndex != 0
+                                                : static_cast<size_t>(event.zIndex) >= plan.zPositions.size()))
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1.zIndex and hasZ do not reference a plan Z position")
                                     .arg(path));
                 }
-                if (event.z != plan.zPositions.at(static_cast<size_t>(event.zIndex)))
+                const double expectedZ = positionFocus.value_or(0.0)
+                    + (plan.zPositions.empty() ? 0.0 : plan.zPositions.at(static_cast<size_t>(event.zIndex)))
+                    + (channel ? channel->zOffsetUm : 0.0);
+                if (event.z != expectedZ)
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1.z does not match plan.zPositions[%2]")
@@ -1329,6 +1531,14 @@ namespace scopeone::core
             {
                 return fail(errorMessage,
                             QStringLiteral("%1.cameraIds must contain at least one camera ID").arg(path));
+            }
+
+            if (channel && !channel->cameraId.isEmpty() && event.cameraIds != QStringList{channel->cameraId})
+            {
+                return fail(errorMessage,
+                            QStringLiteral("%1.cameraIds does not match the camera of plan.channels[%2]")
+                                .arg(path)
+                                .arg(event.channelIndex));
             }
 
             const QSet<QString> planCameraIds(plan.cameraIds.constBegin(), plan.cameraIds.constEnd());
@@ -1521,6 +1731,16 @@ namespace scopeone::core
             object.insert(QStringLiteral("exposureMs"), event.exposureMs);
             object.insert(QStringLiteral("minimumStartTimeMs"), QString::number(event.minimumStartTimeMs));
             object.insert(QStringLiteral("cameraIds"), QJsonArray::fromStringList(event.cameraIds));
+            if (!event.channelPreset.isEmpty())
+            {
+                object.insert(QStringLiteral("channelIndex"), event.channelIndex);
+                object.insert(QStringLiteral("channelGroup"), event.channelGroup);
+                object.insert(QStringLiteral("channelPreset"), event.channelPreset);
+            }
+            if (event.zOffsetUm != 0.0)
+            {
+                object.insert(QStringLiteral("zOffsetUm"), event.zOffsetUm);
+            }
             return canonicalJsonObject(object);
         }
 
@@ -1632,9 +1852,18 @@ namespace scopeone::core
                 order.append(recordingAxisName(axis));
             }
             QJsonArray positions;
-            for (const QPointF& position : plan.positions)
+            for (size_t index = 0; index < plan.positions.size(); ++index)
             {
-                positions.append(pointToJson(position));
+                QJsonObject position = pointToJson(plan.positions.at(index));
+                if (index < plan.positionLabels.size() && !plan.positionLabels.at(index).isEmpty())
+                {
+                    position.insert(QStringLiteral("label"), plan.positionLabels.at(index));
+                }
+                if (index < plan.positionZ.size() && plan.positionZ.at(index))
+                {
+                    position.insert(QStringLiteral("z"), *plan.positionZ.at(index));
+                }
+                positions.append(canonicalJsonObject(position));
             }
             QJsonArray zPositions;
             for (const double z : plan.zPositions)
@@ -1676,6 +1905,48 @@ namespace scopeone::core
             object.insert(QStringLiteral("order"), order);
             object.insert(QStringLiteral("positions"), positions);
             object.insert(QStringLiteral("zPositions"), zPositions);
+            if (!plan.channels.empty())
+            {
+                QJsonArray channels;
+                for (const ChannelSetting& channel : plan.channels)
+                {
+                    QJsonObject channelObject;
+                    channelObject.insert(QStringLiteral("preset"), channel.preset);
+                    channelObject.insert(QStringLiteral("exposureMs"), channel.exposureMs);
+                    channelObject.insert(QStringLiteral("zOffsetUm"), channel.zOffsetUm);
+                    channelObject.insert(QStringLiteral("zStack"), channel.zStack);
+                    channelObject.insert(QStringLiteral("skipFrames"), channel.skipFrames);
+                    if (!channel.cameraId.isEmpty())
+                    {
+                        channelObject.insert(QStringLiteral("cameraId"), channel.cameraId);
+                    }
+                    channels.append(canonicalJsonObject(channelObject));
+                }
+                object.insert(QStringLiteral("channelGroup"), plan.channelGroup);
+                object.insert(QStringLiteral("channels"), channels);
+            }
+            if (!plan.timeIntervalsMs.empty())
+            {
+                QJsonArray intervals;
+                for (const double interval : plan.timeIntervalsMs)
+                {
+                    intervals.append(interval);
+                }
+                object.insert(QStringLiteral("timeIntervalsMs"), intervals);
+            }
+            if (plan.autofocus)
+            {
+                object.insert(QStringLiteral("autofocus"), true);
+                object.insert(QStringLiteral("autofocusEveryFrames"), plan.autofocusEveryFrames);
+            }
+            if (plan.keepShutterOpenSlices)
+            {
+                object.insert(QStringLiteral("keepShutterOpenSlices"), true);
+            }
+            if (plan.keepShutterOpenChannels)
+            {
+                object.insert(QStringLiteral("keepShutterOpenChannels"), true);
+            }
             object.insert(QStringLiteral("saveDir"), plan.saveDir);
             object.insert(QStringLiteral("baseName"), plan.baseName);
             object.insert(QStringLiteral("metadataFileName"), plan.metadataFileName);
@@ -1684,6 +1955,37 @@ namespace scopeone::core
             object.insert(QStringLiteral("processing"), canonicalJsonObject(processing));
             object.insert(QStringLiteral("userMetadata"), canonicalJsonObject(plan.userMetadata));
             return canonicalJsonObject(object);
+        }
+
+        bool parseChannelSetting(const QJsonObject& object,
+                                 ChannelSetting& channel,
+                                 const QString& path,
+                                 QString* errorMessage)
+        {
+            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("cameraId")}),
+                                   {QStringLiteral("preset"),
+                                    QStringLiteral("exposureMs"),
+                                    QStringLiteral("zOffsetUm"),
+                                    QStringLiteral("zStack"),
+                                    QStringLiteral("skipFrames")},
+                                   path,
+                                   errorMessage))
+            {
+                return false;
+            }
+            ChannelSetting parsed;
+            if (!readString(object, QStringLiteral("preset"), parsed.preset, path, errorMessage)
+                || !readDouble(object, QStringLiteral("exposureMs"), parsed.exposureMs, path, errorMessage)
+                || !readDouble(object, QStringLiteral("zOffsetUm"), parsed.zOffsetUm, path, errorMessage)
+                || !readBool(object, QStringLiteral("zStack"), parsed.zStack, path, errorMessage)
+                || !readInt(object, QStringLiteral("skipFrames"), parsed.skipFrames, path, errorMessage)
+                || (object.contains(QStringLiteral("cameraId"))
+                    && !readString(object, QStringLiteral("cameraId"), parsed.cameraId, path, errorMessage)))
+            {
+                return false;
+            }
+            channel = parsed;
+            return true;
         }
 
         bool parsePoint(const QJsonObject& object,
@@ -1826,7 +2128,15 @@ namespace scopeone::core
                                        const QString& path,
                                        QString* errorMessage)
         {
-            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("enablePyramid")}),
+            if (!checkObjectFields(withoutOptionalFields(object,
+                                                         {QStringLiteral("enablePyramid"),
+                                                          QStringLiteral("channelGroup"),
+                                                          QStringLiteral("channels"),
+                                                          QStringLiteral("keepShutterOpenSlices"),
+                                                          QStringLiteral("keepShutterOpenChannels"),
+                                                          QStringLiteral("timeIntervalsMs"),
+                                                          QStringLiteral("autofocus"),
+                                                          QStringLiteral("autofocusEveryFrames")}),
                                    {QStringLiteral("schemaVersion"),
                                     QStringLiteral("experimentId"),
                                     QStringLiteral("cameraIds"),
@@ -1988,6 +2298,8 @@ namespace scopeone::core
                 return false;
             }
             parsed.positions.clear();
+            parsed.positionLabels.clear();
+            parsed.positionZ.clear();
             parsed.positions.reserve(static_cast<size_t>(positions.size()));
             for (qsizetype index = 0; index < positions.size(); ++index)
             {
@@ -1997,15 +2309,47 @@ namespace scopeone::core
                                 QStringLiteral("%1 must be an object")
                                     .arg(elementPath(memberPath(path, QStringLiteral("positions")), index)));
                 }
+                const QJsonObject positionObject = positions.at(index).toObject();
+                const QString positionPath = elementPath(memberPath(path, QStringLiteral("positions")), index);
                 QPointF position;
-                if (!parsePoint(positions.at(index).toObject(),
+                if (!parsePoint(withoutOptionalFields(positionObject,
+                                                      {QStringLiteral("label"), QStringLiteral("z")}),
                                 position,
-                                elementPath(memberPath(path, QStringLiteral("positions")), index),
+                                positionPath,
                                 errorMessage))
                 {
                     return false;
                 }
+                QString label;
+                std::optional<double> focus;
+                if (positionObject.contains(QStringLiteral("label"))
+                    && !readString(positionObject, QStringLiteral("label"), label, positionPath, errorMessage))
+                {
+                    return false;
+                }
+                if (positionObject.contains(QStringLiteral("z")))
+                {
+                    double z = 0.0;
+                    if (!readDouble(positionObject, QStringLiteral("z"), z, positionPath, errorMessage))
+                    {
+                        return false;
+                    }
+                    focus = z;
+                }
                 parsed.positions.push_back(position);
+                parsed.positionLabels.push_back(label);
+                parsed.positionZ.push_back(focus);
+            }
+            // Positions without any label or focus position keep the plain form
+            if (std::all_of(parsed.positionLabels.begin(), parsed.positionLabels.end(),
+                            [](const QString& label) { return label.isEmpty(); }))
+            {
+                parsed.positionLabels.clear();
+            }
+            if (std::none_of(parsed.positionZ.begin(), parsed.positionZ.end(),
+                             [](const std::optional<double>& z) { return z.has_value(); }))
+            {
+                parsed.positionZ.clear();
             }
 
             QJsonArray zPositions;
@@ -2025,6 +2369,86 @@ namespace scopeone::core
                                     .arg(elementPath(memberPath(path, QStringLiteral("zPositions")), index)));
                 }
                 parsed.zPositions.push_back(value.toDouble());
+            }
+
+            parsed.autofocus = false;
+            parsed.autofocusEveryFrames = 0;
+            if ((object.contains(QStringLiteral("autofocus"))
+                 && !readBool(object, QStringLiteral("autofocus"), parsed.autofocus, path, errorMessage))
+                || (object.contains(QStringLiteral("autofocusEveryFrames"))
+                    && !readInt(object,
+                                QStringLiteral("autofocusEveryFrames"),
+                                parsed.autofocusEveryFrames,
+                                path,
+                                errorMessage)))
+            {
+                return false;
+            }
+            parsed.timeIntervalsMs.clear();
+            if (object.contains(QStringLiteral("timeIntervalsMs")))
+            {
+                QJsonArray intervals;
+                if (!readArray(object, QStringLiteral("timeIntervalsMs"), intervals, path, errorMessage))
+                {
+                    return false;
+                }
+                for (qsizetype index = 0; index < intervals.size(); ++index)
+                {
+                    const QJsonValue value = intervals.at(index);
+                    if (!value.isDouble() || !isFinite(value.toDouble()))
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1 must be a finite number")
+                                        .arg(elementPath(memberPath(path, QStringLiteral("timeIntervalsMs")), index)));
+                    }
+                    parsed.timeIntervalsMs.push_back(value.toDouble());
+                }
+            }
+            parsed.keepShutterOpenSlices = false;
+            parsed.keepShutterOpenChannels = false;
+            if ((object.contains(QStringLiteral("keepShutterOpenSlices"))
+                 && !readBool(object,
+                              QStringLiteral("keepShutterOpenSlices"),
+                              parsed.keepShutterOpenSlices,
+                              path,
+                              errorMessage))
+                || (object.contains(QStringLiteral("keepShutterOpenChannels"))
+                    && !readBool(object,
+                                 QStringLiteral("keepShutterOpenChannels"),
+                                 parsed.keepShutterOpenChannels,
+                                 path,
+                                 errorMessage)))
+            {
+                return false;
+            }
+            parsed.channelGroup.clear();
+            parsed.channels.clear();
+            if (object.contains(QStringLiteral("channelGroup"))
+                && !readString(object, QStringLiteral("channelGroup"), parsed.channelGroup, path, errorMessage))
+            {
+                return false;
+            }
+            if (object.contains(QStringLiteral("channels")))
+            {
+                QJsonArray channels;
+                if (!readArray(object, QStringLiteral("channels"), channels, path, errorMessage))
+                {
+                    return false;
+                }
+                for (qsizetype index = 0; index < channels.size(); ++index)
+                {
+                    const QString channelPath = elementPath(memberPath(path, QStringLiteral("channels")), index);
+                    if (!channels.at(index).isObject())
+                    {
+                        return fail(errorMessage, QStringLiteral("%1 must be an object").arg(channelPath));
+                    }
+                    ChannelSetting channel;
+                    if (!parseChannelSetting(channels.at(index).toObject(), channel, channelPath, errorMessage))
+                    {
+                        return false;
+                    }
+                    parsed.channels.push_back(channel);
+                }
             }
 
             if (!readString(object, QStringLiteral("saveDir"), parsed.saveDir, path, errorMessage)
@@ -2169,7 +2593,11 @@ namespace scopeone::core
                                    const QString& path,
                                    QString* errorMessage)
         {
-            if (!checkObjectFields(object,
+            if (!checkObjectFields(withoutOptionalFields(object,
+                                                         {QStringLiteral("channelIndex"),
+                                                          QStringLiteral("channelGroup"),
+                                                          QStringLiteral("channelPreset"),
+                                                          QStringLiteral("zOffsetUm")}),
                                    {QStringLiteral("sequenceIndex"),
                                     QStringLiteral("burstIndex"),
                                     QStringLiteral("timeIndex"),
@@ -2226,6 +2654,18 @@ namespace scopeone::core
                                             parsed.minimumStartTimeMs,
                                             path,
                                             errorMessage))
+            {
+                return false;
+            }
+
+            if ((object.contains(QStringLiteral("channelIndex"))
+                 && !readInt(object, QStringLiteral("channelIndex"), parsed.channelIndex, path, errorMessage))
+                || (object.contains(QStringLiteral("channelGroup"))
+                    && !readString(object, QStringLiteral("channelGroup"), parsed.channelGroup, path, errorMessage))
+                || (object.contains(QStringLiteral("channelPreset"))
+                    && !readString(object, QStringLiteral("channelPreset"), parsed.channelPreset, path, errorMessage))
+                || (object.contains(QStringLiteral("zOffsetUm"))
+                    && !readDouble(object, QStringLiteral("zOffsetUm"), parsed.zOffsetUm, path, errorMessage)))
             {
                 return false;
             }
@@ -3202,6 +3642,8 @@ namespace scopeone::core
             return QStringLiteral("Z");
         case RecordingAxis::XY:
             return QStringLiteral("XY");
+        case RecordingAxis::Channel:
+            return QStringLiteral("Channel");
         }
         return QStringLiteral("Unknown");
     }
@@ -3317,6 +3759,172 @@ namespace scopeone::core
         return validateExperimentDocumentImpl(document, QStringLiteral("document"), errorMessage);
     }
 
+    namespace
+    {
+        // Marks the events between which the shutter stays open. A block is a run of events
+        // that share the index of every axis slower than the slowest axis that keeps the
+        // shutter open, so the shutter closes whenever one of those slower axes advances.
+        void markShutterBlocks(const ExperimentPlan& plan, QList<AcquisitionEvent>& events)
+        {
+            size_t depth = plan.order.size();
+            for (size_t index = 0; index < plan.order.size(); ++index)
+            {
+                const RecordingAxis axis = plan.order.at(index);
+                if ((axis == RecordingAxis::Z && plan.keepShutterOpenSlices
+                     && !plan.zPositions.empty())
+                    || (axis == RecordingAxis::Channel && plan.keepShutterOpenChannels
+                        && !plan.channels.empty()))
+                {
+                    depth = index;
+                    break;
+                }
+            }
+            if (depth == plan.order.size() || events.isEmpty())
+            {
+                return;
+            }
+
+            const auto blockKey = [&plan, depth](const AcquisitionEvent& event)
+            {
+                QList<int> key;
+                for (size_t index = 0; index < depth; ++index)
+                {
+                    switch (plan.order.at(index))
+                    {
+                    case RecordingAxis::Time:
+                        key.append(event.timeIndex);
+                        break;
+                    case RecordingAxis::Z:
+                        key.append(event.zIndex);
+                        break;
+                    case RecordingAxis::XY:
+                        key.append(event.positionIndex);
+                        break;
+                    case RecordingAxis::Channel:
+                        key.append(event.channelIndex);
+                        break;
+                    }
+                }
+                return key;
+            };
+
+            QList<int> previous = blockKey(events.first());
+            events.first().openShutterBefore = true;
+            for (qsizetype index = 1; index < events.size(); ++index)
+            {
+                const QList<int> key = blockKey(events.at(index));
+                if (key != previous)
+                {
+                    events[index - 1].closeShutterAfter = true;
+                    events[index].openShutterBefore = true;
+                    previous = key;
+                }
+            }
+            events.last().closeShutterAfter = true;
+        }
+    }
+
+    namespace
+    {
+        // The autofocus runs before the first event of each position at a time point
+        void markAutofocus(const ExperimentPlan& plan, QList<AcquisitionEvent>& events)
+        {
+            if (!plan.autofocus)
+            {
+                return;
+            }
+            QSet<QPair<int, int>> seen;
+            for (AcquisitionEvent& event : events)
+            {
+                const QPair<int, int> key(event.timeIndex, event.positionIndex);
+                if (seen.contains(key))
+                {
+                    continue;
+                }
+                seen.insert(key);
+                event.autofocusBefore = plan.autofocusEveryFrames <= 1
+                    || event.timeIndex % plan.autofocusEveryFrames == 0;
+            }
+        }
+    }
+
+    QString positionName(const ExperimentPlan& plan, int positionIndex)
+    {
+        QString name;
+        if (positionIndex >= 0 && static_cast<size_t>(positionIndex) < plan.positionLabels.size())
+        {
+            name = plan.positionLabels.at(static_cast<size_t>(positionIndex)).trimmed();
+        }
+        // The name becomes a directory name of the output
+        for (QChar& character : name)
+        {
+            if (QStringLiteral("/\\:*?\"<>|").contains(character) || character.unicode() < 0x20)
+            {
+                character = QLatin1Char('_');
+            }
+        }
+        return name.isEmpty() ? QStringLiteral("Position %1").arg(positionIndex + 1) : name;
+    }
+
+    QString omeAcquisitionOrder(const ExperimentPlan& plan)
+    {
+        QString order;
+        for (const RecordingAxis axis : plan.order)
+        {
+            switch (axis)
+            {
+            case RecordingAxis::Time:
+                order += QLatin1Char('T');
+                break;
+            case RecordingAxis::Z:
+                order += QLatin1Char('Z');
+                break;
+            case RecordingAxis::Channel:
+                order += QLatin1Char('C');
+                break;
+            case RecordingAxis::XY:
+                break;
+            }
+        }
+        for (const QChar letter : QStringLiteral("TZC"))
+        {
+            if (!order.contains(letter))
+            {
+                order += letter;
+            }
+        }
+        return order;
+    }
+
+    quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event)
+    {
+        const quint64 framesPerBurst = static_cast<quint64>((std::max)(1, plan.framesPerBurst));
+        const quint64 timeCount = framesPerBurst
+            * static_cast<quint64>(plan.burstMode ? (std::max)(1, plan.targetBursts) : 1);
+        const quint64 zCount = (std::max<quint64>)(1u, static_cast<quint64>(plan.zPositions.size()));
+        const quint64 channelCount = (std::max<quint64>)(1u, static_cast<quint64>(plan.channels.size()));
+        const quint64 time = static_cast<quint64>(event.burstIndex) * framesPerBurst
+            + static_cast<quint64>(event.timeIndex);
+
+        quint64 index = 0;
+        for (const QChar letter : omeAcquisitionOrder(plan))
+        {
+            if (letter == QLatin1Char('T'))
+            {
+                index = index * timeCount + time;
+            }
+            else if (letter == QLatin1Char('Z'))
+            {
+                index = index * zCount + static_cast<quint64>(event.zIndex);
+            }
+            else
+            {
+                index = index * channelCount + static_cast<quint64>(event.channelIndex);
+            }
+        }
+        return index;
+    }
+
     QList<AcquisitionEvent> buildAcquisitionEvents(const ExperimentPlan& plan,
                                                    int burstIndex,
                                                    QString* errorMessage)
@@ -3347,9 +3955,13 @@ namespace scopeone::core
         const int timeCount = plan.framesPerBurst;
         const int zCount = plan.zPositions.empty() ? 1 : static_cast<int>(plan.zPositions.size());
         const int positionCount = plan.positions.empty() ? 1 : static_cast<int>(plan.positions.size());
+        const int channelCount = plan.channels.empty() ? 1 : static_cast<int>(plan.channels.size());
+        // A channel that does not image the whole Z stack images its middle position
+        const int middleZIndex = (zCount - 1) / 2;
         int timeIndex = 0;
         int zIndex = 0;
         int positionIndex = 0;
+        int channelIndex = 0;
 
         const auto axisCount = [&](RecordingAxis axis)
         {
@@ -3361,6 +3973,8 @@ namespace scopeone::core
                 return zCount;
             case RecordingAxis::XY:
                 return positionCount;
+            case RecordingAxis::Channel:
+                return channelCount;
             }
             return 0;
         };
@@ -3369,6 +3983,15 @@ namespace scopeone::core
         {
             if (depth == plan.order.size())
             {
+                const ChannelSetting* channel = plan.channels.empty()
+                    ? nullptr
+                    : &plan.channels.at(static_cast<size_t>(channelIndex));
+                if (channel
+                    && ((!channel->zStack && zIndex != middleZIndex)
+                        || (channel->skipFrames > 0 && timeIndex % (channel->skipFrames + 1) != 0)))
+                {
+                    return;
+                }
                 AcquisitionEvent event;
                 event.sequenceIndex = static_cast<quint64>(burstIndex) * eventsPerBurst
                     + static_cast<quint64>(events.size());
@@ -3376,8 +3999,12 @@ namespace scopeone::core
                 event.timeIndex = timeIndex;
                 event.zIndex = zIndex;
                 event.positionIndex = positionIndex;
+                const std::optional<double> positionFocus =
+                    static_cast<size_t>(positionIndex) < plan.positionZ.size()
+                        ? plan.positionZ.at(static_cast<size_t>(positionIndex))
+                        : std::nullopt;
                 event.hasXY = !plan.positions.empty();
-                event.hasZ = !plan.zPositions.empty();
+                event.hasZ = !plan.zPositions.empty() || positionFocus.has_value();
                 if (event.hasXY)
                 {
                     const QPointF& position = plan.positions.at(static_cast<size_t>(positionIndex));
@@ -3386,15 +4013,46 @@ namespace scopeone::core
                 }
                 if (event.hasZ)
                 {
-                    event.z = plan.zPositions.at(static_cast<size_t>(zIndex));
+                    // The Z positions are offsets from the focus position of the position
+                    event.z = positionFocus.value_or(0.0)
+                        + (plan.zPositions.empty() ? 0.0 : plan.zPositions.at(static_cast<size_t>(zIndex)));
                 }
                 event.exposureMs = plan.exposureMs;
+                if (channel)
+                {
+                    event.channelIndex = channelIndex;
+                    event.channelGroup = plan.channelGroup;
+                    event.channelPreset = channel->preset;
+                    if (channel->exposureMs > 0.0)
+                    {
+                        event.exposureMs = channel->exposureMs;
+                    }
+                    if (event.hasZ)
+                    {
+                        event.z += channel->zOffsetUm;
+                    }
+                    else
+                    {
+                        event.zOffsetUm = channel->zOffsetUm;
+                    }
+                }
+                long double timeOffset = static_cast<long double>(timeIndex)
+                    * static_cast<long double>(plan.mdaIntervalMs);
+                if (!plan.timeIntervalsMs.empty())
+                {
+                    timeOffset = 0.0L;
+                    for (int interval = 0; interval < timeIndex; ++interval)
+                    {
+                        timeOffset += static_cast<long double>(plan.timeIntervalsMs.at(static_cast<size_t>(interval)));
+                    }
+                }
                 const long double minimumStart = static_cast<long double>(burstIndex)
                         * static_cast<long double>(plan.burstIntervalMs)
-                    + static_cast<long double>(timeIndex)
-                        * static_cast<long double>(plan.mdaIntervalMs);
+                    + timeOffset;
                 event.minimumStartTimeMs = static_cast<qint64>(minimumStart);
-                event.cameraIds = plan.cameraIds;
+                event.cameraIds = channel && !channel->cameraId.isEmpty()
+                    ? QStringList{channel->cameraId}
+                    : plan.cameraIds;
                 events.append(event);
                 return;
             }
@@ -3414,11 +4072,16 @@ namespace scopeone::core
                 case RecordingAxis::XY:
                     positionIndex = index;
                     break;
+                case RecordingAxis::Channel:
+                    channelIndex = index;
+                    break;
                 }
                 appendEvents(depth + 1);
             }
         };
         appendEvents(0);
+        markShutterBlocks(plan, events);
+        markAutofocus(plan, events);
         return events;
     }
 

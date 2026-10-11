@@ -855,8 +855,7 @@ namespace scopeone::core
             QString arrayPath = fileManifest.rawPath;
             if (multiPosition)
             {
-                arrayPath = QDir(arrayPath).filePath(
-                    QStringLiteral("Position %1").arg(positionIndex + 1));
+                arrayPath = QDir(arrayPath).filePath(positionName(m_manifest.plan, positionIndex));
             }
             arrayPath = QDir(arrayPath).filePath(QStringLiteral("0"));
 #if defined(_WIN32)
@@ -868,7 +867,7 @@ namespace scopeone::core
             location.t = static_cast<std::int64_t>(selectedRecord->event.burstIndex)
                     * (std::max)(1, m_manifest.plan.framesPerBurst)
                 + selectedRecord->event.timeIndex;
-            location.c = 0;
+            location.c = selectedRecord->event.channelIndex;
             location.z = selectedRecord->event.zIndex;
             break;
         }
@@ -876,28 +875,7 @@ namespace scopeone::core
         {
             location.format = scopewriter::Format::OmeTiff;
             const AcquisitionEvent& event = selectedRecord->event;
-            const std::uint64_t framesPerBurst = static_cast<std::uint64_t>(
-                (std::max)(1, m_manifest.plan.framesPerBurst));
-            const std::uint64_t time = static_cast<std::uint64_t>(event.burstIndex)
-                    * framesPerBurst
-                + static_cast<std::uint64_t>(event.timeIndex);
-            const std::uint64_t timeCount = framesPerBurst
-                * static_cast<std::uint64_t>(m_manifest.plan.burstMode
-                                                  ? (std::max)(1, m_manifest.plan.targetBursts)
-                                                  : 1);
-            const std::uint64_t z = static_cast<std::uint64_t>(event.zIndex);
-            const std::uint64_t zCount = (std::max)(
-                std::uint64_t{1}, static_cast<std::uint64_t>(m_manifest.plan.zPositions.size()));
-
-            const auto timeAxis = std::find(m_manifest.plan.order.begin(),
-                                            m_manifest.plan.order.end(),
-                                            RecordingAxis::Time);
-            const auto zAxis = std::find(m_manifest.plan.order.begin(),
-                                         m_manifest.plan.order.end(),
-                                         RecordingAxis::Z);
-            location.frameIndex = zAxis < timeAxis
-                                      ? z * timeCount + time
-                                      : time * zCount + z;
+            location.frameIndex = omePlaneIndex(m_manifest.plan, event);
 
             if (m_manifest.plan.positions.size() > 1)
             {
@@ -1323,6 +1301,8 @@ namespace scopeone::core
             m_managers->recordingManager->recordedMaxBytes());
         m_managers->recordingManager->setCameraProvider(m_managers->cameraProvider);
         m_managers->recordingManager->setStageProvider(m_managers->hardwareRuntime);
+        m_managers->recordingManager->setConfigurationProvider(m_managers->hardwareRuntime);
+        m_managers->recordingManager->setAcquisitionHardware(m_managers->hardwareRuntime);
         m_managers->recordingManager->setCameraRuntimeControl(m_managers->cameraRuntimeControl);
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)

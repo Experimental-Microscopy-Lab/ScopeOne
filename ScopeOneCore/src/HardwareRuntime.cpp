@@ -815,6 +815,70 @@ namespace scopeone::core::internal
         return provider->setConfig(groupName, configName, errorMessage);
     }
 
+    // The provider that has the hardware functions of the Micro-Manager core, if there is one
+    AcquisitionHardware* HardwareRuntime::acquisitionHardware() const
+    {
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
+            if (auto* hardware = dynamic_cast<AcquisitionHardware*>(provider.get()))
+            {
+                return hardware;
+            }
+        }
+        return nullptr;
+    }
+
+    bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
+            return false;
+        }
+        return hardware->autoShutter(enabled, errorMessage);
+    }
+
+    bool HardwareRuntime::setAutoShutter(bool enabled, QString* errorMessage)
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
+            return false;
+        }
+        return hardware->setAutoShutter(enabled, errorMessage);
+    }
+
+    bool HardwareRuntime::setCoreShutterOpen(bool open, QString* errorMessage)
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
+            return false;
+        }
+        return hardware->setCoreShutterOpen(open, errorMessage);
+    }
+
+    bool HardwareRuntime::hasAutofocus() const
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        return hardware && hardware->hasAutofocus();
+    }
+
+    bool HardwareRuntime::runAutofocus(QString* errorMessage)
+    {
+        AcquisitionHardware* hardware = acquisitionHardware();
+        if (!hardware)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Autofocus is not available");
+            return false;
+        }
+        return hardware->runAutofocus(errorMessage);
+    }
+
     void HardwareRuntime::clear()
     {
         for (const HardwareProviderDescriptor& descriptor : m_registry.providers())

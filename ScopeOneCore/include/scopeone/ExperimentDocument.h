@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <optional>
 #include <vector>
 
 #include "scopeone/ImageFrame.h"
@@ -32,7 +33,26 @@ namespace scopeone::core
     {
         Time = 0,
         Z = 1,
-        XY = 2
+        XY = 2,
+        Channel = 3
+    };
+
+    // One channel of a multi-channel acquisition. Like a Micro-Manager channel it is a preset
+    // of a configuration group that is applied before the image is taken.
+    struct ChannelSetting
+    {
+        QString preset;
+        // Zero keeps the exposure of the plan
+        double exposureMs{0.0};
+        // Focus offset of this channel in micrometers
+        double zOffsetUm{0.0};
+        // False images this channel only at the middle Z position
+        bool zStack{true};
+        // Images this channel at every (skipFrames + 1)th time point
+        int skipFrames{0};
+        // Camera that takes this channel. Empty uses every camera of the plan. The other
+        // cameras leave the planes of the channel empty.
+        QString cameraId;
     };
 
     enum class ProcessingBitDepth
@@ -102,11 +122,33 @@ namespace scopeone::core
         int targetBursts{1};
         double burstIntervalMs{0.0};
         double mdaIntervalMs{0.0};
+        // Interval after each time point except the last one, for acquisitions whose time
+        // points are not evenly spaced. Either empty, or framesPerBurst - 1 long and then
+        // used instead of mdaIntervalMs.
+        std::vector<double> timeIntervalsMs;
         double exposureMs{0.0};
         double pixelSizeUm{0.0};
         std::vector<RecordingAxis> order{RecordingAxis::Time, RecordingAxis::Z, RecordingAxis::XY};
         std::vector<QPointF> positions;
+        // Names of the positions and the focus position of each one. Either list is empty or
+        // as long as positions; a position without a name is called Position N and one without
+        // a focus position keeps the focus of the Z positions. With a focus position, the Z
+        // positions are offsets from it.
+        std::vector<QString> positionLabels;
+        std::vector<std::optional<double>> positionZ;
         std::vector<double> zPositions;
+        // Configuration group whose presets are the channels
+        QString channelGroup;
+        std::vector<ChannelSetting> channels;
+        // Keep the shutter open between the Z positions or between the channels, instead of
+        // opening it for every image
+        bool keepShutterOpenSlices{false};
+        bool keepShutterOpenChannels{false};
+        // Run the autofocus device before the first image of each position at a time point.
+        // With autofocusEveryFrames above 1 it runs at every Nth time point only. The Z
+        // positions that follow are shifted by the distance the autofocus moved the focus.
+        bool autofocus{false};
+        int autofocusEveryFrames{0};
         QString saveDir;
         QString baseName;
         QString metadataFileName;
@@ -131,6 +173,19 @@ namespace scopeone::core
         double exposureMs{0.0};
         qint64 minimumStartTimeMs{0};
         QStringList cameraIds;
+        // Channel of a multi-channel acquisition; the preset is empty without channels
+        int channelIndex{0};
+        QString channelGroup;
+        QString channelPreset;
+        // Focus offset of the channel from the focus position at the start of the
+        // acquisition, used when the plan has no Z positions of its own
+        double zOffsetUm{0.0};
+        // The shutter is opened before this event and closed after it. Derived from the plan
+        // when the events are built, so it is not part of the experiment document.
+        bool openShutterBefore{false};
+        bool closeShutterAfter{false};
+        // The autofocus runs before this event
+        bool autofocusBefore{false};
     };
 
     struct FrameRecord
@@ -266,6 +321,16 @@ namespace scopeone::core
     SCOPEONE_CORE_EXPORT bool validateExperimentPlan(const ExperimentPlan& plan, QString* errorMessage = nullptr);
     SCOPEONE_CORE_EXPORT bool validateExperimentDocument(const ExperimentDocument& document,
                                                          QString* errorMessage = nullptr);
+    // Name of a position as it appears in the output and the OME metadata
+    SCOPEONE_CORE_EXPORT QString positionName(const ExperimentPlan& plan, int positionIndex);
+
+    // Order of the time, Z and channel axes of the plan from the slowest to the fastest
+    // changing one, as the letters T, Z and C. Every letter appears exactly once.
+    SCOPEONE_CORE_EXPORT QString omeAcquisitionOrder(const ExperimentPlan& plan);
+
+    // Position of an event among the planes of one OME image, counting from zero
+    SCOPEONE_CORE_EXPORT quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event);
+
     SCOPEONE_CORE_EXPORT QList<AcquisitionEvent> buildAcquisitionEvents(const ExperimentPlan& plan,
                                                                        int burstIndex = 0,
                                                                        QString* errorMessage = nullptr);

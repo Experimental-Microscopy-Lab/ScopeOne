@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "internal/AcquisitionHardware.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
 #include "internal/AcquisitionEngine.h"
@@ -54,6 +55,7 @@ namespace scopeone::core::internal
                             public ShutterProvider,
                             public StateProvider,
                             public ConfigurationProvider,
+                            public AcquisitionHardware,
                             public CameraRuntimeControl
     {
         Q_OBJECT
@@ -146,6 +148,12 @@ namespace scopeone::core::internal
                        const QString& configName,
                        QString* errorMessage) override;
 
+        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const override;
+        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr) override;
+        bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
+        bool hasAutofocus() const override;
+        bool runAutofocus(QString* errorMessage = nullptr) override;
+
         DeviceRegistry* deviceRegistry() { return &m_registry; }
         const DeviceRegistry* deviceRegistry() const { return &m_registry; }
         void clear();
@@ -171,6 +179,8 @@ namespace scopeone::core::internal
             const QStringList& cameraIds) const;
 
         DeviceRegistry m_registry;
+        AcquisitionHardware* acquisitionHardware() const;
+
         AcquisitionEngine m_acquisitionEngine;
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;

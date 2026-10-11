@@ -11,6 +11,7 @@
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QDebug>
 #include <QHBoxLayout>
 #include <QAbstractItemView>
@@ -25,6 +26,7 @@
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStorageInfo>
+#include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -258,6 +260,27 @@ namespace scopeone::ui
             syncOrderList();
             updateUiState();
         });
+        connect(m_mdaAutofocusCheck, &QCheckBox::toggled, this, [this]() { updateUiState(); });
+        connect(m_mdaEnableChannelCheck, &QCheckBox::toggled, this, [this](bool enabled)
+        {
+            if (enabled)
+            {
+                refreshChannelGroups();
+            }
+            syncOrderList();
+            updateUiState();
+        });
+        connect(m_channelGroupCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this]() { loadChannelPresets(); });
+        connect(m_channelTable, &QTableWidget::itemChanged, this, [this]()
+        {
+            syncOrderList();
+            updateUiState();
+        });
+        connect(m_channelUpButton, &QPushButton::clicked, this, [this]() { moveChannelRow(-1); });
+        connect(m_channelDownButton, &QPushButton::clicked, this, [this]() { moveChannelRow(1); });
+        connect(m_scopeonecore, &scopeone::core::ScopeOneCore::hardwareConfigurationChanged, this,
+                [this]() { refreshChannelGroups(); });
         connect(m_mdaOrderList, &QListWidget::currentRowChanged, this, [this]() { updateUiState(); });
         connect(m_mdaOrderUpButton, &QPushButton::clicked, this, [this]() { moveOrderItem(-1); });
         connect(m_mdaOrderDownButton, &QPushButton::clicked, this, [this]() { moveOrderItem(1); });
@@ -525,6 +548,11 @@ namespace scopeone::ui
         zRowLayout->addWidget(m_mdaZCountSpin);
         mdaLayout->addRow("Z:", zRowLayout);
 
+        m_mdaZRelativeCheck = new QCheckBox("Relative to the current Z", this);
+        m_mdaZRelativeCheck->setToolTip(QStringLiteral(
+            "The Z start is measured from the focus position when the recording starts"));
+        mdaLayout->addRow("", m_mdaZRelativeCheck);
+
         m_mdaEnableXYCheck = new QCheckBox("Enable XY Grid", this);
         mdaLayout->addRow("", m_mdaEnableXYCheck);
 
@@ -582,13 +610,74 @@ namespace scopeone::ui
         yRowLayout->addWidget(m_mdaYCountSpin);
         mdaLayout->addRow("Y:", yRowLayout);
 
+        auto* autofocusLayout = new QHBoxLayout();
+        m_mdaAutofocusCheck = new QCheckBox("Autofocus", this);
+        m_mdaAutofocusCheck->setToolTip(QStringLiteral(
+            "Runs the autofocus device of Micro-Manager before the first image of each position"));
+        m_mdaAutofocusEverySpin = new QSpinBox(this);
+        m_mdaAutofocusEverySpin->setRange(1, 100000);
+        m_mdaAutofocusEverySpin->setValue(1);
+        m_mdaAutofocusEverySpin->setPrefix(QStringLiteral("every "));
+        m_mdaAutofocusEverySpin->setSuffix(QStringLiteral(" time point(s)"));
+        autofocusLayout->addWidget(m_mdaAutofocusCheck);
+        autofocusLayout->addWidget(m_mdaAutofocusEverySpin);
+        autofocusLayout->addStretch();
+        mdaLayout->addRow("", autofocusLayout);
+
+        m_mdaEnableChannelCheck = new QCheckBox("Enable Channels", this);
+        mdaLayout->addRow("", m_mdaEnableChannelCheck);
+
+        m_channelGroupCombo = new QComboBox(this);
+        m_channelGroupCombo->setToolTip(QStringLiteral(
+            "Configuration group whose presets are the channels"));
+        mdaLayout->addRow("Group:", m_channelGroupCombo);
+
+        m_channelTable = new QTableWidget(0, 7, this);
+        m_channelTable->setHorizontalHeaderLabels(
+            {"Use", "Preset", "Exposure (ms)", "Z offset (µm)", "Z stack", "Skip", "Camera"});
+        m_channelTable->horizontalHeaderItem(6)->setToolTip(
+            QStringLiteral("Camera that images this channel. All uses every selected camera."));
+        m_channelTable->horizontalHeaderItem(2)->setToolTip(
+            QStringLiteral("Exposure of this channel. 0 uses the exposure of the camera."));
+        m_channelTable->horizontalHeaderItem(3)->setToolTip(
+            QStringLiteral("Focus offset of this channel"));
+        m_channelTable->horizontalHeaderItem(4)->setToolTip(
+            QStringLiteral("Unchecked images this channel only at the middle Z position"));
+        m_channelTable->horizontalHeaderItem(5)->setToolTip(
+            QStringLiteral("Number of time points skipped between images of this channel"));
+        m_channelTable->verticalHeader()->hide();
+        m_channelTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_channelTable->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_channelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+        m_channelTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        m_channelTable->setFixedHeight(130);
+
+        m_channelUpButton = new QPushButton("Up", this);
+        m_channelDownButton = new QPushButton("Down", this);
+        m_channelUpButton->setMaximumWidth(70);
+        m_channelDownButton->setMaximumWidth(70);
+        auto* channelButtonsLayout = new QVBoxLayout();
+        channelButtonsLayout->addWidget(m_channelUpButton);
+        channelButtonsLayout->addWidget(m_channelDownButton);
+        channelButtonsLayout->addStretch();
+        auto* channelLayout = new QHBoxLayout();
+        channelLayout->addWidget(m_channelTable, 1);
+        channelLayout->addLayout(channelButtonsLayout);
+        mdaLayout->addRow("Channels:", channelLayout);
+
+        m_keepShutterSlicesCheck = new QCheckBox("Keep the shutter open between Z positions", this);
+        m_keepShutterChannelsCheck = new QCheckBox("Keep the shutter open between channels", this);
+        mdaLayout->addRow("", m_keepShutterSlicesCheck);
+        mdaLayout->addRow("", m_keepShutterChannelsCheck);
+
         m_mdaOrderList = new QListWidget(this);
         m_mdaOrderList->setSelectionMode(QAbstractItemView::SingleSelection);
         m_mdaOrderList->setFixedHeight(72);
         m_orderPreference = {
             static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Time),
             static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Z),
-            static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY)
+            static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY),
+            static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Channel)
         };
         syncOrderList();
 
@@ -681,6 +770,19 @@ namespace scopeone::ui
     void RecordingWidget::setAvailableCameras(const QStringList& cameraIds)
     {
         m_availableCameraIds = cameraIds;
+        for (int row = 0; row < m_channelTable->rowCount(); ++row)
+        {
+            // Offer the new cameras, keeping the choice where the camera still exists
+            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
+            {
+                const QString selected = combo->currentText();
+                combo->clear();
+                combo->addItem(QStringLiteral("All"));
+                combo->addItems(cameraIds);
+                const int index = combo->findText(selected);
+                combo->setCurrentIndex(index < 0 ? 0 : index);
+            }
+        }
 
         QString current = m_detectorCombo->currentText();
         {
@@ -766,6 +868,20 @@ namespace scopeone::ui
         m_mdaYStartSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
         m_mdaYStepSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
         m_mdaYCountSpin->setEnabled(editingEnabled && m_mdaEnableXYCheck->isChecked());
+        m_mdaZRelativeCheck->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_mdaAutofocusCheck->setEnabled(editingEnabled);
+        m_mdaAutofocusEverySpin->setEnabled(editingEnabled && m_mdaAutofocusCheck->isChecked());
+        m_keepShutterSlicesCheck->setEnabled(editingEnabled && m_mdaEnableZCheck->isChecked());
+        m_keepShutterChannelsCheck->setEnabled(
+            editingEnabled && m_mdaEnableChannelCheck->isChecked() && usedChannels().size() > 1);
+        m_mdaEnableChannelCheck->setEnabled(editingEnabled);
+        const bool channelsEnabled = editingEnabled && m_mdaEnableChannelCheck->isChecked();
+        m_channelGroupCombo->setEnabled(channelsEnabled);
+        m_channelTable->setEnabled(channelsEnabled);
+        m_channelUpButton->setEnabled(channelsEnabled && m_channelTable->currentRow() > 0);
+        m_channelDownButton->setEnabled(
+            channelsEnabled && m_channelTable->currentRow() >= 0
+            && m_channelTable->currentRow() + 1 < m_channelTable->rowCount());
         const int orderRow = m_mdaOrderList->currentRow();
         const int orderCount = m_mdaOrderList->count();
         m_mdaOrderUpButton->setEnabled(editingEnabled && orderRow > 0);
@@ -856,8 +972,11 @@ namespace scopeone::ui
                                                ? static_cast<qint64>(m_mdaXCountSpin->value())
                                                    * m_mdaYCountSpin->value()
                                                : 1;
+            const qint64 channelCount = m_mdaEnableChannelCheck->isChecked()
+                ? static_cast<qint64>((std::max<size_t>)(1, usedChannels().size()))
+                : 1;
             const long double estimatedBytes = static_cast<long double>(bytesPerPlane)
-                * m_framesSpin->value() * burstCount * zCount * positionCount;
+                * m_framesSpin->value() * burstCount * zCount * positionCount * channelCount;
             const qint64 estimate = estimatedBytes > static_cast<long double>((std::numeric_limits<qint64>::max)())
                                         ? (std::numeric_limits<qint64>::max)()
                                         : static_cast<qint64>(estimatedBytes);
@@ -963,14 +1082,25 @@ namespace scopeone::ui
 
         if (m_mdaEnableZCheck->isChecked())
         {
+            // A relative stack is placed around the focus position at the start of the recording
+            double zOrigin = 0.0;
+            if (m_mdaZRelativeCheck->isChecked()
+                && !m_scopeonecore->readZPosition(m_scopeonecore->currentFocusDevice(), zOrigin))
+            {
+                qWarning().noquote() << "Cannot read the focus position for a relative Z stack";
+                return false;
+            }
             const int count = qMax(1, m_mdaZCountSpin->value());
             plan.zPositions.reserve(count);
             for (int i = 0; i < count; ++i)
             {
-                plan.zPositions.push_back(m_mdaZStartSpin->value()
+                plan.zPositions.push_back(zOrigin + m_mdaZStartSpin->value()
                     + static_cast<double>(i) * m_mdaZStepSpin->value());
             }
         }
+        plan.keepShutterOpenSlices = m_mdaEnableZCheck->isChecked() && m_keepShutterSlicesCheck->isChecked();
+        plan.autofocus = m_mdaAutofocusCheck->isChecked();
+        plan.autofocusEveryFrames = plan.autofocus ? m_mdaAutofocusEverySpin->value() : 0;
 
         if (m_mdaEnableXYCheck->isChecked())
         {
@@ -986,8 +1116,19 @@ namespace scopeone::ui
                     const double x = m_mdaXStartSpin->value()
                         + static_cast<double>(xIndex) * m_mdaXStepSpin->value();
                     plan.positions.push_back(QPointF(x, y));
+                    // Named like the tiles of a Micro-Manager position list
+                    plan.positionLabels.push_back(QStringLiteral("Pos-1-%1_%2")
+                                                      .arg(xIndex, 3, 10, QLatin1Char('0'))
+                                                      .arg(yIndex, 3, 10, QLatin1Char('0')));
                 }
             }
+        }
+
+        if (m_mdaEnableChannelCheck->isChecked())
+        {
+            plan.channels = usedChannels();
+            plan.channelGroup = plan.channels.empty() ? QString() : m_channelGroupCombo->currentText();
+            plan.keepShutterOpenChannels = plan.channels.size() > 1 && m_keepShutterChannelsCheck->isChecked();
         }
 
         if (!m_scopeonecore->startRecording(plan, selectedCameraIds()))
@@ -1051,6 +1192,189 @@ namespace scopeone::ui
         return true;
     }
 
+    // Camera choice of one channel: every selected camera, or one of them
+    QComboBox* RecordingWidget::makeChannelCameraCombo(const QString& selected)
+    {
+        auto* combo = new QComboBox(m_channelTable);
+        combo->addItem(QStringLiteral("All"));
+        combo->addItems(m_availableCameraIds);
+        const int index = combo->findText(selected);
+        combo->setCurrentIndex(index < 0 ? 0 : index);
+        return combo;
+    }
+
+    // Lists the configuration groups of the loaded hardware as channel groups
+    void RecordingWidget::refreshChannelGroups()
+    {
+        const QStringList groups = m_scopeonecore->availableConfigGroups();
+        QStringList shown;
+        for (int index = 0; index < m_channelGroupCombo->count(); ++index)
+        {
+            shown.append(m_channelGroupCombo->itemText(index));
+        }
+        if (groups == shown)
+        {
+            return;
+        }
+        const QString previous = m_channelGroupCombo->currentText();
+        {
+            QSignalBlocker blocker(m_channelGroupCombo);
+            m_channelGroupCombo->clear();
+            m_channelGroupCombo->addItems(groups);
+            // Micro-Manager calls the group of its channels "Channel" by default
+            int selected = m_channelGroupCombo->findText(previous);
+            if (selected < 0)
+            {
+                selected = m_channelGroupCombo->findText(QStringLiteral("Channel"));
+            }
+            m_channelGroupCombo->setCurrentIndex(selected < 0 ? 0 : selected);
+        }
+        loadChannelPresets();
+    }
+
+    // Lists the presets of the selected group, keeping the settings of those already listed
+    void RecordingWidget::loadChannelPresets()
+    {
+        struct Row
+        {
+            bool used{false};
+            scopeone::core::ChannelSetting setting;
+        };
+        QHash<QString, Row> previous;
+        QStringList previousOrder;
+        for (int row = 0; row < m_channelTable->rowCount(); ++row)
+        {
+            Row entry;
+            entry.used = m_channelTable->item(row, 0)->checkState() == Qt::Checked;
+            entry.setting.preset = m_channelTable->item(row, 1)->text();
+            entry.setting.exposureMs = m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble();
+            entry.setting.zOffsetUm = m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble();
+            entry.setting.zStack = m_channelTable->item(row, 4)->checkState() == Qt::Checked;
+            entry.setting.skipFrames = m_channelTable->item(row, 5)->data(Qt::EditRole).toInt();
+            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
+            {
+                entry.setting.cameraId = combo->currentText() == QStringLiteral("All")
+                    ? QString()
+                    : combo->currentText();
+            }
+            previous.insert(entry.setting.preset, entry);
+            previousOrder.append(entry.setting.preset);
+        }
+
+        QStringList presets = m_scopeonecore->availableConfigs(m_channelGroupCombo->currentText());
+        QStringList ordered;
+        for (const QString& preset : previousOrder)
+        {
+            if (presets.contains(preset))
+            {
+                ordered.append(preset);
+            }
+        }
+        for (const QString& preset : presets)
+        {
+            if (!ordered.contains(preset))
+            {
+                ordered.append(preset);
+            }
+        }
+
+        {
+            QSignalBlocker blocker(m_channelTable);
+            m_channelTable->setRowCount(0);
+            for (const QString& preset : ordered)
+            {
+                const Row entry = previous.value(preset);
+                const int row = m_channelTable->rowCount();
+                m_channelTable->insertRow(row);
+
+                auto* use = new QTableWidgetItem();
+                use->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                use->setCheckState(entry.used ? Qt::Checked : Qt::Unchecked);
+                auto* name = new QTableWidgetItem(preset);
+                name->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                auto* exposure = new QTableWidgetItem();
+                exposure->setData(Qt::EditRole, entry.setting.exposureMs);
+                auto* offset = new QTableWidgetItem();
+                offset->setData(Qt::EditRole, entry.setting.zOffsetUm);
+                auto* zStack = new QTableWidgetItem();
+                zStack->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                zStack->setCheckState(previous.contains(preset) && !entry.setting.zStack ? Qt::Unchecked
+                                                                                         : Qt::Checked);
+                auto* skip = new QTableWidgetItem();
+                skip->setData(Qt::EditRole, entry.setting.skipFrames);
+
+                m_channelTable->setItem(row, 0, use);
+                m_channelTable->setItem(row, 1, name);
+                m_channelTable->setItem(row, 2, exposure);
+                m_channelTable->setItem(row, 3, offset);
+                m_channelTable->setItem(row, 4, zStack);
+                m_channelTable->setItem(row, 5, skip);
+                m_channelTable->setCellWidget(row, 6, makeChannelCameraCombo(entry.setting.cameraId));
+            }
+        }
+        syncOrderList();
+        updateUiState();
+    }
+
+    // Swaps the selected channel with its neighbour
+    void RecordingWidget::moveChannelRow(int delta)
+    {
+        const int row = m_channelTable->currentRow();
+        const int target = row + delta;
+        if (row < 0 || target < 0 || target >= m_channelTable->rowCount())
+        {
+            return;
+        }
+        {
+            QSignalBlocker blocker(m_channelTable);
+            for (int column = 0; column < 6; ++column)
+            {
+                QTableWidgetItem* first = m_channelTable->takeItem(row, column);
+                QTableWidgetItem* second = m_channelTable->takeItem(target, column);
+                m_channelTable->setItem(row, column, second);
+                m_channelTable->setItem(target, column, first);
+            }
+            auto* firstCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6));
+            auto* secondCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(target, 6));
+            if (firstCamera && secondCamera)
+            {
+                const QString text = firstCamera->currentText();
+                firstCamera->setCurrentText(secondCamera->currentText());
+                secondCamera->setCurrentText(text);
+            }
+        }
+        m_channelTable->setCurrentCell(target, 1);
+        updateUiState();
+    }
+
+    // The checked channels in the order of the table
+    std::vector<scopeone::core::ChannelSetting> RecordingWidget::usedChannels() const
+    {
+        std::vector<scopeone::core::ChannelSetting> channels;
+        for (int row = 0; row < m_channelTable->rowCount(); ++row)
+        {
+            if (m_channelTable->item(row, 0)->checkState() != Qt::Checked)
+            {
+                continue;
+            }
+            scopeone::core::ChannelSetting channel;
+            channel.preset = m_channelTable->item(row, 1)->text();
+            channel.exposureMs = (std::max)(0.0, m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble());
+            channel.zOffsetUm = m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble();
+            channel.zStack = m_channelTable->item(row, 4)->checkState() == Qt::Checked;
+            channel.skipFrames = (std::max)(0, m_channelTable->item(row, 5)->data(Qt::EditRole).toInt());
+            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
+            {
+                if (combo->currentText() != QStringLiteral("All"))
+                {
+                    channel.cameraId = combo->currentText();
+                }
+            }
+            channels.push_back(channel);
+        }
+        return channels;
+    }
+
     // Moves one MDA order item in the visible list
     void RecordingWidget::moveOrderItem(int delta)
     {
@@ -1098,6 +1422,10 @@ namespace scopeone::ui
         {
             allowed.insert(static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::XY));
         }
+        if (m_mdaEnableChannelCheck->isChecked() && !usedChannels().empty())
+        {
+            allowed.insert(static_cast<int>(scopeone::core::ScopeOneCore::RecordingAxis::Channel));
+        }
 
         std::vector<int> visibleInternal;
         for (int axis : m_orderPreference)
@@ -1130,6 +1458,9 @@ namespace scopeone::ui
                 break;
             case scopeone::core::ScopeOneCore::RecordingAxis::XY:
                 label = "XY";
+                break;
+            case scopeone::core::ScopeOneCore::RecordingAxis::Channel:
+                label = "Channel";
                 break;
             }
             auto* item = new QListWidgetItem(label, m_mdaOrderList);
