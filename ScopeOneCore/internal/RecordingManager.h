@@ -161,6 +161,9 @@ namespace scopeone::core::internal
             ExperimentPlan plan;
             AcquisitionEvent lastEvent{};
             bool hasLastEvent{false};
+            // Events of the running burst and how many of them finished
+            qint64 eventsThisBurst{0};
+            qint64 eventsDone{0};
         };
 
         bool buildCapturePlan(const ExperimentPlan& requestedPlan,

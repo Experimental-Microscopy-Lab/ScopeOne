@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include "scopeone/ScopeOneCore.h"
 
 #include <QWidget>
@@ -13,6 +14,11 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QLabel;
 class QLineEdit;
+class QProgressBar;
+namespace scopeone::gui
+{
+    class CollapsibleSection;
+}
 class QPushButton;
 class QListWidget;
 class QTableWidget;
@@ -45,6 +51,8 @@ namespace scopeone::ui
         void updateStorageStatus();
         void updateStorageStatusText(qint64 availableBytes);
         void moveOrderItem(int delta);
+        void updateSectionSummaries();
+        void updatePlanSummary();
         void syncOrderList();
         void refreshChannelGroups();
         QComboBox* makeChannelCameraCombo(const QString& selected);
@@ -75,6 +83,12 @@ namespace scopeone::ui
         QSpinBox* m_compressionLevelSpin{nullptr};
         QCheckBox* m_pyramidCheck{nullptr};
         QComboBox* m_formatCombo{nullptr};
+
+        scopeone::gui::CollapsibleSection* m_timeSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_zSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_positionSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_channelSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_advancedSection{nullptr};
 
         QSpinBox* m_framesSpin{nullptr};
         QDoubleSpinBox* m_mdaIntervalSpin{nullptr};
@@ -124,6 +138,12 @@ namespace scopeone::ui
         QLabel* m_frameCountLabel{nullptr};
         QLabel* m_burstCountLabel{nullptr};
         QLabel* m_storageStatusLabel{nullptr};
+        QLabel* m_planSummaryLabel{nullptr};
+        QProgressBar* m_progressBar{nullptr};
+        QLabel* m_failureLabel{nullptr};
+        QElapsedTimer m_runTimer;
+        double m_summaryExposureMs{0.0};
+        qint64 m_summaryExposureAtMs{0};
         QTimer* m_storageStatusTimer{nullptr};
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};

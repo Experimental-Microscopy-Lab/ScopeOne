@@ -1,4 +1,5 @@
 #include "RecordingWidget.h"
+#include "CollapsibleSection.h"
 #include "PositionListFile.h"
 #include "scopeone/ScopeOneCore.h"
 #include <QCheckBox>
@@ -21,6 +22,7 @@
 #include <QListWidget>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -128,6 +130,25 @@ namespace
     {
         const qint64 target = (std::max)(0ll, frameTarget);
         return QString("%1 / %2 frames").arg(frameCurrent).arg(target);
+    }
+
+    // Formats a duration as the largest two units, such as 1 h 05 min
+    QString formatDuration(double milliseconds)
+    {
+        const qint64 seconds = static_cast<qint64>(milliseconds / 1000.0 + 0.5);
+        if (seconds < 1)
+        {
+            return QStringLiteral("under 1 s");
+        }
+        if (seconds < 60)
+        {
+            return QStringLiteral("%1 s").arg(seconds);
+        }
+        if (seconds < 3600)
+        {
+            return QStringLiteral("%1 min %2 s").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+        }
+        return QStringLiteral("%1 h %2 min").arg(seconds / 3600).arg(seconds % 3600 / 60, 2, 10, QLatin1Char('0'));
     }
 
     QString formatBurstsText(int burstCurrent, int burstTarget)
@@ -325,6 +346,31 @@ namespace scopeone::ui
                     const bool progressVisible = phase != scopeone::core::kRecordingPhaseIdle
                         && phase != scopeone::core::kRecordingPhaseStopped;
                     m_frameCountLabel->setVisible(progressVisible);
+                    // Overall progress over all bursts, with a rough estimate of the time left
+                    if (progressVisible && frameTarget > 0)
+                    {
+                        const qint64 bursts = (std::max)(1, burstTarget);
+                        const qint64 total = frameTarget * bursts;
+                        const qint64 done = (std::min)(total,
+                                                       (burstCurrent > 0 ? (burstCurrent - 1) * frameTarget : 0)
+                                                           + frameCurrent);
+                        m_progressBar->setRange(0, static_cast<int>((std::min<qint64>)(total, 2000000000)));
+                        m_progressBar->setValue(static_cast<int>((std::min<qint64>)(done, 2000000000)));
+                        QString format = QStringLiteral("%p%");
+                        if (done > 0 && done < total && m_runTimer.isValid() && m_runTimer.elapsed() > 2000)
+                        {
+                            format += QStringLiteral(" · about %1 left")
+                                          .arg(formatDuration(static_cast<double>(m_runTimer.elapsed())
+                                                              / static_cast<double>(done)
+                                                              * static_cast<double>(total - done)));
+                        }
+                        m_progressBar->setFormat(format);
+                        m_progressBar->show();
+                    }
+                    else if (!progressVisible)
+                    {
+                        m_progressBar->hide();
+                    }
                     const QString burstStatus = formatBurstsText(burstCurrent, burstTarget);
                     m_burstCountLabel->setText(burstStatus);
                     m_burstCountLabel->setVisible(progressVisible && !burstStatus.isEmpty());
@@ -333,6 +379,15 @@ namespace scopeone::ui
                 [this](bool recording)
                 {
                     m_isRecording = recording;
+                    if (recording)
+                    {
+                        m_runTimer.start();
+                        m_failureLabel->hide();
+                    }
+                    else
+                    {
+                        m_progressBar->hide();
+                    }
                     m_startStopButton->setText(recording ? "Stop" : "Start");
                     m_startStopButton->setStyleSheet(recording
                                                          ? QStringLiteral(
@@ -367,6 +422,15 @@ namespace scopeone::ui
                 {
                     const QString result = session ? session->saveMessage() : QString();
                     const bool saved = session && session->isSaved();
+                    // Say why a run failed where the user is looking
+                    if (session
+                        && session->experimentDocument().runState == scopeone::core::ExperimentRunState::Failed)
+                    {
+                        const QString reason = session->experimentDocument().errorMessage;
+                        m_failureLabel->setText(QStringLiteral("The acquisition failed: %1")
+                                                    .arg(reason.isEmpty() ? QStringLiteral("unknown error") : reason));
+                        m_failureLabel->show();
+                    }
                     if (result.isEmpty())
                     {
                         return;
@@ -505,8 +569,14 @@ namespace scopeone::ui
 
         contentLayout->addWidget(formatGroup);
 
-        auto* mdaGroup = new QGroupBox("MDA (Time / Z / XY)", this);
-        auto* mdaLayout = new QFormLayout(mdaGroup);
+        // The acquisition settings are split into blocks that fold away, each with a summary
+        // of its settings in the title
+        m_timeSection = new scopeone::gui::CollapsibleSection("Time", this);
+        m_zSection = new scopeone::gui::CollapsibleSection("Z stack", this);
+        m_positionSection = new scopeone::gui::CollapsibleSection("Positions", this);
+        m_channelSection = new scopeone::gui::CollapsibleSection("Channels", this);
+        m_advancedSection = new scopeone::gui::CollapsibleSection("Order and options", this);
+        QFormLayout* mdaLayout = m_timeSection->form();
 
         m_framesSpin = new QSpinBox(this);
         m_framesSpin->setRange(1, 1000000);
@@ -519,6 +589,7 @@ namespace scopeone::ui
         m_mdaIntervalSpin->setValue(0.0);
         mdaLayout->addRow("Interval (ms):", m_mdaIntervalSpin);
 
+        mdaLayout = m_zSection->form();
         m_mdaEnableZCheck = new QCheckBox("Enable Z Stack", this);
         mdaLayout->addRow("", m_mdaEnableZCheck);
 
@@ -556,7 +627,8 @@ namespace scopeone::ui
             "The Z start is measured from the focus position when the recording starts"));
         mdaLayout->addRow("", m_mdaZRelativeCheck);
 
-        m_mdaEnableXYCheck = new QCheckBox("Enable XY Grid", this);
+        mdaLayout = m_positionSection->form();
+        m_mdaEnableXYCheck = new QCheckBox("Enable XY positions", this);
         mdaLayout->addRow("", m_mdaEnableXYCheck);
 
         auto* xRowLayout = new QHBoxLayout();
@@ -699,6 +771,7 @@ namespace scopeone::ui
         autofocusLayout->addStretch();
         mdaLayout->addRow("", autofocusLayout);
 
+        mdaLayout = m_channelSection->form();
         m_mdaEnableChannelCheck = new QCheckBox("Enable Channels", this);
         mdaLayout->addRow("", m_mdaEnableChannelCheck);
 
@@ -740,6 +813,7 @@ namespace scopeone::ui
         channelLayout->addLayout(channelButtonsLayout);
         mdaLayout->addRow("Channels:", channelLayout);
 
+        mdaLayout = m_advancedSection->form();
         m_keepShutterSlicesCheck = new QCheckBox("Keep the shutter open between Z positions", this);
         m_keepShutterChannelsCheck = new QCheckBox("Keep the shutter open between channels", this);
         mdaLayout->addRow("", m_keepShutterSlicesCheck);
@@ -778,6 +852,7 @@ namespace scopeone::ui
         orderLayout->addLayout(orderButtonsLayout);
         mdaLayout->addRow("Order", orderLayout);
 
+        mdaLayout = m_timeSection->form();
         m_burstModeCheck = new QCheckBox("Burst mode", this);
         mdaLayout->addRow("", m_burstModeCheck);
 
@@ -800,7 +875,50 @@ namespace scopeone::ui
         burstIntervalLayout->addStretch();
         mdaLayout->addRow("Burst Interval:", burstIntervalLayout);
 
-        contentLayout->addWidget(mdaGroup);
+        contentLayout->addWidget(m_timeSection);
+        contentLayout->addWidget(m_zSection);
+        contentLayout->addWidget(m_positionSection);
+        contentLayout->addWidget(m_channelSection);
+        contentLayout->addWidget(m_advancedSection);
+        // Only the time settings are always needed. The others open with their checkbox.
+        for (auto* section : {m_zSection, m_positionSection, m_channelSection, m_advancedSection})
+        {
+            section->setExpanded(false);
+        }
+        const auto openWith = [](QCheckBox* check, scopeone::gui::CollapsibleSection* section)
+        {
+            connect(check, &QCheckBox::toggled, section, [section](bool on)
+            {
+                if (on)
+                {
+                    section->setExpanded(true);
+                }
+            });
+        };
+        openWith(m_mdaEnableZCheck, m_zSection);
+        openWith(m_mdaEnableXYCheck, m_positionSection);
+        openWith(m_mdaEnableChannelCheck, m_channelSection);
+        // The summaries follow the settings
+        const auto refresh = [this]() { updateSectionSummaries(); updatePlanSummary(); };
+        for (QSpinBox* spin : {m_framesSpin, m_mdaZCountSpin, m_mdaXCountSpin, m_mdaYCountSpin,
+                               m_burstCountSpin, m_mdaAutofocusEverySpin})
+        {
+            connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, refresh);
+        }
+        for (QDoubleSpinBox* spin : {m_mdaIntervalSpin, m_mdaZStepSpin, m_burstIntervalSpin})
+        {
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, refresh);
+        }
+        for (QCheckBox* check : {m_mdaEnableZCheck, m_mdaEnableXYCheck, m_mdaEnableChannelCheck,
+                                 m_mdaAutofocusCheck, m_burstModeCheck, m_keepShutterSlicesCheck,
+                                 m_keepShutterChannelsCheck, m_hardwareSequencingCheck, m_mdaZRelativeCheck})
+        {
+            connect(check, &QCheckBox::toggled, this, refresh);
+        }
+        connect(m_channelTable, &QTableWidget::itemChanged, this, refresh);
+        connect(m_positionTable->model(), &QAbstractItemModel::rowsInserted, this, refresh);
+        connect(m_positionTable->model(), &QAbstractItemModel::rowsRemoved, this, refresh);
+        updateSectionSummaries();
 
         auto* statusGroup = new QGroupBox("Status", this);
         auto* statusLayout = new QGridLayout(statusGroup);
@@ -831,6 +949,26 @@ namespace scopeone::ui
         statusLayout->addWidget(m_writerStatusLabel, 2, 0, 1, 2);
         statusLayout->addWidget(m_storageStatusLabel, 3, 0, 1, 2);
 
+        m_planSummaryLabel = new QLabel(this);
+        m_planSummaryLabel->setWordWrap(true);
+        m_planSummaryLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        m_planSummaryLabel->setToolTip(QStringLiteral(
+            "What the settings above will acquire. The time counts exposures only; moving the "
+            "stages, changing channels and writing the images take more."));
+        {
+            QFont font = m_planSummaryLabel->font();
+            font.setBold(true);
+            m_planSummaryLabel->setFont(font);
+        }
+        m_progressBar = new QProgressBar(this);
+        m_progressBar->setTextVisible(true);
+        m_progressBar->setRange(0, 1);
+        m_progressBar->hide();
+        m_failureLabel = new QLabel(this);
+        m_failureLabel->setWordWrap(true);
+        m_failureLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        m_failureLabel->setStyleSheet(QStringLiteral("QLabel { color: #c0392b; font-weight: bold; }"));
+        m_failureLabel->hide();
         m_startStopButton = new QPushButton("Start", this);
         m_startStopButton->setMinimumHeight(28);
 
@@ -844,7 +982,10 @@ namespace scopeone::ui
         auto* footerLayout = new QVBoxLayout(footer);
         footerLayout->setContentsMargins(6, 6, 6, 6);
         footerLayout->setSpacing(6);
+        footerLayout->addWidget(m_planSummaryLabel);
         footerLayout->addWidget(statusGroup);
+        footerLayout->addWidget(m_progressBar);
+        footerLayout->addWidget(m_failureLabel);
         footerLayout->addWidget(m_startStopButton);
         mainLayout->addWidget(footer);
     }
@@ -909,6 +1050,149 @@ namespace scopeone::ui
         {
             startRecording();
         }
+    }
+
+    // Puts a short summary of the settings in the title of each folded block
+    void RecordingWidget::updateSectionSummaries()
+    {
+        if (!m_timeSection)
+        {
+            return;
+        }
+        QString time = QStringLiteral("%1 time point(s)").arg(m_framesSpin->value());
+        if (m_mdaIntervalSpin->value() > 0.0)
+        {
+            time += QStringLiteral(", every %1 ms").arg(m_mdaIntervalSpin->value(), 0, 'f', 1);
+        }
+        if (m_burstModeCheck->isChecked())
+        {
+            time += QStringLiteral(", %1 bursts").arg(m_burstCountSpin->value());
+        }
+        m_timeSection->setSummary(time);
+
+        m_zSection->setSummary(m_mdaEnableZCheck->isChecked()
+            ? QStringLiteral("%1 slice(s), step %2 µm%3")
+                  .arg(m_mdaZCountSpin->value())
+                  .arg(m_mdaZStepSpin->value(), 0, 'g', 6)
+                  .arg(m_mdaZRelativeCheck->isChecked() ? QStringLiteral(", relative") : QString())
+            : QStringLiteral("off"));
+
+        if (!m_mdaEnableXYCheck->isChecked())
+        {
+            m_positionSection->setSummary(QStringLiteral("off"));
+        }
+        else
+        {
+            const int count = m_positionTable->rowCount() > 0
+                ? m_positionTable->rowCount()
+                : m_mdaXCountSpin->value() * m_mdaYCountSpin->value();
+            m_positionSection->setSummary(
+                QStringLiteral("%1 position(s)%2")
+                    .arg(count)
+                    .arg(m_mdaAutofocusCheck->isChecked() ? QStringLiteral(", autofocus") : QString()));
+        }
+
+        if (!m_mdaEnableChannelCheck->isChecked())
+        {
+            m_channelSection->setSummary(QStringLiteral("off"));
+        }
+        else
+        {
+            QStringList names;
+            for (const auto& channel : usedChannels())
+            {
+                names.append(channel.preset);
+            }
+            m_channelSection->setSummary(names.isEmpty() ? QStringLiteral("none selected")
+                                                         : names.join(QStringLiteral(", ")));
+        }
+
+        QStringList options;
+        if (m_keepShutterSlicesCheck->isChecked() || m_keepShutterChannelsCheck->isChecked())
+        {
+            options.append(QStringLiteral("shutter held"));
+        }
+        if (m_hardwareSequencingCheck->isChecked())
+        {
+            options.append(QStringLiteral("hardware sequencing"));
+        }
+        m_advancedSection->setSummary(options.isEmpty() ? QStringLiteral("default")
+                                                        : options.join(QStringLiteral(", ")));
+    }
+
+    // Tells what the settings will acquire: how many images and how long the exposures take
+    void RecordingWidget::updatePlanSummary()
+    {
+        if (!m_planSummaryLabel)
+        {
+            return;
+        }
+        const qint64 frames = m_framesSpin->value();
+        const qint64 bursts = m_burstModeCheck->isChecked() ? m_burstCountSpin->value() : 1;
+        const qint64 timePoints = frames * bursts;
+        const qint64 zCount = m_mdaEnableZCheck->isChecked() ? m_mdaZCountSpin->value() : 1;
+        const qint64 positions = !m_mdaEnableXYCheck->isChecked()
+            ? 1
+            : m_positionTable->rowCount() > 0
+                ? static_cast<qint64>(m_positionTable->rowCount())
+                : static_cast<qint64>(m_mdaXCountSpin->value()) * m_mdaYCountSpin->value();
+        const qint64 cameras = qMax<qsizetype>(1, selectedCameraIds().size());
+
+        // The camera is asked at most once a second, because the settings change often
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_summaryExposureAtMs > 1000)
+        {
+            double exposureMs = 0.0;
+            m_summaryExposureMs = m_scopeonecore->readExposure(QStringLiteral("All"), exposureMs) && exposureMs > 0.0
+                ? exposureMs
+                : 0.0;
+            m_summaryExposureAtMs = now;
+        }
+        const double cameraExposureMs = m_summaryExposureMs;
+
+        // Images and exposure time of the channels at one position, over all time points
+        qint64 imagesPerPosition = 0;
+        double exposurePerTimePointMs = 0.0;
+        if (m_mdaEnableChannelCheck->isChecked() && !usedChannels().empty())
+        {
+            for (const auto& channel : usedChannels())
+            {
+                const qint64 slices = channel.zStack ? zCount : 1;
+                const qint64 imagedTimePoints = (timePoints + channel.skipFrames) / (channel.skipFrames + 1);
+                imagesPerPosition += imagedTimePoints * slices;
+                exposurePerTimePointMs += static_cast<double>(slices)
+                    * (channel.exposureMs > 0.0 ? channel.exposureMs : cameraExposureMs);
+            }
+        }
+        else
+        {
+            imagesPerPosition = timePoints * zCount;
+            exposurePerTimePointMs = static_cast<double>(zCount) * cameraExposureMs;
+        }
+        const qint64 images = imagesPerPosition * positions * cameras;
+        exposurePerTimePointMs *= static_cast<double>(positions);
+
+        // A time point takes the interval, or longer when the exposures do not fit in it
+        const double timePointMs = (std::max)(m_mdaIntervalSpin->value(), exposurePerTimePointMs);
+        double burstMs = exposurePerTimePointMs
+            + static_cast<double>(frames - 1) * timePointMs;
+        double totalMs = burstMs;
+        if (bursts > 1)
+        {
+            const double burstIntervalMs = intervalToMs(m_burstIntervalSpin->value(),
+                                                        m_burstIntervalUnitCombo->currentText());
+            totalMs = static_cast<double>(bursts - 1) * (std::max)(burstIntervalMs, burstMs) + burstMs;
+        }
+
+        QString text = QStringLiteral("%L1 image(s)").arg(images);
+        if (cameraExposureMs > 0.0 || m_mdaIntervalSpin->value() > 0.0)
+        {
+            text += QStringLiteral(" · %1 %2")
+                        .arg(m_mdaIntervalSpin->value() > 0.0 ? QStringLiteral("about")
+                                                              : QStringLiteral("at least"),
+                             formatDuration(totalMs));
+        }
+        m_planSummaryLabel->setText(text);
     }
 
     // Updates widget enabled state from recording settings
@@ -989,6 +1273,8 @@ namespace scopeone::ui
             && hasDir
             && hasName;
         m_startStopButton->setEnabled(m_isRecording || canStart);
+        updateSectionSummaries();
+        updatePlanSummary();
         updateStorageStatus();
     }
 

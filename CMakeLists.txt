@@ -78,6 +78,7 @@ set(SCOPEONE_UI_SOURCES
         src/DeviceControlWidget.cpp
         src/RecordingWidget.cpp
         src/PositionListFile.cpp
+        src/CollapsibleSection.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
@@ -100,6 +101,7 @@ set(SCOPEONE_UI_HEADERS
         src/DeviceControlWidget.h
         src/RecordingWidget.h
         src/PositionListFile.h
+        src/CollapsibleSection.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
@@ -203,12 +205,16 @@ else ()
 endif ()
 
 if (SCOPEONE_CORE_RUNTIME_FILES)
-    add_custom_command(TARGET ScopeOne POST_BUILD
+    # A target of its own that runs on every build. As a post-build step of ScopeOne it ran only
+    # when the application itself was relinked, so a rebuilt core library was left behind next
+    # to an older copy that the application kept loading.
+    add_custom_target(ScopeOneCoreRuntime ALL
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${SCOPEONE_CORE_RUNTIME_FILES}
             "$<TARGET_FILE_DIR:ScopeOne>"
             COMMAND_EXPAND_LISTS
     )
+    add_dependencies(ScopeOneCoreRuntime ScopeOne)
 endif ()
 
 if (UNIX AND NOT APPLE)

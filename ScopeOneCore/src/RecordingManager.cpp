@@ -524,7 +524,13 @@ namespace scopeone::core::internal
                         }
                     }
                     settings.acquisitionStartTimestampNs = acquisitionStartTimestampNs;
-                    settings.imageName = imageName.toStdString();
+                    // Named after the acquisition, with the camera when there are several
+                    settings.imageName = (plan.baseName.isEmpty()
+                                              ? imageName
+                                              : plan.cameraIds.size() > 1
+                                                    ? plan.baseName + QLatin1Char(' ') + imageName
+                                                    : plan.baseName).toStdString();
+                    settings.description = plan.comment.toStdString();
                     settings.creator = "ScopeOne";
                     if (plan.channels.empty())
                     {
@@ -568,6 +574,23 @@ namespace scopeone::core::internal
                             });
                         }
                     }
+                    {
+                        // The order of the axes from the slowest to the fastest, positions included,
+                        // like the AxisOrder of the Micro-Manager summary metadata
+                        QStringList axes;
+                        for (const RecordingAxis axis : plan.order)
+                        {
+                            switch (axis)
+                            {
+                            case RecordingAxis::Time: axes.append(QStringLiteral("Time")); break;
+                            case RecordingAxis::XY: axes.append(QStringLiteral("XY")); break;
+                            case RecordingAxis::Z: axes.append(QStringLiteral("Z")); break;
+                            case RecordingAxis::Channel: axes.append(QStringLiteral("Channel")); break;
+                            }
+                        }
+                        settings.metadata["scopeone.acquisition"]["AcquisitionOrder"] =
+                            axes.join(QLatin1Char(',')).toStdString();
+                    }
                     if (!plan.comment.isEmpty())
                     {
                         // Like the comments of the Micro-Manager summary metadata
@@ -610,6 +633,14 @@ namespace scopeone::core::internal
                     if (readFiniteNumber(cameraProperties.value(QStringLiteral("Offset")), value))
                     {
                         settings.detector.offset = value;
+                    }
+                    // What the camera reports about itself and how it was set
+                    settings.detector.model = cameraProperties.value(QStringLiteral("CameraName")).toString().toStdString();
+                    settings.detector.serialNumber = cameraProperties.value(QStringLiteral("CameraID")).toString().toStdString();
+                    settings.detector.binning = cameraProperties.value(QStringLiteral("Binning")).toString().toStdString();
+                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Gain")), value))
+                    {
+                        settings.detector.gain = value;
                     }
                     settings.enableCompression = tiff.useDeflate;
                     settings.compressionLevel = tiff.zipQuality;
@@ -1703,9 +1734,16 @@ namespace scopeone::core::internal
         const int xyCount = m_mdaState.plan.positions.empty()
                                 ? 1
                                 : static_cast<int>(m_mdaState.plan.positions.size());
+        // An MDA burst has an event for every image, channels and skipped planes included
         const qint64 frameTarget = m_mdaState.usingMda
-                                       ? static_cast<qint64>(tCount) * zCount * xyCount
+                                       ? (m_mdaState.eventsThisBurst > 0
+                                              ? m_mdaState.eventsThisBurst
+                                              : static_cast<qint64>(tCount) * zCount * xyCount)
                                        : m_captureState.framesPerBurst;
+        if (m_mdaState.usingMda)
+        {
+            frameCurrent = m_mdaState.eventsDone;
+        }
 
         int mdaTimeIndex = 0;
         int mdaZIndex = 0;
@@ -1995,6 +2033,7 @@ namespace scopeone::core::internal
 
         m_mdaState.lastEvent = output.event;
         m_mdaState.hasLastEvent = true;
+        ++m_mdaState.eventsDone;
 
         AcquisitionEventRecord record;
         record.event = output.event;
@@ -2250,6 +2289,8 @@ namespace scopeone::core::internal
         }
 
         m_captureState.waitingBetweenBursts = false;
+        m_mdaState.eventsThisBurst = 0;
+        m_mdaState.eventsDone = 0;
         const int burstIndex = m_captureState.currentBurst;
         m_captureState.currentBurst += 1;
         m_captureState.phase = kRecordingPhaseRecordingMda;
@@ -2269,6 +2310,7 @@ namespace scopeone::core::internal
             }
             return false;
         }
+        m_mdaState.eventsThisBurst = events.size();
         if (!m_mdaState.manager->start(events, false))
         {
             if (errorMessage && errorMessage->isEmpty())
