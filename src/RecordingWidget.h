@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include "scopeone/ScopeOneCore.h"
 
 #include <QWidget>
@@ -13,8 +14,14 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QLabel;
 class QLineEdit;
+class QProgressBar;
+namespace scopeone::gui
+{
+    class CollapsibleSection;
+}
 class QPushButton;
 class QListWidget;
+class QTableWidget;
 class QTimer;
 
 namespace scopeone::ui
@@ -44,7 +51,20 @@ namespace scopeone::ui
         void updateStorageStatus();
         void updateStorageStatusText(qint64 availableBytes);
         void moveOrderItem(int delta);
+        void updateSectionSummaries();
+        void updatePlanSummary();
         void syncOrderList();
+        void refreshChannelGroups();
+        QComboBox* makeChannelCameraCombo(const QString& selected);
+        QPushButton* makeChannelColorButton(const QString& color);
+        void addListedPosition(const QString& label, double x, double y, const QString& z);
+        void fillPositionListFromGrid();
+        void loadPositionList();
+        void savePositionList();
+        static void showChannelColor(QPushButton* button, const QString& color);
+        void loadChannelPresets();
+        void moveChannelRow(int delta);
+        std::vector<scopeone::core::ChannelSetting> usedChannels() const;
         QString getLastSaveDirectory() const;
         void setLastSaveDirectory(const QString& path);
         QString buildTimestampBaseName() const;
@@ -64,6 +84,12 @@ namespace scopeone::ui
         QCheckBox* m_pyramidCheck{nullptr};
         QComboBox* m_formatCombo{nullptr};
 
+        scopeone::gui::CollapsibleSection* m_timeSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_zSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_positionSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_channelSection{nullptr};
+        scopeone::gui::CollapsibleSection* m_advancedSection{nullptr};
+
         QSpinBox* m_framesSpin{nullptr};
         QDoubleSpinBox* m_mdaIntervalSpin{nullptr};
         QListWidget* m_mdaOrderList{nullptr};
@@ -74,6 +100,25 @@ namespace scopeone::ui
         QDoubleSpinBox* m_mdaZStepSpin{nullptr};
         QSpinBox* m_mdaZCountSpin{nullptr};
         QCheckBox* m_mdaEnableXYCheck{nullptr};
+        QCheckBox* m_mdaZRelativeCheck{nullptr};
+        QCheckBox* m_mdaAutofocusCheck{nullptr};
+        QSpinBox* m_mdaAutofocusEverySpin{nullptr};
+        QCheckBox* m_keepShutterSlicesCheck{nullptr};
+        QCheckBox* m_keepShutterChannelsCheck{nullptr};
+        QTableWidget* m_positionTable{nullptr};
+        QPushButton* m_positionMarkButton{nullptr};
+        QPushButton* m_positionRemoveButton{nullptr};
+        QPushButton* m_positionClearButton{nullptr};
+        QPushButton* m_positionFromGridButton{nullptr};
+        QPushButton* m_positionLoadButton{nullptr};
+        QPushButton* m_positionSaveButton{nullptr};
+        QCheckBox* m_hardwareSequencingCheck{nullptr};
+        QLineEdit* m_commentLineEdit{nullptr};
+        QCheckBox* m_mdaEnableChannelCheck{nullptr};
+        QComboBox* m_channelGroupCombo{nullptr};
+        QTableWidget* m_channelTable{nullptr};
+        QPushButton* m_channelUpButton{nullptr};
+        QPushButton* m_channelDownButton{nullptr};
         QDoubleSpinBox* m_mdaXStartSpin{nullptr};
         QDoubleSpinBox* m_mdaXStepSpin{nullptr};
         QSpinBox* m_mdaXCountSpin{nullptr};
@@ -93,6 +138,12 @@ namespace scopeone::ui
         QLabel* m_frameCountLabel{nullptr};
         QLabel* m_burstCountLabel{nullptr};
         QLabel* m_storageStatusLabel{nullptr};
+        QLabel* m_planSummaryLabel{nullptr};
+        QProgressBar* m_progressBar{nullptr};
+        QLabel* m_failureLabel{nullptr};
+        QElapsedTimer m_runTimer;
+        double m_summaryExposureMs{0.0};
+        qint64 m_summaryExposureAtMs{0};
         QTimer* m_storageStatusTimer{nullptr};
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};

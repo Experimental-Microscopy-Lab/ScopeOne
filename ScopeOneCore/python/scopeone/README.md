@@ -374,6 +374,45 @@ For timed MDA with more than one time point, `order` must begin with `time` so e
 
 The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
 
+#### Multi-channel acquisition
+
+A plan can image several channels, like the multi-dimensional acquisition of Micro-Manager. A channel is a preset of a configuration group, for example the presets of the `Channel` group of a Micro-Manager configuration. The two fields are optional, and a plan without them acquires a single channel:
+
+```json
+{
+  "order": ["Time", "Z", "Channel"],
+  "channelGroup": "Channel",
+  "channels": [
+    {"preset": "DAPI", "exposureMs": 10.0, "zOffsetUm": 0.0, "zStack": true, "skipFrames": 0},
+    {"preset": "FITC", "exposureMs": 20.0, "zOffsetUm": 1.5, "zStack": true, "skipFrames": 0},
+    {"preset": "Rhodamine", "exposureMs": 0.0, "zOffsetUm": 0.0, "zStack": false, "skipFrames": 1}
+  ]
+}
+```
+
+- `order` lists the axes from the slowest to the fastest changing one and must contain `Channel` when `channels` is not empty. The channels are imaged in the order of the list.
+- Before an event is taken, the preset of its channel is applied, unless the previous event used the same preset.
+- `exposureMs` is the exposure of the channel. Zero keeps `plan.exposureMs`.
+- `zOffsetUm` moves the focus of the channel. It is added to the Z positions of the plan, or measured from the focus position at the start when the plan has none.
+- `zStack: false` images the channel only at the middle Z position, and `skipFrames: n` only at every (n + 1)th time point.
+- The channels become the channel axis of the OME-TIFF and OME-Zarr output and are named after their presets. Planes that are not acquired because of `zStack` or `skipFrames` stay empty.
+
+- `color` (`#RRGGBB`, optional) sets the display colour of the channel, which is written to the `Color` of the OME channel.
+- A channel may set `cameraId` to be imaged by that camera only. It must be one of the cameras of the plan, and the other cameras leave the planes of the channel empty.
+- The channel setup is also stored in the `scopeone.channels` metadata of the OME output (group, preset, exposure, Z offset, Z stack, skip, camera, and the device properties that each preset sets as `Channel<i>.Setting.<device>.<property>`).
+
+#### Positions, timing, shutter and autofocus
+
+These plan fields are optional and follow the Micro-Manager acquisition engine:
+
+- `positions[i].label` names a position (default `Position <i+1>`; labels must be unique) and `positions[i].z` is the focus of that position. The Z positions of the plan are then offsets from the position focus.
+- `timeIntervalsMs` lists one interval per gap between time points (`framesPerBurst - 1` values) and replaces `mdaIntervalMs`; the two cannot be combined.
+- `keepShutterOpenSlices` / `keepShutterOpenChannels` keep the shutter open between the Z slices or the channels of one block instead of opening it for each image. The shutter state is restored when the run ends.
+- `autofocus` runs the autofocus device of the core before the first image of every position at a time point (every `autofocusEveryFrames`-th time point when that is above 1). Z positions that follow are shifted by the distance the autofocus moved the focus.
+- `hardwareSequencing` takes the Z slices of one position and channel in a single sequence: the focus device steps through its positions on the triggers of the camera, which runs one sequence acquisition. It is used where the focus device reports a hardware sequence long enough for the slices and the camera is a native single camera, and the slices are taken one by one otherwise. The channels of one Z slice are sequenced the same way when the properties that differ between their presets (a filter wheel, for example) can step through their values on triggers, which needs `Channel` to be the fastest axis.
+- `comment` is free text that is stored with the acquisition, as the OME image description and in the `scopeone.acquisition` metadata, which also holds the `AcquisitionOrder` of the axes from the slowest to the fastest.
+- Exposure, XY and Z are sent only when they change, and the stage positions, the channel preset and the shutter are restored when the run ends.
+
 Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes modules supplied by installed processing plugins.
 
 ### Frame transfer

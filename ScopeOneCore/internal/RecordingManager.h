@@ -36,6 +36,8 @@ namespace scopeone::core::internal
 
         void setCameraProvider(CameraProvider* cameraProvider) { m_cameraProvider = cameraProvider; }
         void setStageProvider(StageProvider* stageProvider) { m_stageProvider = stageProvider; }
+        void setConfigurationProvider(ConfigurationProvider* provider) { m_configurationProvider = provider; }
+        void setAcquisitionHardware(AcquisitionHardware* hardware) { m_acquisitionHardware = hardware; }
         void setCameraRuntimeControl(CameraRuntimeControl* cameraRuntimeControl)
         {
             m_cameraRuntimeControl = cameraRuntimeControl;
@@ -159,6 +161,9 @@ namespace scopeone::core::internal
             ExperimentPlan plan;
             AcquisitionEvent lastEvent{};
             bool hasLastEvent{false};
+            // Events of the running burst and how many of them finished
+            qint64 eventsThisBurst{0};
+            qint64 eventsDone{0};
         };
 
         bool buildCapturePlan(const ExperimentPlan& requestedPlan,
@@ -212,6 +217,8 @@ namespace scopeone::core::internal
 
         CameraProvider* m_cameraProvider{nullptr};
         StageProvider* m_stageProvider{nullptr};
+        ConfigurationProvider* m_configurationProvider{nullptr};
+        AcquisitionHardware* m_acquisitionHardware{nullptr};
         CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;

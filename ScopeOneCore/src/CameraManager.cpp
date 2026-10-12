@@ -464,4 +464,21 @@ namespace scopeone::core::internal
             && m_backend->captureEventFrame(normalizedId, frame, timeoutMs);
     }
 
+    bool CameraManager::supportsEventSequence(const QString& cameraId) const
+    {
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty() && m_backend && m_backend->supportsEventSequence(normalizedId);
+    }
+
+    bool CameraManager::captureEventSequence(const QString& cameraId,
+                                             int count,
+                                             std::vector<ImageFrame>& frames,
+                                             int timeoutMs)
+    {
+        const QString normalizedId = normalizedCameraId(cameraId);
+        return !normalizedId.isEmpty()
+            && m_backend
+            && m_backend->captureEventSequence(normalizedId, count, frames, timeoutMs);
+    }
+
 }

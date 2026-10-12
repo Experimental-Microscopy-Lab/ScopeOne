@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "internal/AcquisitionHardware.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
 #include "internal/AcquisitionEngine.h"
@@ -54,6 +55,7 @@ namespace scopeone::core::internal
                             public ShutterProvider,
                             public StateProvider,
                             public ConfigurationProvider,
+                            public AcquisitionHardware,
                             public CameraRuntimeControl
     {
         Q_OBJECT
@@ -96,6 +98,11 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                ImageFrame& frame,
                                int timeoutMs) override;
+        bool supportsEventSequence(const QString& cameraId) const override;
+        bool captureEventSequence(const QString& cameraId,
+                                  int count,
+                                  std::vector<ImageFrame>& frames,
+                                  int timeoutMs) override;
         void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
         bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
                                               bool enabled) override;
@@ -142,9 +149,26 @@ namespace scopeone::core::internal
         QStringList availableConfigGroups() const override;
         QStringList availableConfigs(const QString& groupName) const override;
         QString currentConfig(const QString& groupName) const override;
+        std::vector<scopeone::core::ConfigSetting> configSettings(
+            const QString& groupName, const QString& configName) const override;
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage) override;
+
+        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const override;
+        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr) override;
+        bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
+        bool hasAutofocus() const override;
+        bool runAutofocus(QString* errorMessage = nullptr) override;
+        long focusSequenceCapacity(const QString& focusDevice) const override;
+        bool startFocusSequence(const QString& focusDevice,
+                                const std::vector<double>& positions,
+                                QString* errorMessage = nullptr) override;
+        void stopFocusSequence(const QString& focusDevice) override;
+        long propertySequenceCapacity(const QString& device, const QString& property) const override;
+        bool startPropertySequences(const std::vector<PropertySequence>& sequences,
+                                    QString* errorMessage = nullptr) override;
+        void stopPropertySequences(const std::vector<PropertySequence>& sequences) override;
 
         DeviceRegistry* deviceRegistry() { return &m_registry; }
         const DeviceRegistry* deviceRegistry() const { return &m_registry; }
@@ -171,6 +195,8 @@ namespace scopeone::core::internal
             const QStringList& cameraIds) const;
 
         DeviceRegistry m_registry;
+        AcquisitionHardware* acquisitionHardware() const;
+
         AcquisitionEngine m_acquisitionEngine;
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;

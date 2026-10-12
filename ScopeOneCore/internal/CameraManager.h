@@ -77,6 +77,11 @@ namespace scopeone::core::internal
         bool captureEventFrame(const QString& cameraId,
                                scopeone::core::ImageFrame& frame,
                                int timeoutMs = 1500) override;
+        bool supportsEventSequence(const QString& cameraId) const override;
+        bool captureEventSequence(const QString& cameraId,
+                                  int count,
+                                  std::vector<scopeone::core::ImageFrame>& frames,
+                                  int timeoutMs = 10000) override;
 
     signals:
         void processingFrameReady(const scopeone::core::ImageFrame& frame, quint64 token);

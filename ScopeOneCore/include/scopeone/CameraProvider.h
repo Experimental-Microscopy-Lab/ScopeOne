@@ -4,6 +4,7 @@
 #include <QStringList>
 
 #include <functional>
+#include <vector>
 
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/ImageFrame.h"
@@ -37,5 +38,25 @@ namespace scopeone::core
         virtual bool captureEventFrame(const QString& cameraId,
                                        ImageFrame& frame,
                                        int timeoutMs = 1500) = 0;
+        // Whether the camera can take a series of images in one sequence acquisition, which
+        // lets the hardware time the images, for example while a stage steps through a
+        // sequence of positions
+        virtual bool supportsEventSequence(const QString& cameraId) const
+        {
+            (void)cameraId;
+            return false;
+        }
+        // Takes count images in one sequence acquisition of the camera
+        virtual bool captureEventSequence(const QString& cameraId,
+                                          int count,
+                                          std::vector<ImageFrame>& frames,
+                                          int timeoutMs = 10000)
+        {
+            (void)cameraId;
+            (void)count;
+            (void)frames;
+            (void)timeoutMs;
+            return false;
+        }
     };
 }

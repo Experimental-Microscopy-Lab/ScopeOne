@@ -399,6 +399,20 @@ namespace scopeone::core::internal
         return m_cameraProvider && m_cameraProvider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
+    bool MicroManagerProvider::supportsEventSequence(const QString& cameraId) const
+    {
+        return m_cameraProvider && m_cameraProvider->supportsEventSequence(cameraId);
+    }
+
+    bool MicroManagerProvider::captureEventSequence(const QString& cameraId,
+                                                    int count,
+                                                    std::vector<scopeone::core::ImageFrame>& frames,
+                                                    int timeoutMs)
+    {
+        return m_cameraProvider
+            && m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs);
+    }
+
     void MicroManagerProvider::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
     {
         if (m_cameraRuntimeControl)
@@ -782,6 +796,33 @@ namespace scopeone::core::internal
         }
     }
 
+    std::vector<scopeone::core::ConfigSetting> MicroManagerProvider::configSettings(
+        const QString& groupName, const QString& configName) const
+    {
+        std::vector<scopeone::core::ConfigSetting> settings;
+        if (!m_core)
+        {
+            return settings;
+        }
+        try
+        {
+            const Configuration preset = m_core->getConfigData(groupName.trimmed().toStdString().c_str(),
+                                                               configName.trimmed().toStdString().c_str());
+            for (size_t index = 0; index < preset.size(); ++index)
+            {
+                const PropertySetting setting = preset.getSetting(index);
+                settings.push_back({QString::fromStdString(setting.getDeviceLabel()),
+                                    QString::fromStdString(setting.getPropertyName()),
+                                    QString::fromStdString(setting.getPropertyValue())});
+            }
+        }
+        catch (const CMMError&)
+        {
+            settings.clear();
+        }
+        return settings;
+    }
+
     QString MicroManagerProvider::currentConfig(const QString& groupName) const
     {
         if (!m_core)
@@ -901,6 +942,259 @@ namespace scopeone::core::internal
 
             m_core->waitForSystem();
             m_core->updateSystemStateCache();
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::autoShutter(bool& enabled, QString* errorMessage) const
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            enabled = m_core->getAutoShutter();
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::setAutoShutter(bool enabled, QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->setAutoShutter(enabled);
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::setCoreShutterOpen(bool open, QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->setShutterOpen(open);
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            setError(errorMessage, error);
+            return false;
+        }
+    }
+
+    bool MicroManagerProvider::hasAutofocus() const
+    {
+        try
+        {
+            return m_core && !m_core->getAutoFocusDevice().empty();
+        }
+        catch (const CMMError&)
+        {
+            return false;
+        }
+    }
+
+    long MicroManagerProvider::propertySequenceCapacity(const QString& device, const QString& property) const
+    {
+        if (!m_core || device.isEmpty() || property.isEmpty())
+        {
+            return 0;
+        }
+        try
+        {
+            const std::string label = device.toStdString();
+            const std::string name = property.toStdString();
+            return m_core->isPropertySequenceable(label.c_str(), name.c_str())
+                ? m_core->getPropertySequenceMaxLength(label.c_str(), name.c_str())
+                : 0;
+        }
+        catch (const CMMError&)
+        {
+            return 0;
+        }
+    }
+
+    bool MicroManagerProvider::startPropertySequences(const std::vector<PropertySequence>& sequences,
+                                                      QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        std::size_t started = 0;
+        try
+        {
+            for (const PropertySequence& sequence : sequences)
+            {
+                const std::string label = sequence.device.toStdString();
+                const std::string name = sequence.property.toStdString();
+                std::vector<std::string> values;
+                values.reserve(sequence.values.size());
+                for (const QString& value : sequence.values)
+                {
+                    values.push_back(value.toStdString());
+                }
+                m_core->loadPropertySequence(label.c_str(), name.c_str(), values);
+                m_core->startPropertySequence(label.c_str(), name.c_str());
+                ++started;
+            }
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            if (errorMessage) *errorMessage = QString::fromStdString(error.getMsg());
+            // Do not leave the properties that were armed running
+            for (std::size_t index = 0; index < started; ++index)
+            {
+                try
+                {
+                    m_core->stopPropertySequence(sequences[index].device.toStdString().c_str(),
+                                                 sequences[index].property.toStdString().c_str());
+                }
+                catch (const CMMError&)
+                {
+                }
+            }
+            return false;
+        }
+    }
+
+    void MicroManagerProvider::stopPropertySequences(const std::vector<PropertySequence>& sequences)
+    {
+        if (!m_core)
+        {
+            return;
+        }
+        for (const PropertySequence& sequence : sequences)
+        {
+            try
+            {
+                m_core->stopPropertySequence(sequence.device.toStdString().c_str(),
+                                             sequence.property.toStdString().c_str());
+            }
+            catch (const CMMError&)
+            {
+            }
+        }
+    }
+
+    long MicroManagerProvider::focusSequenceCapacity(const QString& focusDevice) const
+    {
+        if (!m_core || focusDevice.isEmpty())
+        {
+            return 0;
+        }
+        try
+        {
+            const std::string label = focusDevice.toStdString();
+            return m_core->isStageSequenceable(label.c_str())
+                ? m_core->getStageSequenceMaxLength(label.c_str())
+                : 0;
+        }
+        catch (const CMMError&)
+        {
+            return 0;
+        }
+    }
+
+    bool MicroManagerProvider::startFocusSequence(const QString& focusDevice,
+                                                  const std::vector<double>& positions,
+                                                  QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            const std::string label = focusDevice.toStdString();
+            m_core->loadStageSequence(label.c_str(), positions);
+            m_core->startStageSequence(label.c_str());
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            if (errorMessage) *errorMessage = QString::fromStdString(error.getMsg());
+            return false;
+        }
+    }
+
+    void MicroManagerProvider::stopFocusSequence(const QString& focusDevice)
+    {
+        try
+        {
+            if (m_core && !focusDevice.isEmpty())
+            {
+                m_core->stopStageSequence(focusDevice.toStdString().c_str());
+            }
+        }
+        catch (const CMMError&)
+        {
+        }
+    }
+
+    bool MicroManagerProvider::runAutofocus(QString* errorMessage)
+    {
+        if (errorMessage)
+        {
+            errorMessage->clear();
+        }
+        if (!m_core)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
+            return false;
+        }
+        try
+        {
+            m_core->fullFocus();
             return true;
         }
         catch (const CMMError& error)
