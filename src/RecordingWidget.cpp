@@ -487,7 +487,6 @@ namespace scopeone::ui
             m_fileNameLineEdit->setText(buildTimestampBaseName());
         }
 
-        refreshProtocols();
         restoreLastSettings();
         updateUiState();
     }
@@ -537,27 +536,6 @@ namespace scopeone::ui
         captureLayout->addWidget(new QLabel("File Name:", this), 2, 0);
         captureLayout->addWidget(m_fileNameLineEdit, 2, 1);
         captureLayout->addWidget(m_autoNameButton, 2, 2);
-
-        // Protocols: the settings of the sections below, saved under a name
-        auto* protocolLayout = new QHBoxLayout();
-        protocolLayout->addWidget(new QLabel(tr("Protocol:"), this));
-        m_protocolCombo = new QComboBox(this);
-        m_protocolCombo->setToolTip(tr("Settings of the sections below that were saved under a name"));
-        m_protocolSaveButton = new QPushButton(tr("Save…"), this);
-        m_protocolDeleteButton = new QPushButton(tr("Delete"), this);
-        protocolLayout->addWidget(m_protocolCombo, 1);
-        protocolLayout->addWidget(m_protocolSaveButton);
-        protocolLayout->addWidget(m_protocolDeleteButton);
-        contentLayout->addLayout(protocolLayout);
-        connect(m_protocolCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index)
-        {
-            if (index > 0)
-            {
-                applyProtocol(m_protocolCombo->itemText(index));
-            }
-        });
-        connect(m_protocolSaveButton, &QPushButton::clicked, this, [this]() { saveProtocol(); });
-        connect(m_protocolDeleteButton, &QPushButton::clicked, this, [this]() { deleteProtocol(); });
 
         contentLayout->addWidget(captureGroup);
 
@@ -1226,9 +1204,6 @@ namespace scopeone::ui
         const bool burstEnabled = m_burstModeCheck->isChecked();
         const bool hasSelectedCameras = !selectedCameraIds().isEmpty();
 
-        m_protocolCombo->setEnabled(editingEnabled);
-        m_protocolSaveButton->setEnabled(editingEnabled);
-        m_protocolDeleteButton->setEnabled(editingEnabled && m_protocolCombo->currentIndex() > 0);
         m_detectorCombo->setEnabled(editingEnabled);
         m_saveDirLineEdit->setEnabled(editingEnabled);
         m_browseButton->setEnabled(editingEnabled);

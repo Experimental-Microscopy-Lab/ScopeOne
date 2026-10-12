@@ -1,5 +1,4 @@
-// Saving and restoring the settings of the recording panel, as the last settings that were
-// used and as named protocols
+// Saving and restoring the settings of the recording panel, as the settings that were used last
 
 #include "RecordingWidget.h"
 #include "scopeone/ScopeOneCore.h"
@@ -7,12 +6,10 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
-#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -24,7 +21,6 @@ namespace scopeone::ui
     namespace
     {
         constexpr auto kLastSettingsKey = "Recording/LastSettings";
-        constexpr auto kProtocolsKey = "Recording/Protocols";
 
         QJsonObject readJsonSetting(const char* key)
         {
@@ -230,76 +226,5 @@ namespace scopeone::ui
         {
             applySettings(object);
         }
-    }
-
-    // Lists the saved protocols in the combo box, keeping its first entry as the prompt
-    void RecordingWidget::refreshProtocols(const QString& select)
-    {
-        const QJsonObject protocols = readJsonSetting(kProtocolsKey);
-        QSignalBlocker blocker(m_protocolCombo);
-        m_protocolCombo->clear();
-        m_protocolCombo->addItem(tr("(none)"));
-        QStringList names = protocols.keys();
-        names.sort(Qt::CaseInsensitive);
-        m_protocolCombo->addItems(names);
-        const int index = m_protocolCombo->findText(select);
-        m_protocolCombo->setCurrentIndex(index < 0 ? 0 : index);
-        m_protocolDeleteButton->setEnabled(m_protocolCombo->currentIndex() > 0 && !m_isRecording);
-    }
-
-    void RecordingWidget::saveProtocol()
-    {
-        bool accepted = false;
-        const QString current = m_protocolCombo->currentIndex() > 0 ? m_protocolCombo->currentText() : QString();
-        const QString name = QInputDialog::getText(this,
-                                                   tr("Save protocol"),
-                                                   tr("Name of the protocol:"),
-                                                   QLineEdit::Normal,
-                                                   current,
-                                                   &accepted).trimmed();
-        if (!accepted || name.isEmpty())
-        {
-            return;
-        }
-        QJsonObject protocols = readJsonSetting(kProtocolsKey);
-        if (protocols.contains(name) && name != current
-            && QMessageBox::question(this,
-                                     tr("Save protocol"),
-                                     tr("A protocol named '%1' exists. Replace it?").arg(name))
-                != QMessageBox::Yes)
-        {
-            return;
-        }
-        protocols.insert(name, captureSettings());
-        writeJsonSetting(kProtocolsKey, protocols);
-        refreshProtocols(name);
-    }
-
-    void RecordingWidget::deleteProtocol()
-    {
-        if (m_protocolCombo->currentIndex() <= 0)
-        {
-            return;
-        }
-        const QString name = m_protocolCombo->currentText();
-        if (QMessageBox::question(this, tr("Delete protocol"), tr("Delete the protocol '%1'?").arg(name))
-            != QMessageBox::Yes)
-        {
-            return;
-        }
-        QJsonObject protocols = readJsonSetting(kProtocolsKey);
-        protocols.remove(name);
-        writeJsonSetting(kProtocolsKey, protocols);
-        refreshProtocols();
-    }
-
-    void RecordingWidget::applyProtocol(const QString& name)
-    {
-        const QJsonObject protocols = readJsonSetting(kProtocolsKey);
-        if (protocols.contains(name))
-        {
-            applySettings(protocols.value(name).toObject());
-        }
-        m_protocolDeleteButton->setEnabled(m_protocolCombo->currentIndex() > 0 && !m_isRecording);
     }
 }

@@ -164,10 +164,6 @@ namespace scopeone::ui
         PreviewWidget* m_previewWidget{nullptr};
 
         QLineEdit* m_exposureLineEdit{nullptr};
-        QSlider* m_exposureSlider{nullptr};
-        // The exposure that the field was last set to or applied, so that leaving it unchanged does nothing
-        double m_appliedExposureMs{-1.0};
-        QComboBox* m_exposurePresetCombo{nullptr};
         QLabel* m_exposureLabel{nullptr};
 
         QPushButton* m_previewToggleButton{nullptr};
@@ -179,8 +175,6 @@ namespace scopeone::ui
 
         QWidget* createStageGroup();
         void updateStageControlsEnabled();
-        void showExposure(double exposureMs);
-        double exposureFromSlider(int value) const;
         void updateStagePositions();
         QString selectedXYStageLabel() const;
         QString selectedZStageLabel() const;

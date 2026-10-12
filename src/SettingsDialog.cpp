@@ -1,4 +1,3 @@
-#include <QSettings>
 #include "SettingsDialog.h"
 
 #include <QComboBox>
@@ -55,22 +54,6 @@ namespace scopeone::ui
         const int colorSchemeIndex = m_colorSchemeComboBox->findData(colorScheme);
         m_colorSchemeComboBox->setCurrentIndex(colorSchemeIndex >= 0 ? colorSchemeIndex : 0);
         formLayout->addRow(QStringLiteral("Color scheme"), m_colorSchemeComboBox);
-
-        // The size of the whole interface, for small or very large screens. It applies from the
-        // next start, because the application reads it before anything is drawn.
-        m_scaleComboBox = new QComboBox(this);
-        for (const int percent : {75, 90, 100, 110, 125, 150, 175, 200})
-        {
-            m_scaleComboBox->addItem(QStringLiteral("%1%").arg(percent), percent);
-        }
-        {
-            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-            const int index = m_scaleComboBox->findData(
-                settings.value(QStringLiteral("Interface/scalePercent"), 100).toInt());
-            m_scaleComboBox->setCurrentIndex(index >= 0 ? index : m_scaleComboBox->findData(100));
-        }
-        m_scaleComboBox->setToolTip(QStringLiteral("Applies after ScopeOne is restarted"));
-        formLayout->addRow(QStringLiteral("Interface scale (restart)"), m_scaleComboBox);
 
         m_recordingBufferLimitEdit = new QLineEdit(this);
         auto* validator = new QDoubleValidator(m_recordingBufferLimitEdit);
@@ -141,9 +124,6 @@ namespace scopeone::ui
                             return;
                         }
                     }
-                    QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-                    settings.setValue(QStringLiteral("Interface/scalePercent"),
-                                      m_scaleComboBox->currentData().toInt());
                     accept();
                 });
         connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);

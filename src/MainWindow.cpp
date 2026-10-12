@@ -948,17 +948,6 @@ namespace scopeone::ui
         setupImageGallery();
         setTabPosition(Qt::LeftDockWidgetArea, QTabWidget::North);
         updateDockWidgetMenu();
-
-        // Without a configuration the viewer says what to do and offers to do it
-        m_emptyLoadButton = new QPushButton(tr("Load configuration…"), m_previewWidget);
-        m_emptyRecentButton = new QPushButton(tr("Recent"), m_previewWidget);
-        m_emptyRecentButton->setMenu(m_recentConfigurationsMenu);
-        connect(m_emptyLoadButton, &QPushButton::clicked, this, [this]()
-        {
-            m_loadConfigurationAction->trigger();
-        });
-        m_previewWidget->installEventFilter(this);
-        updateEmptyState();
     }
 
     // Lists the built-in and the saved arrangements of the panels
@@ -1037,55 +1026,6 @@ namespace scopeone::ui
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         settings.setValue(QStringLiteral("Workspaces/") + name, saveState(kWindowLayoutVersion));
         rebuildWorkspacesMenu();
-    }
-
-    // Tells the viewer why it is empty and shows the buttons that help when no configuration is loaded
-    void MainWindow::updateEmptyState()
-    {
-        if (!m_emptyLoadButton)
-        {
-            return;
-        }
-        const bool loaded = !m_scopeonecore->loadedConfigurationPath().isEmpty();
-        if (!loaded)
-        {
-            m_previewWidget->setEmptyStateMessage(
-                tr("No configuration loaded\nLoad a Micro-Manager configuration to use your devices"));
-        }
-        else if (m_scopeonecore->cameraIds().isEmpty())
-        {
-            m_previewWidget->setEmptyStateMessage(
-                tr("The loaded configuration has no camera\nYou can still open images from the File menu"));
-        }
-        else
-        {
-            m_previewWidget->setEmptyStateMessage(QString());
-        }
-        const bool showButtons = !loaded;
-        m_emptyLoadButton->setVisible(showButtons);
-        m_emptyRecentButton->setVisible(showButtons && !m_recentConfigurationsMenu->isEmpty());
-        if (showButtons)
-        {
-            const QSize load = m_emptyLoadButton->sizeHint();
-            const QSize recent = m_emptyRecentButton->sizeHint();
-            const int gap = 8;
-            const int total = load.width() + (m_emptyRecentButton->isVisible() ? gap + recent.width() : 0);
-            const int x = (m_previewWidget->width() - total) / 2;
-            const int y = m_previewWidget->height() / 2 + 40;
-            m_emptyLoadButton->setGeometry(x, y, load.width(), load.height());
-            m_emptyRecentButton->setGeometry(x + load.width() + gap, y, recent.width(), load.height());
-            m_emptyLoadButton->raise();
-            m_emptyRecentButton->raise();
-        }
-    }
-
-    bool MainWindow::eventFilter(QObject* watched, QEvent* event)
-    {
-        if (watched == m_previewWidget && event->type() == QEvent::Resize)
-        {
-            updateEmptyState();
-        }
-        return QMainWindow::eventFilter(watched, event);
     }
 
     // Register built in tools and discover external tool plugins
@@ -2044,7 +1984,6 @@ namespace scopeone::ui
         m_recentConfigurationsMenu->setEnabled(
             !m_recentConfigurationsMenu->isEmpty()
             && !m_scopeonecore->configurationOperationRunning());
-        updateEmptyState();
 
         if (!success)
         {
@@ -2121,7 +2060,6 @@ namespace scopeone::ui
     {
         m_loadConfigurationAction->setEnabled(true);
         m_unloadConfigurationAction->setEnabled(true);
-        updateEmptyState();
         if (!success)
         {
             notifyError(tr("Unload Failed"), tr("Failed to unload configuration: %1").arg(errorMessage));

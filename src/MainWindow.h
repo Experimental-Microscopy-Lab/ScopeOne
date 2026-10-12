@@ -82,7 +82,6 @@ namespace scopeone::ui
         void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
-        void updateEmptyState();
         void rebuildWorkspacesMenu();
         void saveWorkspace();
         void restoreWindowLayout();
@@ -100,9 +99,6 @@ namespace scopeone::ui
         void showStatusMessage(const QString& message, int timeoutMs = 0);
         // Shows a message over the corner of the window that does not block anything
         void notifyError(const QString& title, const QString& message);
-
-    protected:
-        bool eventFilter(QObject* watched, QEvent* event) override;
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
@@ -178,8 +174,6 @@ namespace scopeone::ui
         QLabel* m_statusMessageLabel{nullptr};
         scopeone::ui::NotificationOverlay* m_notifications{nullptr};
         QMenu* m_workspacesMenu{nullptr};
-        QPushButton* m_emptyLoadButton{nullptr};
-        QPushButton* m_emptyRecentButton{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};

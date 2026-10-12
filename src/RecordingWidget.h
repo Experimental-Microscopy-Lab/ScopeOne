@@ -59,10 +59,6 @@ namespace scopeone::ui
         void applySettings(const QJsonObject& object);
         void saveLastSettings() const;
         void restoreLastSettings();
-        void refreshProtocols(const QString& select = QString());
-        void saveProtocol();
-        void deleteProtocol();
-        void applyProtocol(const QString& name);
         void syncOrderList();
         void refreshChannelGroups();
         QComboBox* makeChannelCameraCombo(const QString& selected);
@@ -141,9 +137,6 @@ namespace scopeone::ui
         QDoubleSpinBox* m_burstIntervalSpin{nullptr};
         QComboBox* m_burstIntervalUnitCombo{nullptr};
 
-        QComboBox* m_protocolCombo{nullptr};
-        QPushButton* m_protocolSaveButton{nullptr};
-        QPushButton* m_protocolDeleteButton{nullptr};
         // Channel settings read from a saved protocol, applied when the presets are listed
         QString m_savedChannelGroup;
         QJsonArray m_savedChannels;
