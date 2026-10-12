@@ -487,11 +487,14 @@ namespace scopeone::ui
             m_fileNameLineEdit->setText(buildTimestampBaseName());
         }
 
+        refreshProtocols();
+        restoreLastSettings();
         updateUiState();
     }
 
     RecordingWidget::~RecordingWidget()
     {
+        saveLastSettings();
         m_scopeonecore->stopRecording();
     }
 
@@ -534,6 +537,27 @@ namespace scopeone::ui
         captureLayout->addWidget(new QLabel("File Name:", this), 2, 0);
         captureLayout->addWidget(m_fileNameLineEdit, 2, 1);
         captureLayout->addWidget(m_autoNameButton, 2, 2);
+
+        // Protocols: the settings of the sections below, saved under a name
+        auto* protocolLayout = new QHBoxLayout();
+        protocolLayout->addWidget(new QLabel(tr("Protocol:"), this));
+        m_protocolCombo = new QComboBox(this);
+        m_protocolCombo->setToolTip(tr("Settings of the sections below that were saved under a name"));
+        m_protocolSaveButton = new QPushButton(tr("Save…"), this);
+        m_protocolDeleteButton = new QPushButton(tr("Delete"), this);
+        protocolLayout->addWidget(m_protocolCombo, 1);
+        protocolLayout->addWidget(m_protocolSaveButton);
+        protocolLayout->addWidget(m_protocolDeleteButton);
+        contentLayout->addLayout(protocolLayout);
+        connect(m_protocolCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index)
+        {
+            if (index > 0)
+            {
+                applyProtocol(m_protocolCombo->itemText(index));
+            }
+        });
+        connect(m_protocolSaveButton, &QPushButton::clicked, this, [this]() { saveProtocol(); });
+        connect(m_protocolDeleteButton, &QPushButton::clicked, this, [this]() { deleteProtocol(); });
 
         contentLayout->addWidget(captureGroup);
 
@@ -1202,6 +1226,9 @@ namespace scopeone::ui
         const bool burstEnabled = m_burstModeCheck->isChecked();
         const bool hasSelectedCameras = !selectedCameraIds().isEmpty();
 
+        m_protocolCombo->setEnabled(editingEnabled);
+        m_protocolSaveButton->setEnabled(editingEnabled);
+        m_protocolDeleteButton->setEnabled(editingEnabled && m_protocolCombo->currentIndex() > 0);
         m_detectorCombo->setEnabled(editingEnabled);
         m_saveDirLineEdit->setEnabled(editingEnabled);
         m_browseButton->setEnabled(editingEnabled);
@@ -1550,6 +1577,7 @@ namespace scopeone::ui
             qWarning().noquote() << QStringLiteral("Failed to start recording");
             return false;
         }
+        saveLastSettings();
         return true;
     }
 
@@ -1767,7 +1795,9 @@ namespace scopeone::ui
         {
             return;
         }
-        const QString previous = m_channelGroupCombo->currentText();
+        const QString previous = m_channelGroupCombo->currentText().isEmpty()
+            ? m_savedChannelGroup
+            : m_channelGroupCombo->currentText();
         {
             QSignalBlocker blocker(m_channelGroupCombo);
             m_channelGroupCombo->clear();
@@ -1814,6 +1844,31 @@ namespace scopeone::ui
             }
             previous.insert(entry.setting.preset, entry);
             previousOrder.append(entry.setting.preset);
+        }
+
+        // Channels of a saved protocol or of the last session, before the table has any
+        if (previous.isEmpty() && !m_savedChannels.isEmpty()
+            && (m_savedChannelGroup.isEmpty() || m_savedChannelGroup == m_channelGroupCombo->currentText()))
+        {
+            for (const QJsonValue& value : m_savedChannels)
+            {
+                const QJsonObject saved = value.toObject();
+                Row entry;
+                entry.used = saved.value(QStringLiteral("used")).toBool();
+                entry.setting.preset = saved.value(QStringLiteral("preset")).toString();
+                entry.setting.exposureMs = saved.value(QStringLiteral("exposureMs")).toDouble();
+                entry.setting.zOffsetUm = saved.value(QStringLiteral("zOffsetUm")).toDouble();
+                entry.setting.zStack = saved.value(QStringLiteral("zStack")).toBool(true);
+                entry.setting.skipFrames = saved.value(QStringLiteral("skipFrames")).toInt();
+                const QString camera = saved.value(QStringLiteral("camera")).toString();
+                entry.setting.cameraId = camera == QStringLiteral("All") ? QString() : camera;
+                entry.setting.color = saved.value(QStringLiteral("color")).toString();
+                if (!entry.setting.preset.isEmpty())
+                {
+                    previous.insert(entry.setting.preset, entry);
+                    previousOrder.append(entry.setting.preset);
+                }
+            }
         }
 
         QStringList presets = m_scopeonecore->availableConfigs(m_channelGroupCombo->currentText());
@@ -1867,6 +1922,10 @@ namespace scopeone::ui
                 m_channelTable->setCellWidget(row, 6, makeChannelCameraCombo(entry.setting.cameraId));
                 m_channelTable->setCellWidget(row, 7, makeChannelColorButton(entry.setting.color));
             }
+        }
+        if (m_channelTable->rowCount() > 0)
+        {
+            m_savedChannels = QJsonArray();
         }
         syncOrderList();
         updateUiState();

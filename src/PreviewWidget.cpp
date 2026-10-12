@@ -1124,6 +1124,17 @@ namespace scopeone::ui
     }
 
     // Refreshes placeholder state and schedules repaint
+    void PreviewWidget::setEmptyStateMessage(const QString& message)
+    {
+        if (message == m_emptyStateMessage)
+        {
+            return;
+        }
+        m_emptyStateMessage = message;
+        updateImageDisplay();
+        update();
+    }
+
     void PreviewWidget::updateImageDisplay()
     {
         bool hasDisplayableFrame = false;
@@ -1140,7 +1151,9 @@ namespace scopeone::ui
             }
         }
 
-        m_placeholderText = QStringLiteral("No image loaded\nClick 'Start Preview' to view the camera feed");
+        m_placeholderText = m_emptyStateMessage.isEmpty()
+            ? QStringLiteral("No image loaded\nClick 'Start Preview' to view the camera feed")
+            : m_emptyStateMessage;
         if (hasDisplayableFrame && visibleLayerKeys().isEmpty())
         {
             m_placeholderText = QStringLiteral("No layer visible");

@@ -1442,10 +1442,44 @@ namespace scopeone::ui
         exposureValidator->setNotation(QDoubleValidator::StandardNotation);
         m_exposureLineEdit->setValidator(exposureValidator);
         m_exposureLineEdit->setText(QStringLiteral("100.0"));
-        connect(m_exposureLineEdit, &QLineEdit::returnPressed,
+        // Leaving the field applies the value as well as pressing Enter
+        connect(m_exposureLineEdit, &QLineEdit::editingFinished,
                 this, &DeviceControlWidget::onExposureChanged);
         layout->addWidget(m_exposureLineEdit, row, 1);
         row++;
+
+        // A slider on a logarithmic scale between the limits, and common values to pick from
+        m_exposureSlider = new QSlider(Qt::Horizontal, group);
+        m_exposureSlider->setRange(0, 1000);
+        m_exposureSlider->setToolTip(tr("Exposure on a logarithmic scale"));
+        m_exposurePresetCombo = new QComboBox(group);
+        m_exposurePresetCombo->addItem(tr("Preset"));
+        for (const double preset : {1.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0})
+        {
+            m_exposurePresetCombo->addItem(tr("%1 ms").arg(preset, 0, 'g', 6), preset);
+        }
+        layout->addWidget(m_exposureSlider, row, 0, 1, 1);
+        layout->addWidget(m_exposurePresetCombo, row, 1);
+        row++;
+        connect(m_exposureSlider, &QSlider::valueChanged, this, [this](int value)
+        {
+            // While dragging only the number follows. The camera is set when the slider is let go.
+            m_exposureLineEdit->setText(formatExposureMs(exposureFromSlider(value)));
+            if (!m_exposureSlider->isSliderDown())
+            {
+                onExposureChanged();
+            }
+        });
+        connect(m_exposureSlider, &QSlider::sliderReleased, this, [this]() { onExposureChanged(); });
+        connect(m_exposurePresetCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index)
+        {
+            if (index > 0)
+            {
+                m_exposureLineEdit->setText(formatExposureMs(m_exposurePresetCombo->itemData(index).toDouble()));
+                m_exposurePresetCombo->setCurrentIndex(0);
+                onExposureChanged();
+            }
+        });
 
         m_previewToggleButton = new QPushButton("Start Preview");
         m_previewToggleButton->setMinimumHeight(30);
@@ -1540,14 +1574,21 @@ namespace scopeone::ui
         setArrowSize(m_xyBigDownButton);
         setArrowSize(m_xyBigLeftButton);
         setArrowSize(m_xyBigRightButton);
-        m_xyUpButton->setToolTip(QStringLiteral("Move +Y by step"));
-        m_xyDownButton->setToolTip(QStringLiteral("Move -Y by step"));
-        m_xyLeftButton->setToolTip(QStringLiteral("Move -X by step"));
-        m_xyRightButton->setToolTip(QStringLiteral("Move +X by step"));
-        m_xyBigUpButton->setToolTip(QStringLiteral("Move +Y by big step"));
-        m_xyBigDownButton->setToolTip(QStringLiteral("Move -Y by big step"));
-        m_xyBigLeftButton->setToolTip(QStringLiteral("Move -X by big step"));
-        m_xyBigRightButton->setToolTip(QStringLiteral("Move +X by big step"));
+        m_xyUpButton->setToolTip(QStringLiteral("Move +Y by step (Up arrow in the image view)"));
+        m_xyDownButton->setToolTip(QStringLiteral("Move -Y by step (Down arrow in the image view)"));
+        m_xyLeftButton->setToolTip(QStringLiteral("Move -X by step (Left arrow in the image view)"));
+        m_xyRightButton->setToolTip(QStringLiteral("Move +X by step (Right arrow in the image view)"));
+        m_xyBigUpButton->setToolTip(QStringLiteral("Move +Y by big step (Shift+Up arrow in the image view)"));
+        m_xyBigDownButton->setToolTip(QStringLiteral("Move -Y by big step (Shift+Down arrow in the image view)"));
+        m_xyBigLeftButton->setToolTip(QStringLiteral("Move -X by big step (Shift+Left arrow in the image view)"));
+        m_xyBigRightButton->setToolTip(QStringLiteral("Move +X by big step (Shift+Right arrow in the image view)"));
+        // Holding a step button keeps stepping. The moves are queued, so a slow stage only falls behind.
+        for (QPushButton* button : {m_xyUpButton, m_xyDownButton, m_xyLeftButton, m_xyRightButton})
+        {
+            button->setAutoRepeat(true);
+            button->setAutoRepeatDelay(500);
+            button->setAutoRepeatInterval(250);
+        }
         // Wide enough for the largest expected coordinate so positions are never clipped
         const int positionLabelWidth = fontMetrics().horizontalAdvance(QStringLiteral("X: -000000.00")) + 8;
         QWidget* xyCenterWidget = new QWidget();
@@ -1624,10 +1665,16 @@ namespace scopeone::ui
         setArrowSize(m_zDownButton);
         setArrowSize(m_zBigUpButton);
         setArrowSize(m_zBigDownButton);
-        m_zUpButton->setToolTip(QStringLiteral("Move +Z by step"));
-        m_zDownButton->setToolTip(QStringLiteral("Move -Z by step"));
-        m_zBigUpButton->setToolTip(QStringLiteral("Move +Z by big step"));
-        m_zBigDownButton->setToolTip(QStringLiteral("Move -Z by big step"));
+        m_zUpButton->setToolTip(QStringLiteral("Move +Z by step (Page Up in the image view)"));
+        m_zDownButton->setToolTip(QStringLiteral("Move -Z by step (Page Down in the image view)"));
+        m_zBigUpButton->setToolTip(QStringLiteral("Move +Z by big step (Shift+Page Up in the image view)"));
+        m_zBigDownButton->setToolTip(QStringLiteral("Move -Z by big step (Shift+Page Down in the image view)"));
+        for (QPushButton* button : {m_zUpButton, m_zDownButton})
+        {
+            button->setAutoRepeat(true);
+            button->setAutoRepeatDelay(500);
+            button->setAutoRepeatInterval(250);
+        }
         zButtonsLayout->addWidget(m_zBigUpButton);
         zButtonsLayout->addWidget(m_zUpButton);
         m_zPosLabel = new QLabel("Z: N/A");
@@ -1920,6 +1967,26 @@ namespace scopeone::ui
         updateCameraParametersFromHardware();
     }
 
+    // Shows an exposure in the field and on the slider without sending it anywhere
+    void DeviceControlWidget::showExposure(double exposureMs)
+    {
+        m_appliedExposureMs = exposureMs;
+        m_exposureLineEdit->setText(formatExposureMs(exposureMs));
+        const double low = (std::max)(m_minExposureMs, 0.001);
+        const double high = (std::max)(m_maxExposureMs, low * 1.001);
+        const double clamped = qBound(low, exposureMs, high);
+        QSignalBlocker blocker(m_exposureSlider);
+        m_exposureSlider->setValue(qRound(1000.0 * std::log(clamped / low) / std::log(high / low)));
+    }
+
+    // The exposure that a slider position stands for
+    double DeviceControlWidget::exposureFromSlider(int value) const
+    {
+        const double low = (std::max)(m_minExposureMs, 0.001);
+        const double high = (std::max)(m_maxExposureMs, low * 1.001);
+        return low * std::pow(high / low, static_cast<double>(value) / 1000.0);
+    }
+
     // Applies exposure from the editor
     void DeviceControlWidget::onExposureChanged()
     {
@@ -1934,8 +2001,13 @@ namespace scopeone::ui
         }
         exposureMs = qBound(m_minExposureMs, exposureMs, m_maxExposureMs);
 
-        m_exposureLineEdit->setText(formatExposureMs(exposureMs));
-        emit exposureValueChanged(exposureMs);
+        // Leaving the field as it was must not set the camera again, which restarts the preview
+        const bool unchanged = qFuzzyCompare(1.0 + exposureMs, 1.0 + m_appliedExposureMs);
+        showExposure(exposureMs);
+        if (!unchanged)
+        {
+            emit exposureValueChanged(exposureMs);
+        }
     }
 
     // Keeps device control buttons in sync
@@ -1948,6 +2020,8 @@ namespace scopeone::ui
         m_stageControlsGroup->setEnabled(m_liveViewerContext);
         m_cameraSelectCombo->setEnabled(canControlHardware && m_controlTargetEnabled);
         m_exposureLineEdit->setEnabled(canControlHardware);
+        m_exposureSlider->setEnabled(canControlHardware);
+        m_exposurePresetCombo->setEnabled(canControlHardware);
         m_previewToggleButton->setEnabled(canControlHardware);
         m_snapButton->setEnabled(canControlHardware);
         m_previewToggleButton->setText(m_previewRunning
@@ -1979,7 +2053,7 @@ namespace scopeone::ui
         if (m_scopeonecore->readExposure(m_currentTarget, exposure))
         {
             QSignalBlocker blocker(m_exposureLineEdit);
-            m_exposureLineEdit->setText(formatExposureMs(exposure));
+            showExposure(exposure);
         }
     }
 

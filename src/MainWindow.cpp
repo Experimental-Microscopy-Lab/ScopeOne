@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "NotificationOverlay.h"
 
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/PluginManifest.h"
@@ -936,6 +937,7 @@ namespace scopeone::ui
         setupTools();
 
         setupStatusBar();
+        m_notifications = new NotificationOverlay(this);
         setupDeviceControl();
         setupInspect();
         setupImageProcessing();
@@ -946,6 +948,144 @@ namespace scopeone::ui
         setupImageGallery();
         setTabPosition(Qt::LeftDockWidgetArea, QTabWidget::North);
         updateDockWidgetMenu();
+
+        // Without a configuration the viewer says what to do and offers to do it
+        m_emptyLoadButton = new QPushButton(tr("Load configuration…"), m_previewWidget);
+        m_emptyRecentButton = new QPushButton(tr("Recent"), m_previewWidget);
+        m_emptyRecentButton->setMenu(m_recentConfigurationsMenu);
+        connect(m_emptyLoadButton, &QPushButton::clicked, this, [this]()
+        {
+            m_loadConfigurationAction->trigger();
+        });
+        m_previewWidget->installEventFilter(this);
+        updateEmptyState();
+    }
+
+    // Lists the built-in and the saved arrangements of the panels
+    void MainWindow::rebuildWorkspacesMenu()
+    {
+        m_workspacesMenu->clear();
+
+        // Two arrangements that bring forward what the work needs
+        const auto bringForward = [this](QDockWidget* right, bool recording)
+        {
+            for (QDockWidget* dock : {m_controlDockWidget, m_viewDockWidget, m_analyzeDockWidget,
+                                      m_processDockWidget, m_consoleDockWidget})
+            {
+                dock->show();
+            }
+            right->raise();
+            if (recording)
+            {
+                m_recordingDockWidget->show();
+                m_recordingDockWidget->raise();
+            }
+        };
+        connect(m_workspacesMenu->addAction(tr("Acquire (controls and recording)")), &QAction::triggered,
+                this, [bringForward, this]() { bringForward(m_controlDockWidget, true); });
+        connect(m_workspacesMenu->addAction(tr("Analyze (inspect and process)")), &QAction::triggered,
+                this, [bringForward, this]() { bringForward(m_analyzeDockWidget, false); });
+        m_workspacesMenu->addSeparator();
+
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        settings.beginGroup(QStringLiteral("Workspaces"));
+        const QStringList names = settings.childKeys();
+        for (const QString& name : names)
+        {
+            const QByteArray state = settings.value(name).toByteArray();
+            connect(m_workspacesMenu->addAction(name), &QAction::triggered, this, [this, state, name]()
+            {
+                if (!restoreState(state, kWindowLayoutVersion))
+                {
+                    notifyError(tr("Workspace"), tr("The workspace '%1' could not be restored.").arg(name));
+                }
+            });
+        }
+        settings.endGroup();
+        m_workspacesMenu->addSeparator();
+        connect(m_workspacesMenu->addAction(tr("Save Current Layout...")), &QAction::triggered,
+                this, [this]() { saveWorkspace(); });
+        if (!names.isEmpty())
+        {
+            QMenu* removeMenu = m_workspacesMenu->addMenu(tr("Delete"));
+            for (const QString& name : names)
+            {
+                connect(removeMenu->addAction(name), &QAction::triggered, this, [this, name]()
+                {
+                    QSettings stored(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                    stored.remove(QStringLiteral("Workspaces/") + name);
+                    rebuildWorkspacesMenu();
+                });
+            }
+        }
+    }
+
+    // Stores the arrangement of the panels under a name chosen by the user
+    void MainWindow::saveWorkspace()
+    {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(this,
+                                                   tr("Save Layout"),
+                                                   tr("Name of the workspace:"),
+                                                   QLineEdit::Normal,
+                                                   QString(),
+                                                   &accepted).trimmed();
+        if (!accepted || name.isEmpty())
+        {
+            return;
+        }
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        settings.setValue(QStringLiteral("Workspaces/") + name, saveState(kWindowLayoutVersion));
+        rebuildWorkspacesMenu();
+    }
+
+    // Tells the viewer why it is empty and shows the buttons that help when no configuration is loaded
+    void MainWindow::updateEmptyState()
+    {
+        if (!m_emptyLoadButton)
+        {
+            return;
+        }
+        const bool loaded = !m_scopeonecore->loadedConfigurationPath().isEmpty();
+        if (!loaded)
+        {
+            m_previewWidget->setEmptyStateMessage(
+                tr("No configuration loaded\nLoad a Micro-Manager configuration to use your devices"));
+        }
+        else if (m_scopeonecore->cameraIds().isEmpty())
+        {
+            m_previewWidget->setEmptyStateMessage(
+                tr("The loaded configuration has no camera\nYou can still open images from the File menu"));
+        }
+        else
+        {
+            m_previewWidget->setEmptyStateMessage(QString());
+        }
+        const bool showButtons = !loaded;
+        m_emptyLoadButton->setVisible(showButtons);
+        m_emptyRecentButton->setVisible(showButtons && !m_recentConfigurationsMenu->isEmpty());
+        if (showButtons)
+        {
+            const QSize load = m_emptyLoadButton->sizeHint();
+            const QSize recent = m_emptyRecentButton->sizeHint();
+            const int gap = 8;
+            const int total = load.width() + (m_emptyRecentButton->isVisible() ? gap + recent.width() : 0);
+            const int x = (m_previewWidget->width() - total) / 2;
+            const int y = m_previewWidget->height() / 2 + 40;
+            m_emptyLoadButton->setGeometry(x, y, load.width(), load.height());
+            m_emptyRecentButton->setGeometry(x + load.width() + gap, y, recent.width(), load.height());
+            m_emptyLoadButton->raise();
+            m_emptyRecentButton->raise();
+        }
+    }
+
+    bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+    {
+        if (watched == m_previewWidget && event->type() == QEvent::Resize)
+        {
+            updateEmptyState();
+        }
+        return QMainWindow::eventFilter(watched, event);
     }
 
     // Register built in tools and discover external tool plugins
@@ -1014,6 +1154,15 @@ namespace scopeone::ui
         m_imageGalleryWidget->addSession(session, title);
         m_imageWorkspace->openSession(session, title);
         showStatusMessage(tr("Images added to Gallery"), 5000);
+    }
+
+    void MainWindow::notifyError(const QString& title, const QString& message)
+    {
+        qWarning().noquote() << QStringLiteral("%1: %2").arg(title, message);
+        if (m_notifications)
+        {
+            m_notifications->show(NotificationOverlay::Level::Error, title, message);
+        }
     }
 
     // Create the shared status strip for transient and persistent state
@@ -1210,6 +1359,8 @@ namespace scopeone::ui
 
         viewMenu->addSeparator();
         m_dockWidgetsMenu = viewMenu->addMenu(tr("&Dock Widgets"));
+        m_workspacesMenu = viewMenu->addMenu(tr("&Workspaces"));
+        rebuildWorkspacesMenu();
         auto* resetLayoutAction = viewMenu->addAction(tr("&Reset Layout"));
         connect(resetLayoutAction, &QAction::triggered, this, [this]()
         {
@@ -1314,6 +1465,7 @@ namespace scopeone::ui
     void MainWindow::setupImageProcessing()
     {
         m_imageProcessingWidget = new ImageProcessingWidget(m_scopeonecore, m_imageWorkspace, this);
+        connect(m_imageProcessingWidget, &ImageProcessingWidget::problem, this, &MainWindow::notifyError);
 
         m_controlDockWidget = new QDockWidget(tr("Control"), this);
 
@@ -1892,11 +2044,11 @@ namespace scopeone::ui
         m_recentConfigurationsMenu->setEnabled(
             !m_recentConfigurationsMenu->isEmpty()
             && !m_scopeonecore->configurationOperationRunning());
+        updateEmptyState();
 
         if (!success)
         {
-            QMessageBox::critical(this, tr("Load Failed"),
-                                  tr("Failed to load configuration: %1").arg(errorMessage));
+            notifyError(tr("Load Failed"), tr("Failed to load configuration: %1").arg(errorMessage));
             showStatusMessage(tr("Configuration load failed"), 5000);
             qCritical().noquote() << QString("Configuration failed: %1").arg(errorMessage);
             return;
@@ -1969,10 +2121,10 @@ namespace scopeone::ui
     {
         m_loadConfigurationAction->setEnabled(true);
         m_unloadConfigurationAction->setEnabled(true);
+        updateEmptyState();
         if (!success)
         {
-            QMessageBox::critical(this, tr("Unload Failed"),
-                                  tr("Failed to unload configuration: %1").arg(errorMessage));
+            notifyError(tr("Unload Failed"), tr("Failed to unload configuration: %1").arg(errorMessage));
             showStatusMessage(tr("Configuration unload failed"), 5000);
             qCritical().noquote() << QString("Configuration unload failed: %1").arg(errorMessage);
             return;
@@ -2006,12 +2158,10 @@ namespace scopeone::ui
                 m_closeSaveProgress->deleteLater();
                 m_closeSaveProgress = nullptr;
             }
-            QMessageBox::critical(
-                this,
-                tr("Save Failed"),
-                session && !session->saveMessage().isEmpty()
-                    ? session->saveMessage()
-                    : tr("Failed to save gallery images"));
+            notifyError(tr("Save Failed"),
+                        session && !session->saveMessage().isEmpty()
+                            ? session->saveMessage()
+                            : tr("Failed to save gallery images"));
             return;
         }
         if (!m_closePendingSessions.isEmpty())

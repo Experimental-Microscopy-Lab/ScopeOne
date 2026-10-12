@@ -92,6 +92,9 @@ namespace scopeone::ui
         void setFitToWindow(bool enabled);
         bool isFitToWindow() const;
         void setScaleBarVisible(bool visible);
+        // Text that stands in for the image when there is nothing to show, for example because no
+        // configuration is loaded. Empty restores the default.
+        void setEmptyStateMessage(const QString& message);
         bool isScaleBarVisible() const;
         void setClippingWarningEnabled(bool enabled);
         bool isClippingWarningEnabled() const;
@@ -274,6 +277,7 @@ signals:
         QMap<QString, ViewportState> m_viewportStates;
         ViewportState m_overlayViewportState;
         QString m_placeholderText{QStringLiteral("No image loaded")};
+        QString m_emptyStateMessage;
 
         bool m_glInited{false};
         QOpenGLFunctions_3_3_Core m_gl3dFunctions;

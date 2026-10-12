@@ -30,6 +30,8 @@ namespace scopeone::ui
         ~ImageProcessingWidget() override = default;
 
     signals:
+        // A problem the user should see, which does not stop anything else
+        void problem(const QString& title, const QString& message);
         void processingStarted();
         void processingStopped();
         void processedLayerReady(const QString& layerKey);

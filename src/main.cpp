@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QIcon>
+#include <QSettings>
 #include <QSurfaceFormat>
 #include <memory>
 #include "AppVersion.h"
@@ -10,6 +11,18 @@
 
 int main(int argc, char *argv[])
 {
+    // The interface scale chosen in the settings applies from the start of the application. A scale
+    // that the environment already sets is left alone.
+    if (!qEnvironmentVariableIsSet("QT_SCALE_FACTOR"))
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const int percent = settings.value(QStringLiteral("Interface/scalePercent"), 100).toInt();
+        if (percent >= 50 && percent <= 300 && percent != 100)
+        {
+            qputenv("QT_SCALE_FACTOR", QByteArray::number(percent / 100.0, 'f', 2));
+        }
+    }
+
     QSurfaceFormat format;
     // macOS supports OpenGL only up to 4.1, and ScopeOne currently uses no features introduced after 4.1
     format.setVersion(4, 1);

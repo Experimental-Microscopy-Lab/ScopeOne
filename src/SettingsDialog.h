@@ -29,5 +29,6 @@ namespace scopeone::ui
         QLineEdit* m_microManagerDirectoryEdit{nullptr};
         QComboBox* m_widgetStyleComboBox{nullptr};
         QComboBox* m_colorSchemeComboBox{nullptr};
+        QComboBox* m_scaleComboBox{nullptr};
     };
 }

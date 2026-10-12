@@ -526,7 +526,7 @@ namespace scopeone::ui
                     finishOfflineProcessing();
                     if (!error.isEmpty() || !frame.isValid())
                     {
-                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     const QString outputSourceId = QStringLiteral("processed:%1")
@@ -562,7 +562,7 @@ namespace scopeone::ui
                     finishOfflineProcessing();
                     if (!error.isEmpty() || !session)
                     {
-                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     emit processedStackReady(session);
@@ -581,7 +581,7 @@ namespace scopeone::ui
                     finishOfflineProcessing();
                     if (!error.isEmpty() || outputLayerKey.isEmpty())
                     {
-                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     emit processedLayerReady(outputLayerKey);
@@ -621,7 +621,7 @@ namespace scopeone::ui
                     finishOfflineProcessing();
                     if (!error.isEmpty())
                     {
-                        QMessageBox::warning(this, tr("Processing Failed"), error);
+                        emit problem(tr("Processing Failed"), error);
                     }
                 });
 
@@ -1086,10 +1086,9 @@ namespace scopeone::ui
         if (m_offlineProcessingRequestId == 0)
         {
             finishOfflineProcessing();
-            QMessageBox::warning(this,
-                                 tr("Processing Failed"),
-                                 entireStack ? tr("No stack is available")
-                                             : tr("No image is available"));
+            emit problem(tr("Processing Failed"),
+                         entireStack ? tr("No stack is available")
+                                     : tr("No image is available"));
             return;
         }
         m_processingProgress->setRange(0, 0);
@@ -1114,7 +1113,7 @@ namespace scopeone::ui
     {
         if (!m_scopeonecore->addProcessingModule(m_moduleTypeCombo->currentData().toString()))
         {
-            QMessageBox::warning(this, tr("Warning"), tr("Failed to add processing module"));
+            emit problem(tr("Warning"), tr("Failed to add processing module"));
             return;
         }
         updateModuleList();
@@ -1126,7 +1125,7 @@ namespace scopeone::ui
         const int row = m_moduleList->currentRow();
         if (row < 0 || !m_scopeonecore->removeProcessingModule(row))
         {
-            QMessageBox::warning(this, tr("Warning"), tr("Failed to remove processing module"));
+            emit problem(tr("Warning"), tr("Failed to remove processing module"));
             return;
         }
     }
