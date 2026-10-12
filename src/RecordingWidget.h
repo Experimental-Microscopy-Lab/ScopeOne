@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QElapsedTimer>
 #include "scopeone/ScopeOneCore.h"
 
@@ -53,6 +55,10 @@ namespace scopeone::ui
         void moveOrderItem(int delta);
         void updateSectionSummaries();
         void updatePlanSummary();
+        QJsonObject captureSettings() const;
+        void applySettings(const QJsonObject& object);
+        void saveLastSettings() const;
+        void restoreLastSettings();
         void syncOrderList();
         void refreshChannelGroups();
         QComboBox* makeChannelCameraCombo(const QString& selected);
@@ -130,6 +136,10 @@ namespace scopeone::ui
         QSpinBox* m_burstCountSpin{nullptr};
         QDoubleSpinBox* m_burstIntervalSpin{nullptr};
         QComboBox* m_burstIntervalUnitCombo{nullptr};
+
+        // Channel settings read from a saved protocol, applied when the presets are listed
+        QString m_savedChannelGroup;
+        QJsonArray m_savedChannels;
 
         QPushButton* m_startStopButton{nullptr};
         QLabel* m_statusLabel{nullptr};

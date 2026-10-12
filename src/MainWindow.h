@@ -20,6 +20,11 @@ class QProgressBar;
 class QProgressDialog;
 class QTimer;
 
+namespace scopeone::ui
+{
+    class NotificationOverlay;
+}
+
 namespace scopeone::core
 {
     class ImageSceneModel;
@@ -77,6 +82,8 @@ namespace scopeone::ui
         void showLivePreview();
         void updateControlTarget(const QString& target);
         void updateDockWidgetMenu();
+        void rebuildWorkspacesMenu();
+        void saveWorkspace();
         void restoreWindowLayout();
         void saveWindowLayout() const;
         void syncCameraState();
@@ -90,6 +97,8 @@ namespace scopeone::ui
         void openImages(const QStringList& filePaths);
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
+        // Shows a message over the corner of the window that does not block anything
+        void notifyError(const QString& title, const QString& message);
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
@@ -163,6 +172,8 @@ namespace scopeone::ui
         QPointer<QProgressDialog> m_closeSaveProgress;
         std::unique_ptr<ToolRegistry> m_toolRegistry;
         QLabel* m_statusMessageLabel{nullptr};
+        scopeone::ui::NotificationOverlay* m_notifications{nullptr};
+        QMenu* m_workspacesMenu{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};

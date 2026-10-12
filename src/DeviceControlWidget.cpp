@@ -1540,14 +1540,21 @@ namespace scopeone::ui
         setArrowSize(m_xyBigDownButton);
         setArrowSize(m_xyBigLeftButton);
         setArrowSize(m_xyBigRightButton);
-        m_xyUpButton->setToolTip(QStringLiteral("Move +Y by step"));
-        m_xyDownButton->setToolTip(QStringLiteral("Move -Y by step"));
-        m_xyLeftButton->setToolTip(QStringLiteral("Move -X by step"));
-        m_xyRightButton->setToolTip(QStringLiteral("Move +X by step"));
-        m_xyBigUpButton->setToolTip(QStringLiteral("Move +Y by big step"));
-        m_xyBigDownButton->setToolTip(QStringLiteral("Move -Y by big step"));
-        m_xyBigLeftButton->setToolTip(QStringLiteral("Move -X by big step"));
-        m_xyBigRightButton->setToolTip(QStringLiteral("Move +X by big step"));
+        m_xyUpButton->setToolTip(QStringLiteral("Move +Y by step (Up arrow in the image view)"));
+        m_xyDownButton->setToolTip(QStringLiteral("Move -Y by step (Down arrow in the image view)"));
+        m_xyLeftButton->setToolTip(QStringLiteral("Move -X by step (Left arrow in the image view)"));
+        m_xyRightButton->setToolTip(QStringLiteral("Move +X by step (Right arrow in the image view)"));
+        m_xyBigUpButton->setToolTip(QStringLiteral("Move +Y by big step (Shift+Up arrow in the image view)"));
+        m_xyBigDownButton->setToolTip(QStringLiteral("Move -Y by big step (Shift+Down arrow in the image view)"));
+        m_xyBigLeftButton->setToolTip(QStringLiteral("Move -X by big step (Shift+Left arrow in the image view)"));
+        m_xyBigRightButton->setToolTip(QStringLiteral("Move +X by big step (Shift+Right arrow in the image view)"));
+        // Holding a step button keeps stepping. The moves are queued, so a slow stage only falls behind.
+        for (QPushButton* button : {m_xyUpButton, m_xyDownButton, m_xyLeftButton, m_xyRightButton})
+        {
+            button->setAutoRepeat(true);
+            button->setAutoRepeatDelay(500);
+            button->setAutoRepeatInterval(250);
+        }
         // Wide enough for the largest expected coordinate so positions are never clipped
         const int positionLabelWidth = fontMetrics().horizontalAdvance(QStringLiteral("X: -000000.00")) + 8;
         QWidget* xyCenterWidget = new QWidget();
@@ -1624,10 +1631,16 @@ namespace scopeone::ui
         setArrowSize(m_zDownButton);
         setArrowSize(m_zBigUpButton);
         setArrowSize(m_zBigDownButton);
-        m_zUpButton->setToolTip(QStringLiteral("Move +Z by step"));
-        m_zDownButton->setToolTip(QStringLiteral("Move -Z by step"));
-        m_zBigUpButton->setToolTip(QStringLiteral("Move +Z by big step"));
-        m_zBigDownButton->setToolTip(QStringLiteral("Move -Z by big step"));
+        m_zUpButton->setToolTip(QStringLiteral("Move +Z by step (Page Up in the image view)"));
+        m_zDownButton->setToolTip(QStringLiteral("Move -Z by step (Page Down in the image view)"));
+        m_zBigUpButton->setToolTip(QStringLiteral("Move +Z by big step (Shift+Page Up in the image view)"));
+        m_zBigDownButton->setToolTip(QStringLiteral("Move -Z by big step (Shift+Page Down in the image view)"));
+        for (QPushButton* button : {m_zUpButton, m_zDownButton})
+        {
+            button->setAutoRepeat(true);
+            button->setAutoRepeatDelay(500);
+            button->setAutoRepeatInterval(250);
+        }
         zButtonsLayout->addWidget(m_zBigUpButton);
         zButtonsLayout->addWidget(m_zUpButton);
         m_zPosLabel = new QLabel("Z: N/A");
