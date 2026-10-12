@@ -11,6 +11,16 @@
 #include <QTextStream>
 #include <algorithm>
 #include <vector>
+#ifdef Q_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <cwctype>
+#endif
 
 namespace scopeone::core::internal
 {
@@ -69,6 +79,44 @@ namespace scopeone::core::internal
             QString value;
         };
 
+#ifdef Q_OS_WIN
+        // Lets Windows find the libraries that a device adapter depends on, such as the runtime of
+        // a camera vendor, in the folder of the adapter. MMCore loads an adapter by its full path,
+        // and Windows looks for the libraries it needs in the folder of the application and in
+        // PATH, not in the folder of the adapter. Micro-Manager works without this because its
+        // adapters sit beside its executable.
+        void addAdapterDirectoriesToLibraryPath(const QStringList& directories)
+        {
+            const DWORD capacity = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+            std::wstring current(capacity > 0 ? capacity : 0, L'\0');
+            if (capacity > 0)
+            {
+                const DWORD length = GetEnvironmentVariableW(L"PATH", current.data(), capacity);
+                current.resize(length);
+            }
+            std::wstring added;
+            for (const QString& directory : directories)
+            {
+                const std::wstring native = QDir::toNativeSeparators(directory).toStdWString();
+                // A directory that is already in PATH is not added again
+                const std::wstring entry = L";" + native + L";";
+                std::wstring haystack = L";" + current + L";";
+                std::transform(haystack.begin(), haystack.end(), haystack.begin(), ::towlower);
+                std::wstring needle = entry;
+                std::transform(needle.begin(), needle.end(), needle.begin(), ::towlower);
+                if (!native.empty() && haystack.find(needle) == std::wstring::npos
+                    && added.find(native) == std::wstring::npos)
+                {
+                    added += native + L";";
+                }
+            }
+            if (!added.empty())
+            {
+                SetEnvironmentVariableW(L"PATH", (added + current).c_str());
+            }
+        }
+#endif
+
         // Sets adapter search paths relative to the application directory
         void configureAdapterSearchPaths(CMMCore& core, const QStringList& additionalPaths)
         {
@@ -82,6 +130,13 @@ namespace scopeone::core::internal
                     paths.append(normalizedPath);
                 }
             }
+
+#ifdef Q_OS_WIN
+            // The folder of the application is searched anyway
+            QStringList libraryDirectories = paths;
+            libraryDirectories.removeAll(appDir);
+            addAdapterDirectoriesToLibraryPath(libraryDirectories);
+#endif
 
             std::vector<std::string> searchPaths;
             searchPaths.reserve(static_cast<size_t>(paths.size()));
