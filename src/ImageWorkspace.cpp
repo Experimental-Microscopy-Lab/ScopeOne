@@ -667,6 +667,13 @@ namespace scopeone::ui
         return result;
     }
 
+    std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> ImageWorkspace::documentSession(
+        const QString& documentId) const
+    {
+        const Document* document = findDocument(documentId);
+        return document ? document->session : nullptr;
+    }
+
     ImageDocumentInfo ImageWorkspace::document(const QString& documentId) const
     {
         const Document* document = findDocument(documentId);

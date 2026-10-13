@@ -314,6 +314,13 @@ namespace scopeone::core
                 return recordedFrameCount() > 0;
             }
 
+            // One recorded frame, from memory or from the files that were written. Invalid when
+            // there is no such frame.
+            ImageFrame recordedFrame(const QString& cameraId, int index) const
+            {
+                return imageFrameAt(cameraId, index);
+            }
+
             bool isSaved() const { return m_saved; }
             const QString& saveMessage() const { return m_saveMessage; }
 

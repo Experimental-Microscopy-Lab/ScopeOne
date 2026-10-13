@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "ImageAnalysis.h"
 #include "NotificationOverlay.h"
 
 #include "scopeone/ScopeOneCore.h"
@@ -1356,6 +1357,12 @@ namespace scopeone::ui
         addAction(autoContrastAction);
 
         auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
+        // Image, Process and Analyze come before Tools, as in ImageJ
+        m_imageAnalysis = new ImageAnalysis(m_scopeonecore, m_imageWorkspace, this, this);
+        m_imageAnalysis->setPresenter([this](
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            const QString& title) { presentSession(session, title); });
+        m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
         auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));

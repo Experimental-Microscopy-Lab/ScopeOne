@@ -81,6 +81,13 @@ set(SCOPEONE_UI_SOURCES
         src/PositionListFile.cpp
         src/CollapsibleSection.cpp
         src/ToolIcons.cpp
+        src/ImageOps.cpp
+        src/ParameterDialog.cpp
+        src/ResultsWindow.cpp
+        src/RoiManagerWindow.cpp
+        src/ProfilePlotWindow.cpp
+        src/ImageAnalysis.cpp
+        src/OrthogonalViewsDialog.cpp
         src/NotificationOverlay.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
@@ -106,6 +113,13 @@ set(SCOPEONE_UI_HEADERS
         src/PositionListFile.h
         src/CollapsibleSection.h
         src/ToolIcons.h
+        src/ImageOps.h
+        src/ParameterDialog.h
+        src/ResultsWindow.h
+        src/RoiManagerWindow.h
+        src/ProfilePlotWindow.h
+        src/ImageAnalysis.h
+        src/OrthogonalViewsDialog.h
         src/NotificationOverlay.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h

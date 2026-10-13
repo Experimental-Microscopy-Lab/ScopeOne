@@ -23,6 +23,7 @@ class QTimer;
 namespace scopeone::ui
 {
     class NotificationOverlay;
+    class ImageAnalysis;
 }
 
 namespace scopeone::core
@@ -174,6 +175,7 @@ namespace scopeone::ui
         QLabel* m_statusMessageLabel{nullptr};
         scopeone::ui::NotificationOverlay* m_notifications{nullptr};
         QMenu* m_workspacesMenu{nullptr};
+        ImageAnalysis* m_imageAnalysis{nullptr};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
