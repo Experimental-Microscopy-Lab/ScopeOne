@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CommandFinder.h"
 #include "ImageAnalysis.h"
 #include "NotificationOverlay.h"
 
@@ -1364,6 +1365,22 @@ namespace scopeone::ui
             const QString& title) { presentSession(session, title); });
         m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
         m_toolRegistry->populateMenu(toolsMenu, this);
+        toolsMenu->addSeparator();
+        // Finds a command of any menu by name, which keeps the many menus usable
+        auto* findCommandsAction = toolsMenu->addAction(tr("&Find Commands..."));
+        findCommandsAction->setShortcut(QKeySequence(Qt::Key_L));
+        findCommandsAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(findCommandsAction, &QAction::triggered, this, [this]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus)
+                          || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            CommandFinder finder(menuBar(), this);
+            finder.exec();
+        });
         toolsMenu->addSeparator();
         auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
         connect(pluginManagerAction, &QAction::triggered, this, [this]()
