@@ -99,6 +99,11 @@ namespace scopeone::ui
         void createMask();
         void createSelection();
         void imageProperties();
+        void enhanceContrast();
+        void enhanceLocalContrast();
+        void applyDisplayRange();
+        void addNoise(bool saltAndPepper);
+        void topHat();
         void wandTolerance();
         void analyzeParticles();
         void measureShapes(const QList<scopeone::core::ImageSceneModel::Markup>& shapes, bool allSlices);

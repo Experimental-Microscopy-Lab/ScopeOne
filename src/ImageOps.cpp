@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <numeric>
+#include <random>
 
 namespace scopeone::ui::imageops
 {
@@ -2128,5 +2129,239 @@ namespace scopeone::ui::imageops
         }
         const QList<Particle> particles = findParticles(mask);
         return particles.isEmpty() ? QList<QPoint>{} : particles.first().outline;
+    }
+
+    std::vector<qint64> histogramOfFrames(const QList<ImageFrame>& frames)
+    {
+        std::vector<qint64> total;
+        for (const ImageFrame& frame : frames)
+        {
+            const std::vector<qint64> histogram = histogramOf(frame);
+            if (total.size() < histogram.size())
+            {
+                total.resize(histogram.size(), 0);
+            }
+            for (size_t i = 0; i < histogram.size(); ++i)
+            {
+                total[i] += histogram[i];
+            }
+        }
+        return total;
+    }
+
+    LevelRange saturatedRange(const std::vector<qint64>& histogram, double saturatedPercent)
+    {
+        qint64 total = 0;
+        for (const qint64 count : histogram)
+        {
+            total += count;
+        }
+        const qint64 threshold = saturatedPercent > 0.0 ? static_cast<qint64>(total * saturatedPercent / 200.0) : 0;
+        LevelRange range;
+        qint64 count = 0;
+        int low = -1;
+        do
+        {
+            ++low;
+            count += histogram[static_cast<size_t>(low)];
+        } while (count <= threshold && low < static_cast<int>(histogram.size()) - 1);
+        count = 0;
+        int high = static_cast<int>(histogram.size());
+        do
+        {
+            --high;
+            count += histogram[static_cast<size_t>(high)];
+        } while (count <= threshold && high > 0);
+        range.low = low;
+        range.high = std::max(low, high);
+        return range;
+    }
+
+    ImageFrame stretched(const ImageFrame& frame, int low, int high)
+    {
+        std::vector<float> values = toFloat(frame);
+        const float limit = static_cast<float>(maxValue(frame));
+        const float span = static_cast<float>(std::max(1, high - low));
+        for (float& value : values)
+        {
+            value = (value - static_cast<float>(low)) / span * limit;
+        }
+        return fromFloat(values, frame, frame.width, frame.height);
+    }
+
+    ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram)
+    {
+        const std::vector<qint64> counts = histogram ? *histogram : histogramOf(frame);
+        const int top = static_cast<int>(counts.size()) - 1;
+        std::vector<double> weight(counts.size());
+        for (size_t i = 0; i < counts.size(); ++i)
+        {
+            weight[i] = sqrtCounts ? std::sqrt(static_cast<double>(counts[i])) : static_cast<double>(counts[i]);
+        }
+        // Every value counts twice but the first and the last, as in ImageJ
+        double sum = weight[0] + weight[static_cast<size_t>(top)];
+        for (int i = 1; i < top; ++i)
+        {
+            sum += 2.0 * weight[static_cast<size_t>(i)];
+        }
+        const double scale = sum > 0.0 ? top / sum : 1.0;
+        std::vector<float> lookup(counts.size());
+        double running = weight[0];
+        lookup[0] = 0.0f;
+        for (int i = 1; i < top; ++i)
+        {
+            const double delta = weight[static_cast<size_t>(i)];
+            running += delta;
+            lookup[static_cast<size_t>(i)] = static_cast<float>(std::round(running * scale));
+            running += delta;
+        }
+        lookup[static_cast<size_t>(top)] = static_cast<float>(top);
+        std::vector<float> values = toFloat(frame);
+        for (float& value : values)
+        {
+            value = lookup[static_cast<size_t>(std::clamp(static_cast<int>(value), 0, top))];
+        }
+        return fromFloat(values, frame, frame.width, frame.height);
+    }
+
+    ImageFrame localContrast(const ImageFrame& frame, int blockSize, int bins, double maxSlope)
+    {
+        const int width = frame.width;
+        const int height = frame.height;
+        const int tilesX = std::max(2, static_cast<int>(std::lround(static_cast<double>(width) / std::max(8, blockSize))));
+        const int tilesY = std::max(2, static_cast<int>(std::lround(static_cast<double>(height) / std::max(8, blockSize))));
+        bins = std::clamp(bins, 16, 4096);
+        const std::vector<float> source = toFloat(frame);
+        const float limit = static_cast<float>(maxValue(frame));
+        const auto binOf = [&](float value)
+        {
+            return std::clamp(static_cast<int>(value / limit * (bins - 1) + 0.5f), 0, bins - 1);
+        };
+        // One lookup table for each tile, from the histogram with its tall peaks cut off
+        std::vector<std::vector<float>> tables(static_cast<size_t>(tilesX) * tilesY);
+        for (int ty = 0; ty < tilesY; ++ty)
+        {
+            for (int tx = 0; tx < tilesX; ++tx)
+            {
+                const int x0 = tx * width / tilesX;
+                const int x1 = (tx + 1) * width / tilesX;
+                const int y0 = ty * height / tilesY;
+                const int y1 = (ty + 1) * height / tilesY;
+                std::vector<double> histogram(static_cast<size_t>(bins), 0.0);
+                for (int y = y0; y < y1; ++y)
+                {
+                    for (int x = x0; x < x1; ++x)
+                    {
+                        histogram[static_cast<size_t>(binOf(source[static_cast<size_t>(y) * width + x]))] += 1.0;
+                    }
+                }
+                const double pixels = std::max(1.0, static_cast<double>(x1 - x0) * (y1 - y0));
+                const double clip = std::max(1.0, maxSlope * pixels / bins);
+                double excess = 0.0;
+                for (double& count : histogram)
+                {
+                    if (count > clip)
+                    {
+                        excess += count - clip;
+                        count = clip;
+                    }
+                }
+                for (double& count : histogram)
+                {
+                    count += excess / bins;
+                }
+                std::vector<float> table(static_cast<size_t>(bins));
+                double running = 0.0;
+                for (int b = 0; b < bins; ++b)
+                {
+                    running += histogram[static_cast<size_t>(b)];
+                    table[static_cast<size_t>(b)] = static_cast<float>(running / pixels) * limit;
+                }
+                tables[static_cast<size_t>(ty) * tilesX + tx] = std::move(table);
+            }
+        }
+        // Each pixel takes the mean of the tables of the four nearest tile centers
+        std::vector<float> result(source.size());
+        for (int y = 0; y < height; ++y)
+        {
+            const double fy = (y + 0.5) * tilesY / height - 0.5;
+            const int ty0 = std::clamp(static_cast<int>(std::floor(fy)), 0, tilesY - 1);
+            const int ty1 = std::min(ty0 + 1, tilesY - 1);
+            const double wy = std::clamp(fy - ty0, 0.0, 1.0);
+            for (int x = 0; x < width; ++x)
+            {
+                const double fx = (x + 0.5) * tilesX / width - 0.5;
+                const int tx0 = std::clamp(static_cast<int>(std::floor(fx)), 0, tilesX - 1);
+                const int tx1 = std::min(tx0 + 1, tilesX - 1);
+                const double wx = std::clamp(fx - tx0, 0.0, 1.0);
+                const int bin = binOf(source[static_cast<size_t>(y) * width + x]);
+                const auto at = [&](int tx, int ty) { return tables[static_cast<size_t>(ty) * tilesX + tx][static_cast<size_t>(bin)]; };
+                result[static_cast<size_t>(y) * width + x] = static_cast<float>(
+                    (1 - wy) * ((1 - wx) * at(tx0, ty0) + wx * at(tx1, ty0))
+                    + wy * ((1 - wx) * at(tx0, ty1) + wx * at(tx1, ty1)));
+            }
+        }
+        return fromFloat(result, frame, width, height);
+    }
+
+    ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma)
+    {
+        std::vector<float> values = toFloat(frame);
+        std::mt19937 generator(std::random_device{}());
+        std::normal_distribution<float> noise(0.0f, static_cast<float>(sigma));
+        for (float& value : values)
+        {
+            value += noise(generator);
+        }
+        return fromFloat(values, frame, frame.width, frame.height);
+    }
+
+    ImageFrame withSaltAndPepper(const ImageFrame& frame, double percent)
+    {
+        std::vector<float> values = toFloat(frame);
+        std::mt19937 generator(std::random_device{}());
+        std::uniform_real_distribution<double> chance(0.0, 100.0);
+        const float limit = static_cast<float>(maxValue(frame));
+        for (float& value : values)
+        {
+            const double roll = chance(generator);
+            if (roll < percent / 2.0)
+            {
+                value = 0.0f;
+            }
+            else if (roll < percent)
+            {
+                value = limit;
+            }
+        }
+        return fromFloat(values, frame, frame.width, frame.height);
+    }
+
+    ImageFrame topHat(const ImageFrame& frame, double radius, bool lightBackground)
+    {
+        const std::vector<float> source = toFloat(frame);
+        const std::vector<Offset> disc = discOffsets(std::max(1.0, radius));
+        std::vector<float> result(source.size());
+        if (!lightBackground)
+        {
+            // The image minus its opening
+            const std::vector<float> opened = morphology(morphology(source, frame.width, frame.height, disc, true),
+                                                         frame.width, frame.height, disc, false);
+            for (size_t i = 0; i < source.size(); ++i)
+            {
+                result[i] = source[i] - opened[i];
+            }
+        }
+        else
+        {
+            // The closing minus the image
+            const std::vector<float> closed = morphology(morphology(source, frame.width, frame.height, disc, false),
+                                                         frame.width, frame.height, disc, true);
+            for (size_t i = 0; i < source.size(); ++i)
+            {
+                result[i] = closed[i] - source[i];
+            }
+        }
+        return fromFloat(result, frame, frame.width, frame.height);
     }
 }

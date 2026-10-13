@@ -226,6 +226,31 @@ namespace scopeone::ui::imageops
     // Takes away the slowly changing background with a rolling ball of the given radius
     ImageFrame subtractBackground(const ImageFrame& frame, double radius, bool lightBackground);
 
+    // ---- contrast and noise
+
+    // One count for every value that a frame can have, over all the given frames
+    std::vector<qint64> histogramOfFrames(const QList<ImageFrame>& frames);
+    // The values between which all pixels lie but for the given percentage, which is split
+    // between the dark and the bright end
+    struct LevelRange
+    {
+        int low{0};
+        int high{0};
+    };
+    LevelRange saturatedRange(const std::vector<qint64>& histogram, double saturatedPercent);
+    // Stretches the values from low to high over the whole range of the frame
+    ImageFrame stretched(const ImageFrame& frame, int low, int high);
+    // Spreads the values so that all of them are about equally frequent. With sqrtCounts the
+    // counts are square rooted first, which keeps the look more natural, as ImageJ does.
+    ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram = nullptr);
+    // Contrast limited adaptive histogram equalization, which brings out local detail
+    ImageFrame localContrast(const ImageFrame& frame, int blockSize, int bins, double maxSlope);
+    ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma);
+    ImageFrame withSaltAndPepper(const ImageFrame& frame, double percent);
+    // Keeps what is smaller than the disc: bright detail on a dark background, or with
+    // lightBackground dark detail on a bright one
+    ImageFrame topHat(const ImageFrame& frame, double radius, bool lightBackground);
+
     // ---- math
 
     enum class MathOperation { Add, Subtract, Multiply, Divide, Min, Max, Gamma, Log, Exp, Square, Sqrt, Abs };

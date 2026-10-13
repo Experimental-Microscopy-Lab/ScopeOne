@@ -335,6 +335,7 @@ namespace scopeone::ui
 
         QMenu* adjust = menu->addMenu(tr("&Adjust"));
         connect(adjust->addAction(tr("&Threshold...")), &QAction::triggered, this, [this]() { thresholdImage(); });
+        connect(adjust->addAction(tr("&Apply Display Range")), &QAction::triggered, this, [this]() { applyDisplayRange(); });
 
         QMenu* stacks = menu->addMenu(tr("S&tacks"));
         connect(stacks->addAction(tr("&Z Project...")), &QAction::triggered, this, [this]() { zProject(); });
@@ -354,6 +355,7 @@ namespace scopeone::ui
         addFilter(filters, tr("Ma&ximum..."), imageops::Filter::Maximum, 2.0);
         addFilter(filters, tr("&Variance..."), imageops::Filter::Variance, 2.0);
         connect(filters->addAction(tr("&Unsharp Mask...")), &QAction::triggered, this, [this]() { unsharpMask(); });
+        connect(filters->addAction(tr("&Top Hat...")), &QAction::triggered, this, [this]() { topHat(); });
         connect(menu->addAction(tr("&Sharpen")), &QAction::triggered, this,
                 [this]() { apply(tr("Sharpen"), [](const ImageFrame& f) { return imageops::sharpened(f); }); });
         connect(menu->addAction(tr("Find &Edges")), &QAction::triggered, this,
@@ -376,6 +378,13 @@ namespace scopeone::ui
         addMath(math, tr("A&bsolute Value"), imageops::MathOperation::Abs, false, 0.0);
 
         connect(menu->addAction(tr("Image &Calculator...")), &QAction::triggered, this, [this]() { calculate(); });
+
+        connect(menu->addAction(tr("Enhance &Contrast...")), &QAction::triggered, this, [this]() { enhanceContrast(); });
+        connect(menu->addAction(tr("Enhance &Local Contrast (CLAHE)...")), &QAction::triggered, this,
+                [this]() { enhanceLocalContrast(); });
+        QMenu* noise = menu->addMenu(tr("&Noise"));
+        connect(noise->addAction(tr("Add &Noise...")), &QAction::triggered, this, [this]() { addNoise(false); });
+        connect(noise->addAction(tr("Add &Salt and Pepper...")), &QAction::triggered, this, [this]() { addNoise(true); });
 
         QMenu* binary = menu->addMenu(tr("Bin&ary"));
         connect(binary->addAction(tr("&Make Binary")), &QAction::triggered, this, [this]() { thresholdImage(); });
@@ -650,6 +659,138 @@ namespace scopeone::ui
             {
                 return imageops::unsharpMask(frame, sigma, weight);
             });
+        }
+    }
+
+    // ---- contrast
+
+    // Stretches the contrast. Without Normalize the display range of the image is set and its data
+    // stay as they are, and with it, or with Equalize, a new image is made.
+    void ImageAnalysis::enhanceContrast()
+    {
+        Source source;
+        if (!activeSource(source))
+        {
+            return;
+        }
+        QList<ParameterField> fields{
+            ParameterField::real(tr("Saturated pixels (%)"), 0.35, 0.0, 100.0, 2),
+            ParameterField::check(tr("Normalize"), false),
+            ParameterField::check(tr("Equalize histogram"), false),
+            ParameterField::check(tr("Use the histogram of the whole stack"), false)};
+        if (!askParameters(m_window, tr("Enhance Contrast"), fields))
+        {
+            return;
+        }
+        const double saturated = fields.at(0).value;
+        const bool normalize = fields.at(1).checked;
+        const bool equalize = fields.at(2).checked;
+        const bool wholeStack = fields.at(3).checked && source.frames.size() > 1;
+        const ImageFrame& current = source.frames.at(source.index);
+        const std::vector<qint64> histogram = imageops::histogramOfFrames(
+            wholeStack ? source.frames : QList<ImageFrame>{current});
+
+        if (!normalize && !equalize)
+        {
+            const imageops::LevelRange range = imageops::saturatedRange(histogram, saturated);
+            if (source.scene)
+            {
+                source.scene->setLayerAutoStretchEnabled(source.layerKey, false);
+                source.scene->setLayerDisplayLevels(source.layerKey, range.low, range.high, imageops::maxValue(current));
+            }
+            return;
+        }
+        const Scope scope = chooseScope(source, tr("Enhance Contrast"));
+        if (scope == Scope::Cancel)
+        {
+            return;
+        }
+        const imageops::LevelRange range = imageops::saturatedRange(histogram, saturated);
+        const auto operation = [&](const ImageFrame& frame)
+        {
+            if (equalize)
+            {
+                return imageops::equalized(frame, true, wholeStack ? &histogram : nullptr);
+            }
+            return imageops::stretched(frame, range.low, range.high);
+        };
+        QList<ImageFrame> result;
+        if (scope == Scope::All)
+        {
+            for (const ImageFrame& frame : source.frames)
+            {
+                result.append(operation(frame));
+            }
+        }
+        else
+        {
+            result.append(operation(current));
+        }
+        present(result, tr("%1 (%2)").arg(equalize ? tr("Equalized") : tr("Normalized"), source.title));
+    }
+
+    void ImageAnalysis::enhanceLocalContrast()
+    {
+        QList<ParameterField> fields{ParameterField::integer(tr("Block size (pixels)"), 127, 8, 2000),
+                                     ParameterField::integer(tr("Histogram bins"), 256, 16, 4096),
+                                     ParameterField::real(tr("Maximum slope"), 3.0, 1.0, 100.0, 1)};
+        if (askParameters(m_window, tr("Enhance Local Contrast"), fields))
+        {
+            const int block = static_cast<int>(fields.at(0).value);
+            const int bins = static_cast<int>(fields.at(1).value);
+            const double slope = fields.at(2).value;
+            apply(tr("Enhance Local Contrast"), [block, bins, slope](const ImageFrame& frame)
+            {
+                return imageops::localContrast(frame, block, bins, slope);
+            });
+        }
+    }
+
+    // Writes the display range of the image into its data, so that what is shown is what is stored
+    void ImageAnalysis::applyDisplayRange()
+    {
+        Source source;
+        if (!activeSource(source) || !source.scene)
+        {
+            return;
+        }
+        scopeone::core::DocumentLayer layer;
+        if (!source.scene->findLayer(source.layerKey, layer))
+        {
+            return;
+        }
+        const int low = layer.display.levelMin;
+        const int high = layer.display.levelMax;
+        apply(tr("Apply Display Range"), [low, high](const ImageFrame& frame)
+        {
+            return imageops::stretched(frame, low, high);
+        });
+    }
+
+    void ImageAnalysis::addNoise(bool saltAndPepper)
+    {
+        QList<ParameterField> fields{
+            saltAndPepper ? ParameterField::real(tr("Percent of pixels"), 2.5, 0.0, 100.0, 2)
+                          : ParameterField::real(tr("Standard deviation"), 25.0, 0.0, 100000.0, 1)};
+        if (askParameters(m_window, saltAndPepper ? tr("Add Salt and Pepper") : tr("Add Noise"), fields))
+        {
+            const double amount = fields.first().value;
+            apply(saltAndPepper ? tr("Salt and Pepper") : tr("Add Noise"), [amount, saltAndPepper](const ImageFrame& frame)
+            {
+                return saltAndPepper ? imageops::withSaltAndPepper(frame, amount) : imageops::withGaussianNoise(frame, amount);
+            });
+        }
+    }
+
+    void ImageAnalysis::topHat()
+    {
+        QList<ParameterField> fields{ParameterField::real(tr("Radius (pixels)"), 10.0, 1.0, 200.0, 1),
+                                     ParameterField::check(tr("Light background"), false)};
+        if (askParameters(m_window, tr("Top Hat"), fields))
+        {
+            const double radius = fields.at(0).value;
+            const bool light = fields.at(1).checked;
+            apply(tr("Top Hat"), [radius, light](const ImageFrame& frame) { return imageops::topHat(frame, radius, light); });
         }
     }
 
