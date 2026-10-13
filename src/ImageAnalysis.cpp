@@ -11,6 +11,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSignalBlocker>
 
 namespace scopeone::ui
 {
@@ -146,8 +147,15 @@ namespace scopeone::ui
         }
     }
 
-    void ImageAnalysis::apply(const QString& title, const FrameOperation& operation)
+    void ImageAnalysis::apply(const QString& menuText, const FrameOperation& operation)
     {
+        // The name of the command as it reads, without the mnemonic mark and the dots of a dialog
+        QString title = menuText;
+        title.remove(QLatin1Char('&'));
+        while (title.endsWith(QLatin1Char('.')))
+        {
+            title.chop(1);
+        }
         Source source;
         if (!activeSource(source))
         {
@@ -212,6 +220,16 @@ namespace scopeone::ui
         connect(menu->addAction(text), &QAction::triggered, this, [this, text, operation]()
         {
             int iterations = 1;
+            double tolerance = 0.5;
+            if (operation == imageops::BinaryOperation::Watershed)
+            {
+                QList<ParameterField> fields{ParameterField::real(tr("Tolerance"), 0.5, 0.0, 50.0, 2)};
+                if (!askParameters(m_window, text, fields))
+                {
+                    return;
+                }
+                tolerance = fields.first().value;
+            }
             if (operation == imageops::BinaryOperation::Erode || operation == imageops::BinaryOperation::Dilate
                 || operation == imageops::BinaryOperation::Open || operation == imageops::BinaryOperation::Close)
             {
@@ -222,11 +240,17 @@ namespace scopeone::ui
                 }
                 iterations = static_cast<int>(fields.first().value);
             }
-            apply(text, [operation, iterations](const ImageFrame& frame)
+            apply(text, [operation, iterations, tolerance](const ImageFrame& frame)
             {
-                return imageops::binary(frame, operation, iterations);
+                return imageops::binary(frame, operation, iterations, tolerance);
             });
         });
+    }
+
+    void ImageAnalysis::addImageCommand(QMenu* menu, const QString& text, const FrameOperation& operation)
+    {
+        connect(menu->addAction(text), &QAction::triggered, this,
+                [this, text, operation]() { apply(QString(text).remove(QLatin1Char('&')), operation); });
     }
 
     void ImageAnalysis::buildImageMenu(QMenu* menu)
@@ -299,6 +323,10 @@ namespace scopeone::ui
         addBinary(binary, tr("&Fill Holes"), imageops::BinaryOperation::FillHoles);
         addBinary(binary, tr("Out&line"), imageops::BinaryOperation::Outline);
         addBinary(binary, tr("&Invert"), imageops::BinaryOperation::Invert);
+        binary->addSeparator();
+        addBinary(binary, tr("&Watershed..."), imageops::BinaryOperation::Watershed);
+        addBinary(binary, tr("&Skeletonize"), imageops::BinaryOperation::Skeletonize);
+        addImageCommand(binary, tr("Distance &Map"), [](const ImageFrame& frame) { return imageops::distanceMap(frame); });
     }
 
     void ImageAnalysis::buildAnalyzeMenu(QMenu* menu)
@@ -339,6 +367,8 @@ namespace scopeone::ui
             m_roiManager->raise();
         });
         connect(menu->addAction(tr("Plot &Z-axis Profile")), &QAction::triggered, this, [this]() { plotZProfile(); });
+        menu->addSeparator();
+        connect(menu->addAction(tr("Analyze &Particles...")), &QAction::triggered, this, [this]() { analyzeParticles(); });
     }
 
     // ---- Image menu
@@ -611,6 +641,108 @@ namespace scopeone::ui
             shape.label = source.title;
         }
         measureShapes({shape}, false);
+    }
+
+    // Finds the particles of a binary image, or of an image above a threshold, and measures each
+    // one, like Analyze Particles of ImageJ
+    void ImageAnalysis::analyzeParticles()
+    {
+        Source source;
+        if (!activeSource(source))
+        {
+            return;
+        }
+        const ImageFrame image = source.frames.at(source.index);
+        // A binary image has nothing but zero and one value above it
+        bool binary = true;
+        for (int y = 0; binary && y < image.height; ++y)
+        {
+            for (int x = 0; binary && x < image.width; ++x)
+            {
+                const int value = imageops::pixelAt(image, x, y);
+                binary = value == 0 || value == imageops::maxValue(image) || value == 255;
+            }
+        }
+        QList<ParameterField> fields{
+            ParameterField::real(tr("Smallest size (pixels)"), 0.0, 0.0, 1.0e9, 0),
+            ParameterField::real(tr("Largest size (pixels)"), 1.0e9, 0.0, 1.0e9, 0),
+            ParameterField::real(tr("Smallest circularity"), 0.0, 0.0, 1.0, 2),
+            ParameterField::real(tr("Largest circularity"), 1.0, 0.0, 1.0, 2),
+            ParameterField::options(tr("Threshold, for an image that is not binary"),
+                                    {tr("IsoData"), tr("Otsu"), tr("Mean"), tr("Triangle")}, 1),
+            ParameterField::check(tr("Dark objects on a light background"), false),
+            ParameterField::check(tr("Exclude particles on the edges"), false),
+            ParameterField::check(tr("Include holes"), false),
+            ParameterField::check(tr("Display results"), true),
+            ParameterField::check(tr("Add to ROI Manager"), false),
+            ParameterField::options(tr("Show"), {tr("Nothing"), tr("Masks"), tr("Count Masks")}, 0)};
+        if (!askParameters(m_window, tr("Analyze Particles"), fields))
+        {
+            return;
+        }
+        ImageFrame mask = image;
+        if (!binary)
+        {
+            const int limit = imageops::autoThreshold(image, static_cast<imageops::ThresholdMethod>(fields.at(4).choice));
+            mask = fields.at(5).checked ? imageops::thresholded(image, 0, limit)
+                                        : imageops::thresholded(image, limit + 1, imageops::maxValue(image));
+        }
+        const double minSize = fields.at(0).value;
+        const double maxSize = fields.at(1).value;
+        const double minCircularity = fields.at(2).value;
+        const double maxCircularity = fields.at(3).value;
+        const bool excludeEdges = fields.at(6).checked;
+        const bool includeHoles = fields.at(7).checked;
+        const bool display = fields.at(8).checked;
+        const bool addToManager = fields.at(9).checked;
+        const int show = fields.at(10).choice;
+
+        const double scale = pixelScale(source);
+        const double unit = scale > 0.0 ? scale : 1.0;
+        const QString unitName = scale > 0.0 ? QStringLiteral("µm") : QStringLiteral("pixel");
+        if (display && !m_results)
+        {
+            m_results = new ResultsWindow(m_window);
+        }
+
+        QList<imageops::Particle> kept;
+        QSignalBlocker blocker(addToManager ? source.scene : nullptr);
+        for (const imageops::Particle& particle : imageops::findParticles(mask))
+        {
+            if (excludeEdges && particle.touchesEdge)
+            {
+                continue;
+            }
+            const imageops::Measurement result = imageops::measureParticle(image, particle, scale, includeHoles);
+            const double size = result.area / (unit * unit);
+            if (size < minSize || size > maxSize || result.circularity < minCircularity
+                || result.circularity > maxCircularity)
+            {
+                continue;
+            }
+            kept.append(particle);
+            const QString label = tr("Particle %1").arg(kept.size());
+            if (display)
+            {
+                m_results->addMeasurement(label, result, source.frames.size() > 1 ? source.index + 1 : 0, unitName);
+            }
+            if (addToManager && source.scene)
+            {
+                source.scene->createPolygon(source.layerKey, particle.outline, label);
+            }
+        }
+        if (addToManager && source.scene)
+        {
+            blocker.unblock();
+            emit source.scene->markupsChanged();
+        }
+        if (show != 0 && !kept.isEmpty())
+        {
+            ImageFrame shown = imageops::particleImage(kept, image.width, image.height, show == 2);
+            shown.cameraId = image.cameraId;
+            present({shown}, tr("%1 of %2").arg(show == 2 ? tr("Count Masks") : tr("Masks"), source.title));
+        }
+        QMessageBox::information(m_window, tr("Analyze Particles"), tr("%1 particles").arg(kept.size()));
     }
 
     void ImageAnalysis::measureShapes(const QList<ImageSceneModel::Markup>& shapes, bool allSlices)

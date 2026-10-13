@@ -193,6 +193,268 @@ namespace scopeone::ui::imageops
             return result;
         }
 
+        // Squared distance of every foreground pixel to the nearest background pixel. The outside
+        // of the image counts as background.
+        std::vector<float> squaredDistances(const std::vector<unsigned char>& mask, int width, int height)
+        {
+            const int w = width + 2;
+            const int h = height + 2;
+            const float infinity = 1.0e12f;
+            std::vector<float> f(static_cast<size_t>(w) * h, 0.0f);
+            for (int y = 0; y < height; ++y)
+            {
+                for (int x = 0; x < width; ++x)
+                {
+                    f[static_cast<size_t>(y + 1) * w + x + 1] = mask[static_cast<size_t>(y) * width + x] ? infinity : 0.0f;
+                }
+            }
+            // One dimensional transform of Felzenszwalb and Huttenlocher, on rows and then columns
+            const auto transform = [&](std::vector<float>& line)
+            {
+                const int n = static_cast<int>(line.size());
+                std::vector<int> v(static_cast<size_t>(n));
+                std::vector<float> z(static_cast<size_t>(n) + 1);
+                std::vector<float> d(static_cast<size_t>(n));
+                int k = 0;
+                v[0] = 0;
+                z[0] = -infinity;
+                z[1] = infinity;
+                for (int q = 1; q < n; ++q)
+                {
+                    float s = 0.0f;
+                    while (true)
+                    {
+                        const int p = v[static_cast<size_t>(k)];
+                        s = ((line[static_cast<size_t>(q)] + static_cast<float>(q) * q)
+                             - (line[static_cast<size_t>(p)] + static_cast<float>(p) * p)) / (2.0f * (q - p));
+                        if (s <= z[static_cast<size_t>(k)] && k > 0)
+                        {
+                            --k;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    ++k;
+                    v[static_cast<size_t>(k)] = q;
+                    z[static_cast<size_t>(k)] = s;
+                    z[static_cast<size_t>(k) + 1] = infinity;
+                }
+                k = 0;
+                for (int q = 0; q < n; ++q)
+                {
+                    while (z[static_cast<size_t>(k) + 1] < q)
+                    {
+                        ++k;
+                    }
+                    const int p = v[static_cast<size_t>(k)];
+                    d[static_cast<size_t>(q)] = static_cast<float>(q - p) * (q - p) + line[static_cast<size_t>(p)];
+                }
+                line = d;
+            };
+            std::vector<float> line;
+            for (int x = 0; x < w; ++x)
+            {
+                line.assign(static_cast<size_t>(h), 0.0f);
+                for (int y = 0; y < h; ++y) line[static_cast<size_t>(y)] = f[static_cast<size_t>(y) * w + x];
+                transform(line);
+                for (int y = 0; y < h; ++y) f[static_cast<size_t>(y) * w + x] = line[static_cast<size_t>(y)];
+            }
+            for (int y = 0; y < h; ++y)
+            {
+                line.assign(f.begin() + static_cast<std::ptrdiff_t>(y) * w, f.begin() + static_cast<std::ptrdiff_t>(y + 1) * w);
+                transform(line);
+                std::copy(line.begin(), line.end(), f.begin() + static_cast<std::ptrdiff_t>(y) * w);
+            }
+            std::vector<float> result(static_cast<size_t>(width) * height);
+            for (int y = 0; y < height; ++y)
+            {
+                for (int x = 0; x < width; ++x)
+                {
+                    result[static_cast<size_t>(y) * width + x] = f[static_cast<size_t>(y + 1) * w + x + 1];
+                }
+            }
+            return result;
+        }
+
+        std::vector<unsigned char> maskOf(const ImageFrame& frame)
+        {
+            std::vector<unsigned char> mask(static_cast<size_t>(frame.width) * frame.height);
+            for (int y = 0; y < frame.height; ++y)
+            {
+                for (int x = 0; x < frame.width; ++x)
+                {
+                    mask[static_cast<size_t>(y) * frame.width + x] = pixelAt(frame, x, y) > 0 ? 1 : 0;
+                }
+            }
+            return mask;
+        }
+
+        ImageFrame frameOfMask(const std::vector<unsigned char>& mask, const ImageFrame& like)
+        {
+            ImageFrame base = like;
+            base.pixelFormat = ImagePixelFormat::Mono8;
+            base.bitsPerSample = 8;
+            ImageFrame result = blankFrame(base, like.width, like.height);
+            for (int y = 0; y < like.height; ++y)
+            {
+                for (int x = 0; x < like.width; ++x)
+                {
+                    result.bytes.data()[static_cast<qint64>(y) * result.stride + x] =
+                        mask[static_cast<size_t>(y) * like.width + x] ? static_cast<char>(255) : 0;
+                }
+            }
+            return result;
+        }
+
+        // Separates touching objects along the valleys of the distance to the background. The peaks
+        // of the distance that rise less than tolerance above the saddle between them count as one.
+        std::vector<unsigned char> watershedMask(const std::vector<unsigned char>& mask, int width, int height,
+                                                 double tolerance)
+        {
+            std::vector<float> distance = squaredDistances(mask, width, height);
+            for (float& value : distance)
+            {
+                value = std::sqrt(value);
+            }
+            std::vector<int> order;
+            for (size_t i = 0; i < mask.size(); ++i)
+            {
+                if (mask[i])
+                {
+                    order.push_back(static_cast<int>(i));
+                }
+            }
+            std::stable_sort(order.begin(), order.end(), [&](int a, int b)
+            {
+                return distance[static_cast<size_t>(a)] > distance[static_cast<size_t>(b)];
+            });
+            // -1 is not reached yet, 0 is a line between objects, and a larger value a basin
+            std::vector<int> label(mask.size(), -1);
+            std::vector<int> parent(1, 0);
+            std::vector<float> peak(1, 0.0f);
+            const auto find = [&](int a)
+            {
+                while (parent[static_cast<size_t>(a)] != a)
+                {
+                    parent[static_cast<size_t>(a)] = parent[static_cast<size_t>(parent[static_cast<size_t>(a)])];
+                    a = parent[static_cast<size_t>(a)];
+                }
+                return a;
+            };
+            for (const int index : order)
+            {
+                const int x = index % width;
+                const int y = index / width;
+                std::vector<int> roots;
+                for (int dy = -1; dy <= 1; ++dy)
+                {
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= width || ny >= height)
+                        {
+                            continue;
+                        }
+                        const int neighbour = label[static_cast<size_t>(ny) * width + nx];
+                        if (neighbour > 0)
+                        {
+                            const int root = find(neighbour);
+                            if (std::find(roots.begin(), roots.end(), root) == roots.end())
+                            {
+                                roots.push_back(root);
+                            }
+                        }
+                    }
+                }
+                const float here = distance[static_cast<size_t>(index)];
+                if (roots.empty())
+                {
+                    const int created = static_cast<int>(parent.size());
+                    parent.push_back(created);
+                    peak.push_back(here);
+                    label[static_cast<size_t>(index)] = created;
+                    continue;
+                }
+                std::sort(roots.begin(), roots.end(), [&](int a, int b)
+                {
+                    return peak[static_cast<size_t>(a)] > peak[static_cast<size_t>(b)];
+                });
+                const int best = roots.front();
+                int separate = 1;
+                for (size_t k = 1; k < roots.size(); ++k)
+                {
+                    if (peak[static_cast<size_t>(roots[k])] - here < static_cast<float>(tolerance))
+                    {
+                        parent[static_cast<size_t>(roots[k])] = best;
+                    }
+                    else
+                    {
+                        ++separate;
+                    }
+                }
+                label[static_cast<size_t>(index)] = separate == 1 ? best : 0;
+            }
+            std::vector<unsigned char> result(mask.size(), 0);
+            for (size_t i = 0; i < mask.size(); ++i)
+            {
+                result[i] = (mask[i] && label[i] != 0) ? 1 : 0;
+            }
+            return result;
+        }
+
+        // Thins the objects to lines one pixel wide, by the method of Zhang and Suen
+        std::vector<unsigned char> skeletonMask(std::vector<unsigned char> mask, int width, int height)
+        {
+            const auto at = [&](const std::vector<unsigned char>& m, int x, int y) -> int
+            {
+                return (x >= 0 && y >= 0 && x < width && y < height) ? m[static_cast<size_t>(y) * width + x] : 0;
+            };
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (int step = 0; step < 2; ++step)
+                {
+                    std::vector<size_t> remove;
+                    for (int y = 0; y < height; ++y)
+                    {
+                        for (int x = 0; x < width; ++x)
+                        {
+                            if (!at(mask, x, y))
+                            {
+                                continue;
+                            }
+                            const int p2 = at(mask, x, y - 1), p3 = at(mask, x + 1, y - 1), p4 = at(mask, x + 1, y);
+                            const int p5 = at(mask, x + 1, y + 1), p6 = at(mask, x, y + 1), p7 = at(mask, x - 1, y + 1);
+                            const int p8 = at(mask, x - 1, y), p9 = at(mask, x - 1, y - 1);
+                            const int neighbours = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+                            const int sequence[] = {p2, p3, p4, p5, p6, p7, p8, p9, p2};
+                            int transitions = 0;
+                            for (int k = 0; k < 8; ++k)
+                            {
+                                transitions += (sequence[k] == 0 && sequence[k + 1] == 1) ? 1 : 0;
+                            }
+                            const bool first = step == 0 ? (p2 * p4 * p6 == 0 && p4 * p6 * p8 == 0)
+                                                         : (p2 * p4 * p8 == 0 && p2 * p6 * p8 == 0);
+                            if (neighbours >= 2 && neighbours <= 6 && transitions == 1 && first)
+                            {
+                                remove.push_back(static_cast<size_t>(y) * width + x);
+                            }
+                        }
+                    }
+                    for (const size_t i : remove)
+                    {
+                        mask[i] = 0;
+                        changed = true;
+                    }
+                }
+            }
+            return mask;
+        }
+
         // Histogram of the values of a frame, one bin for each possible value
         std::vector<qint64> histogramOf(const ImageFrame& frame)
         {
@@ -1059,8 +1321,16 @@ namespace scopeone::ui::imageops
         return result;
     }
 
-    ImageFrame binary(const ImageFrame& frame, BinaryOperation operation, int iterations)
+    ImageFrame binary(const ImageFrame& frame, BinaryOperation operation, int iterations, double tolerance)
     {
+        if (operation == BinaryOperation::Watershed)
+        {
+            return frameOfMask(watershedMask(maskOf(frame), frame.width, frame.height, tolerance), frame);
+        }
+        if (operation == BinaryOperation::Skeletonize)
+        {
+            return frameOfMask(skeletonMask(maskOf(frame), frame.width, frame.height), frame);
+        }
         const int width = frame.width;
         const int height = frame.height;
         std::vector<unsigned char> mask(static_cast<size_t>(width) * height);
@@ -1140,6 +1410,9 @@ namespace scopeone::ui::imageops
         case BinaryOperation::Invert:
             for (unsigned char& value : mask) value = value ? 0 : 1;
             break;
+        case BinaryOperation::Watershed:
+        case BinaryOperation::Skeletonize:
+            break;
         case BinaryOperation::Outline:
         {
             std::vector<unsigned char> next(mask.size(), 0);
@@ -1198,6 +1471,273 @@ namespace scopeone::ui::imageops
             {
                 result.bytes.data()[static_cast<qint64>(y) * result.stride + x] =
                     mask[static_cast<size_t>(y) * width + x] ? static_cast<char>(255) : 0;
+            }
+        }
+        return result;
+    }
+
+    ImageFrame distanceMap(const ImageFrame& frame)
+    {
+        std::vector<float> distance = squaredDistances(maskOf(frame), frame.width, frame.height);
+        for (float& value : distance)
+        {
+            value = std::sqrt(value);
+        }
+        ImageFrame like = frame;
+        like.pixelFormat = ImagePixelFormat::Mono16;
+        like.bitsPerSample = 16;
+        return fromFloat(distance, like, frame.width, frame.height);
+    }
+
+    QList<Particle> findParticles(const ImageFrame& mask)
+    {
+        const int width = mask.width;
+        const int height = mask.height;
+        const std::vector<unsigned char> foreground = maskOf(mask);
+        std::vector<int> label(foreground.size(), 0);
+        QList<Particle> particles;
+        const auto inside = [&](int x, int y, int wanted)
+        {
+            return x >= 0 && y >= 0 && x < width && y < height && label[static_cast<size_t>(y) * width + x] == wanted;
+        };
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                const size_t start = static_cast<size_t>(y) * width + x;
+                if (!foreground[start] || label[start] != 0)
+                {
+                    continue;
+                }
+                const int wanted = static_cast<int>(particles.size()) + 1;
+                Particle particle;
+                int left = x, right = x, top = y, bottom = y;
+                std::vector<int> stack{static_cast<int>(start)};
+                label[start] = wanted;
+                while (!stack.empty())
+                {
+                    const int index = stack.back();
+                    stack.pop_back();
+                    particle.pixels.push_back(index);
+                    const int px = index % width;
+                    const int py = index / width;
+                    left = std::min(left, px);
+                    right = std::max(right, px);
+                    top = std::min(top, py);
+                    bottom = std::max(bottom, py);
+                    for (int dy = -1; dy <= 1; ++dy)
+                    {
+                        for (int dx = -1; dx <= 1; ++dx)
+                        {
+                            const int nx = px + dx;
+                            const int ny = py + dy;
+                            if (nx >= 0 && ny >= 0 && nx < width && ny < height
+                                && foreground[static_cast<size_t>(ny) * width + nx]
+                                && label[static_cast<size_t>(ny) * width + nx] == 0)
+                            {
+                                label[static_cast<size_t>(ny) * width + nx] = wanted;
+                                stack.push_back(ny * width + nx);
+                            }
+                        }
+                    }
+                }
+                particle.bounds = QRect(left, top, right - left + 1, bottom - top + 1);
+                particle.touchesEdge = left == 0 || top == 0 || right == width - 1 || bottom == height - 1;
+
+                // Follows the outer edge of the pixels with the particle on the right hand
+                static const int stepX[4] = {1, 0, -1, 0};
+                static const int stepY[4] = {0, 1, 0, -1};
+                int cornerX = x;
+                int cornerY = y;
+                int direction = 0;
+                int edges = 0;
+                int turns = 0;
+                do
+                {
+                    cornerX += stepX[direction];
+                    cornerY += stepY[direction];
+                    ++edges;
+                    bool aheadLeft = false;
+                    bool aheadRight = false;
+                    switch (direction)
+                    {
+                    case 0: aheadLeft = inside(cornerX, cornerY - 1, wanted); aheadRight = inside(cornerX, cornerY, wanted); break;
+                    case 1: aheadLeft = inside(cornerX, cornerY, wanted); aheadRight = inside(cornerX - 1, cornerY, wanted); break;
+                    case 2: aheadLeft = inside(cornerX - 1, cornerY, wanted); aheadRight = inside(cornerX - 1, cornerY - 1, wanted); break;
+                    default: aheadLeft = inside(cornerX - 1, cornerY - 1, wanted); aheadRight = inside(cornerX, cornerY - 1, wanted); break;
+                    }
+                    const int next = aheadLeft ? (direction + 3) % 4 : (aheadRight ? direction : (direction + 1) % 4);
+                    if (next != direction)
+                    {
+                        particle.outline.append(QPoint(cornerX, cornerY));
+                        ++turns;
+                    }
+                    direction = next;
+                } while (!(cornerX == x && cornerY == y && direction == 0));
+                particle.perimeter = edges - turns * (2.0 - std::sqrt(2.0));
+                particles.append(std::move(particle));
+            }
+        }
+        return particles;
+    }
+
+    Measurement measureParticle(const ImageFrame& image, const Particle& particle, double scale, bool includeHoles)
+    {
+        const double unit = scale > 0.0 ? scale : 1.0;
+        Measurement result;
+        if (includeHoles)
+        {
+            Markup outline;
+            outline.type = MarkupType::Polygon;
+            outline.points = particle.outline;
+            outline.rect = particle.bounds;
+            result = measure(image, outline, scale);
+        }
+        else
+        {
+            std::vector<int> values;
+            double sum = 0.0;
+            double sum2 = 0.0;
+            double sumX = 0.0;
+            double sumY = 0.0;
+            for (const int index : particle.pixels)
+            {
+                const int x = index % image.width;
+                const int y = index / image.width;
+                const int value = pixelAt(image, x, y);
+                values.push_back(value);
+                sum += value;
+                sum2 += static_cast<double>(value) * value;
+                sumX += x + 0.5;
+                sumY += y + 0.5;
+            }
+            const double n = static_cast<double>(values.size());
+            result.pixelCount = static_cast<qint64>(values.size());
+            result.area = n * unit * unit;
+            result.mean = sum / n;
+            result.stdDev = std::sqrt(std::max(0.0, sum2 / n - result.mean * result.mean));
+            result.minValue = *std::min_element(values.begin(), values.end());
+            result.maxValue = *std::max_element(values.begin(), values.end());
+            const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+            std::nth_element(values.begin(), middle, values.end());
+            result.median = *middle;
+            result.centroidX = sumX / n * unit;
+            result.centroidY = sumY / n * unit;
+            result.rawIntegratedDensity = sum;
+            result.integratedDensity = result.area * result.mean;
+        }
+        result.boundsX = particle.bounds.x() * unit;
+        result.boundsY = particle.bounds.y() * unit;
+        result.boundsWidth = particle.bounds.width() * unit;
+        result.boundsHeight = particle.bounds.height() * unit;
+        result.perimeter = particle.perimeter * unit;
+
+        // The ellipse that has the same second moments as the particle
+        double meanX = 0.0;
+        double meanY = 0.0;
+        const double count = static_cast<double>(particle.pixels.size());
+        for (const int index : particle.pixels)
+        {
+            meanX += index % image.width + 0.5;
+            meanY += index / image.width + 0.5;
+        }
+        meanX /= count;
+        meanY /= count;
+        double xx = 1.0 / 12.0;
+        double yy = 1.0 / 12.0;
+        double xy = 0.0;
+        for (const int index : particle.pixels)
+        {
+            const double dx = index % image.width + 0.5 - meanX;
+            const double dy = index / image.width + 0.5 - meanY;
+            xx += dx * dx / count;
+            yy += dy * dy / count;
+            xy += dx * dy / count;
+        }
+        const double root = std::sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy);
+        const double major = 4.0 * std::sqrt(std::max(0.0, (xx + yy + root) / 2.0));
+        const double minor = 4.0 * std::sqrt(std::max(0.0, (xx + yy - root) / 2.0));
+        result.majorAxis = major * unit;
+        result.minorAxis = minor * unit;
+        result.aspectRatio = minor > 0.0 ? major / minor : 0.0;
+        result.roundness = major > 0.0 ? std::min(1.0, 4.0 * count / (3.14159265358979323846 * major * major)) : 0.0;
+        result.circularity = particle.perimeter > 0.0
+            ? std::min(1.0, 4.0 * 3.14159265358979323846 * count / (particle.perimeter * particle.perimeter))
+            : 0.0;
+
+        // The convex hull of the outline gives the solidity and the longest distance across
+        QList<QPoint> points = particle.outline;
+        std::sort(points.begin(), points.end(), [](const QPoint& a, const QPoint& b)
+        {
+            return a.x() < b.x() || (a.x() == b.x() && a.y() < b.y());
+        });
+        points.erase(std::unique(points.begin(), points.end()), points.end());
+        const auto cross = [](const QPoint& o, const QPoint& a, const QPoint& b)
+        {
+            return static_cast<qint64>(a.x() - o.x()) * (b.y() - o.y()) - static_cast<qint64>(a.y() - o.y()) * (b.x() - o.x());
+        };
+        QList<QPoint> hull;
+        if (points.size() >= 3)
+        {
+            hull.resize(points.size() * 2);
+            int k = 0;
+            for (int i = 0; i < points.size(); ++i)
+            {
+                while (k >= 2 && cross(hull[k - 2], hull[k - 1], points[i]) <= 0) --k;
+                hull[k++] = points[i];
+            }
+            for (int i = static_cast<int>(points.size()) - 2, t = k + 1; i >= 0; --i)
+            {
+                while (k >= t && cross(hull[k - 2], hull[k - 1], points[i]) <= 0) --k;
+                hull[k++] = points[i];
+            }
+            hull.resize(k - 1);
+        }
+        else
+        {
+            hull = points;
+        }
+        double hullArea = 0.0;
+        double longest = 0.0;
+        for (int i = 0; i < hull.size(); ++i)
+        {
+            const QPoint a = hull.at(i);
+            const QPoint b = hull.at((i + 1) % hull.size());
+            hullArea += static_cast<double>(a.x()) * b.y() - static_cast<double>(b.x()) * a.y();
+            for (int j = i + 1; j < hull.size(); ++j)
+            {
+                longest = std::max(longest, std::hypot(static_cast<double>(a.x() - hull.at(j).x()),
+                                                       static_cast<double>(a.y() - hull.at(j).y())));
+            }
+        }
+        hullArea = std::abs(hullArea) / 2.0;
+        result.solidity = hullArea > 0.0 ? std::min(1.0, count / hullArea) : 0.0;
+        result.feret = longest * unit;
+        return result;
+    }
+
+    ImageFrame particleImage(const QList<Particle>& particles, int width, int height, bool numbered)
+    {
+        ImageFrame like;
+        like.pixelFormat = numbered ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
+        like.bitsPerSample = numbered ? 16 : 8;
+        ImageFrame result = blankFrame(like, width, height);
+        for (int number = 0; number < particles.size(); ++number)
+        {
+            for (const int index : particles.at(number).pixels)
+            {
+                const int x = index % width;
+                const int y = index / width;
+                if (numbered)
+                {
+                    const quint16 value = static_cast<quint16>(std::min(number + 1, 65535));
+                    std::memcpy(result.bytes.data() + static_cast<qint64>(y) * result.stride + static_cast<qint64>(x) * 2,
+                                &value, sizeof(value));
+                }
+                else
+                {
+                    result.bytes.data()[static_cast<qint64>(y) * result.stride + x] = static_cast<char>(255);
+                }
             }
         }
         return result;

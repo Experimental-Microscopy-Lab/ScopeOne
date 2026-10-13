@@ -69,6 +69,7 @@ namespace scopeone::ui
         void addMath(QMenu* menu, const QString& text, imageops::MathOperation operation, bool needsValue,
                      double value);
         void addBinary(QMenu* menu, const QString& text, imageops::BinaryOperation operation);
+        void addImageCommand(QMenu* menu, const QString& text, const FrameOperation& operation);
 
         void duplicateImage();
         void cropImage();
@@ -84,6 +85,7 @@ namespace scopeone::ui
         void unsharpMask();
         void calculate();
         void measure();
+        void analyzeParticles();
         void measureShapes(const QList<scopeone::core::ImageSceneModel::Markup>& shapes, bool allSlices);
 
         scopeone::core::ScopeOneCore* m_core{nullptr};

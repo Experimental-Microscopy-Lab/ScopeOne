@@ -34,6 +34,9 @@ namespace scopeone::ui
             {QStringLiteral("rawintden"), QStringLiteral("RawIntDen")},
             {QStringLiteral("skewness"), QStringLiteral("Skew")},
             {QStringLiteral("kurtosis"), QStringLiteral("Kurt")},
+            {QStringLiteral("shape"), QStringLiteral("Circ., AR, Round, Solidity")},
+            {QStringLiteral("feret"), QStringLiteral("Feret")},
+            {QStringLiteral("ellipse"), QStringLiteral("Major, Minor")},
             {QStringLiteral("slice"), QStringLiteral("Slice")},
         };
     }
@@ -172,6 +175,11 @@ namespace scopeone::ui
         if (key == QLatin1String("rawintden")) return number(m.rawIntegratedDensity);
         if (key == QLatin1String("skewness")) return number(m.skewness);
         if (key == QLatin1String("kurtosis")) return number(m.kurtosis);
+        if (key == QLatin1String("shape"))
+            return number(m.circularity) + QStringLiteral(", ") + number(m.aspectRatio) + QStringLiteral(", ")
+                + number(m.roundness) + QStringLiteral(", ") + number(m.solidity);
+        if (key == QLatin1String("feret")) return number(m.feret);
+        if (key == QLatin1String("ellipse")) return number(m.majorAxis) + QStringLiteral(", ") + number(m.minorAxis);
         if (key == QLatin1String("slice")) return row.slice > 0 ? QString::number(row.slice) : QString();
         return {};
     }

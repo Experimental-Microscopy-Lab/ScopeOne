@@ -155,6 +155,14 @@ namespace scopeone::ui::imageops
         double rawIntegratedDensity{0.0};
         double skewness{0.0};
         double kurtosis{0.0};
+        // Shape of a particle, which only particles have
+        double circularity{0.0};
+        double aspectRatio{0.0};
+        double roundness{0.0};
+        double solidity{0.0};
+        double feret{0.0};
+        double majorAxis{0.0};
+        double minorAxis{0.0};
     };
     Measurement measure(const ImageFrame& frame, const Markup& markup, double scale);
 
@@ -213,6 +221,31 @@ namespace scopeone::ui::imageops
     // Pixels from low to high become 255 and the others 0, in an 8 bit frame
     ImageFrame thresholded(const ImageFrame& frame, double low, double high);
 
-    enum class BinaryOperation { Erode, Dilate, Open, Close, FillHoles, Outline, Invert };
-    ImageFrame binary(const ImageFrame& frame, BinaryOperation operation, int iterations);
+    enum class BinaryOperation { Erode, Dilate, Open, Close, FillHoles, Outline, Invert, Watershed, Skeletonize };
+    // For Watershed, iterations is not used and tolerance is how much lower than its peak the
+    // distance to the background may fall between two objects before they are told apart
+    ImageFrame binary(const ImageFrame& frame, BinaryOperation operation, int iterations, double tolerance = 0.5);
+    // Distance of every object pixel to the nearest background pixel, in a 16 bit frame
+    ImageFrame distanceMap(const ImageFrame& frame);
+
+    // ---- particles
+
+    // A group of touching pixels of a binary image, found by following 8 connected pixels
+    struct Particle
+    {
+        // Corners of the outline in pixels, which is the outer edge of the particle
+        QList<QPoint> outline;
+        std::vector<int> pixels;
+        QRect bounds;
+        bool touchesEdge{false};
+        // Length of the outline, with the corners cut as ImageJ does
+        double perimeter{0.0};
+    };
+    // Pixels above zero are the particles
+    QList<Particle> findParticles(const ImageFrame& mask);
+    // Measures a particle on an image. A particle does not include the holes in it unless
+    // includeHoles, in which case everything inside the outline counts.
+    Measurement measureParticle(const ImageFrame& image, const Particle& particle, double scale, bool includeHoles);
+    // A frame in which every particle has its number, or 255, as its value
+    ImageFrame particleImage(const QList<Particle>& particles, int width, int height, bool numbered);
 }
