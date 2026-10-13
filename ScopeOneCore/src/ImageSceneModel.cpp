@@ -54,6 +54,17 @@ namespace scopeone::core
                 && left.zoomPercent == right.zoomPercent;
         }
 
+        // The smallest rectangle that holds all corners, which hit tests and clipping use
+        QRect polygonBounds(const QList<QPoint>& points)
+        {
+            QRect bounds(points.first(), QSize(1, 1));
+            for (const QPoint& point : points)
+            {
+                bounds = bounds.united(QRect(point, QSize(1, 1)));
+            }
+            return bounds;
+        }
+
         ImageSceneModel::Markup markupFromDocument(
             const scopeone::core::DocumentMarkup& documentMarkup,
             const ImageSceneModel& sceneModel)
@@ -72,6 +83,10 @@ namespace scopeone::core
             markup.start = documentMarkup.start.toPoint();
             markup.end = documentMarkup.end.toPoint();
             markup.rect = documentMarkup.rect.toRect();
+            for (const QPointF& point : documentMarkup.points)
+            {
+                markup.points.append(point.toPoint());
+            }
             markup.label = documentMarkup.label;
             markup.visible = documentMarkup.visible;
             markup.selected = documentMarkup.selected;
@@ -582,6 +597,68 @@ namespace scopeone::core
         return addMarkup(markup);
     }
 
+    QString ImageSceneModel::createEllipse(const QString& layerKey,
+                                           const QRect& rect,
+                                           const QString& label,
+                                           MarkupRole role)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        const QRect normalizedRect = rect.normalized();
+        if (trimmedLayerKey.isEmpty()
+            || normalizedRect.width() <= 0
+            || normalizedRect.height() <= 0)
+        {
+            return {};
+        }
+        Markup markup;
+        markup.type = MarkupType::Ellipse;
+        markup.role = role;
+        markup.layerKey = trimmedLayerKey;
+        markup.rect = normalizedRect;
+        markup.label = label.trimmed();
+        return addMarkup(markup);
+    }
+
+    QString ImageSceneModel::createPolygon(const QString& layerKey,
+                                           const QList<QPoint>& points,
+                                           const QString& label,
+                                           MarkupRole role)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty() || points.size() < 3)
+        {
+            return {};
+        }
+        Markup markup;
+        markup.type = MarkupType::Polygon;
+        markup.role = role;
+        markup.layerKey = trimmedLayerKey;
+        markup.points = points;
+        markup.rect = polygonBounds(points);
+        markup.label = label.trimmed();
+        return addMarkup(markup);
+    }
+
+    QString ImageSceneModel::createPoint(const QString& layerKey,
+                                         const QPoint& point,
+                                         const QString& label,
+                                         MarkupRole role)
+    {
+        const QString trimmedLayerKey = layerKey.trimmed();
+        if (trimmedLayerKey.isEmpty())
+        {
+            return {};
+        }
+        Markup markup;
+        markup.type = MarkupType::Point;
+        markup.role = role;
+        markup.layerKey = trimmedLayerKey;
+        markup.start = point;
+        markup.end = point;
+        markup.label = label.trimmed();
+        return addMarkup(markup);
+    }
+
     QString ImageSceneModel::addMarkup(Markup markup)
     {
         scopeone::core::DocumentMarkup documentMarkup;
@@ -593,6 +670,10 @@ namespace scopeone::core
         documentMarkup.start = markup.start;
         documentMarkup.end = markup.end;
         documentMarkup.rect = markup.rect;
+        for (const QPoint& point : markup.points)
+        {
+            documentMarkup.points.append(point);
+        }
         documentMarkup.visible = markup.visible;
         documentMarkup.selected = markup.selected;
         if (documentMarkup.layerId.isEmpty() || layerIndex(documentMarkup.layerId) < 0)
@@ -757,7 +838,8 @@ namespace scopeone::core
         const int index = markupIndex(id);
         const QRect normalizedRect = rect.normalized();
         if (index < 0
-            || m_document.markups.at(index).type != scopeone::core::DocumentMarkupType::Rect
+            || (m_document.markups.at(index).type != scopeone::core::DocumentMarkupType::Rect
+                && m_document.markups.at(index).type != scopeone::core::DocumentMarkupType::Ellipse)
             || normalizedRect.width() <= 0
             || normalizedRect.height() <= 0)
         {
@@ -769,6 +851,49 @@ namespace scopeone::core
             return true;
         }
         markup.rect = normalizedRect;
+        emit markupsChanged();
+        return true;
+    }
+
+    bool ImageSceneModel::updatePolygon(const QString& id, const QList<QPoint>& points)
+    {
+        const int index = markupIndex(id);
+        if (index < 0
+            || m_document.markups.at(index).type != scopeone::core::DocumentMarkupType::Polygon
+            || points.size() < 3)
+        {
+            return false;
+        }
+        scopeone::core::DocumentMarkup& markup = m_document.markups[index];
+        QList<QPointF> converted;
+        for (const QPoint& point : points)
+        {
+            converted.append(point);
+        }
+        if (markup.points == converted)
+        {
+            return true;
+        }
+        markup.points = converted;
+        markup.rect = polygonBounds(points);
+        emit markupsChanged();
+        return true;
+    }
+
+    bool ImageSceneModel::updatePoint(const QString& id, const QPoint& point)
+    {
+        const int index = markupIndex(id);
+        if (index < 0 || m_document.markups.at(index).type != scopeone::core::DocumentMarkupType::Point)
+        {
+            return false;
+        }
+        scopeone::core::DocumentMarkup& markup = m_document.markups[index];
+        if (markup.start == point && markup.end == point)
+        {
+            return true;
+        }
+        markup.start = point;
+        markup.end = point;
         emit markupsChanged();
         return true;
     }

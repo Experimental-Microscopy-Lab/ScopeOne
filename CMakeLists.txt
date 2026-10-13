@@ -80,6 +80,7 @@ set(SCOPEONE_UI_SOURCES
         src/RecordingWidgetSettings.cpp
         src/PositionListFile.cpp
         src/CollapsibleSection.cpp
+        src/ToolIcons.cpp
         src/NotificationOverlay.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
@@ -104,6 +105,7 @@ set(SCOPEONE_UI_HEADERS
         src/RecordingWidget.h
         src/PositionListFile.h
         src/CollapsibleSection.h
+        src/ToolIcons.h
         src/NotificationOverlay.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h

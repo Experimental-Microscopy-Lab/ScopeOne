@@ -47,7 +47,7 @@ namespace scopeone::ui
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
         enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
-        enum class AnalysisTool { Select, Rectangle, Line };
+        enum class AnalysisTool { Select, Rectangle, Ellipse, Polygon, Line, Point };
 
         struct PreviewInteractionTarget
         {
@@ -172,6 +172,7 @@ signals:
             RectTopRight,
             RectBottomLeft,
             RectBottomRight,
+            PolygonVertex,
         };
 
         // What a shape being dragged on the canvas will become when released
@@ -186,6 +187,9 @@ signals:
             QPoint start;
             QPoint end;
             bool dragging{false};
+            // A polygon is drawn by clicking its corners one after another. end follows the pointer.
+            bool polygonActive{false};
+            QList<QPoint> vertices;
         };
 
         struct LayerDisplaySettings
@@ -325,6 +329,7 @@ signals:
         QPoint m_dragMarkupStartImagePos;
         MarkupEditMode m_dragMarkupEditMode{MarkupEditMode::None};
         bool m_markupDragging{false};
+        int m_dragMarkupVertex{-1};
         bool m_viewPanning{false};
         QPoint m_panStartWidgetPos;
         QPoint m_panStartOffset;
@@ -401,7 +406,8 @@ signals:
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,
-                                    MarkupEditMode& outEditMode) const;
+                                    MarkupEditMode& outEditMode,
+                                    int* outVertexIndex = nullptr) const;
         void clearSelectedMarkups();
         void drawRenderItem(const RenderItem& item);
         void draw3dSurface(const RenderItem& item,
@@ -441,6 +447,7 @@ signals:
         void cleanupTextureCache();
         void cancelDraft();
         void finishDraft();
+        void finishPolygonDraft();
         bool draftImageMarkup(ImageSceneModel::Markup& outMarkup,
                               FrameSourceState* outFrameState = nullptr) const;
         void restoreToolCursor();

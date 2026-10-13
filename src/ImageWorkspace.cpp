@@ -132,17 +132,48 @@ namespace scopeone::ui
                                     {
                                         continue;
                                     }
-                                    const QString markupId =
-                                        savedMarkup.type == scopeone::core::DocumentMarkupType::Line
-                                            ? scene->createLine(document->activeLayerKey,
-                                                                savedMarkup.start.toPoint(),
-                                                                savedMarkup.end.toPoint(),
-                                                                savedMarkup.label,
-                                                                savedMarkup.role)
-                                            : scene->createRect(document->activeLayerKey,
-                                                               savedMarkup.rect.toRect(),
-                                                               savedMarkup.label,
-                                                               savedMarkup.role);
+                                    QString markupId;
+                                    switch (savedMarkup.type)
+                                    {
+                                    case scopeone::core::DocumentMarkupType::Line:
+                                        markupId = scene->createLine(document->activeLayerKey,
+                                                                     savedMarkup.start.toPoint(),
+                                                                     savedMarkup.end.toPoint(),
+                                                                     savedMarkup.label,
+                                                                     savedMarkup.role);
+                                        break;
+                                    case scopeone::core::DocumentMarkupType::Rect:
+                                        markupId = scene->createRect(document->activeLayerKey,
+                                                                     savedMarkup.rect.toRect(),
+                                                                     savedMarkup.label,
+                                                                     savedMarkup.role);
+                                        break;
+                                    case scopeone::core::DocumentMarkupType::Ellipse:
+                                        markupId = scene->createEllipse(document->activeLayerKey,
+                                                                        savedMarkup.rect.toRect(),
+                                                                        savedMarkup.label,
+                                                                        savedMarkup.role);
+                                        break;
+                                    case scopeone::core::DocumentMarkupType::Polygon:
+                                    {
+                                        QList<QPoint> corners;
+                                        for (const QPointF& corner : savedMarkup.points)
+                                        {
+                                            corners.append(corner.toPoint());
+                                        }
+                                        markupId = scene->createPolygon(document->activeLayerKey,
+                                                                        corners,
+                                                                        savedMarkup.label,
+                                                                        savedMarkup.role);
+                                        break;
+                                    }
+                                    case scopeone::core::DocumentMarkupType::Point:
+                                        markupId = scene->createPoint(document->activeLayerKey,
+                                                                      savedMarkup.start.toPoint(),
+                                                                      savedMarkup.label,
+                                                                      savedMarkup.role);
+                                        break;
+                                    }
                                     scene->setVisible(markupId, savedMarkup.visible);
                                     scene->setSelected(markupId, savedMarkup.selected);
                                 }

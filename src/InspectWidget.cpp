@@ -10,7 +10,11 @@
 #include <QLabel>
 #include <QList>
 #include <QLocale>
+#include <QButtonGroup>
+#include <QToolButton>
+#include <QEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QPalette>
 #include <QPushButton>
 #include <QTimer>
@@ -98,6 +102,57 @@ namespace scopeone::ui
                     if (bounds.contains(x, y))
                     {
                         add(x, y);
+                    }
+                }
+            }
+            else if (markup.type == scopeone::core::DocumentMarkupType::Point)
+            {
+                if (bounds.contains(markup.start))
+                {
+                    add(markup.start.x(), markup.start.y());
+                }
+            }
+            else if (markup.type == scopeone::core::DocumentMarkupType::Ellipse)
+            {
+                // The pixels whose centers are inside the ellipse that the rectangle encloses
+                const QRect shape = markup.rect.normalized();
+                const double radiusX = shape.width() / 2.0;
+                const double radiusY = shape.height() / 2.0;
+                const double centerX = shape.x() + radiusX;
+                const double centerY = shape.y() + radiusY;
+                const QRect area = shape.intersected(bounds);
+                for (int y = area.top(); y <= area.bottom(); ++y)
+                {
+                    for (int x = area.left(); x <= area.right(); ++x)
+                    {
+                        const double dx = (x + 0.5 - centerX) / radiusX;
+                        const double dy = (y + 0.5 - centerY) / radiusY;
+                        if (dx * dx + dy * dy <= 1.0)
+                        {
+                            add(x, y);
+                        }
+                    }
+                }
+            }
+            else if (markup.type == scopeone::core::DocumentMarkupType::Polygon)
+            {
+                // The pixels whose centers are inside the polygon. Its corners are on pixel corners,
+                // as in ImageJ, so a pixel center is never on an edge of a polygon with vertical
+                // or horizontal sides.
+                QPolygonF polygon;
+                for (const QPoint& corner : markup.points)
+                {
+                    polygon << QPointF(corner);
+                }
+                const QRect area = polygon.boundingRect().toAlignedRect().intersected(bounds);
+                for (int y = area.top(); y <= area.bottom(); ++y)
+                {
+                    for (int x = area.left(); x <= area.right(); ++x)
+                    {
+                        if (polygon.containsPoint(QPointF(x + 0.5, y + 0.5), Qt::OddEvenFill))
+                        {
+                            add(x, y);
+                        }
                     }
                 }
             }
@@ -539,17 +594,50 @@ namespace scopeone::ui
         auto* selectionGroup = new QGroupBox(QStringLiteral("Selection"), contentContainer);
         auto* selectionLayout = new QVBoxLayout(selectionGroup);
         auto* toolButtons = new QHBoxLayout();
-        m_rectangleToolButton = new QPushButton(QStringLiteral("Rectangle"), selectionGroup);
-        m_rectangleToolButton->setToolTip(QStringLiteral("Drag on the image to draw a rectangle"));
-        m_lineToolButton = new QPushButton(QStringLiteral("Line"), selectionGroup);
-        m_lineToolButton->setToolTip(QStringLiteral("Drag on the image to draw a line and plot its profile"));
+        toolButtons->setSpacing(2);
+        // A row of icons like the toolbar of ImageJ. The tools are exclusive.
+        struct ToolSpec
+        {
+            ToolIconKind icon;
+            PreviewWidget::AnalysisTool tool;
+            const char* tip;
+        };
+        const ToolSpec toolSpecs[] = {
+            {ToolIconKind::Select, PreviewWidget::AnalysisTool::Select,
+             "Select: click a shape to select it, drag it to move it"},
+            {ToolIconKind::Rectangle, PreviewWidget::AnalysisTool::Rectangle,
+             "Rectangle: drag on the image"},
+            {ToolIconKind::Ellipse, PreviewWidget::AnalysisTool::Ellipse,
+             "Ellipse: drag on the image over the rectangle that holds it"},
+            {ToolIconKind::Polygon, PreviewWidget::AnalysisTool::Polygon,
+             "Polygon: click the corners. Double-click, Enter or a click on the first corner closes it. "
+             "Backspace takes back a corner and Esc cancels."},
+            {ToolIconKind::Line, PreviewWidget::AnalysisTool::Line,
+             "Line: drag on the image to plot the profile along it"},
+            {ToolIconKind::Point, PreviewWidget::AnalysisTool::Point,
+             "Point: click to read one pixel"},
+        };
+        auto* toolGroup = new QButtonGroup(this);
+        toolGroup->setExclusive(true);
+        for (const ToolSpec& spec : toolSpecs)
+        {
+            ToolButton entry;
+            entry.button = new QToolButton(selectionGroup);
+            entry.button->setCheckable(true);
+            entry.button->setAutoRaise(true);
+            entry.button->setIconSize(QSize(20, 20));
+            entry.button->setFixedSize(28, 28);
+            entry.button->setToolTip(QString::fromLatin1(spec.tip));
+            entry.icon = spec.icon;
+            entry.tool = static_cast<int>(spec.tool);
+            toolGroup->addButton(entry.button);
+            toolButtons->addWidget(entry.button);
+            m_toolButtons.append(entry);
+        }
+        m_toolButtons.first().button->setChecked(true);
+        refreshToolIcons();
         m_deleteSelectionButton = new QPushButton(QStringLiteral("Delete"), selectionGroup);
         m_deleteSelectionButton->setToolTip(QStringLiteral("Delete the selected shape (Del)"));
-        for (QPushButton* button : {m_rectangleToolButton, m_lineToolButton})
-        {
-            button->setCheckable(true);
-            toolButtons->addWidget(button);
-        }
         toolButtons->addStretch();
         toolButtons->addWidget(m_deleteSelectionButton);
         selectionLayout->addLayout(toolButtons);
@@ -599,24 +687,16 @@ namespace scopeone::ui
         connect(m_selectionStatsWatcher, &QFutureWatcher<SelectionStatistics>::finished,
                 this, &InspectWidget::applySelectionStats);
 
-        // Clicking the checked tool again returns to plain selection
-        const auto setTool = [this](PreviewWidget::AnalysisTool tool)
+        for (const ToolButton& entry : std::as_const(m_toolButtons))
         {
-            m_rectangleToolButton->setChecked(tool == PreviewWidget::AnalysisTool::Rectangle);
-            m_lineToolButton->setChecked(tool == PreviewWidget::AnalysisTool::Line);
-            if (PreviewWidget* preview = m_workspace->activePreviewWidget())
+            connect(entry.button, &QToolButton::clicked, this, [this, tool = entry.tool]()
             {
-                preview->setAnalysisTool(tool);
-            }
-        };
-        connect(m_rectangleToolButton, &QPushButton::clicked, this, [setTool](bool checked)
-        {
-            setTool(checked ? PreviewWidget::AnalysisTool::Rectangle : PreviewWidget::AnalysisTool::Select);
-        });
-        connect(m_lineToolButton, &QPushButton::clicked, this, [setTool](bool checked)
-        {
-            setTool(checked ? PreviewWidget::AnalysisTool::Line : PreviewWidget::AnalysisTool::Select);
-        });
+                if (PreviewWidget* preview = m_workspace->activePreviewWidget())
+                {
+                    preview->setAnalysisTool(static_cast<PreviewWidget::AnalysisTool>(tool));
+                }
+            });
+        }
         connect(m_deleteSelectionButton, &QPushButton::clicked, this, [this]()
         {
             scopeone::core::ImageSceneModel::Markup markup;
@@ -628,6 +708,24 @@ namespace scopeone::ui
 
         scrollArea->setWidget(contentContainer);
         mainLayout->addWidget(scrollArea);
+    }
+
+    // Draws the tool icons in the colors of the current theme
+    void InspectWidget::refreshToolIcons()
+    {
+        for (const ToolButton& entry : std::as_const(m_toolButtons))
+        {
+            entry.button->setIcon(toolIcon(entry.icon, palette(), devicePixelRatioF()));
+        }
+    }
+
+    void InspectWidget::changeEvent(QEvent* event)
+    {
+        if (event->type() == QEvent::PaletteChange)
+        {
+            refreshToolIcons();
+        }
+        QWidget::changeEvent(event);
     }
 
     // Create statistics controls for one layer
@@ -798,7 +896,7 @@ namespace scopeone::ui
         const bool hasSelection = selectedMarkup(markup);
         m_selectionInfoLabel->setText(
             hasSelection ? selectionSummary(markup).join(QLatin1Char('\n'))
-                         : QStringLiteral("Choose Rectangle or Line, then drag on the image."));
+                         : QStringLiteral("Pick a tool above, then draw on the image."));
 
         if (hasSelection)
         {
@@ -905,21 +1003,53 @@ namespace scopeone::ui
             }
             lines.append(length + QStringLiteral("   Angle %1°").arg(angle < 0.0 ? angle + 360.0 : angle, 0, 'f', 1));
         }
+        else if (markup.type == scopeone::core::DocumentMarkupType::Point)
+        {
+            lines.append(QStringLiteral("Point (%1, %2)").arg(markup.start.x()).arg(markup.start.y()));
+        }
         else
         {
-            lines.append(QStringLiteral("X %1   Y %2   W %3   H %4")
-                             .arg(rect.x()).arg(rect.y())
-                             .arg(rect.width()).arg(rect.height()));
+            double areaPixels = static_cast<double>(rect.width()) * rect.height();
+            if (markup.type == scopeone::core::DocumentMarkupType::Ellipse)
+            {
+                lines.append(QStringLiteral("Ellipse   X %1   Y %2   W %3   H %4")
+                                 .arg(rect.x()).arg(rect.y())
+                                 .arg(rect.width()).arg(rect.height()));
+                areaPixels *= 3.14159265358979323846 / 4.0;
+            }
+            else if (markup.type == scopeone::core::DocumentMarkupType::Polygon)
+            {
+                // Area by the shoelace formula, and the length of the outline
+                double twiceArea = 0.0;
+                double perimeter = 0.0;
+                for (int index = 0; index < markup.points.size(); ++index)
+                {
+                    const QPoint current = markup.points.at(index);
+                    const QPoint next = markup.points.at((index + 1) % markup.points.size());
+                    twiceArea += static_cast<double>(current.x()) * next.y()
+                        - static_cast<double>(next.x()) * current.y();
+                    perimeter += std::hypot(static_cast<double>(next.x() - current.x()),
+                                            static_cast<double>(next.y() - current.y()));
+                }
+                areaPixels = std::abs(twiceArea) / 2.0;
+                lines.append(QStringLiteral("Polygon   %1 corners   Perimeter %2 px")
+                                 .arg(markup.points.size())
+                                 .arg(perimeter, 0, 'f', 1));
+            }
+            else
+            {
+                lines.append(QStringLiteral("X %1   Y %2   W %3   H %4")
+                                 .arg(rect.x()).arg(rect.y())
+                                 .arg(rect.width()).arg(rect.height()));
+            }
             QString area = QStringLiteral("Area %1 px")
-                               .arg(QLocale().toString(static_cast<qlonglong>(rect.width()) * rect.height()));
+                               .arg(QLocale().toString(static_cast<qlonglong>(std::llround(areaPixels))));
             if (calibrated)
             {
                 const double scale = std::abs(layer.pixelToSensor.m11 * layer.pixelToSensor.m22
                                               - layer.pixelToSensor.m12 * layer.pixelToSensor.m21);
                 area += QStringLiteral("  ·  %1 µm²")
-                            .arg(static_cast<double>(rect.width()) * rect.height()
-                                     * scale * pixelSizeUm * pixelSizeUm,
-                                 0, 'f', 3);
+                            .arg(areaPixels * scale * pixelSizeUm * pixelSizeUm, 0, 'f', 3);
             }
             lines.append(area);
         }

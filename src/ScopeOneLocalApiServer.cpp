@@ -164,12 +164,28 @@ namespace scopeone::ui
                 object.insert(QStringLiteral("x2"), markup.end.x());
                 object.insert(QStringLiteral("y2"), markup.end.y());
             }
-            else if (markup.type == ImageSceneModel::MarkupType::Rect)
+            else if (markup.type == ImageSceneModel::MarkupType::Rect
+                     || markup.type == ImageSceneModel::MarkupType::Ellipse)
             {
+                // An ellipse is given by its bounding rectangle
                 object.insert(QStringLiteral("x"), markup.rect.x());
                 object.insert(QStringLiteral("y"), markup.rect.y());
                 object.insert(QStringLiteral("width"), markup.rect.width());
                 object.insert(QStringLiteral("height"), markup.rect.height());
+            }
+            else if (markup.type == ImageSceneModel::MarkupType::Point)
+            {
+                object.insert(QStringLiteral("x"), markup.start.x());
+                object.insert(QStringLiteral("y"), markup.start.y());
+            }
+            else if (markup.type == ImageSceneModel::MarkupType::Polygon)
+            {
+                QJsonArray points;
+                for (const QPoint& point : markup.points)
+                {
+                    points.append(QJsonObject{{QStringLiteral("x"), point.x()}, {QStringLiteral("y"), point.y()}});
+                }
+                object.insert(QStringLiteral("points"), points);
             }
             return object;
         }
@@ -3258,8 +3274,13 @@ namespace scopeone::ui
                 || request.contains(QStringLiteral("y"))
                 || request.contains(QStringLiteral("width"))
                 || request.contains(QStringLiteral("height"));
+            const bool isRectLike = markup.type == ImageSceneModel::MarkupType::Rect
+                || markup.type == ImageSceneModel::MarkupType::Ellipse;
             if ((markup.type == ImageSceneModel::MarkupType::Line && hasRectGeometry)
-                || (markup.type == ImageSceneModel::MarkupType::Rect && hasLineGeometry))
+                || (isRectLike && hasLineGeometry)
+                || ((markup.type == ImageSceneModel::MarkupType::Polygon
+                     || markup.type == ImageSceneModel::MarkupType::Point)
+                    && (hasRectGeometry || hasLineGeometry)))
             {
                 response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry for type"));
                 return response;
@@ -3282,7 +3303,7 @@ namespace scopeone::ui
                 }
             }
 
-            if (markup.type == ImageSceneModel::MarkupType::Rect && hasRectGeometry)
+            if (isRectLike && hasRectGeometry)
             {
                 int x = markup.rect.x();
                 int y = markup.rect.y();
