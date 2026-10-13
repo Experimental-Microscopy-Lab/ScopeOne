@@ -87,7 +87,7 @@ set(SCOPEONE_UI_SOURCES
         src/RoiManagerWindow.cpp
         src/ProfilePlotWindow.cpp
         src/ImageAnalysis.cpp
-        src/CommandFinder.cpp
+        src/CommandSearchBox.cpp
         src/OrthogonalViewsDialog.cpp
         src/NotificationOverlay.cpp
         src/DevicePropertyWidget.cpp
@@ -120,7 +120,7 @@ set(SCOPEONE_UI_HEADERS
         src/RoiManagerWindow.h
         src/ProfilePlotWindow.h
         src/ImageAnalysis.h
-        src/CommandFinder.h
+        src/CommandSearchBox.h
         src/OrthogonalViewsDialog.h
         src/NotificationOverlay.h
         src/DevicePropertyWidget.h

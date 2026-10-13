@@ -1,5 +1,5 @@
 #include "MainWindow.h"
-#include "CommandFinder.h"
+#include "CommandSearchBox.h"
 #include "ImageAnalysis.h"
 #include "NotificationOverlay.h"
 
@@ -1366,22 +1366,6 @@ namespace scopeone::ui
         m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
-        // Finds a command of any menu by name, which keeps the many menus usable
-        auto* findCommandsAction = toolsMenu->addAction(tr("&Find Commands..."));
-        findCommandsAction->setShortcut(QKeySequence(Qt::Key_L));
-        findCommandsAction->setShortcutContext(Qt::ApplicationShortcut);
-        connect(findCommandsAction, &QAction::triggered, this, [this]()
-        {
-            QWidget* focus = focusWidget();
-            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus)
-                          || qobject_cast<QPlainTextEdit*>(focus)))
-            {
-                return;
-            }
-            CommandFinder finder(menuBar(), this);
-            finder.exec();
-        });
-        toolsMenu->addSeparator();
         auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
         connect(pluginManagerAction, &QAction::triggered, this, [this]()
         {
@@ -1403,6 +1387,25 @@ namespace scopeone::ui
         auto* aboutAction = helpMenu->addAction(tr("&About ScopeOne"));
         connect(aboutAction, &QAction::triggered,
                 this, [this]() { AboutDialog::showAbout(this); });
+
+        // A search field for the commands of all menus at the right end of the menu bar, like the
+        // search of ImageJ. The key L goes to it.
+        auto* commandSearch = new CommandSearchBox(menuBar(), menuBar());
+        menuBar()->setCornerWidget(commandSearch, Qt::TopRightCorner);
+        auto* searchAction = new QAction(tr("Search Commands"), this);
+        searchAction->setShortcut(QKeySequence(Qt::Key_L));
+        searchAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(searchAction, &QAction::triggered, this, [this, commandSearch]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus)
+                          || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            commandSearch->activate();
+        });
+        addAction(searchAction);
     }
 
     // Create the camera control dock
