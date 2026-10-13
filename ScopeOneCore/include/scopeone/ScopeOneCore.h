@@ -252,6 +252,11 @@ namespace scopeone::core
             {
                 return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
             }
+            // Sets the size of a pixel of the images of a camera in this session, in micrometers
+            void setPixelSizeUm(const QString& cameraId, double pixelSizeUm)
+            {
+                m_cameraPixelSizesUm.insert(cameraId.trimmed(), pixelSizeUm);
+            }
 
             QStringList recordedCameraIds() const
             {

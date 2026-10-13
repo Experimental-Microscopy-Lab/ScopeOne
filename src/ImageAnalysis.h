@@ -62,6 +62,7 @@ namespace scopeone::ui
         using FrameOperation = std::function<scopeone::core::ImageFrame(const scopeone::core::ImageFrame&)>;
         void apply(const QString& title, const FrameOperation& operation);
 
+        void buildEditMenu(QMenu* menu);
         void buildImageMenu(QMenu* menu);
         void buildProcessMenu(QMenu* menu);
         void buildAnalyzeMenu(QMenu* menu);
@@ -85,6 +86,20 @@ namespace scopeone::ui
         void unsharpMask();
         void calculate();
         void measure();
+        // The selection that a command changes, which has to be drawn first
+        bool requireSelection(Source& source, scopeone::core::ImageSceneModel::Markup& shape);
+        // Takes the place of the selection with a polygon, a rectangle or nothing
+        void replaceWithPolygon(const Source& source, const scopeone::core::ImageSceneModel::Markup& old,
+                                const QList<QPoint>& corners);
+        void selectAll();
+        void specifySelection();
+        void enlargeSelection();
+        void rotateSelection();
+        void scaleSelection();
+        void createMask();
+        void createSelection();
+        void imageProperties();
+        void wandTolerance();
         void analyzeParticles();
         void measureShapes(const QList<scopeone::core::ImageSceneModel::Markup>& shapes, bool allSlices);
 

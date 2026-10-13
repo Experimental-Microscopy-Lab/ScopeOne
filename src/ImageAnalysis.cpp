@@ -11,6 +11,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSignalBlocker>
 
 namespace scopeone::ui
@@ -29,12 +30,15 @@ namespace scopeone::ui
 
     void ImageAnalysis::addMenus(QMenuBar* menuBar, QAction* before)
     {
+        QMenu* edit = new QMenu(tr("&Edit"), menuBar);
         QMenu* image = new QMenu(tr("&Image"), menuBar);
         QMenu* process = new QMenu(tr("&Process"), menuBar);
         QMenu* analyze = new QMenu(tr("&Analyze"), menuBar);
+        menuBar->insertMenu(before, edit);
         menuBar->insertMenu(before, image);
         menuBar->insertMenu(before, process);
         menuBar->insertMenu(before, analyze);
+        buildEditMenu(edit);
         buildImageMenu(image);
         buildProcessMenu(process);
         buildAnalyzeMenu(analyze);
@@ -253,6 +257,63 @@ namespace scopeone::ui
                 [this, text, operation]() { apply(QString(text).remove(QLatin1Char('&')), operation); });
     }
 
+    void ImageAnalysis::buildEditMenu(QMenu* menu)
+    {
+        QAction* selectAllAction = menu->addAction(tr("Select &All"));
+        selectAllAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+A")));
+        connect(selectAllAction, &QAction::triggered, this, [this]() { selectAll(); });
+        QAction* selectNoneAction = menu->addAction(tr("Select &None"));
+        selectNoneAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
+        connect(selectNoneAction, &QAction::triggered, this, [this]()
+        {
+            if (ImageSceneModel* scene = m_workspace->activeSceneModel())
+            {
+                scene->selectOnly(QString());
+            }
+        });
+        menu->addSeparator();
+
+        QMenu* selection = menu->addMenu(tr("&Selection"));
+        connect(selection->addAction(tr("To &Bounding Box")), &QAction::triggered, this, [this]()
+        {
+            Source source;
+            ImageSceneModel::Markup shape;
+            if (requireSelection(source, shape))
+            {
+                const QRect box = imageops::selectionBounds(shape);
+                source.scene->remove(shape.id);
+                const QString id = source.scene->createRect(source.layerKey, box, shape.label);
+                source.scene->selectOnly(id);
+            }
+        });
+        connect(selection->addAction(tr("&Convex Hull")), &QAction::triggered, this, [this]()
+        {
+            Source source;
+            ImageSceneModel::Markup shape;
+            if (requireSelection(source, shape))
+            {
+                replaceWithPolygon(source, shape, imageops::convexHull(imageops::selectionCorners(shape)));
+            }
+        });
+        connect(selection->addAction(tr("Fit &Ellipse")), &QAction::triggered, this, [this]()
+        {
+            Source source;
+            ImageSceneModel::Markup shape;
+            if (requireSelection(source, shape))
+            {
+                replaceWithPolygon(source, shape, imageops::fittedEllipse(source.frames.first().width,
+                                                                          source.frames.first().height, shape));
+            }
+        });
+        connect(selection->addAction(tr("En&large...")), &QAction::triggered, this, [this]() { enlargeSelection(); });
+        connect(selection->addAction(tr("&Specify...")), &QAction::triggered, this, [this]() { specifySelection(); });
+        connect(selection->addAction(tr("&Rotate...")), &QAction::triggered, this, [this]() { rotateSelection(); });
+        connect(selection->addAction(tr("S&cale...")), &QAction::triggered, this, [this]() { scaleSelection(); });
+        selection->addSeparator();
+        connect(selection->addAction(tr("Create &Mask")), &QAction::triggered, this, [this]() { createMask(); });
+        connect(selection->addAction(tr("Create Se&lection")), &QAction::triggered, this, [this]() { createSelection(); });
+    }
+
     void ImageAnalysis::buildImageMenu(QMenu* menu)
     {
         connect(menu->addAction(tr("&Duplicate...")), &QAction::triggered, this, [this]() { duplicateImage(); });
@@ -269,6 +330,8 @@ namespace scopeone::ui
         connect(transform->addAction(tr("Rotate 90 Degrees &Left")), &QAction::triggered, this,
                 [this]() { apply(tr("Rotate 90 Degrees Left"), [](const ImageFrame& f) { return imageops::rotate90(f, false); }); });
         connect(transform->addAction(tr("&Rotate...")), &QAction::triggered, this, [this]() { rotateImage(); });
+
+        connect(menu->addAction(tr("&Properties...")), &QAction::triggered, this, [this]() { imageProperties(); });
 
         QMenu* adjust = menu->addMenu(tr("&Adjust"));
         connect(adjust->addAction(tr("&Threshold...")), &QAction::triggered, this, [this]() { thresholdImage(); });
@@ -369,6 +432,7 @@ namespace scopeone::ui
         connect(menu->addAction(tr("Plot &Z-axis Profile")), &QAction::triggered, this, [this]() { plotZProfile(); });
         menu->addSeparator();
         connect(menu->addAction(tr("Analyze &Particles...")), &QAction::triggered, this, [this]() { analyzeParticles(); });
+        connect(menu->addAction(tr("&Wand Tolerance...")), &QAction::triggered, this, [this]() { wandTolerance(); });
     }
 
     // ---- Image menu
@@ -641,6 +705,202 @@ namespace scopeone::ui
             shape.label = source.title;
         }
         measureShapes({shape}, false);
+    }
+
+    // ---- selections
+
+    bool ImageAnalysis::requireSelection(Source& source, ImageSceneModel::Markup& shape)
+    {
+        if (!activeSource(source))
+        {
+            return false;
+        }
+        if (!selectedShape(source, shape))
+        {
+            QMessageBox::information(m_window, tr("Selection"), tr("Draw a selection first."));
+            return false;
+        }
+        return true;
+    }
+
+    void ImageAnalysis::replaceWithPolygon(const Source& source, const ImageSceneModel::Markup& old,
+                                           const QList<QPoint>& corners)
+    {
+        if (corners.size() < 3)
+        {
+            QMessageBox::information(m_window, tr("Selection"), tr("Nothing is left of the selection."));
+            return;
+        }
+        source.scene->remove(old.id);
+        const QString id = source.scene->createPolygon(source.layerKey, corners, old.label);
+        source.scene->selectOnly(id);
+    }
+
+    void ImageAnalysis::selectAll()
+    {
+        Source source;
+        if (!activeSource(source) || !source.scene)
+        {
+            return;
+        }
+        const ImageFrame& frame = source.frames.first();
+        const QString id = source.scene->createRect(source.layerKey, QRect(0, 0, frame.width, frame.height));
+        source.scene->selectOnly(id);
+    }
+
+    void ImageAnalysis::specifySelection()
+    {
+        Source source;
+        if (!activeSource(source) || !source.scene)
+        {
+            return;
+        }
+        const ImageFrame& frame = source.frames.first();
+        ImageSceneModel::Markup shape;
+        const bool hasShape = selectedShape(source, shape)
+            && (shape.type == ImageSceneModel::MarkupType::Rect || shape.type == ImageSceneModel::MarkupType::Ellipse);
+        const QRect current = hasShape ? shape.rect.normalized() : QRect(0, 0, frame.width / 2, frame.height / 2);
+        QList<ParameterField> fields{
+            ParameterField::integer(tr("Width"), current.width(), 1, frame.width),
+            ParameterField::integer(tr("Height"), current.height(), 1, frame.height),
+            ParameterField::integer(tr("X coordinate"), current.x(), 0, frame.width),
+            ParameterField::integer(tr("Y coordinate"), current.y(), 0, frame.height),
+            ParameterField::check(tr("Oval"), hasShape && shape.type == ImageSceneModel::MarkupType::Ellipse)};
+        if (!askParameters(m_window, tr("Specify"), fields))
+        {
+            return;
+        }
+        const QRect rect(static_cast<int>(fields.at(2).value), static_cast<int>(fields.at(3).value),
+                         static_cast<int>(fields.at(0).value), static_cast<int>(fields.at(1).value));
+        if (hasShape)
+        {
+            source.scene->remove(shape.id);
+        }
+        const QString id = fields.at(4).checked ? source.scene->createEllipse(source.layerKey, rect)
+                                                : source.scene->createRect(source.layerKey, rect);
+        source.scene->selectOnly(id);
+    }
+
+    void ImageAnalysis::enlargeSelection()
+    {
+        Source source;
+        ImageSceneModel::Markup shape;
+        if (!requireSelection(source, shape))
+        {
+            return;
+        }
+        QList<ParameterField> fields{ParameterField::real(tr("Enlarge by (pixels, negative to shrink)"), 15.0, -500.0, 500.0, 1)};
+        if (askParameters(m_window, tr("Enlarge"), fields))
+        {
+            replaceWithPolygon(source, shape,
+                               imageops::enlargedOutline(source.frames.first().width, source.frames.first().height,
+                                                         shape, fields.first().value));
+        }
+    }
+
+    void ImageAnalysis::rotateSelection()
+    {
+        Source source;
+        ImageSceneModel::Markup shape;
+        if (!requireSelection(source, shape))
+        {
+            return;
+        }
+        QList<ParameterField> fields{ParameterField::real(tr("Angle (degrees)"), 15.0, -360.0, 360.0, 1)};
+        if (askParameters(m_window, tr("Rotate Selection"), fields))
+        {
+            replaceWithPolygon(source, shape, imageops::rotatedCorners(shape, fields.first().value));
+        }
+    }
+
+    void ImageAnalysis::scaleSelection()
+    {
+        Source source;
+        ImageSceneModel::Markup shape;
+        if (!requireSelection(source, shape))
+        {
+            return;
+        }
+        QList<ParameterField> fields{ParameterField::real(tr("X scale factor"), 1.5, 0.05, 20.0, 2),
+                                     ParameterField::real(tr("Y scale factor"), 1.5, 0.05, 20.0, 2)};
+        if (askParameters(m_window, tr("Scale Selection"), fields))
+        {
+            replaceWithPolygon(source, shape, imageops::scaledCorners(shape, fields.at(0).value, fields.at(1).value));
+        }
+    }
+
+    // Makes an image in which the pixels of the selection are 255 and the others 0
+    void ImageAnalysis::createMask()
+    {
+        Source source;
+        ImageSceneModel::Markup shape;
+        if (!requireSelection(source, shape))
+        {
+            return;
+        }
+        ImageFrame mask = imageops::selectionMask(source.frames.first().width, source.frames.first().height, shape);
+        mask.cameraId = source.frames.first().cameraId;
+        present({mask}, tr("Mask of %1").arg(source.title));
+    }
+
+    // Makes a selection of every group of touching pixels above zero of a binary image
+    void ImageAnalysis::createSelection()
+    {
+        Source source;
+        if (!activeSource(source) || !source.scene)
+        {
+            return;
+        }
+        QSignalBlocker blocker(source.scene);
+        int number = 0;
+        for (const imageops::Particle& particle : imageops::findParticles(source.frames.at(source.index)))
+        {
+            source.scene->createPolygon(source.layerKey, particle.outline, tr("Selection %1").arg(++number));
+        }
+        blocker.unblock();
+        emit source.scene->markupsChanged();
+    }
+
+    // The size of a pixel of the image
+    void ImageAnalysis::imageProperties()
+    {
+        Source source;
+        if (!activeSource(source))
+        {
+            return;
+        }
+        const ImageFrame& frame = source.frames.first();
+        QList<ParameterField> fields{
+            ParameterField::real(tr("Pixel size (µm)"), m_workspace->pixelSizeUm(source.layerKey), 0.0, 1.0e6, 4)};
+        if (!askParameters(m_window, tr("Properties of %1").arg(source.title), fields))
+        {
+            return;
+        }
+        const double size = fields.first().value;
+        const ImageDocumentInfo document = m_workspace->document();
+        if (document.isValid())
+        {
+            if (const auto session = m_workspace->documentSession())
+            {
+                session->setPixelSizeUm(document.cameraId, size);
+            }
+        }
+        else
+        {
+            m_core->setCameraPixelSizeUm(frame.cameraId, size);
+        }
+    }
+
+    void ImageAnalysis::wandTolerance()
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QList<ParameterField> fields{
+            ParameterField::integer(tr("Tolerance (gray levels)"), settings.value(QStringLiteral("Wand/tolerance"), 0).toInt(),
+                                    0, 65535)};
+        if (askParameters(m_window, tr("Wand Tolerance"), fields))
+        {
+            settings.setValue(QStringLiteral("Wand/tolerance"), static_cast<int>(fields.first().value));
+        }
     }
 
     // Finds the particles of a binary image, or of an image above a threshold, and measures each

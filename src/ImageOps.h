@@ -166,6 +166,26 @@ namespace scopeone::ui::imageops
     };
     Measurement measure(const ImageFrame& frame, const Markup& markup, double scale);
 
+    // ---- changing selections
+
+    // The pixels of the selection as an 8 bit frame of the given size, 255 inside
+    ImageFrame selectionMask(int width, int height, const Markup& selection);
+    // Corners of the outline as a polygon. A rectangle gives its four corners and an ellipse
+    // a ring of points on it.
+    QList<QPoint> selectionCorners(const Markup& selection);
+    QList<QPoint> convexHull(const QList<QPoint>& points);
+    // The outline of the selection grown by the given number of pixels, or shrunk when negative.
+    // Empty when nothing is left.
+    QList<QPoint> enlargedOutline(int width, int height, const Markup& selection, double pixels);
+    // The ellipse that has the same second moments as the selection, as a polygon
+    QList<QPoint> fittedEllipse(int width, int height, const Markup& selection);
+    QList<QPoint> rotatedCorners(const Markup& selection, double degrees);
+    QList<QPoint> scaledCorners(const Markup& selection, double factorX, double factorY);
+    // The outline of the pixels that touch the seed and differ from it by at most tolerance
+    QList<QPoint> wandOutline(const ImageFrame& frame, const QPoint& seed, int tolerance);
+    // Fewer corners, with every point of the outline within epsilon of the result
+    QList<QPoint> simplifiedOutline(const QList<QPoint>& points, double epsilon);
+
     // ---- frames
 
     // A frame like the given one in format and identity, with the given size and zeroed pixels

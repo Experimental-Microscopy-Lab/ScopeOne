@@ -59,6 +59,28 @@ namespace scopeone::ui
                 }
                 break;
             }
+            case ToolIconKind::Freehand:
+            {
+                // A closed curve drawn by hand
+                QPainterPath curve;
+                curve.moveTo(4.0, 11.0);
+                curve.cubicTo(3.0, 5.0, 9.0, 3.0, 11.0, 6.0);
+                curve.cubicTo(13.0, 8.5, 17.5, 5.5, 16.5, 11.5);
+                curve.cubicTo(16.0, 16.0, 10.0, 17.5, 7.5, 15.0);
+                curve.cubicTo(5.5, 13.5, 6.0, 12.5, 4.0, 11.0);
+                painter.drawPath(curve);
+                break;
+            }
+            case ToolIconKind::Wand:
+            {
+                // A stick with sparks at the tip
+                painter.drawLine(QPointF(3.5, 16.5), QPointF(11.0, 9.0));
+                painter.drawLine(QPointF(14.0, 3.0), QPointF(14.0, 8.0));
+                painter.drawLine(QPointF(11.5, 5.5), QPointF(16.5, 5.5));
+                painter.drawLine(QPointF(12.2, 3.7), QPointF(15.8, 7.3));
+                painter.drawLine(QPointF(15.8, 3.7), QPointF(12.2, 7.3));
+                break;
+            }
             case ToolIconKind::Line:
                 painter.drawLine(QPointF(4.0, 16.0), QPointF(16.0, 4.0));
                 handle(QPointF(4.0, 16.0));

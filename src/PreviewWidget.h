@@ -47,7 +47,7 @@ namespace scopeone::ui
     public:
         enum class LayerLayoutMode { SideBySide, Overlay };
         enum class ViewDimensionMode { TwoDimensional, ThreeDimensional };
-        enum class AnalysisTool { Select, Rectangle, Ellipse, Polygon, Line, Point };
+        enum class AnalysisTool { Select, Rectangle, Ellipse, Polygon, Freehand, Line, Point, Wand };
 
         struct PreviewInteractionTarget
         {

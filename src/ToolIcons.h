@@ -11,8 +11,10 @@ namespace scopeone::ui
         Rectangle,
         Ellipse,
         Polygon,
+        Freehand,
         Line,
-        Point
+        Point,
+        Wand
     };
 
     // A line drawing of a selection tool, in the colors of the palette so that it follows the

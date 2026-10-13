@@ -455,6 +455,22 @@ namespace scopeone::ui::imageops
             return mask;
         }
 
+        QRect convexBounds(const QList<QPoint>& points)
+        {
+            int left = points.first().x();
+            int right = left;
+            int top = points.first().y();
+            int bottom = top;
+            for (const QPoint& point : points)
+            {
+                left = std::min(left, point.x());
+                right = std::max(right, point.x());
+                top = std::min(top, point.y());
+                bottom = std::max(bottom, point.y());
+            }
+            return QRect(left, top, std::max(1, right - left), std::max(1, bottom - top));
+        }
+
         // Histogram of the values of a frame, one bin for each possible value
         std::vector<qint64> histogramOf(const ImageFrame& frame)
         {
@@ -1741,5 +1757,376 @@ namespace scopeone::ui::imageops
             }
         }
         return result;
+    }
+
+    ImageFrame selectionMask(int width, int height, const Markup& selection)
+    {
+        ImageFrame like;
+        like.pixelFormat = ImagePixelFormat::Mono8;
+        like.bitsPerSample = 8;
+        ImageFrame canvas = blankFrame(like, width, height);
+        ImageFrame result = blankFrame(like, width, height);
+        visitPixels(canvas, selection, [&](int x, int y, int)
+        {
+            result.bytes.data()[static_cast<qint64>(y) * result.stride + x] = static_cast<char>(255);
+        });
+        return result;
+    }
+
+    QList<QPoint> convexHull(const QList<QPoint>& input)
+    {
+        QList<QPoint> points = input;
+        std::sort(points.begin(), points.end(), [](const QPoint& a, const QPoint& b)
+        {
+            return a.x() < b.x() || (a.x() == b.x() && a.y() < b.y());
+        });
+        points.erase(std::unique(points.begin(), points.end()), points.end());
+        if (points.size() < 3)
+        {
+            return points;
+        }
+        const auto cross = [](const QPoint& o, const QPoint& a, const QPoint& b)
+        {
+            return static_cast<qint64>(a.x() - o.x()) * (b.y() - o.y()) - static_cast<qint64>(a.y() - o.y()) * (b.x() - o.x());
+        };
+        QList<QPoint> hull(points.size() * 2);
+        int k = 0;
+        for (int i = 0; i < points.size(); ++i)
+        {
+            while (k >= 2 && cross(hull[k - 2], hull[k - 1], points[i]) <= 0) --k;
+            hull[k++] = points[i];
+        }
+        for (int i = static_cast<int>(points.size()) - 2, t = k + 1; i >= 0; --i)
+        {
+            while (k >= t && cross(hull[k - 2], hull[k - 1], points[i]) <= 0) --k;
+            hull[k++] = points[i];
+        }
+        hull.resize(k - 1);
+        return hull;
+    }
+
+    QList<QPoint> selectionCorners(const Markup& selection)
+    {
+        switch (selection.type)
+        {
+        case MarkupType::Polygon:
+            return selection.points;
+        case MarkupType::Line:
+            return {selection.start, selection.end};
+        case MarkupType::Point:
+            return {selection.start};
+        case MarkupType::Rect:
+        {
+            const QRect shape = selection.rect.normalized();
+            return {shape.topLeft(), QPoint(shape.right() + 1, shape.top()),
+                    QPoint(shape.right() + 1, shape.bottom() + 1), QPoint(shape.left(), shape.bottom() + 1)};
+        }
+        case MarkupType::Ellipse:
+        {
+            const QRect shape = selection.rect.normalized();
+            const double radiusX = shape.width() / 2.0;
+            const double radiusY = shape.height() / 2.0;
+            QList<QPoint> ring;
+            for (int step = 0; step < 72; ++step)
+            {
+                const double angle = step * 3.14159265358979323846 / 36.0;
+                ring.append(QPoint(static_cast<int>(std::lround(shape.x() + radiusX + radiusX * std::cos(angle))),
+                                   static_cast<int>(std::lround(shape.y() + radiusY + radiusY * std::sin(angle)))));
+            }
+            return ring;
+        }
+        }
+        return {};
+    }
+
+    QList<QPoint> simplifiedOutline(const QList<QPoint>& points, double epsilon)
+    {
+        if (points.size() < 4)
+        {
+            return points;
+        }
+        // Douglas and Peucker, on the closed outline cut at its first and its farthest point
+        const auto distance = [](const QPoint& p, const QPoint& a, const QPoint& b)
+        {
+            const double dx = b.x() - a.x();
+            const double dy = b.y() - a.y();
+            const double length = std::hypot(dx, dy);
+            if (length == 0.0)
+            {
+                return std::hypot(static_cast<double>(p.x() - a.x()), static_cast<double>(p.y() - a.y()));
+            }
+            return std::abs(dy * (p.x() - a.x()) - dx * (p.y() - a.y())) / length;
+        };
+        std::vector<char> keep(static_cast<size_t>(points.size()), 0);
+        int far = 0;
+        double farthest = -1.0;
+        for (int i = 1; i < points.size(); ++i)
+        {
+            const double d = std::hypot(static_cast<double>(points[i].x() - points[0].x()),
+                                        static_cast<double>(points[i].y() - points[0].y()));
+            if (d > farthest)
+            {
+                farthest = d;
+                far = i;
+            }
+        }
+        keep[0] = 1;
+        keep[static_cast<size_t>(far)] = 1;
+        struct Span { int first; int last; };
+        std::vector<Span> stack{{0, far}, {far, static_cast<int>(points.size())}};
+        while (!stack.empty())
+        {
+            const Span span = stack.back();
+            stack.pop_back();
+            const QPoint& a = points[span.first];
+            const QPoint& b = points[span.last % points.size()];
+            int index = -1;
+            double worst = epsilon;
+            for (int i = span.first + 1; i < span.last; ++i)
+            {
+                const double d = distance(points[i], a, b);
+                if (d > worst)
+                {
+                    worst = d;
+                    index = i;
+                }
+            }
+            if (index >= 0)
+            {
+                keep[static_cast<size_t>(index)] = 1;
+                stack.push_back({span.first, index});
+                stack.push_back({index, span.last});
+            }
+        }
+        QList<QPoint> result;
+        for (int i = 0; i < points.size(); ++i)
+        {
+            if (keep[static_cast<size_t>(i)])
+            {
+                result.append(points[i]);
+            }
+        }
+        return result.size() >= 3 ? result : points;
+    }
+
+    QList<QPoint> enlargedOutline(int width, int height, const Markup& selection, double pixels)
+    {
+        // Pad the image, so that a selection at the edge can grow beyond it
+        const int pad = pixels > 0.0 ? static_cast<int>(std::ceil(pixels)) + 1 : 1;
+        const int paddedWidth = width + 2 * pad;
+        const int paddedHeight = height + 2 * pad;
+        std::vector<unsigned char> inside(static_cast<size_t>(paddedWidth) * paddedHeight, 0);
+        const ImageFrame mask = selectionMask(width, height, selection);
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                inside[static_cast<size_t>(y + pad) * paddedWidth + x + pad] = pixelAt(mask, x, y) > 0 ? 1 : 0;
+            }
+        }
+        std::vector<unsigned char> grown(inside.size(), 0);
+        if (pixels >= 0.0)
+        {
+            // Everything within the distance of the selection
+            std::vector<unsigned char> outside(inside.size());
+            for (size_t i = 0; i < inside.size(); ++i)
+            {
+                outside[i] = inside[i] ? 0 : 1;
+            }
+            const std::vector<float> distance = squaredDistances(outside, paddedWidth, paddedHeight);
+            for (size_t i = 0; i < inside.size(); ++i)
+            {
+                grown[i] = (inside[i] || distance[i] <= pixels * pixels) ? 1 : 0;
+            }
+        }
+        else
+        {
+            const std::vector<float> distance = squaredDistances(inside, paddedWidth, paddedHeight);
+            for (size_t i = 0; i < inside.size(); ++i)
+            {
+                grown[i] = (inside[i] && distance[i] > pixels * pixels) ? 1 : 0;
+            }
+        }
+        ImageFrame like;
+        like.pixelFormat = ImagePixelFormat::Mono8;
+        like.bitsPerSample = 8;
+        ImageFrame grownFrame = blankFrame(like, paddedWidth, paddedHeight);
+        for (int y = 0; y < paddedHeight; ++y)
+        {
+            for (int x = 0; x < paddedWidth; ++x)
+            {
+                grownFrame.bytes.data()[static_cast<qint64>(y) * grownFrame.stride + x] =
+                    grown[static_cast<size_t>(y) * paddedWidth + x] ? static_cast<char>(255) : 0;
+            }
+        }
+        // The largest particle is the new selection
+        const QList<Particle> particles = findParticles(grownFrame);
+        const Particle* largest = nullptr;
+        for (const Particle& particle : particles)
+        {
+            if (!largest || particle.pixels.size() > largest->pixels.size())
+            {
+                largest = &particle;
+            }
+        }
+        if (!largest)
+        {
+            return {};
+        }
+        QList<QPoint> outline;
+        for (const QPoint& corner : largest->outline)
+        {
+            outline.append(QPoint(std::clamp(corner.x() - pad, 0, width), std::clamp(corner.y() - pad, 0, height)));
+        }
+        return outline;
+    }
+
+    QList<QPoint> fittedEllipse(int width, int height, const Markup& selection)
+    {
+        const ImageFrame mask = selectionMask(width, height, selection);
+        double count = 0.0;
+        double meanX = 0.0;
+        double meanY = 0.0;
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                if (pixelAt(mask, x, y) > 0)
+                {
+                    count += 1.0;
+                    meanX += x + 0.5;
+                    meanY += y + 0.5;
+                }
+            }
+        }
+        if (count < 3.0)
+        {
+            return {};
+        }
+        meanX /= count;
+        meanY /= count;
+        double xx = 1.0 / 12.0;
+        double yy = 1.0 / 12.0;
+        double xy = 0.0;
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                if (pixelAt(mask, x, y) > 0)
+                {
+                    const double dx = x + 0.5 - meanX;
+                    const double dy = y + 0.5 - meanY;
+                    xx += dx * dx / count;
+                    yy += dy * dy / count;
+                    xy += dx * dy / count;
+                }
+            }
+        }
+        const double root = std::sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy);
+        const double major = 2.0 * std::sqrt(std::max(0.0, (xx + yy + root) / 2.0));
+        const double minor = 2.0 * std::sqrt(std::max(0.0, (xx + yy - root) / 2.0));
+        const double angle = 0.5 * std::atan2(2.0 * xy, xx - yy);
+        QList<QPoint> ring;
+        for (int step = 0; step < 72; ++step)
+        {
+            const double t = step * 3.14159265358979323846 / 36.0;
+            const double ex = major * std::cos(t);
+            const double ey = minor * std::sin(t);
+            const QPoint point(static_cast<int>(std::lround(meanX + ex * std::cos(angle) - ey * std::sin(angle))),
+                               static_cast<int>(std::lround(meanY + ex * std::sin(angle) + ey * std::cos(angle))));
+            if (ring.isEmpty() || ring.last() != point)
+            {
+                ring.append(point);
+            }
+        }
+        return ring;
+    }
+
+    QList<QPoint> rotatedCorners(const Markup& selection, double degrees)
+    {
+        const QList<QPoint> corners = selectionCorners(selection);
+        if (corners.isEmpty())
+        {
+            return {};
+        }
+        double centerX = 0.0;
+        double centerY = 0.0;
+        const QRect box = selection.type == MarkupType::Line || selection.type == MarkupType::Point
+            ? selectionBounds(selection) : QRect(convexBounds(corners));
+        centerX = box.x() + box.width() / 2.0;
+        centerY = box.y() + box.height() / 2.0;
+        const double radians = degrees * 3.14159265358979323846 / 180.0;
+        QList<QPoint> result;
+        for (const QPoint& corner : corners)
+        {
+            const double dx = corner.x() - centerX;
+            const double dy = corner.y() - centerY;
+            result.append(QPoint(static_cast<int>(std::lround(centerX + dx * std::cos(radians) - dy * std::sin(radians))),
+                                 static_cast<int>(std::lround(centerY + dx * std::sin(radians) + dy * std::cos(radians)))));
+        }
+        return result;
+    }
+
+    QList<QPoint> scaledCorners(const Markup& selection, double factorX, double factorY)
+    {
+        const QList<QPoint> corners = selectionCorners(selection);
+        if (corners.isEmpty())
+        {
+            return {};
+        }
+        const QRect box = QRect(convexBounds(corners));
+        const double centerX = box.x() + box.width() / 2.0;
+        const double centerY = box.y() + box.height() / 2.0;
+        QList<QPoint> result;
+        for (const QPoint& corner : corners)
+        {
+            result.append(QPoint(static_cast<int>(std::lround(centerX + (corner.x() - centerX) * factorX)),
+                                 static_cast<int>(std::lround(centerY + (corner.y() - centerY) * factorY))));
+        }
+        return result;
+    }
+
+    QList<QPoint> wandOutline(const ImageFrame& frame, const QPoint& seed, int tolerance)
+    {
+        if (!isMono(frame) || !QRect(0, 0, frame.width, frame.height).contains(seed))
+        {
+            return {};
+        }
+        const int reference = pixelAt(frame, seed.x(), seed.y());
+        ImageFrame like;
+        like.pixelFormat = ImagePixelFormat::Mono8;
+        like.bitsPerSample = 8;
+        ImageFrame mask = blankFrame(like, frame.width, frame.height);
+        std::vector<int> stack{seed.y() * frame.width + seed.x()};
+        std::vector<char> seen(static_cast<size_t>(frame.width) * frame.height, 0);
+        seen[static_cast<size_t>(stack.back())] = 1;
+        while (!stack.empty())
+        {
+            const int index = stack.back();
+            stack.pop_back();
+            const int x = index % frame.width;
+            const int y = index / frame.width;
+            mask.bytes.data()[static_cast<qint64>(y) * mask.stride + x] = static_cast<char>(255);
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                for (int dx = -1; dx <= 1; ++dx)
+                {
+                    const int nx = x + dx;
+                    const int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= frame.width || ny >= frame.height)
+                    {
+                        continue;
+                    }
+                    const size_t next = static_cast<size_t>(ny) * frame.width + nx;
+                    if (!seen[next] && std::abs(pixelAt(frame, nx, ny) - reference) <= tolerance)
+                    {
+                        seen[next] = 1;
+                        stack.push_back(static_cast<int>(next));
+                    }
+                }
+            }
+        }
+        const QList<Particle> particles = findParticles(mask);
+        return particles.isEmpty() ? QList<QPoint>{} : particles.first().outline;
     }
 }
