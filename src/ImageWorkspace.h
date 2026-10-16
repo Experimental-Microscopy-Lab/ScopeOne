@@ -62,6 +62,9 @@ namespace scopeone::ui
             const QString& cameraId = QString());
         QString openFrame(const scopeone::core::ImageFrame& frame,
                           const QString& title);
+        // The session behind an image document, which holds all of its frames
+        std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData> documentSession(
+            const QString& documentId = QString()) const;
         QList<ImageDocumentInfo> documents() const;
         ImageDocumentInfo document(const QString& documentId = QString()) const;
         QString activeDocumentId() const;

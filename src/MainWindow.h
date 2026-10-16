@@ -22,6 +22,7 @@ class QTimer;
 
 namespace scopeone::ui
 {
+    class ImageAnalysis;
     class UpdateChecker;
 }
 
@@ -185,6 +186,7 @@ namespace scopeone::ui
         bool m_statusIsError{false};
         QLabel* m_statusUpdateLabel{nullptr};
         QMenu* m_workspacesMenu{nullptr};
+        ImageAnalysis* m_imageAnalysis{nullptr};
         UpdateChecker* m_updateChecker{nullptr};
         bool m_updateCheckUserInitiated{false};
         QLabel* m_statusCursorLabel{nullptr};

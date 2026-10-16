@@ -1,4 +1,5 @@
 #include "PreviewWidget.h"
+#include "ImageOps.h"
 
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
@@ -11,6 +12,7 @@
 #include <QLabel>
 #include <QMimeData>
 #include <QPainter>
+#include <QSettings>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -1625,7 +1627,7 @@ namespace scopeone::ui
     void PreviewWidget::drawActiveInteractionMarkup(QPainter& painter,
                                                     const std::vector<RenderItem>& renderItems) const
     {
-        if (m_draft.polygonActive)
+        if (m_draft.polygonActive || (m_draft.dragging && m_draft.type == ImageSceneModel::MarkupType::Polygon))
         {
             // The corners clicked so far, and a dashed edge from the last one to the pointer
             painter.save();
@@ -1637,14 +1639,17 @@ namespace scopeone::ui
             {
                 painter.drawLine(m_draft.vertices.at(index - 1), m_draft.vertices.at(index));
             }
-            QPen dashed = pen;
-            dashed.setStyle(Qt::DashLine);
-            painter.setPen(dashed);
-            painter.drawLine(m_draft.vertices.last(), m_draft.end);
-            painter.setPen(pen);
-            for (const QPoint& vertex : m_draft.vertices)
+            if (m_draft.polygonActive)
             {
-                painter.drawRect(QRect(vertex - QPoint(3, 3), QSize(6, 6)));
+                QPen dashed = pen;
+                dashed.setStyle(Qt::DashLine);
+                painter.setPen(dashed);
+                painter.drawLine(m_draft.vertices.last(), m_draft.end);
+                painter.setPen(pen);
+                for (const QPoint& vertex : m_draft.vertices)
+                {
+                    painter.drawRect(QRect(vertex - QPoint(3, 3), QSize(6, 6)));
+                }
             }
             if (m_draft.vertices.size() >= 3
                 && QLineF(QPointF(m_draft.end), QPointF(m_draft.vertices.first())).length() <= 8.0)
@@ -3718,6 +3723,11 @@ namespace scopeone::ui
         {
             corners.removeLast();
         }
+        // A freehand path has a corner for every few pixels of the way, which are too many to keep
+        if (draft.dragging)
+        {
+            corners = imageops::simplifiedOutline(corners, 0.8);
+        }
         if (corners.size() < 3)
         {
             return;
@@ -3875,6 +3885,34 @@ namespace scopeone::ui
             {
                 setActiveLayerKey(target.layerKey);
                 emit layerClicked(target.layerKey);
+                if (m_analysisTool == AnalysisTool::Wand)
+                {
+                    // The region around the click that has a similar value
+                    FrameSourceState wandState;
+                    bool wandProcessed = false;
+                    QRect wandArea;
+                    QRect wandDisplay;
+                    QSize wandSize;
+                    if (resolveLayerDisplayGeometry(target.layerKey, wandState, wandProcessed, wandArea,
+                                                    wandDisplay, wandSize))
+                    {
+                        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                        const QList<QPoint> outline = imageops::wandOutline(
+                            wandProcessed ? wandState.processedFrame : wandState.rawFrame,
+                            target.imagePos,
+                            settings.value(QStringLiteral("Wand/tolerance"), 0).toInt());
+                        if (outline.size() >= 3)
+                        {
+                            const QString wandId = m_sceneModel->createPolygon(target.layerKey, outline);
+                            if (!wandId.isEmpty())
+                            {
+                                m_sceneModel->selectOnly(wandId);
+                            }
+                        }
+                    }
+                    update();
+                    return;
+                }
                 if (m_analysisTool == AnalysisTool::Point)
                 {
                     // A point is placed by one click
@@ -3898,6 +3936,7 @@ namespace scopeone::ui
                         m_draft.type = ImageSceneModel::MarkupType::Ellipse;
                         break;
                     case AnalysisTool::Polygon:
+                    case AnalysisTool::Freehand:
                         m_draft.type = ImageSceneModel::MarkupType::Polygon;
                         break;
                     default:
@@ -3917,6 +3956,10 @@ namespace scopeone::ui
                     else
                     {
                         m_draft.dragging = true;
+                        if (m_analysisTool == AnalysisTool::Freehand)
+                        {
+                            m_draft.vertices = {event->pos()};
+                        }
                     }
                     update();
                     return;
@@ -4043,6 +4086,13 @@ namespace scopeone::ui
         if (m_draft.dragging)
         {
             m_draft.end = event->pos();
+            // A freehand outline collects the points that the pointer passes
+            if (m_draft.type == ImageSceneModel::MarkupType::Polygon
+                && (m_draft.vertices.isEmpty()
+                    || (event->pos() - m_draft.vertices.last()).manhattanLength() >= 3))
+            {
+                m_draft.vertices.append(event->pos());
+            }
             update();
             return;
         }
@@ -4201,7 +4251,14 @@ namespace scopeone::ui
         if (m_draft.dragging && event->button() == Qt::LeftButton)
         {
             m_draft.end = event->pos();
-            finishDraft();
+            if (m_draft.type == ImageSceneModel::MarkupType::Polygon)
+            {
+                finishPolygonDraft();
+            }
+            else
+            {
+                finishDraft();
+            }
             return;
         }
 

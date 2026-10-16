@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "CommandSearchBox.h"
+#include "ImageAnalysis.h"
 #include "UpdateChecker.h"
 
 #include "scopeone/ScopeOneCore.h"
@@ -1493,6 +1495,12 @@ namespace scopeone::ui
         addAction(autoContrastAction);
 
         auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
+        // Image, Process and Analyze come before Tools, as in ImageJ
+        m_imageAnalysis = new ImageAnalysis(m_scopeonecore, m_imageWorkspace, this, this);
+        m_imageAnalysis->setPresenter([this](
+            const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+            const QString& title) { presentSession(session, title); });
+        m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
         auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
@@ -1531,6 +1539,25 @@ namespace scopeone::ui
         auto* aboutAction = helpMenu->addAction(tr("&About ScopeOne"));
         connect(aboutAction, &QAction::triggered,
                 this, [this]() { AboutDialog::showAbout(this); });
+
+        // A search field for the commands of all menus at the right end of the menu bar, like the
+        // search of ImageJ. The key L goes to it.
+        auto* commandSearch = new CommandSearchBox(menuBar(), menuBar());
+        menuBar()->setCornerWidget(commandSearch, Qt::TopRightCorner);
+        auto* searchAction = new QAction(tr("Search Commands"), this);
+        searchAction->setShortcut(QKeySequence(Qt::Key_L));
+        searchAction->setShortcutContext(Qt::ApplicationShortcut);
+        connect(searchAction, &QAction::triggered, this, [this, commandSearch]()
+        {
+            QWidget* focus = focusWidget();
+            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus)
+                          || qobject_cast<QPlainTextEdit*>(focus)))
+            {
+                return;
+            }
+            commandSearch->activate();
+        });
+        addAction(searchAction);
     }
 
     // Create the camera control dock

@@ -252,6 +252,11 @@ namespace scopeone::core
             {
                 return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
             }
+            // Sets the size of a pixel of the images of a camera in this session, in micrometers
+            void setPixelSizeUm(const QString& cameraId, double pixelSizeUm)
+            {
+                m_cameraPixelSizesUm.insert(cameraId.trimmed(), pixelSizeUm);
+            }
 
             QStringList recordedCameraIds() const
             {
@@ -312,6 +317,13 @@ namespace scopeone::core
             bool hasRecordedOutput() const
             {
                 return recordedFrameCount() > 0;
+            }
+
+            // One recorded frame, from memory or from the files that were written. Invalid when
+            // there is no such frame.
+            ImageFrame recordedFrame(const QString& cameraId, int index) const
+            {
+                return imageFrameAt(cameraId, index);
             }
 
             bool isSaved() const { return m_saved; }
