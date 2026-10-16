@@ -22,8 +22,8 @@ class QTimer;
 
 namespace scopeone::ui
 {
-    class NotificationOverlay;
     class ImageAnalysis;
+    class UpdateChecker;
 }
 
 namespace scopeone::core
@@ -98,8 +98,18 @@ namespace scopeone::ui
         void openImages(const QStringList& filePaths);
         void connectPropertyPanels();
         void showStatusMessage(const QString& message, int timeoutMs = 0);
-        // Shows a message over the corner of the window that does not block anything
+        // Tells about a failure where the user is looking: the status bar shows it in red until
+        // something else replaces it, and a click on it opens the console, which has the full text
         void notifyError(const QString& title, const QString& message);
+        // Asks GitHub for a newer release. A check that the user asked for always says what it
+        // found, and one at startup only speaks up when there is a newer version.
+        void checkForUpdates(bool userInitiated);
+
+    protected:
+        bool eventFilter(QObject* watched, QEvent* event) override;
+
+    private:
+        void showUpdateAvailable(const QString& version, const QUrl& url);
         void setCursorStatus(const QString& text);
         void clearCursorStatus();
         void refreshPreviewCursorStatus();
@@ -173,9 +183,12 @@ namespace scopeone::ui
         QPointer<QProgressDialog> m_closeSaveProgress;
         std::unique_ptr<ToolRegistry> m_toolRegistry;
         QLabel* m_statusMessageLabel{nullptr};
-        scopeone::ui::NotificationOverlay* m_notifications{nullptr};
+        bool m_statusIsError{false};
+        QLabel* m_statusUpdateLabel{nullptr};
         QMenu* m_workspacesMenu{nullptr};
         ImageAnalysis* m_imageAnalysis{nullptr};
+        UpdateChecker* m_updateChecker{nullptr};
+        bool m_updateCheckUserInitiated{false};
         QLabel* m_statusCursorLabel{nullptr};
         QLabel* m_statusPreviewLabel{nullptr};
         QLabel* m_statusProcessingLabel{nullptr};
