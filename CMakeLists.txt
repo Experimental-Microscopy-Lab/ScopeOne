@@ -89,7 +89,7 @@ set(SCOPEONE_UI_SOURCES
         src/ImageAnalysis.cpp
         src/CommandSearchBox.cpp
         src/OrthogonalViewsDialog.cpp
-        src/NotificationOverlay.cpp
+        src/UpdateChecker.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
@@ -122,7 +122,7 @@ set(SCOPEONE_UI_HEADERS
         src/ImageAnalysis.h
         src/CommandSearchBox.h
         src/OrthogonalViewsDialog.h
-        src/NotificationOverlay.h
+        src/UpdateChecker.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
