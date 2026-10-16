@@ -46,6 +46,7 @@ namespace scopeone::ui
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
 
         QTreeWidget* m_propertyTree{nullptr};
+        int m_propertyRowHeight{24};
         QTimer* m_autoRefreshTimer{nullptr};
 
         bool m_showReadOnly;

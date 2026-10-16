@@ -17,6 +17,7 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -32,6 +33,23 @@ namespace scopeone::ui
 {
     namespace
     {
+        // Gives every row at least the height of the editors in it
+        class RowHeightDelegate final : public QStyledItemDelegate
+        {
+        public:
+            RowHeightDelegate(int height, QObject* parent) : QStyledItemDelegate(parent), m_height(height) {}
+
+            QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+            {
+                QSize size = QStyledItemDelegate::sizeHint(option, index);
+                size.setHeight(qMax(size.height(), m_height));
+                return size;
+            }
+
+        private:
+            int m_height;
+        };
+
         // Format floating values like Micro Manager property cells
         QString formatDoubleDisplay(double value)
         {
@@ -179,11 +197,9 @@ namespace scopeone::ui
             const int rowHeight = qMax(widgetHeight, textHeight);
 
             m_propertyTree->setUniformRowHeights(true);
-            m_propertyTree->setStyleSheet(QStringLiteral(
-                    "QTreeWidget::item { height: %1px; }"
-                    "QTreeWidget QComboBox, QTreeWidget QSpinBox, QTreeWidget QDoubleSpinBox, QTreeWidget QLineEdit {"
-                    "  min-height: %1px; max-height: %1px; }")
-                .arg(rowHeight));
+            // Set on the rows and the editors and not by a style sheet, so that the editors follow the palette
+            m_propertyRowHeight = rowHeight;
+            m_propertyTree->setItemDelegate(new RowHeightDelegate(rowHeight, m_propertyTree));
         }
 
         mainLayout->addLayout(controlLayout);
@@ -585,6 +601,7 @@ namespace scopeone::ui
 
                 if (editor)
                 {
+                    editor->setFixedHeight(m_propertyRowHeight);
                     m_propertyTree->setItemWidget(propertyItem, ValueColumn, editor);
                 }
             }

@@ -90,6 +90,7 @@ set(SCOPEONE_UI_SOURCES
         src/CommandSearchBox.cpp
         src/OrthogonalViewsDialog.cpp
         src/NotificationOverlay.cpp
+        src/Appearance.cpp
         src/EmptyHint.cpp
         src/WelcomeOverlay.cpp
         src/DevicePropertyWidget.cpp
@@ -125,6 +126,7 @@ set(SCOPEONE_UI_HEADERS
         src/CommandSearchBox.h
         src/OrthogonalViewsDialog.h
         src/NotificationOverlay.h
+        src/Appearance.h
         src/EmptyHint.h
         src/WelcomeOverlay.h
         src/DevicePropertyWidget.h

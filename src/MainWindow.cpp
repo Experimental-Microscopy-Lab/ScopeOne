@@ -8,6 +8,7 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/PluginManifest.h"
 #include "AboutDialog.h"
+#include "Appearance.h"
 #include "InspectWidget.h"
 #include "ConsoleWidget.h"
 #include "DeviceControlWidget.h"
@@ -96,7 +97,7 @@ namespace scopeone::ui
                 label->setMaximumWidth(maxWidth);
             }
             label->setToolTip(tooltip);
-            label->setStyleSheet(QStringLiteral("padding: 0 8px;"));
+            label->setContentsMargins(8, 0, 8, 0);
         }
 
         // Update a status label without redundant repaints
@@ -130,33 +131,6 @@ namespace scopeone::ui
             }
 #endif
             return {};
-        }
-
-        // Apply the requested Qt widget style
-        void applyWidgetStyle(const QString& widgetStyle)
-        {
-            if (widgetStyle != QStringLiteral("default") && !widgetStyle.isEmpty())
-            {
-                QApplication::setStyle(QStyleFactory::create(widgetStyle));
-            }
-        }
-
-        // Apply the requested Qt color scheme
-        void applyColorScheme(const QString& colorScheme)
-        {
-            QStyleHints* styleHints = QApplication::styleHints();
-            if (colorScheme == QStringLiteral("light"))
-            {
-                styleHints->setColorScheme(Qt::ColorScheme::Light);
-            }
-            else if (colorScheme == QStringLiteral("dark"))
-            {
-                styleHints->setColorScheme(Qt::ColorScheme::Dark);
-            }
-            else
-            {
-                styleHints->unsetColorScheme();
-            }
         }
 
         void updateSessionPresentation(
@@ -1827,12 +1801,6 @@ namespace scopeone::ui
     {
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        applyWidgetStyle(settings.value(
-            QStringLiteral("Appearance/Style"),
-            QStringLiteral("default")).toString());
-        applyColorScheme(settings.value(
-            QStringLiteral("Appearance/ColorScheme"),
-            QStringLiteral("system")).toString());
 
         const qint64 recordedMaxBytes = settings
                                         .value(
