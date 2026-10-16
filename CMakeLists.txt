@@ -80,7 +80,7 @@ set(SCOPEONE_UI_SOURCES
         src/RecordingWidgetSettings.cpp
         src/PositionListFile.cpp
         src/CollapsibleSection.cpp
-        src/NotificationOverlay.cpp
+        src/UpdateChecker.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
         src/ScopeOneLocalApiServer.cpp
@@ -104,7 +104,7 @@ set(SCOPEONE_UI_HEADERS
         src/RecordingWidget.h
         src/PositionListFile.h
         src/CollapsibleSection.h
-        src/NotificationOverlay.h
+        src/UpdateChecker.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h
         src/ScopeOneLocalApiServer.h
