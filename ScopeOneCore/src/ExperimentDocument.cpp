@@ -835,6 +835,21 @@ namespace scopeone::core
                 type = DocumentMarkupType::Rect;
                 return true;
             }
+            if (name == QStringLiteral("Ellipse"))
+            {
+                type = DocumentMarkupType::Ellipse;
+                return true;
+            }
+            if (name == QStringLiteral("Polygon"))
+            {
+                type = DocumentMarkupType::Polygon;
+                return true;
+            }
+            if (name == QStringLiteral("Point"))
+            {
+                type = DocumentMarkupType::Point;
+                return true;
+            }
             return false;
         }
 
@@ -1846,6 +1861,15 @@ namespace scopeone::core
             object.insert(QStringLiteral("start"), pointToJson(markup.start));
             object.insert(QStringLiteral("end"), pointToJson(markup.end));
             object.insert(QStringLiteral("rect"), rectToJson(markup.rect));
+            if (markup.type == DocumentMarkupType::Polygon)
+            {
+                QJsonArray points;
+                for (const QPointF& point : markup.points)
+                {
+                    points.append(pointToJson(point));
+                }
+                object.insert(QStringLiteral("points"), points);
+            }
             object.insert(QStringLiteral("visible"), markup.visible);
             object.insert(QStringLiteral("selected"), markup.selected);
             return canonicalJsonObject(object);
@@ -3048,7 +3072,7 @@ namespace scopeone::core
                          const QString& path,
                          QString* errorMessage)
         {
-            if (!checkObjectFields(object,
+            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("points")}),
                                    {QStringLiteral("id"),
                                     QStringLiteral("type"),
                                     QStringLiteral("role"),
@@ -3099,6 +3123,28 @@ namespace scopeone::core
                 || !readBool(object, QStringLiteral("selected"), parsed.selected, path, errorMessage))
             {
                 return false;
+            }
+            if (object.contains(QStringLiteral("points")))
+            {
+                QJsonArray points;
+                if (!readArray(object, QStringLiteral("points"), points, path, errorMessage))
+                {
+                    return false;
+                }
+                for (qsizetype index = 0; index < points.size(); ++index)
+                {
+                    const QString pointPath = elementPath(memberPath(path, QStringLiteral("points")), index);
+                    if (!points.at(index).isObject())
+                    {
+                        return fail(errorMessage, QStringLiteral("%1 must be an object").arg(pointPath));
+                    }
+                    QPointF point;
+                    if (!parsePoint(points.at(index).toObject(), point, pointPath, errorMessage))
+                    {
+                        return false;
+                    }
+                    parsed.points.append(point);
+                }
             }
             if (!parseDocumentMarkupType(type, parsed.type))
             {
@@ -3601,9 +3647,37 @@ namespace scopeone::core
                                 QStringLiteral("%1.layerId references missing layer '%2'")
                                     .arg(markupPath, markup.layerId));
                 }
-                if (markup.type != DocumentMarkupType::Line && markup.type != DocumentMarkupType::Rect)
+                switch (markup.type)
                 {
+                case DocumentMarkupType::Line:
+                case DocumentMarkupType::Rect:
+                case DocumentMarkupType::Ellipse:
+                case DocumentMarkupType::Polygon:
+                case DocumentMarkupType::Point:
+                    break;
+                default:
                     return fail(errorMessage, QStringLiteral("%1.type is invalid").arg(markupPath));
+                }
+                if (markup.type == DocumentMarkupType::Polygon)
+                {
+                    if (markup.points.size() < 3)
+                    {
+                        return fail(errorMessage,
+                                    QStringLiteral("%1.points must have at least three corners").arg(markupPath));
+                    }
+                    for (const QPointF& point : markup.points)
+                    {
+                        if (!isFinite(point.x()) || !isFinite(point.y()))
+                        {
+                            return fail(errorMessage,
+                                        QStringLiteral("%1.points must contain only finite values").arg(markupPath));
+                        }
+                    }
+                }
+                else if (!markup.points.isEmpty())
+                {
+                    return fail(errorMessage,
+                                QStringLiteral("%1.points is only for polygons").arg(markupPath));
                 }
                 switch (markup.role)
                 {
@@ -3623,7 +3697,7 @@ namespace scopeone::core
                     return fail(errorMessage,
                                 QStringLiteral("%1 geometry must contain only finite values").arg(markupPath));
                 }
-                if (markup.type == DocumentMarkupType::Rect
+                if ((markup.type == DocumentMarkupType::Rect || markup.type == DocumentMarkupType::Ellipse)
                     && (markup.rect.width() <= 0.0 || markup.rect.height() <= 0.0))
                 {
                     return fail(errorMessage,
@@ -3728,6 +3802,12 @@ namespace scopeone::core
             return QStringLiteral("Line");
         case DocumentMarkupType::Rect:
             return QStringLiteral("Rect");
+        case DocumentMarkupType::Ellipse:
+            return QStringLiteral("Ellipse");
+        case DocumentMarkupType::Polygon:
+            return QStringLiteral("Polygon");
+        case DocumentMarkupType::Point:
+            return QStringLiteral("Point");
         }
         return QStringLiteral("Unknown");
     }

@@ -34,6 +34,8 @@ namespace scopeone::core
             QPoint start;
             QPoint end;
             QRect rect;
+            // Corners of a polygon
+            QList<QPoint> points;
             QString label;
             bool visible{true};
             bool selected{false};
@@ -96,6 +98,18 @@ namespace scopeone::core
                            const QRect& rect,
                            const QString& label = QString(),
                            MarkupRole role = MarkupRole::Generic);
+        QString createEllipse(const QString& layerKey,
+                              const QRect& rect,
+                              const QString& label = QString(),
+                              MarkupRole role = MarkupRole::Generic);
+        QString createPolygon(const QString& layerKey,
+                              const QList<QPoint>& points,
+                              const QString& label = QString(),
+                              MarkupRole role = MarkupRole::Generic);
+        QString createPoint(const QString& layerKey,
+                            const QPoint& point,
+                            const QString& label = QString(),
+                            MarkupRole role = MarkupRole::Generic);
         QList<Markup> markups(const QString& layerKey = QString()) const;
         bool hasMarkups() const;
         bool findMarkup(const QString& id, Markup& outMarkup) const;
@@ -104,7 +118,10 @@ namespace scopeone::core
         bool setSelected(const QString& id, bool selected);
         bool selectOnly(const QString& id);
         bool updateLine(const QString& id, const QPoint& start, const QPoint& end);
+        // Moves or resizes a rectangle or an ellipse
         bool updateRect(const QString& id, const QRect& rect);
+        bool updatePolygon(const QString& id, const QList<QPoint>& points);
+        bool updatePoint(const QString& id, const QPoint& point);
         bool remove(const QString& id);
         void clear(const QString& layerKey = QString());
         void clearRole(MarkupRole role, const QString& layerKey = QString());

@@ -173,6 +173,8 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.update_markup(markup_id, label=None, visible=None, selected=None, **geometry)`
 - `ScopeOne.remove_markup(markup_id)`
 - `ScopeOne.clear_markups(layer_key=None)`
+
+Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `list_markups` returns an `Ellipse` with `x`, `y`, `width` and `height` of its bounding rectangle, a `Polygon` with a `points` list of `x` and `y`, and a `Point` with `x` and `y`. `update_markup` moves and resizes ellipses like rectangles. They cannot be created or have their geometry changed through the API yet.
 - `ScopeOne.device_properties(device, from_cache=True)`
 - `ScopeOne.device_property_names(device)`
 - `ScopeOne.get_property(device, property, from_cache=True)`

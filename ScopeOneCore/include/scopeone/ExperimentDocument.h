@@ -85,10 +85,14 @@ namespace scopeone::core
         Gallery
     };
 
+    // Ellipse uses rect as its bounding rectangle, Polygon uses points, and Point uses start
     enum class DocumentMarkupType
     {
         Line,
-        Rect
+        Rect,
+        Ellipse,
+        Polygon,
+        Point
     };
 
     enum class DocumentMarkupRole
@@ -300,6 +304,8 @@ namespace scopeone::core
         QPointF start;
         QPointF end;
         QRectF rect;
+        // Corners of a polygon, in order. Empty for the other types.
+        QList<QPointF> points;
         bool visible{true};
         bool selected{false};
     };

@@ -1485,7 +1485,72 @@ namespace scopeone::ui
             return true;
         }
 
-        if (markup.type == ImageSceneModel::MarkupType::Rect)
+        if (markup.type == ImageSceneModel::MarkupType::Point)
+        {
+            QPoint center;
+            if (!imageBounds.contains(markup.start)
+                || !mapImagePositionToWidget(*item.info->frameState,
+                                             item.processed,
+                                             item.layerKey,
+                                             item.area,
+                                             markup.start,
+                                             center))
+            {
+                return false;
+            }
+            // A cross with a ring, so it stays visible on both bright and dark areas
+            painter.setPen(linePen);
+            const int arm = markup.selected ? 7 : 5;
+            painter.drawLine(center + QPoint(-arm, 0), center + QPoint(arm, 0));
+            painter.drawLine(center + QPoint(0, -arm), center + QPoint(0, arm));
+            painter.drawEllipse(center, 2, 2);
+            if (!markup.label.isEmpty())
+            {
+                painter.drawText(center + QPoint(8, -8), markup.label);
+            }
+            return true;
+        }
+
+        if (markup.type == ImageSceneModel::MarkupType::Polygon)
+        {
+            QPolygon widgetPolygon;
+            for (const QPoint& corner : markup.points)
+            {
+                QPoint widgetCorner;
+                if (!mapImagePositionToWidget(*item.info->frameState,
+                                              item.processed,
+                                              item.layerKey,
+                                              item.area,
+                                              corner,
+                                              widgetCorner))
+                {
+                    return false;
+                }
+                widgetPolygon << widgetCorner;
+            }
+            if (widgetPolygon.size() < 3)
+            {
+                return false;
+            }
+            painter.setPen(rectPen);
+            painter.drawPolygon(widgetPolygon);
+            if (markup.selected)
+            {
+                // The corners can be dragged
+                for (const QPoint& corner : widgetPolygon)
+                {
+                    painter.drawRect(QRect(corner - QPoint(3, 3), QSize(6, 6)));
+                }
+            }
+            if (!markup.label.isEmpty())
+            {
+                painter.drawText(widgetPolygon.first() + QPoint(4, -4), markup.label);
+            }
+            return true;
+        }
+
+        if (markup.type == ImageSceneModel::MarkupType::Rect
+            || markup.type == ImageSceneModel::MarkupType::Ellipse)
         {
             QPoint topLeft;
             QPoint bottomRight;
@@ -1518,7 +1583,14 @@ namespace scopeone::ui
             }
             painter.setPen(pen);
             const QRect widgetRect = QRect(topLeft, bottomRight).normalized();
-            painter.drawRect(widgetRect);
+            if (markup.type == ImageSceneModel::MarkupType::Ellipse)
+            {
+                painter.drawEllipse(widgetRect);
+            }
+            else
+            {
+                painter.drawRect(widgetRect);
+            }
             if (!markup.label.isEmpty())
             {
                 painter.drawText(widgetRect.topLeft() + QPoint(4, -4), markup.label);
@@ -1553,6 +1625,36 @@ namespace scopeone::ui
     void PreviewWidget::drawActiveInteractionMarkup(QPainter& painter,
                                                     const std::vector<RenderItem>& renderItems) const
     {
+        if (m_draft.polygonActive)
+        {
+            // The corners clicked so far, and a dashed edge from the last one to the pointer
+            painter.save();
+            QPen pen(QColor(0, 220, 180));
+            pen.setWidth(2);
+            painter.setPen(pen);
+            painter.setBrush(Qt::NoBrush);
+            for (int index = 1; index < m_draft.vertices.size(); ++index)
+            {
+                painter.drawLine(m_draft.vertices.at(index - 1), m_draft.vertices.at(index));
+            }
+            QPen dashed = pen;
+            dashed.setStyle(Qt::DashLine);
+            painter.setPen(dashed);
+            painter.drawLine(m_draft.vertices.last(), m_draft.end);
+            painter.setPen(pen);
+            for (const QPoint& vertex : m_draft.vertices)
+            {
+                painter.drawRect(QRect(vertex - QPoint(3, 3), QSize(6, 6)));
+            }
+            if (m_draft.vertices.size() >= 3
+                && QLineF(QPointF(m_draft.end), QPointF(m_draft.vertices.first())).length() <= 8.0)
+            {
+                // Clicking here closes the polygon
+                painter.drawEllipse(m_draft.vertices.first(), 8, 8);
+            }
+            painter.restore();
+            return;
+        }
         ImageSceneModel::Markup markup;
         if (!m_draft.dragging || !draftImageMarkup(markup))
         {
@@ -1758,8 +1860,13 @@ namespace scopeone::ui
     bool PreviewWidget::markupAtWidgetPosition(const QPoint& widgetPos,
                                                ImageSceneModel::Markup& outMarkup,
                                                PreviewInteractionTarget& outTarget,
-                                               MarkupEditMode& outEditMode) const
+                                               MarkupEditMode& outEditMode,
+                                               int* outVertexIndex) const
     {
+        if (outVertexIndex)
+        {
+            *outVertexIndex = -1;
+        }
         if (!m_sceneModel->hasMarkups())
         {
             return false;
@@ -1846,7 +1953,77 @@ namespace scopeone::ui
                         continue;
                     }
                 }
-                else if (markup.type == ImageSceneModel::MarkupType::Rect)
+                else if (markup.type == ImageSceneModel::MarkupType::Point)
+                {
+                    QPoint center;
+                    if (!mapImagePositionToWidget(*item.info->frameState,
+                                                  item.processed,
+                                                  item.layerKey,
+                                                  item.area,
+                                                  markup.start,
+                                                  center)
+                        || QLineF(QPointF(widgetPos), QPointF(center)).length() > 8.0)
+                    {
+                        continue;
+                    }
+                    outEditMode = MarkupEditMode::Move;
+                }
+                else if (markup.type == ImageSceneModel::MarkupType::Polygon)
+                {
+                    QPolygon widgetPolygon;
+                    bool mappedAll = true;
+                    for (const QPoint& corner : markup.points)
+                    {
+                        QPoint widgetCorner;
+                        mappedAll = mappedAll
+                            && mapImagePositionToWidget(*item.info->frameState,
+                                                        item.processed,
+                                                        item.layerKey,
+                                                        item.area,
+                                                        corner,
+                                                        widgetCorner);
+                        widgetPolygon << widgetCorner;
+                    }
+                    if (!mappedAll || widgetPolygon.size() < 3)
+                    {
+                        continue;
+                    }
+                    int nearCorner = -1;
+                    for (int cornerIndex = 0; cornerIndex < widgetPolygon.size(); ++cornerIndex)
+                    {
+                        if (QLineF(QPointF(widgetPos), QPointF(widgetPolygon.at(cornerIndex))).length() <= 8.0)
+                        {
+                            nearCorner = cornerIndex;
+                            break;
+                        }
+                    }
+                    bool nearEdge = false;
+                    for (int cornerIndex = 0; cornerIndex < widgetPolygon.size() && !nearEdge; ++cornerIndex)
+                    {
+                        nearEdge = pointSegmentDistance(widgetPos,
+                                                        widgetPolygon.at(cornerIndex),
+                                                        widgetPolygon.at((cornerIndex + 1) % widgetPolygon.size()))
+                            <= 6.0;
+                    }
+                    if (nearCorner >= 0)
+                    {
+                        outEditMode = MarkupEditMode::PolygonVertex;
+                        if (outVertexIndex)
+                        {
+                            *outVertexIndex = nearCorner;
+                        }
+                    }
+                    else if (nearEdge || widgetPolygon.containsPoint(widgetPos, Qt::OddEvenFill))
+                    {
+                        outEditMode = MarkupEditMode::Move;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+                else if (markup.type == ImageSceneModel::MarkupType::Rect
+                         || markup.type == ImageSceneModel::MarkupType::Ellipse)
                 {
                     QPoint topLeft;
                     QPoint bottomRight;
@@ -1882,6 +2059,22 @@ namespace scopeone::ui
                     {
                         outEditMode = MarkupEditMode::RectBottomRight;
                     }
+                    else if (markup.type == ImageSceneModel::MarkupType::Ellipse)
+                    {
+                        // The ellipse and a margin of a few pixels around it
+                        const double radiusX = widgetRect.width() / 2.0 + 6.0;
+                        const double radiusY = widgetRect.height() / 2.0 + 6.0;
+                        const double dx = (widgetPos.x() - widgetRect.center().x()) / radiusX;
+                        const double dy = (widgetPos.y() - widgetRect.center().y()) / radiusY;
+                        if (dx * dx + dy * dy <= 1.0)
+                        {
+                            outEditMode = MarkupEditMode::Move;
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                    }
                     else if (widgetRect.adjusted(-6, -6, 6, 6).contains(widgetPos))
                     {
                         outEditMode = MarkupEditMode::Move;
@@ -1890,6 +2083,10 @@ namespace scopeone::ui
                     {
                         continue;
                     }
+                }
+                else
+                {
+                    continue;
                 }
 
                 outMarkup = markup;
@@ -2731,7 +2928,7 @@ namespace scopeone::ui
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             applyViewportForRect(rect());
             QPainter p(this);
-            if (m_sceneModel->hasMarkups() || m_draft.dragging)
+            if (m_sceneModel->hasMarkups() || m_draft.dragging || m_draft.polygonActive)
             {
                 drawMarkups(p, renderItems);
                 drawActiveInteractionMarkup(p, renderItems);
@@ -3393,7 +3590,23 @@ namespace scopeone::ui
                              : ImageSceneModel::MarkupRole::Generic;
         outMarkup.layerKey = m_draft.layerKey;
         outMarkup.sourceId = m_draft.sourceId;
-        if (m_draft.type == ImageSceneModel::MarkupType::Line)
+        if (m_draft.type == ImageSceneModel::MarkupType::Polygon)
+        {
+            // Corners outside the image are moved onto its edge
+            for (const QPoint& vertex : m_draft.vertices)
+            {
+                const QPoint inside(qBound(displayRect.left(), vertex.x(), displayRect.right()),
+                                    qBound(displayRect.top(), vertex.y(), displayRect.bottom()));
+                QPoint imagePoint;
+                if (!mapWidgetPositionToImage(frameState, processed, m_draft.layerKey, itemArea,
+                                              inside, imagePoint))
+                {
+                    return false;
+                }
+                outMarkup.points.append(imagePoint);
+            }
+        }
+        else if (m_draft.type == ImageSceneModel::MarkupType::Line)
         {
             QPoint clippedStart;
             QPoint clippedEnd;
@@ -3469,8 +3682,47 @@ namespace scopeone::ui
         }
         else if (widgetRect.width() >= 3 && widgetRect.height() >= 3)
         {
-            markupId = m_sceneModel->createRect(draft.layerKey, markup.rect);
+            markupId = draft.type == ImageSceneModel::MarkupType::Ellipse
+                           ? m_sceneModel->createEllipse(draft.layerKey, markup.rect)
+                           : m_sceneModel->createRect(draft.layerKey, markup.rect);
         }
+        if (!markupId.isEmpty())
+        {
+            m_sceneModel->selectOnly(markupId);
+        }
+    }
+
+    // Closes the polygon whose corners were clicked so far and makes it a selection
+    void PreviewWidget::finishPolygonDraft()
+    {
+        ImageSceneModel::Markup markup;
+        const bool mapped = draftImageMarkup(markup);
+        const ShapeDraft draft = m_draft;
+        m_draft = ShapeDraft{};
+        restoreToolCursor();
+        update();
+        if (!mapped)
+        {
+            return;
+        }
+        // Corners that landed on the same pixel count once
+        QList<QPoint> corners;
+        for (const QPoint& point : markup.points)
+        {
+            if (corners.isEmpty() || corners.last() != point)
+            {
+                corners.append(point);
+            }
+        }
+        if (corners.size() > 1 && corners.first() == corners.last())
+        {
+            corners.removeLast();
+        }
+        if (corners.size() < 3)
+        {
+            return;
+        }
+        const QString markupId = m_sceneModel->createPolygon(draft.layerKey, corners);
         if (!markupId.isEmpty())
         {
             m_sceneModel->selectOnly(markupId);
@@ -3580,18 +3832,39 @@ namespace scopeone::ui
             return;
         }
 
+        // A polygon takes the clicks that follow its first corner. A click on the first corner closes it.
+        if (m_draft.polygonActive && event->button() == Qt::LeftButton)
+        {
+            PreviewInteractionTarget target;
+            if (m_draft.vertices.size() >= 3
+                && QLineF(QPointF(event->pos()), QPointF(m_draft.vertices.first())).length() <= 8.0)
+            {
+                finishPolygonDraft();
+            }
+            else if (interactionTargetAt(event->pos(), target) && target.layerKey == m_draft.layerKey)
+            {
+                m_draft.vertices.append(event->pos());
+                m_draft.end = event->pos();
+                update();
+            }
+            event->accept();
+            return;
+        }
+
         if (event->button() == Qt::LeftButton)
         {
             ImageSceneModel::Markup markup;
             PreviewInteractionTarget target;
             MarkupEditMode editMode = MarkupEditMode::None;
-            if (markupAtWidgetPosition(event->pos(), markup, target, editMode))
+            int vertexIndex = -1;
+            if (markupAtWidgetPosition(event->pos(), markup, target, editMode, &vertexIndex))
             {
                 m_sceneModel->selectOnly(markup.id);
                 m_dragMarkupId = markup.id;
                 m_dragMarkupOriginal = markup;
                 m_dragMarkupStartImagePos = target.imagePos;
                 m_dragMarkupEditMode = editMode;
+                m_dragMarkupVertex = vertexIndex;
                 m_markupDragging = true;
                 update();
                 return;
@@ -3602,17 +3875,49 @@ namespace scopeone::ui
             {
                 setActiveLayerKey(target.layerKey);
                 emit layerClicked(target.layerKey);
+                if (m_analysisTool == AnalysisTool::Point)
+                {
+                    // A point is placed by one click
+                    const QString markupId = m_sceneModel->createPoint(target.layerKey, target.imagePos);
+                    if (!markupId.isEmpty())
+                    {
+                        m_sceneModel->selectOnly(markupId);
+                    }
+                    update();
+                    return;
+                }
                 if (m_analysisTool != AnalysisTool::Select)
                 {
                     m_draft.purpose = DraftPurpose::Selection;
-                    m_draft.type = m_analysisTool == AnalysisTool::Line
-                                       ? ImageSceneModel::MarkupType::Line
-                                       : ImageSceneModel::MarkupType::Rect;
+                    switch (m_analysisTool)
+                    {
+                    case AnalysisTool::Line:
+                        m_draft.type = ImageSceneModel::MarkupType::Line;
+                        break;
+                    case AnalysisTool::Ellipse:
+                        m_draft.type = ImageSceneModel::MarkupType::Ellipse;
+                        break;
+                    case AnalysisTool::Polygon:
+                        m_draft.type = ImageSceneModel::MarkupType::Polygon;
+                        break;
+                    default:
+                        m_draft.type = ImageSceneModel::MarkupType::Rect;
+                        break;
+                    }
                     m_draft.sourceId = target.sourceId;
                     m_draft.layerKey = target.layerKey;
                     m_draft.start = event->pos();
                     m_draft.end = event->pos();
-                    m_draft.dragging = true;
+                    if (m_analysisTool == AnalysisTool::Polygon)
+                    {
+                        m_draft.polygonActive = true;
+                        m_draft.vertices = {event->pos()};
+                        setFocus();
+                    }
+                    else
+                    {
+                        m_draft.dragging = true;
+                    }
                     update();
                     return;
                 }
@@ -3654,6 +3959,13 @@ namespace scopeone::ui
                 }
                 reset3dCamera();
             }
+            event->accept();
+            return;
+        }
+        // The double click that ends a polygon must not also hide the other layers
+        if (m_draft.polygonActive && event->button() == Qt::LeftButton)
+        {
+            finishPolygonDraft();
             event->accept();
             return;
         }
@@ -3734,6 +4046,12 @@ namespace scopeone::ui
             update();
             return;
         }
+        if (m_draft.polygonActive && !m_viewPanning)
+        {
+            m_draft.end = event->pos();
+            update();
+            return;
+        }
 
         if (m_viewPanning)
         {
@@ -3785,7 +4103,30 @@ namespace scopeone::ui
                     }
                     m_sceneModel->updateLine(m_dragMarkupId, start, end);
                 }
-                else if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Rect)
+                else if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Point)
+                {
+                    m_sceneModel->updatePoint(m_dragMarkupId, imagePos);
+                }
+                else if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Polygon)
+                {
+                    QList<QPoint> corners = m_dragMarkupOriginal.points;
+                    if (m_dragMarkupEditMode == MarkupEditMode::PolygonVertex
+                        && m_dragMarkupVertex >= 0 && m_dragMarkupVertex < corners.size())
+                    {
+                        corners[m_dragMarkupVertex] = imagePos;
+                    }
+                    else
+                    {
+                        const QPoint delta = imagePos - m_dragMarkupStartImagePos;
+                        for (QPoint& corner : corners)
+                        {
+                            corner += delta;
+                        }
+                    }
+                    m_sceneModel->updatePolygon(m_dragMarkupId, corners);
+                }
+                else if (m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Rect
+                         || m_dragMarkupOriginal.type == ImageSceneModel::MarkupType::Ellipse)
                 {
                     const QRect originalRect = m_dragMarkupOriginal.rect.normalized();
                     if (m_dragMarkupEditMode == MarkupEditMode::RectTopLeft)
@@ -3869,6 +4210,7 @@ namespace scopeone::ui
             m_markupDragging = false;
             m_dragMarkupId.clear();
             m_dragMarkupEditMode = MarkupEditMode::None;
+            m_dragMarkupVertex = -1;
             update();
             return;
         }
@@ -3994,6 +4336,27 @@ namespace scopeone::ui
             cancelDraft();
             event->accept();
             return;
+        }
+        if (m_draft.polygonActive)
+        {
+            if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            {
+                finishPolygonDraft();
+                event->accept();
+                return;
+            }
+            if (event->key() == Qt::Key_Backspace)
+            {
+                // Takes back the last corner, and the whole polygon when it was the only one
+                m_draft.vertices.removeLast();
+                if (m_draft.vertices.isEmpty())
+                {
+                    cancelDraft();
+                }
+                update();
+                event->accept();
+                return;
+            }
         }
 
         if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)

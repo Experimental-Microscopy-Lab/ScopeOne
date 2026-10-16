@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ToolIcons.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 
@@ -58,6 +59,9 @@ namespace scopeone::ui
         void refreshActiveViewer();
         void refreshSelection();
 
+    protected:
+        void changeEvent(QEvent* event) override;
+
     private:
         struct LayerInfoGroup
         {
@@ -76,6 +80,7 @@ namespace scopeone::ui
         };
 
         void setupUI();
+        void refreshToolIcons();
         QWidget* createLayerInfoGroup(const QString& layerKey);
         QWidget* createStatisticsGroup(LayerInfoGroup& infoGroup);
         void addLayerInfo(const QString& layerKey);
@@ -106,8 +111,15 @@ namespace scopeone::ui
         QHash<QString, LayerInspectState> m_layerStates;
         QStringList m_availableLayerKeys;
         QStringList m_availableCameraIds;
-        QPushButton* m_rectangleToolButton{nullptr};
-        QPushButton* m_lineToolButton{nullptr};
+        // The selection tools, one of which is always active. The first one only selects.
+        struct ToolButton
+        {
+            QToolButton* button{nullptr};
+            ToolIconKind icon{ToolIconKind::Select};
+            // A PreviewWidget::AnalysisTool, which is not known in this header
+            int tool{0};
+        };
+        QList<ToolButton> m_toolButtons;
         QPushButton* m_deleteSelectionButton{nullptr};
         QLabel* m_selectionInfoLabel{nullptr};
         QWidget* m_selectionStatsWidget{nullptr};
