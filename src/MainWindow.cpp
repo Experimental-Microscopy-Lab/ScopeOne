@@ -982,25 +982,45 @@ namespace scopeone::ui
     {
         m_workspacesMenu->clear();
 
-        // Two arrangements that bring forward what the work needs
-        const auto bringForward = [this](QDockWidget* right, bool recording)
+        // The built-in arrangements start from the default layout, so they do not depend on where
+        // the panels were moved to
+        const auto fromDefaultLayout = [this]()
         {
-            for (QDockWidget* dock : {m_controlDockWidget, m_viewDockWidget, m_analyzeDockWidget,
-                                      m_processDockWidget, m_consoleDockWidget})
+            if (!m_defaultWindowState.isEmpty())
             {
-                dock->show();
-            }
-            right->raise();
-            if (recording)
-            {
-                m_recordingDockWidget->show();
-                m_recordingDockWidget->raise();
+                restoreState(m_defaultWindowState, kWindowLayoutVersion);
             }
         };
+        // Acquire: the controls and the recording panel in front
         connect(m_workspacesMenu->addAction(tr("Acquire (controls and recording)")), &QAction::triggered,
-                this, [bringForward, this]() { bringForward(m_controlDockWidget, true); });
-        connect(m_workspacesMenu->addAction(tr("Analyze (inspect and process)")), &QAction::triggered,
-                this, [bringForward, this]() { bringForward(m_analyzeDockWidget, false); });
+                this, [this, fromDefaultLayout]()
+                {
+                    fromDefaultLayout();
+                    for (QDockWidget* dock : {m_controlDockWidget, m_recordingDockWidget})
+                    {
+                        dock->show();
+                    }
+                    m_controlDockWidget->raise();
+                    m_recordingDockWidget->raise();
+                });
+        // Analyze: the histogram and layers (View) under the selection and profile (Analyze), so
+        // both can be read together. The gallery comes forward and the acquisition panels go.
+        connect(m_workspacesMenu->addAction(tr("Analyze (view, inspect and gallery)")), &QAction::triggered,
+                this, [this, fromDefaultLayout]()
+                {
+                    fromDefaultLayout();
+                    m_controlDockWidget->hide();
+                    m_recordingDockWidget->hide();
+                    // View leaves the tabs and is put below Analyze
+                    removeDockWidget(m_viewDockWidget);
+                    addDockWidget(Qt::RightDockWidgetArea, m_viewDockWidget, Qt::Vertical);
+                    m_analyzeDockWidget->show();
+                    m_viewDockWidget->show();
+                    m_analyzeDockWidget->raise();
+                    resizeDocks({m_analyzeDockWidget, m_viewDockWidget}, {1, 1}, Qt::Vertical);
+                    m_imageGalleryDockWidget->show();
+                    m_imageGalleryDockWidget->raise();
+                });
         m_workspacesMenu->addSeparator();
 
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
