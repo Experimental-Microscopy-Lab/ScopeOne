@@ -252,6 +252,14 @@ namespace scopeone::core
             {
                 return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
             }
+            // Sets how the planes of the images are arranged along the channel, Z and time axes
+            void setStackShape(int channels, int slices, int frames, const QString& order)
+            {
+                m_manifest.plan.stackChannels = channels;
+                m_manifest.plan.stackSlices = slices;
+                m_manifest.plan.stackFrames = frames;
+                m_manifest.plan.stackOrder = order;
+            }
             // Sets the size of a pixel of the images of a camera in this session, in micrometers
             void setPixelSizeUm(const QString& cameraId, double pixelSizeUm)
             {
@@ -598,7 +606,23 @@ namespace scopeone::core
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
-        void openImage(const QString& filePath);
+        // One image of a file that holds several, such as the positions of an OME-TIFF
+        struct ImageSeries
+        {
+            QString name;
+            int firstPlane{0};
+            int planeCount{0};
+            StackShape shape;
+        };
+        // The images of a file, which is empty when the file holds one image
+        static QList<ImageSeries> imageSeries(const QString& filePath);
+        // Opens an image file. A negative series opens all of its planes as one image.
+        void openImage(const QString& filePath, int series = -1);
+        // Reads all the planes of an image file at once, for work that goes through many files
+        static QList<ImageFrame> readImageFrames(const QString& filePath, QString* errorMessage = nullptr);
+        // Writes planes as a multi page TIFF file
+        static bool writeImageFrames(const QList<ImageFrame>& frames, const QString& filePath,
+                                     QString* errorMessage = nullptr);
         int layerSliceCount(const QString& layerKey) const;
         bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         ImageFrame publishToolStreamFrame(const QString& sourceId,

@@ -1,9 +1,12 @@
 #pragma once
 
+#include <QImage>
 #include <QList>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+
+#include <functional>
 
 namespace scopeone::ui
 {
@@ -63,7 +66,14 @@ namespace scopeone::ui
         }
     };
 
+    // Makes the picture that the preview of the dialog shows for the current values of the fields
+    using PreviewRenderer = std::function<QImage(const QList<ParameterField>&)>;
+    using FieldsAction = std::function<void(const QList<ParameterField>&)>;
+
     // Shows the fields in a dialog. The values the user chose are written back to the fields.
-    // Returns false when the dialog was canceled.
-    bool askParameters(QWidget* parent, const QString& title, QList<ParameterField>& fields);
+    // Returns false when the dialog was canceled. With a preview renderer the dialog shows its
+    // picture and keeps it up to date while the values change. With addToPipeline the dialog has a
+    // button that hands the current values to the action and closes the dialog without a result.
+    bool askParameters(QWidget* parent, const QString& title, QList<ParameterField>& fields,
+                       const PreviewRenderer& preview = {}, const FieldsAction& addToPipeline = {});
 }

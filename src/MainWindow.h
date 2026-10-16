@@ -24,6 +24,7 @@ namespace scopeone::ui
 {
     class NotificationOverlay;
     class ImageAnalysis;
+    class WelcomeOverlay;
 }
 
 namespace scopeone::core
@@ -63,6 +64,7 @@ namespace scopeone::ui
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        bool eventFilter(QObject* watched, QEvent* event) override;
 
     private:
         void setupUI();
@@ -128,6 +130,10 @@ namespace scopeone::ui
         void loadConfigurationFromDialog();
         void loadConfigurationPath(const QString& configPath);
         void refreshRecentConfigurationsMenu();
+        void refreshRecentImagesMenu();
+        void updateWelcome();
+        void saveSession();
+        void restoreSessionPrompt();
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
 
@@ -159,6 +165,11 @@ namespace scopeone::ui
         InspectWidget* m_inspectWidget{nullptr};
 
         QMenu* m_recentConfigurationsMenu{nullptr};
+        QMenu* m_recentImagesMenu{nullptr};
+        WelcomeOverlay* m_welcome{nullptr};
+        QAction* m_liveAction{nullptr};
+        QAction* m_openImageAction{nullptr};
+        QList<QAction*> m_viewExportActions;
         QMenu* m_dockWidgetsMenu{nullptr};
         QByteArray m_defaultWindowState;
 

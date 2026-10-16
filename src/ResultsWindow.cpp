@@ -1,4 +1,5 @@
 #include "ResultsWindow.h"
+#include "EmptyHint.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -63,6 +64,7 @@ namespace scopeone::ui
         m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
         m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_table->horizontalHeader()->setStretchLastSection(true);
+        new EmptyHint(m_table, tr("No measurements yet. Choose Analyze > Measure."));
         layout->addWidget(m_table);
 
         connect(copyButton, &QPushButton::clicked, this, [this]()
@@ -126,7 +128,7 @@ namespace scopeone::ui
     }
 
     void ResultsWindow::addMeasurement(const QString& label, const imageops::Measurement& measurement,
-                                       int slice, const QString& unit)
+                                       int slice, const QString& unit, const QString& position)
     {
         // Rows of another kind are not mixed into one table
         if (!m_plainRows.isEmpty())
@@ -134,7 +136,7 @@ namespace scopeone::ui
             m_plainRows.clear();
             m_plainHeaders.clear();
         }
-        m_rows.append({label, measurement, slice, unit});
+        m_rows.append({label, measurement, slice, unit, position});
         rebuild();
         show();
         raise();
@@ -180,7 +182,8 @@ namespace scopeone::ui
                 + number(m.roundness) + QStringLiteral(", ") + number(m.solidity);
         if (key == QLatin1String("feret")) return number(m.feret);
         if (key == QLatin1String("ellipse")) return number(m.majorAxis) + QStringLiteral(", ") + number(m.minorAxis);
-        if (key == QLatin1String("slice")) return row.slice > 0 ? QString::number(row.slice) : QString();
+        if (key == QLatin1String("slice"))
+            return !row.position.isEmpty() ? row.position : (row.slice > 0 ? QString::number(row.slice) : QString());
         return {};
     }
 

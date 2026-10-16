@@ -1,4 +1,5 @@
 #include "RoiManagerWindow.h"
+#include "EmptyHint.h"
 
 #include "ImageWorkspace.h"
 
@@ -54,6 +55,7 @@ namespace scopeone::ui
         auto* layout = new QHBoxLayout(this);
         m_list = new QListWidget(this);
         m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        new EmptyHint(m_list, tr("No selections yet. Draw one on the image to see it here."));
         layout->addWidget(m_list, 1);
 
         auto* buttons = new QVBoxLayout();

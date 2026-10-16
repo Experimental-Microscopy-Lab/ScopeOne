@@ -2,6 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
+#include <QJsonArray>
 #include <QWidget>
 #include <memory>
 
@@ -11,6 +12,8 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QToolButton;
+class QMenu;
 class QProgressBar;
 class QRadioButton;
 class QStackedWidget;
@@ -29,6 +32,9 @@ namespace scopeone::ui
                                        QWidget* parent = nullptr);
         ~ImageProcessingWidget() override = default;
 
+        // Puts a module with the given parameters at the end of the pipeline
+        void addModule(const QString& moduleId, const QVariantMap& parameters);
+
     signals:
         // A problem the user should see, which does not stop anything else
         void problem(const QString& title, const QString& message);
@@ -40,6 +46,10 @@ namespace scopeone::ui
 
     private:
         void onAddModuleClicked();
+        void fillPresetMenu();
+        void savePreset();
+        void applyPipeline(const QJsonArray& steps);
+        QJsonArray currentPipeline() const;
         void onRemoveModuleClicked();
         void onMoveModuleUpClicked();
         void onMoveModuleDownClicked();
@@ -81,6 +91,8 @@ namespace scopeone::ui
         QListWidget* m_moduleList{nullptr};
         QPushButton* m_addModuleButton{nullptr};
         QPushButton* m_removeModuleButton{nullptr};
+        QToolButton* m_presetButton{nullptr};
+        QMenu* m_presetMenu{nullptr};
         QPushButton* m_moveModuleUpButton{nullptr};
         QPushButton* m_moveModuleDownButton{nullptr};
         QComboBox* m_moduleTypeCombo{nullptr};

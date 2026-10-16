@@ -1,5 +1,6 @@
 #include "ImageProcessingWidget.h"
 
+#include "EmptyHint.h"
 #include "ImageWorkspace.h"
 
 #include "scopeone/ScopeOneCore.h"
@@ -8,11 +9,17 @@
 #include <QAbstractSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDoubleSpinBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMenu>
+#include <QToolButton>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -760,13 +767,58 @@ namespace scopeone::ui
                 this, &ImageProcessingWidget::onModuleSelectionChanged);
         connect(m_moduleList, &QListWidget::itemChanged,
                 this, &ImageProcessingWidget::onModuleItemChanged);
+        new EmptyHint(m_moduleList, tr("No steps yet. Search a step below and press Add, or choose Add to Pipeline in the dialog of a Process command."));
         layout->addWidget(m_moduleList);
         auto* controls = new QHBoxLayout;
         m_moduleTypeCombo = new QComboBox(group);
-        for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
+        // The steps are listed by group, and the box finds them by any part of the group or the name
+        static const QList<QPair<QString, QStringList>> groups{
+            {QStringLiteral("Filters"), {QStringLiteral("gaussian_blur"), QStringLiteral("filter"), QStringLiteral("sharpen"),
+                                         QStringLiteral("find_edges"), QStringLiteral("unsharp_mask"), QStringLiteral("top_hat")}},
+            {QStringLiteral("Intensity"), {QStringLiteral("math"), QStringLiteral("invert"), QStringLiteral("threshold"),
+                                           QStringLiteral("clahe"), QStringLiteral("equalize"),
+                                           QStringLiteral("background_calibration")}},
+            {QStringLiteral("Binary"), {QStringLiteral("binary"), QStringLiteral("distance_map"), QStringLiteral("watershed"),
+                                         QStringLiteral("mask")}},
+            {QStringLiteral("Geometry"), {QStringLiteral("flip"), QStringLiteral("rotate_90"),
+                                          QStringLiteral("spatiotemporal_binning")}},
+            {QStringLiteral("Stack"), {QStringLiteral("rolling_projection"), QStringLiteral("differential_rolling")}},
+            {QStringLiteral("Fourier"), {QStringLiteral("fft"), QStringLiteral("frequency_domain_filter"),
+                                         QStringLiteral("ifft")}}};
+        QList<ProcessingModuleDescriptor> remaining = m_scopeonecore->availableProcessingModules();
+        for (const auto& group : groups)
         {
-            m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
+            for (const QString& id : group.second)
+            {
+                for (qsizetype index = 0; index < remaining.size(); ++index)
+                {
+                    if (remaining.at(index).id == id)
+                    {
+                        m_moduleTypeCombo->addItem(tr("%1 / %2").arg(group.first, remaining.at(index).name), id);
+                        remaining.removeAt(index);
+                        break;
+                    }
+                }
+            }
         }
+        for (const ProcessingModuleDescriptor& descriptor : remaining)
+        {
+            m_moduleTypeCombo->addItem(tr("Other / %1").arg(descriptor.name), descriptor.id);
+        }
+        m_moduleTypeCombo->setEditable(true);
+        m_moduleTypeCombo->setInsertPolicy(QComboBox::NoInsert);
+        m_moduleTypeCombo->completer()->setFilterMode(Qt::MatchContains);
+        m_moduleTypeCombo->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+        m_moduleTypeCombo->lineEdit()->setPlaceholderText(tr("Search steps"));
+        connect(m_moduleTypeCombo->lineEdit(), &QLineEdit::returnPressed, this, [this]()
+        {
+            const int found = m_moduleTypeCombo->findText(m_moduleTypeCombo->currentText(), Qt::MatchContains);
+            if (found >= 0)
+            {
+                m_moduleTypeCombo->setCurrentIndex(found);
+                onAddModuleClicked();
+            }
+        });
         controls->addWidget(m_moduleTypeCombo, 1);
         m_addModuleButton = new QPushButton(tr("Add"), group);
         m_removeModuleButton = new QPushButton(tr("Remove"), group);
@@ -786,6 +838,13 @@ namespace scopeone::ui
         controls->addWidget(m_moveModuleUpButton);
         controls->addWidget(m_moveModuleDownButton);
         controls->addWidget(m_removeModuleButton);
+        m_presetButton = new QToolButton(group);
+        m_presetButton->setText(tr("Presets"));
+        m_presetButton->setPopupMode(QToolButton::InstantPopup);
+        m_presetMenu = new QMenu(m_presetButton);
+        m_presetButton->setMenu(m_presetMenu);
+        connect(m_presetMenu, &QMenu::aboutToShow, this, &ImageProcessingWidget::fillPresetMenu);
+        controls->addWidget(m_presetButton);
         layout->addLayout(controls);
         return group;
     }
@@ -1118,6 +1177,129 @@ namespace scopeone::ui
         }
         updateModuleList();
         m_moduleList->setCurrentRow(m_moduleList->count() - 1);
+    }
+
+    void ImageProcessingWidget::addModule(const QString& moduleId, const QVariantMap& parameters)
+    {
+        if (!m_scopeonecore->addProcessingModule(moduleId))
+        {
+            emit problem(tr("Warning"), tr("Failed to add processing module"));
+            return;
+        }
+        const int index = static_cast<int>(m_scopeonecore->processingModules().size()) - 1;
+        m_scopeonecore->setProcessingModuleParameters(index, parameters);
+        updateModuleList();
+        m_moduleList->setCurrentRow(index);
+    }
+
+    // The pipeline as a list of steps with their parameters, as it is kept in a preset
+    QJsonArray ImageProcessingWidget::currentPipeline() const
+    {
+        QJsonArray steps;
+        for (const auto& module : m_scopeonecore->processingModules())
+        {
+            QJsonObject step;
+            step.insert(QStringLiteral("id"), module.id());
+            step.insert(QStringLiteral("enabled"), module.enabled());
+            step.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(module.parameters()));
+            steps.append(step);
+        }
+        return steps;
+    }
+
+    // Replaces the pipeline by the steps of a preset
+    void ImageProcessingWidget::applyPipeline(const QJsonArray& steps)
+    {
+        while (!m_scopeonecore->processingModules().isEmpty())
+        {
+            m_scopeonecore->removeProcessingModule(0);
+        }
+        for (const QJsonValue& value : steps)
+        {
+            const QJsonObject step = value.toObject();
+            addModule(step.value(QStringLiteral("id")).toString(),
+                      step.value(QStringLiteral("parameters")).toObject().toVariantMap());
+            m_scopeonecore->setProcessingModuleEnabled(
+                static_cast<int>(m_scopeonecore->processingModules().size()) - 1,
+                step.value(QStringLiteral("enabled")).toBool(true));
+        }
+        updateModuleList();
+    }
+
+    void ImageProcessingWidget::savePreset()
+    {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(this, tr("Save Preset"), tr("Name of the preset"),
+                                                   QLineEdit::Normal, QString(), &accepted).trimmed();
+        if (!accepted || name.isEmpty())
+        {
+            return;
+        }
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        presets.insert(name, currentPipeline());
+        settings.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(presets).toJson(QJsonDocument::Compact));
+    }
+
+    void ImageProcessingWidget::fillPresetMenu()
+    {
+        m_presetMenu->clear();
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        connect(m_presetMenu->addAction(tr("Save Pipeline as Preset...")), &QAction::triggered, this,
+                &ImageProcessingWidget::savePreset);
+        m_presetMenu->addSeparator();
+        QMenu* removeMenu = new QMenu(tr("Delete Preset"), m_presetMenu);
+        for (auto it = presets.begin(); it != presets.end(); ++it)
+        {
+            const QString name = it.key();
+            const QJsonArray steps = it.value().toArray();
+            connect(m_presetMenu->addAction(name), &QAction::triggered, this, [this, steps]() { applyPipeline(steps); });
+            connect(removeMenu->addAction(name), &QAction::triggered, this, [name]()
+            {
+                QSettings stored(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                QJsonObject all = QJsonDocument::fromJson(stored.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+                all.remove(name);
+                stored.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(all).toJson(QJsonDocument::Compact));
+            });
+        }
+        if (presets.isEmpty())
+        {
+            m_presetMenu->addAction(tr("No presets saved"))->setEnabled(false);
+        }
+        else
+        {
+            m_presetMenu->addMenu(removeMenu);
+        }
+        m_presetMenu->addSeparator();
+        connect(m_presetMenu->addAction(tr("Import from File...")), &QAction::triggered, this, [this]()
+        {
+            const QString path = QFileDialog::getOpenFileName(this, tr("Import Pipeline"), QString(),
+                                                              tr("Pipeline (*.json)"));
+            if (path.isEmpty())
+            {
+                return;
+            }
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly))
+            {
+                applyPipeline(QJsonDocument::fromJson(file.readAll()).array());
+            }
+        });
+        connect(m_presetMenu->addAction(tr("Export to File...")), &QAction::triggered, this, [this]()
+        {
+            const QString path = QFileDialog::getSaveFileName(this, tr("Export Pipeline"), QStringLiteral("pipeline.json"),
+                                                              tr("Pipeline (*.json)"));
+            if (path.isEmpty())
+            {
+                return;
+            }
+            QFile file(path);
+            if (file.open(QIODevice::WriteOnly))
+            {
+                file.write(QJsonDocument(currentPipeline()).toJson());
+            }
+        });
     }
 
     void ImageProcessingWidget::onRemoveModuleClicked()

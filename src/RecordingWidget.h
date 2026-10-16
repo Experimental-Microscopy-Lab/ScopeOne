@@ -40,6 +40,8 @@ namespace scopeone::ui
         bool snapToGallery(const QString& target);
 
     signals:
+        // Storage that is too small for the recording, which the user should see at once
+        void storageWarning(const QString& title, const QString& message);
         void gallerySessionCaptured(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
 
@@ -162,5 +164,7 @@ namespace scopeone::ui
         bool m_isRecording{false};
         bool m_writerFinalizing{false};
         bool m_storageQueryPending{false};
+        bool m_lowStorageWarned{false};
+        qint64 m_warnedEstimate{0};
     };
 }

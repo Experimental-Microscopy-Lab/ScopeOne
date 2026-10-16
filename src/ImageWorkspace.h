@@ -55,6 +55,12 @@ namespace scopeone::ui
         void setVisibleLayers(const QStringList& layerKeys, bool sideBySide = false);
         void setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         int layerSliceCount(const QString& layerKey) const;
+        // How the slices of the image of a layer are arranged along the channel, Z and time axes
+        scopeone::core::StackShape layerStackShape(const QString& layerKey) const;
+        void refreshStackShape(const QString& layerKey) { emit stackShapeChanged(layerKey); }
+        // Whether the channels of the image of a layer are shown on top of each other
+        bool isComposite(const QString& layerKey) const;
+        void setComposite(const QString& layerKey, bool enabled);
 
         QStringList openSession(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
@@ -99,6 +105,8 @@ namespace scopeone::ui
 
     signals:
         void documentsChanged();
+        // The axes of the slices of a layer were changed by the user
+        void stackShapeChanged(const QString& layerKey);
         void activeDocumentChanged(const QString& documentId);
         void activeViewerChanged();
         void viewDimensionModeChanged();
@@ -127,6 +135,7 @@ namespace scopeone::ui
         void setupViewerToolbar();
         void updateViewerToolbar();
         void setActiveDocument(const QString& documentId);
+        void publishChannels(Document& document);
         void syncActiveLayer();
         void updateLineProfile(Document& document);
 

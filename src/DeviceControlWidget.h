@@ -75,7 +75,14 @@ namespace scopeone::ui
         void requestHalfROI(const QString& cameraId);
         void requestClearROI(const QString& cameraId);
 
+    protected:
+        bool eventFilter(QObject* watched, QEvent* event) override;
+
     private:
+        bool canRemoveSelectedLayer() const;
+        void removeSelectedLayer();
+        void showOnlyLayer(const QString& layerKey);
+        void refreshLayerSwatch(const QString& layerKey);
         void onExposureChanged();
         void onPreviewToggleClicked();
 
@@ -106,7 +113,6 @@ namespace scopeone::ui
                                             int currentColumn,
                                             int previousRow,
                                             int previousColumn);
-        void onOpenImageClicked();
         void onPreviewLayerDuplicateClicked();
         void onPreviewLayerTableItemChanged(QTableWidgetItem* item);
         void showLayerContextMenu(const QPoint& pos);
@@ -138,9 +144,6 @@ namespace scopeone::ui
         QMap<QString, QCheckBox*> m_layerRows;
         QGroupBox* m_layerSettingsGroup{nullptr};
         QLabel* m_selectedLayerLabel{nullptr};
-        QPushButton* m_layerMoveUpButton{nullptr};
-        QPushButton* m_layerMoveDownButton{nullptr};
-        QPushButton* m_layerRemoveButton{nullptr};
         QSpinBox* m_layerOpacitySpinBox{nullptr};
         QDoubleSpinBox* m_layerGammaSpinBox{nullptr};
         QComboBox* m_layerColormapComboBox{nullptr};

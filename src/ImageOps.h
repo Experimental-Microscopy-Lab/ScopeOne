@@ -208,9 +208,6 @@ namespace scopeone::ui::imageops
     // ---- geometry
 
     ImageFrame crop(const ImageFrame& frame, const QRect& area);
-    ImageFrame flipHorizontal(const ImageFrame& frame);
-    ImageFrame flipVertical(const ImageFrame& frame);
-    ImageFrame rotate90(const ImageFrame& frame, bool clockwise);
     ImageFrame scaled(const ImageFrame& frame, double factorX, double factorY, bool smooth);
     // Turns the image by an angle in degrees, clockwise. With grow the image is made large
     // enough to hold the turned image.
@@ -218,11 +215,6 @@ namespace scopeone::ui::imageops
 
     // ---- filters
 
-    enum class Filter { Mean, Median, Minimum, Maximum, Gaussian, Variance };
-    ImageFrame filtered(const ImageFrame& frame, Filter filter, double radius);
-    ImageFrame unsharpMask(const ImageFrame& frame, double sigma, double weight);
-    ImageFrame sharpened(const ImageFrame& frame);
-    ImageFrame findEdges(const ImageFrame& frame);
     // Takes away the slowly changing background with a rolling ball of the given radius
     ImageFrame subtractBackground(const ImageFrame& frame, double radius, bool lightBackground);
 
@@ -243,18 +235,13 @@ namespace scopeone::ui::imageops
     // Spreads the values so that all of them are about equally frequent. With sqrtCounts the
     // counts are square rooted first, which keeps the look more natural, as ImageJ does.
     ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram = nullptr);
-    // Contrast limited adaptive histogram equalization, which brings out local detail
-    ImageFrame localContrast(const ImageFrame& frame, int blockSize, int bins, double maxSlope);
     ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma);
     ImageFrame withSaltAndPepper(const ImageFrame& frame, double percent);
     // Keeps what is smaller than the disc: bright detail on a dark background, or with
     // lightBackground dark detail on a bright one
-    ImageFrame topHat(const ImageFrame& frame, double radius, bool lightBackground);
 
     // ---- math
 
-    enum class MathOperation { Add, Subtract, Multiply, Divide, Min, Max, Gamma, Log, Exp, Square, Sqrt, Abs };
-    ImageFrame math(const ImageFrame& frame, MathOperation operation, double value);
 
     enum class CalculatorOperation { Add, Subtract, Multiply, Divide, And, Or, Xor, Min, Max, Average, Difference };
     ImageFrame calculate(const ImageFrame& first, const ImageFrame& second, CalculatorOperation operation);
@@ -267,11 +254,6 @@ namespace scopeone::ui::imageops
     ImageFrame thresholded(const ImageFrame& frame, double low, double high);
 
     enum class BinaryOperation { Erode, Dilate, Open, Close, FillHoles, Outline, Invert, Watershed, Skeletonize };
-    // For Watershed, iterations is not used and tolerance is how much lower than its peak the
-    // distance to the background may fall between two objects before they are told apart
-    ImageFrame binary(const ImageFrame& frame, BinaryOperation operation, int iterations, double tolerance = 0.5);
-    // Distance of every object pixel to the nearest background pixel, in a 16 bit frame
-    ImageFrame distanceMap(const ImageFrame& frame);
 
     // ---- particles
 

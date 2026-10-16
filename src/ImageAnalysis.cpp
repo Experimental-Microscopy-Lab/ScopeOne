@@ -8,14 +8,52 @@
 #include "RoiManagerWindow.h"
 
 #include <QAction>
+#include <QCoreApplication>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QProgressDialog>
+#include <QImage>
+#include <QPainter>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSettings>
 #include <QSignalBlocker>
 
+#include <limits>
+#include <memory>
+
 namespace scopeone::ui
 {
+    namespace
+    {
+        // A gray picture of a frame, with the values from low to high spread over the gray levels
+        QImage grayPicture(const scopeone::core::ImageFrame& frame, int low, int high)
+        {
+            QImage picture(frame.width, frame.height, QImage::Format_Grayscale8);
+            const double scale = high > low ? 255.0 / (high - low) : 1.0;
+            for (int y = 0; y < frame.height; ++y)
+            {
+                uchar* row = picture.scanLine(y);
+                for (int x = 0; x < frame.width; ++x)
+                {
+                    row[x] = static_cast<uchar>(std::clamp((imageops::pixelAt(frame, x, y) - low) * scale, 0.0, 255.0));
+                }
+            }
+            return picture;
+        }
+
+        // The middle part of the frame, which is what the preview of a command works on
+        scopeone::core::ImageFrame previewPart(const scopeone::core::ImageFrame& frame)
+        {
+            const int width = std::min(frame.width, 420);
+            const int height = std::min(frame.height, 320);
+            return imageops::crop(frame, QRect((frame.width - width) / 2, (frame.height - height) / 2, width, height));
+        }
+    } // namespace
+
     using scopeone::core::ImageFrame;
     using scopeone::core::ImageSceneModel;
 
@@ -42,6 +80,89 @@ namespace scopeone::ui
         buildImageMenu(image);
         buildProcessMenu(process);
         buildAnalyzeMenu(analyze);
+        m_menus = {edit, image, process, analyze};
+        bindShortcuts();
+    }
+
+    // Gives the commands the keys that ImageJ gives them
+    void ImageAnalysis::bindShortcuts()
+    {
+        struct Binding
+        {
+            int menu;
+            const char* name;
+            const char* keys;
+        };
+        const Binding bindings[] = {
+            {1, "Duplicate...", "Ctrl+Shift+D"},
+            {1, "Crop", "Ctrl+Shift+X"},
+            {1, "Scale...", "Ctrl+E"},
+            {1, "Properties...", "Ctrl+Shift+P"},
+            {1, "Threshold...", "Ctrl+Shift+T"},
+            {1, "Orthogonal Views", "Ctrl+Shift+H"},
+        };
+        for (const Binding& binding : bindings)
+        {
+            if (QAction* action = findAction(m_menus.at(binding.menu), QString::fromLatin1(binding.name)))
+            {
+                action->setShortcut(QKeySequence(QString::fromLatin1(binding.keys)));
+            }
+        }
+    }
+
+    QAction* ImageAnalysis::findAction(QMenu* menu, const QString& name)
+    {
+        for (QAction* action : menu->actions())
+        {
+            QString text = action->text();
+            text.remove(QLatin1Char('&'));
+            if (text == name)
+            {
+                return action;
+            }
+            if (action->menu())
+            {
+                if (QAction* found = findAction(action->menu(), name))
+                {
+                    return found;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    // The commands that are used most on an image, in a menu where the user clicked it
+    void ImageAnalysis::showContextMenu(const QPoint& globalPosition)
+    {
+        QMenu menu(m_window);
+        const QStringList names{QStringLiteral("Duplicate..."), QStringLiteral("Crop"), QStringLiteral("Properties..."),
+                                QString(), QStringLiteral("Measure"), QStringLiteral("Threshold..."),
+                                QStringLiteral("Analyze Particles..."), QStringLiteral("ROI Manager")};
+        for (const QString& name : names)
+        {
+            if (name.isEmpty())
+            {
+                menu.addSeparator();
+                continue;
+            }
+            for (QMenu* source : m_menus)
+            {
+                if (QAction* action = findAction(source, name))
+                {
+                    menu.addAction(action);
+                    break;
+                }
+            }
+        }
+        if (!m_contextActions.isEmpty())
+        {
+            menu.addSeparator();
+            for (QAction* action : m_contextActions)
+            {
+                menu.addAction(action);
+            }
+        }
+        menu.exec(globalPosition);
     }
 
     // ---- the image a command works on
@@ -83,7 +204,51 @@ namespace scopeone::ui
             QMessageBox::information(m_window, tr("No image"), tr("There is no 8 bit or 16 bit gray image to work on."));
             return false;
         }
+        const int planes = static_cast<int>(source.frames.size());
+        const scopeone::core::StackShape shape = m_workspace->layerStackShape(source.layerKey);
+        if (shape.isHyperstack() && shape.channels * shape.slices * shape.frames == planes)
+        {
+            source.shape = shape;
+            source.hyper = true;
+        }
+        else
+        {
+            source.shape = scopeone::core::StackShape{};
+            source.shape.frames = planes;
+        }
         return true;
+    }
+
+    // The names of the axes that have more than one step, and their letters
+    QStringList ImageAnalysis::axisChoices(const Source& source, QList<QChar>& letters)
+    {
+        letters = stack::activeAxes(source.shape);
+        if (letters.isEmpty())
+        {
+            letters = {QLatin1Char('T')};
+        }
+        QStringList names;
+        for (const QChar letter : letters)
+        {
+            names << stack::axisName(letter, !source.hyper);
+        }
+        return names;
+    }
+
+    // The slices along an axis, the other axes being where the current slice has them
+    QList<scopeone::core::ImageFrame> ImageAnalysis::framesAlong(const Source& source, QChar axis, int* position)
+    {
+        QList<scopeone::core::ImageFrame> frames;
+        const QList<int> planes = stack::planesAlong(source.shape, axis, source.index);
+        for (const int plane : planes)
+        {
+            frames.append(source.frames.at(plane));
+        }
+        if (position)
+        {
+            *position = std::max(0, static_cast<int>(planes.indexOf(source.index)));
+        }
+        return frames;
     }
 
     // Size of a pixel in micrometers, which is zero when the image is not calibrated
@@ -126,9 +291,13 @@ namespace scopeone::ui
         }
         QMessageBox box(m_window);
         box.setWindowTitle(command);
-        box.setText(tr("Process all %1 slices?").arg(source.frames.size()));
-        QPushButton* all = box.addButton(tr("All slices"), QMessageBox::YesRole);
-        QPushButton* current = box.addButton(tr("This slice"), QMessageBox::NoRole);
+        box.setText(source.hyper
+                        ? tr("Process all %1 planes (%2 channels, %3 slices, %4 frames)?")
+                              .arg(source.frames.size()).arg(source.shape.channels).arg(source.shape.slices)
+                              .arg(source.shape.frames)
+                        : tr("Process all %1 slices?").arg(source.frames.size()));
+        QPushButton* all = box.addButton(source.hyper ? tr("All planes") : tr("All slices"), QMessageBox::YesRole);
+        QPushButton* current = box.addButton(source.hyper ? tr("This plane") : tr("This slice"), QMessageBox::NoRole);
         box.addButton(QMessageBox::Cancel);
         box.exec();
         if (box.clickedButton() == all)
@@ -138,13 +307,23 @@ namespace scopeone::ui
         return box.clickedButton() == current ? Scope::Current : Scope::Cancel;
     }
 
-    void ImageAnalysis::present(const QList<ImageFrame>& frames, const QString& title)
+    void ImageAnalysis::present(const QList<ImageFrame>& frames, const QString& title,
+                                const scopeone::core::StackShape* shape)
     {
         if (frames.isEmpty() || !m_presenter)
         {
             return;
         }
-        const auto session = m_core->createFrameSession(frames, scopeone::core::ExperimentPlan{});
+        scopeone::core::ExperimentPlan plan;
+        if (shape && shape->isHyperstack()
+            && shape->channels * shape->slices * shape->frames == static_cast<int>(frames.size()))
+        {
+            plan.stackChannels = shape->channels;
+            plan.stackSlices = shape->slices;
+            plan.stackFrames = shape->frames;
+            plan.stackOrder = shape->order;
+        }
+        const auto session = m_core->createFrameSession(frames, plan);
         if (session)
         {
             m_presenter(session, title);
@@ -182,72 +361,221 @@ namespace scopeone::ui
         {
             result.append(operation(source.frames.at(source.index)));
         }
-        present(result, QStringLiteral("%1 (%2)").arg(title, source.title));
+        present(result, QStringLiteral("%1 (%2)").arg(title, source.title), scope == Scope::All ? &source.shape : nullptr);
     }
 
     // ---- menus
 
-    void ImageAnalysis::addFilter(QMenu* menu, const QString& text, imageops::Filter filter, double radius)
+    // The preview of a dialog: the middle of the current slice before and after the operation
+    ImageAnalysis::PreviewRenderer ImageAnalysis::makePreview(
+        const Source& source,
+        const std::function<ImageFrame(const ImageFrame&, const QList<ParameterField>&)>& operation) const
     {
-        connect(menu->addAction(text), &QAction::triggered, this, [this, text, filter, radius]()
+        const ImageFrame part = previewPart(source.frames.at(source.index));
+        int low = std::numeric_limits<int>::max();
+        int high = 0;
+        for (int y = 0; y < part.height; ++y)
         {
-            QList<ParameterField> fields{ParameterField::real(tr("Radius (pixels)"), radius, 0.5, 200.0, 1)};
-            if (askParameters(m_window, text, fields))
+            for (int x = 0; x < part.width; ++x)
             {
-                const double chosen = fields.first().value;
-                apply(text, [filter, chosen](const ImageFrame& frame) { return imageops::filtered(frame, filter, chosen); });
+                const int value = imageops::pixelAt(part, x, y);
+                low = std::min(low, value);
+                high = std::max(high, value);
             }
+        }
+        // Small images are enlarged, with sharp pixels, so that the preview is not tiny
+        const int zoom = std::max(1, std::min(3, std::min(400 / std::max(1, part.width), 300 / std::max(1, part.height))));
+        const auto enlarge = [zoom](const QImage& picture)
+        {
+            return zoom > 1 ? picture.scaled(picture.size() * zoom, Qt::KeepAspectRatio, Qt::FastTransformation) : picture;
+        };
+        const QImage before = enlarge(grayPicture(part, low, high));
+        return [operation, before, part, low, high, enlarge](const QList<ParameterField>& values)
+        {
+            const ImageFrame after = operation(part, values);
+            if (!after.isValid())
+            {
+                return before;
+            }
+            const bool sameRange = after.isMono16() == part.isMono16();
+            const QImage changed = enlarge(sameRange ? grayPicture(after, low, high) : grayPicture(after, 0, 255));
+            QImage both(before.width() + changed.width() + 8, std::max(before.height(), changed.height()),
+                        QImage::Format_Grayscale8);
+            both.fill(64);
+            QPainter painter(&both);
+            painter.drawImage(0, 0, before);
+            painter.drawImage(before.width() + 8, 0, changed);
+            return both;
+        };
+    }
+
+    // Asks for the settings of an operation on one slice, with a preview of what it does
+    bool ImageAnalysis::askWithPreview(
+        const QString& title, QList<ParameterField>& fields,
+        const std::function<ImageFrame(const ImageFrame&, const QList<ParameterField>&)>& operation)
+    {
+        Source source;
+        if (!activeSource(source))
+        {
+            return false;
+        }
+        return askParameters(m_window, title, fields, makePreview(source, operation));
+    }
+
+    // Runs a processing module once on the image or on every slice, with the parameters in preset and
+    // the ones in askKeys asked for in a dialog that follows the descriptor of the module
+    void ImageAnalysis::runModule(const QString& menuText, const QString& moduleId, const QVariantMap& preset,
+                                  const QStringList& askKeys)
+    {
+        QString title = menuText;
+        title.remove(QLatin1Char('&'));
+        while (title.endsWith(QLatin1Char('.')))
+        {
+            title.chop(1);
+        }
+        Source source;
+        if (!activeSource(source))
+        {
+            return;
+        }
+        QVariantMap parameters = preset;
+        if (!askKeys.isEmpty())
+        {
+            scopeone::core::ProcessingModuleDescriptor descriptor;
+            for (const auto& candidate : m_core->availableProcessingModules())
+            {
+                if (candidate.id == moduleId)
+                {
+                    descriptor = candidate;
+                }
+            }
+            QList<ParameterField> fields;
+            QList<scopeone::core::ProcessingParameterDescriptor> asked;
+            for (const QString& key : askKeys)
+            {
+                for (const auto& parameter : descriptor.parameters)
+                {
+                    if (parameter.key != key)
+                    {
+                        continue;
+                    }
+                    const QVariant start = preset.contains(key) ? preset.value(key) : parameter.defaultValue;
+                    switch (parameter.type)
+                    {
+                    case scopeone::core::ProcessingParameterType::Integer:
+                        fields.append(ParameterField::integer(parameter.name, start.toInt(),
+                                                              parameter.minimum.toInt(), parameter.maximum.toInt()));
+                        break;
+                    case scopeone::core::ProcessingParameterType::Real:
+                        fields.append(ParameterField::real(parameter.name, start.toDouble(), parameter.minimum.toDouble(),
+                                                           parameter.maximum.toDouble(), parameter.decimals));
+                        break;
+                    case scopeone::core::ProcessingParameterType::Choice:
+                    {
+                        QStringList names;
+                        for (const auto& choice : parameter.choices)
+                        {
+                            names << choice.name;
+                        }
+                        fields.append(ParameterField::options(parameter.name, names, start.toInt()));
+                        break;
+                    }
+                    default:
+                        fields.append(ParameterField::check(parameter.name, start.toBool()));
+                        break;
+                    }
+                    asked.append(parameter);
+                }
+            }
+            const auto collect = [&preset, &asked](const QList<ParameterField>& values)
+            {
+                QVariantMap result = preset;
+                for (int i = 0; i < asked.size(); ++i)
+                {
+                    const ParameterField& field = values.at(i);
+                    switch (field.kind)
+                    {
+                    case ParameterField::Kind::Integer: result.insert(asked.at(i).key, static_cast<int>(field.value)); break;
+                    case ParameterField::Kind::Real: result.insert(asked.at(i).key, field.value); break;
+                    case ParameterField::Kind::Choice: result.insert(asked.at(i).key, field.choice); break;
+                    case ParameterField::Kind::Check: result.insert(asked.at(i).key, field.checked); break;
+                    }
+                }
+                return result;
+            };
+            auto previewModule = std::shared_ptr<scopeone::core::ProcessingModule>(
+                m_core->createProcessingModule(moduleId).release());
+            const PreviewRenderer renderer = makePreview(
+                source, [&collect, previewModule](const ImageFrame& part, const QList<ParameterField>& values)
+                {
+                    previewModule->setParameters(collect(values));
+                    return previewModule->process(part, 16).frame;
+                });
+            const FieldsAction toPipeline = [this, &collect, moduleId](const QList<ParameterField>& values)
+            {
+                emit pipelineStepRequested(moduleId, collect(values));
+            };
+            if (!askParameters(m_window, title, fields, renderer, toPipeline))
+            {
+                return;
+            }
+            parameters = collect(fields);
+        }
+        std::shared_ptr<scopeone::core::ProcessingModule> module(m_core->createProcessingModule(moduleId).release());
+        module->setParameters(parameters);
+        apply(title, [module](const ImageFrame& frame) { return module->process(frame, 16).frame; });
+    }
+
+    void ImageAnalysis::addFilter(QMenu* menu, const QString& text, int kind, double radius)
+    {
+        connect(menu->addAction(text), &QAction::triggered, this, [this, text, kind, radius]()
+        {
+            runModule(text, QStringLiteral("filter"), {{"kind", kind}, {"radius", radius}}, {QStringLiteral("radius")});
         });
     }
 
-    void ImageAnalysis::addMath(QMenu* menu, const QString& text, imageops::MathOperation operation,
-                                bool needsValue, double value)
+    void ImageAnalysis::addMath(QMenu* menu, const QString& text, int operation, bool needsValue, double value)
     {
         connect(menu->addAction(text), &QAction::triggered, this, [this, text, operation, needsValue, value]()
         {
-            double chosen = value;
-            if (needsValue)
-            {
-                QList<ParameterField> fields{ParameterField::real(tr("Value"), value, -1.0e9, 1.0e9, 3)};
-                if (!askParameters(m_window, text, fields))
-                {
-                    return;
-                }
-                chosen = fields.first().value;
-            }
-            apply(text, [operation, chosen](const ImageFrame& frame) { return imageops::math(frame, operation, chosen); });
+            runModule(text, QStringLiteral("math"), {{"operation", operation}, {"value", value}},
+                      needsValue ? QStringList{QStringLiteral("value")} : QStringList{});
         });
+    }
+
+    void ImageAnalysis::addModuleCommand(QMenu* menu, const QString& text, const QString& moduleId,
+                                         const QVariantMap& preset, const QStringList& askKeys)
+    {
+        connect(menu->addAction(text), &QAction::triggered, this,
+                [this, text, moduleId, preset, askKeys]() { runModule(text, moduleId, preset, askKeys); });
     }
 
     void ImageAnalysis::addBinary(QMenu* menu, const QString& text, imageops::BinaryOperation operation)
     {
         connect(menu->addAction(text), &QAction::triggered, this, [this, text, operation]()
         {
-            int iterations = 1;
-            double tolerance = 0.5;
-            if (operation == imageops::BinaryOperation::Watershed)
+            using Operation = imageops::BinaryOperation;
+            if (operation == Operation::Watershed)
             {
-                QList<ParameterField> fields{ParameterField::real(tr("Tolerance"), 0.5, 0.0, 50.0, 2)};
-                if (!askParameters(m_window, text, fields))
-                {
-                    return;
-                }
-                tolerance = fields.first().value;
+                runModule(text, QStringLiteral("watershed"), {}, {QStringLiteral("tolerance")});
+                return;
             }
-            if (operation == imageops::BinaryOperation::Erode || operation == imageops::BinaryOperation::Dilate
-                || operation == imageops::BinaryOperation::Open || operation == imageops::BinaryOperation::Close)
+            // The number of the operation in the binary module
+            int number = 0;
+            switch (operation)
             {
-                QList<ParameterField> fields{ParameterField::integer(tr("Iterations"), 1, 1, 100)};
-                if (!askParameters(m_window, text, fields))
-                {
-                    return;
-                }
-                iterations = static_cast<int>(fields.first().value);
+            case Operation::Erode: number = 0; break;
+            case Operation::Dilate: number = 1; break;
+            case Operation::Open: number = 2; break;
+            case Operation::Close: number = 3; break;
+            case Operation::Outline: number = 4; break;
+            case Operation::Invert: number = 5; break;
+            case Operation::FillHoles: number = 6; break;
+            default: number = 7; break;
             }
-            apply(text, [operation, iterations, tolerance](const ImageFrame& frame)
-            {
-                return imageops::binary(frame, operation, iterations, tolerance);
-            });
+            const bool repeats = number <= 3;
+            runModule(text, QStringLiteral("binary"), {{"operation", number}, {"iterations", 1}},
+                      repeats ? QStringList{QStringLiteral("iterations")} : QStringList{});
         });
     }
 
@@ -321,14 +649,10 @@ namespace scopeone::ui
         connect(menu->addAction(tr("&Scale...")), &QAction::triggered, this, [this]() { scaleImage(); });
 
         QMenu* transform = menu->addMenu(tr("&Transform"));
-        connect(transform->addAction(tr("Flip &Horizontally")), &QAction::triggered, this,
-                [this]() { apply(tr("Flip Horizontally"), [](const ImageFrame& f) { return imageops::flipHorizontal(f); }); });
-        connect(transform->addAction(tr("Flip &Vertically")), &QAction::triggered, this,
-                [this]() { apply(tr("Flip Vertically"), [](const ImageFrame& f) { return imageops::flipVertical(f); }); });
-        connect(transform->addAction(tr("Rotate 90 Degrees &Right")), &QAction::triggered, this,
-                [this]() { apply(tr("Rotate 90 Degrees Right"), [](const ImageFrame& f) { return imageops::rotate90(f, true); }); });
-        connect(transform->addAction(tr("Rotate 90 Degrees &Left")), &QAction::triggered, this,
-                [this]() { apply(tr("Rotate 90 Degrees Left"), [](const ImageFrame& f) { return imageops::rotate90(f, false); }); });
+        addModuleCommand(transform, tr("Flip &Horizontally"), QStringLiteral("flip"), {{"direction", 0}}, {});
+        addModuleCommand(transform, tr("Flip &Vertically"), QStringLiteral("flip"), {{"direction", 1}}, {});
+        addModuleCommand(transform, tr("Rotate 90 Degrees &Right"), QStringLiteral("rotate_90"), {{"direction", 0}}, {});
+        addModuleCommand(transform, tr("Rotate 90 Degrees &Left"), QStringLiteral("rotate_90"), {{"direction", 1}}, {});
         connect(transform->addAction(tr("&Rotate...")), &QAction::triggered, this, [this]() { rotateImage(); });
 
         connect(menu->addAction(tr("&Properties...")), &QAction::triggered, this, [this]() { imageProperties(); });
@@ -348,34 +672,33 @@ namespace scopeone::ui
     void ImageAnalysis::buildProcessMenu(QMenu* menu)
     {
         QMenu* filters = menu->addMenu(tr("&Filters"));
-        addFilter(filters, tr("&Gaussian Blur..."), imageops::Filter::Gaussian, 2.0);
-        addFilter(filters, tr("&Mean..."), imageops::Filter::Mean, 2.0);
-        addFilter(filters, tr("M&edian..."), imageops::Filter::Median, 2.0);
-        addFilter(filters, tr("Mi&nimum..."), imageops::Filter::Minimum, 2.0);
-        addFilter(filters, tr("Ma&ximum..."), imageops::Filter::Maximum, 2.0);
-        addFilter(filters, tr("&Variance..."), imageops::Filter::Variance, 2.0);
-        connect(filters->addAction(tr("&Unsharp Mask...")), &QAction::triggered, this, [this]() { unsharpMask(); });
-        connect(filters->addAction(tr("&Top Hat...")), &QAction::triggered, this, [this]() { topHat(); });
-        connect(menu->addAction(tr("&Sharpen")), &QAction::triggered, this,
-                [this]() { apply(tr("Sharpen"), [](const ImageFrame& f) { return imageops::sharpened(f); }); });
-        connect(menu->addAction(tr("Find &Edges")), &QAction::triggered, this,
-                [this]() { apply(tr("Find Edges"), [](const ImageFrame& f) { return imageops::findEdges(f); }); });
+        addFilter(filters, tr("&Gaussian Blur..."), 4, 2.0);
+        addFilter(filters, tr("&Mean..."), 0, 2.0);
+        addFilter(filters, tr("M&edian..."), 1, 2.0);
+        addFilter(filters, tr("Mi&nimum..."), 2, 2.0);
+        addFilter(filters, tr("Ma&ximum..."), 3, 2.0);
+        addFilter(filters, tr("&Variance..."), 5, 2.0);
+        addModuleCommand(filters, tr("&Unsharp Mask..."), QStringLiteral("unsharp_mask"), {},
+                         {QStringLiteral("sigma"), QStringLiteral("weight")});
+        addModuleCommand(filters, tr("&Top Hat..."), QStringLiteral("top_hat"), {},
+                         {QStringLiteral("radius"), QStringLiteral("light_background")});
+        addModuleCommand(menu, tr("&Sharpen"), QStringLiteral("sharpen"), {}, {});
+        addModuleCommand(menu, tr("Find &Edges"), QStringLiteral("find_edges"), {}, {});
         connect(menu->addAction(tr("Subtract &Background...")), &QAction::triggered, this,
                 [this]() { subtractBackground(); });
 
         QMenu* math = menu->addMenu(tr("&Math"));
-        addMath(math, tr("&Add..."), imageops::MathOperation::Add, true, 25.0);
-        addMath(math, tr("&Subtract..."), imageops::MathOperation::Subtract, true, 25.0);
-        addMath(math, tr("&Multiply..."), imageops::MathOperation::Multiply, true, 1.25);
-        addMath(math, tr("&Divide..."), imageops::MathOperation::Divide, true, 1.25);
-        addMath(math, tr("M&inimum..."), imageops::MathOperation::Min, true, 0.0);
-        addMath(math, tr("Ma&ximum..."), imageops::MathOperation::Max, true, 255.0);
-        addMath(math, tr("&Gamma..."), imageops::MathOperation::Gamma, true, 0.5);
-        addMath(math, tr("&Log"), imageops::MathOperation::Log, false, 0.0);
-        addMath(math, tr("&Exp"), imageops::MathOperation::Exp, false, 0.0);
-        addMath(math, tr("S&quare"), imageops::MathOperation::Square, false, 0.0);
-        addMath(math, tr("Square &Root"), imageops::MathOperation::Sqrt, false, 0.0);
-        addMath(math, tr("A&bsolute Value"), imageops::MathOperation::Abs, false, 0.0);
+        addMath(math, tr("&Add..."), 0, true, 25.0);
+        addMath(math, tr("&Subtract..."), 1, true, 25.0);
+        addMath(math, tr("&Multiply..."), 2, true, 1.25);
+        addMath(math, tr("&Divide..."), 3, true, 1.25);
+        addMath(math, tr("M&inimum..."), 4, true, 0.0);
+        addMath(math, tr("Ma&ximum..."), 5, true, 255.0);
+        addMath(math, tr("&Gamma..."), 6, true, 0.5);
+        addMath(math, tr("&Log"), 7, false, 0.0);
+        addMath(math, tr("&Exp"), 8, false, 0.0);
+        addMath(math, tr("S&quare"), 9, false, 0.0);
+        addMath(math, tr("Square &Root"), 10, false, 0.0);
 
         connect(menu->addAction(tr("Image &Calculator...")), &QAction::triggered, this, [this]() { calculate(); });
 
@@ -398,7 +721,103 @@ namespace scopeone::ui
         binary->addSeparator();
         addBinary(binary, tr("&Watershed..."), imageops::BinaryOperation::Watershed);
         addBinary(binary, tr("&Skeletonize"), imageops::BinaryOperation::Skeletonize);
-        addImageCommand(binary, tr("Distance &Map"), [](const ImageFrame& frame) { return imageops::distanceMap(frame); });
+        addModuleCommand(binary, tr("Distance &Map"), QStringLiteral("distance_map"), {}, {});
+
+        menu->addSeparator();
+        connect(menu->addAction(tr("Run Pipeline on a &Folder...")), &QAction::triggered, this, [this]() { batchProcess(); });
+    }
+
+    // Runs the steps of the Process panel on every image file of a folder and saves the results
+    void ImageAnalysis::batchProcess()
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        if (m_core->processingModules().isEmpty())
+        {
+            QMessageBox::information(m_window, tr("Run Pipeline on a Folder"),
+                                     tr("The Process panel has no steps. Add the steps to run first."));
+            return;
+        }
+        const QString input = QFileDialog::getExistingDirectory(
+            m_window, tr("Folder with the images"), settings.value(QStringLiteral("Batch/input")).toString());
+        if (input.isEmpty())
+        {
+            return;
+        }
+        const QString output = QFileDialog::getExistingDirectory(
+            m_window, tr("Folder for the results"), settings.value(QStringLiteral("Batch/output"), input).toString());
+        if (output.isEmpty())
+        {
+            return;
+        }
+        settings.setValue(QStringLiteral("Batch/input"), input);
+        settings.setValue(QStringLiteral("Batch/output"), output);
+        QList<ParameterField> fields{ParameterField::check(tr("Include subfolders"), false)};
+        if (!askParameters(m_window, tr("Run Pipeline on a Folder"), fields))
+        {
+            return;
+        }
+        QStringList files;
+        QDirIterator iterator(input, {QStringLiteral("*.tif"), QStringLiteral("*.tiff"), QStringLiteral("*.png"),
+                                      QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"), QStringLiteral("*.bmp")},
+                              QDir::Files, fields.first().checked ? QDirIterator::Subdirectories : QDirIterator::NoIteratorFlags);
+        while (iterator.hasNext())
+        {
+            files.append(iterator.next());
+        }
+        files.sort();
+        if (files.isEmpty())
+        {
+            QMessageBox::information(m_window, tr("Run Pipeline on a Folder"), tr("There are no image files in that folder."));
+            return;
+        }
+
+        QProgressDialog progress(tr("Processing images..."), tr("Cancel"), 0, static_cast<int>(files.size()), m_window);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(0);
+        QStringList failed;
+        int done = 0;
+        for (const QString& path : files)
+        {
+            progress.setValue(done);
+            progress.setLabelText(tr("%1 (%2 of %3)").arg(QFileInfo(path).fileName()).arg(done + 1).arg(files.size()));
+            QCoreApplication::processEvents();
+            if (progress.wasCanceled())
+            {
+                break;
+            }
+            ++done;
+            QString error;
+            const QList<ImageFrame> frames = scopeone::core::ScopeOneCore::readImageFrames(path, &error);
+            // A new pipeline for each file, so that steps that remember frames start afresh
+            const auto pipeline = m_core->createProcessingPipeline();
+            QList<ImageFrame> results;
+            for (const ImageFrame& frame : frames)
+            {
+                const scopeone::core::ProcessingResult result = pipeline->process(frame, 16);
+                if (result.hasImage())
+                {
+                    results.append(result.frame);
+                }
+            }
+            const QString relative = QDir(input).relativeFilePath(path);
+            QString target = QDir(output).filePath(QFileInfo(relative).path() == QLatin1String(".")
+                                                       ? QFileInfo(relative).completeBaseName()
+                                                       : QFileInfo(relative).path() + QLatin1Char('/') + QFileInfo(relative).completeBaseName());
+            target += QStringLiteral("_processed.tif");
+            QDir().mkpath(QFileInfo(target).path());
+            if (frames.isEmpty() || results.isEmpty()
+                || !scopeone::core::ScopeOneCore::writeImageFrames(results, target, &error))
+            {
+                failed.append(QFileInfo(path).fileName());
+            }
+        }
+        progress.setValue(static_cast<int>(files.size()));
+        QString summary = tr("Processed %1 of %2 images into %3.").arg(done - failed.size()).arg(files.size()).arg(QDir::toNativeSeparators(output));
+        if (!failed.isEmpty())
+        {
+            summary += tr("\n\nThese could not be processed:\n%1").arg(failed.join(QLatin1Char('\n')));
+        }
+        QMessageBox::information(m_window, tr("Run Pipeline on a Folder"), summary);
     }
 
     void ImageAnalysis::buildAnalyzeMenu(QMenu* menu)
@@ -459,7 +878,7 @@ namespace scopeone::ui
             return;
         }
         present(scope == Scope::All ? source.frames : QList<ImageFrame>{source.frames.at(source.index)},
-                tr("Copy of %1").arg(source.title));
+                tr("Copy of %1").arg(source.title), scope == Scope::All ? &source.shape : nullptr);
     }
 
     void ImageAnalysis::cropImage()
@@ -484,7 +903,8 @@ namespace scopeone::ui
         QList<ParameterField> fields{ParameterField::real(tr("X scale"), 0.5, 0.01, 20.0, 3),
                                      ParameterField::real(tr("Y scale"), 0.5, 0.01, 20.0, 3),
                                      ParameterField::check(tr("Interpolate"), true)};
-        if (askParameters(m_window, tr("Scale"), fields))
+        if (askWithPreview(tr("Scale"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
+                           { return imageops::scaled(frame, v.at(0).value, v.at(1).value, v.at(2).checked); }))
         {
             const double x = fields.at(0).value;
             const double y = fields.at(1).value;
@@ -498,7 +918,8 @@ namespace scopeone::ui
         QList<ParameterField> fields{ParameterField::real(tr("Angle (degrees)"), 15.0, -360.0, 360.0, 1),
                                      ParameterField::check(tr("Interpolate"), true),
                                      ParameterField::check(tr("Enlarge image to fit result"), false)};
-        if (askParameters(m_window, tr("Rotate"), fields))
+        if (askWithPreview(tr("Rotate"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
+                           { return imageops::rotated(frame, v.at(0).value, v.at(1).checked, v.at(2).checked); }))
         {
             const double angle = fields.at(0).value;
             const bool smooth = fields.at(1).checked;
@@ -513,21 +934,8 @@ namespace scopeone::ui
     // Makes a binary image from the pixels that are above a limit found by one of the methods
     void ImageAnalysis::thresholdImage()
     {
-        QList<ParameterField> fields{
-            ParameterField::options(tr("Method"), {tr("IsoData"), tr("Otsu"), tr("Mean"), tr("Triangle")}, 1),
-            ParameterField::check(tr("Dark objects on a light background"), false)};
-        if (!askParameters(m_window, tr("Threshold"), fields))
-        {
-            return;
-        }
-        const auto method = static_cast<imageops::ThresholdMethod>(fields.at(0).choice);
-        const bool darkObjects = fields.at(1).checked;
-        apply(tr("Threshold"), [method, darkObjects](const ImageFrame& frame)
-        {
-            const int limit = imageops::autoThreshold(frame, method);
-            return darkObjects ? imageops::thresholded(frame, 0, limit)
-                               : imageops::thresholded(frame, limit + 1, imageops::maxValue(frame));
-        });
+        runModule(tr("Threshold"), QStringLiteral("threshold"), {},
+                  {QStringLiteral("method"), QStringLiteral("select"), QStringLiteral("low"), QStringLiteral("high")});
     }
 
     // ---- Stacks
@@ -539,10 +947,19 @@ namespace scopeone::ui
         {
             return;
         }
-        const int count = static_cast<int>(source.frames.size());
+        QList<QChar> letters;
+        const QStringList names = axisChoices(source, letters);
+        // Z when the image has it, as in Fiji
+        const int zIndex = static_cast<int>(letters.indexOf(QLatin1Char('Z')));
+        int largest = 1;
+        for (const QChar letter : letters)
+        {
+            largest = std::max(largest, source.shape.axisSize(letter));
+        }
         QList<ParameterField> fields{
-            ParameterField::integer(tr("Start slice"), 1, 1, count),
-            ParameterField::integer(tr("Stop slice"), count, 1, count),
+            ParameterField::options(tr("Project along"), names, std::max(0, zIndex)),
+            ParameterField::integer(tr("Start"), 1, 1, largest),
+            ParameterField::integer(tr("Stop"), largest, 1, largest),
             ParameterField::options(tr("Projection"),
                                     {tr("Maximum Intensity"), tr("Average Intensity"), tr("Sum Slices"),
                                      tr("Minimum Intensity"), tr("Standard Deviation"), tr("Median")})};
@@ -553,10 +970,30 @@ namespace scopeone::ui
         static const imageops::Projection methods[] = {
             imageops::Projection::Max, imageops::Projection::Average, imageops::Projection::Sum,
             imageops::Projection::Min, imageops::Projection::StdDev, imageops::Projection::Median};
-        const imageops::Projection method = methods[fields.at(2).choice];
-        present({imageops::zProject(source.frames, static_cast<int>(fields.at(0).value) - 1,
-                                    static_cast<int>(fields.at(1).value) - 1, method)},
-                tr("Projection of %1").arg(source.title));
+        const imageops::Projection method = methods[fields.at(3).choice];
+        const QChar axis = letters.at(fields.at(0).choice);
+        const int size = source.shape.axisSize(axis);
+        const int start = std::clamp(static_cast<int>(fields.at(1).value) - 1, 0, size - 1);
+        const int stop = std::clamp(static_cast<int>(fields.at(2).value) - 1, start, size - 1);
+
+        // Every position on the other axes gets its own projection, so a hyperstack stays one
+        scopeone::core::StackShape result = source.shape;
+        (axis == QLatin1Char('C') ? result.channels : (axis == QLatin1Char('Z') ? result.slices : result.frames)) = 1;
+        const int outputCount = result.channels * result.slices * result.frames;
+        QList<ImageFrame> projections;
+        for (int i = 0; i < outputCount; ++i)
+        {
+            int c, z, t;
+            stack::coordinates(result, i, c, z, t);
+            QList<ImageFrame> line;
+            for (int step = start; step <= stop; ++step)
+            {
+                stack::coordinate(c, z, t, axis) = step;
+                line.append(source.frames.at(stack::planeIndex(source.shape, c, z, t)));
+            }
+            projections.append(imageops::zProject(line, 0, static_cast<int>(line.size()) - 1, method));
+        }
+        present(projections, tr("Projection of %1").arg(source.title), &result);
     }
 
     void ImageAnalysis::makeSubstack()
@@ -566,17 +1003,54 @@ namespace scopeone::ui
         {
             return;
         }
-        const int count = static_cast<int>(source.frames.size());
-        QList<ParameterField> fields{ParameterField::integer(tr("First slice"), 1, 1, count),
-                                     ParameterField::integer(tr("Last slice"), count, 1, count),
-                                     ParameterField::integer(tr("Step"), 1, 1, std::max(1, count))};
-        if (askParameters(m_window, tr("Substack"), fields))
+        QList<QChar> letters;
+        const QStringList names = axisChoices(source, letters);
+        QList<ParameterField> fields;
+        for (int i = 0; i < letters.size(); ++i)
         {
-            present(imageops::substack(source.frames, static_cast<int>(fields.at(0).value) - 1,
-                                       static_cast<int>(fields.at(1).value) - 1,
-                                       static_cast<int>(fields.at(2).value)),
-                    tr("Substack of %1").arg(source.title));
+            const int size = source.shape.axisSize(letters.at(i));
+            const QString name = names.at(i);
+            fields.append(ParameterField::integer(tr("%1: first").arg(name), 1, 1, size));
+            fields.append(ParameterField::integer(tr("%1: last").arg(name), size, 1, size));
+            fields.append(ParameterField::integer(tr("%1: step").arg(name), 1, 1, std::max(1, size)));
         }
+        if (!askParameters(m_window, tr("Substack"), fields))
+        {
+            return;
+        }
+        // The positions that are kept on each axis
+        scopeone::core::StackShape result = source.shape;
+        QList<int> kept[3];
+        for (int i = 0; i < letters.size(); ++i)
+        {
+            const QChar axis = letters.at(i);
+            const int size = source.shape.axisSize(axis);
+            const int first = std::clamp(static_cast<int>(fields.at(3 * i).value) - 1, 0, size - 1);
+            const int last = std::clamp(static_cast<int>(fields.at(3 * i + 1).value) - 1, first, size - 1);
+            const int step = std::max(1, static_cast<int>(fields.at(3 * i + 2).value));
+            QList<int>& positions = kept[axis == QLatin1Char('C') ? 0 : (axis == QLatin1Char('Z') ? 1 : 2)];
+            for (int position = first; position <= last; position += step)
+            {
+                positions.append(position);
+            }
+            (axis == QLatin1Char('C') ? result.channels : (axis == QLatin1Char('Z') ? result.slices : result.frames)) =
+                static_cast<int>(positions.size());
+        }
+        const auto positionsOf = [&kept, &source](QChar axis, int step)
+        {
+            const QList<int>& positions = kept[axis == QLatin1Char('C') ? 0 : (axis == QLatin1Char('Z') ? 1 : 2)];
+            return positions.isEmpty() ? step : positions.at(step);
+        };
+        QList<ImageFrame> frames;
+        const int outputCount = result.channels * result.slices * result.frames;
+        for (int i = 0; i < outputCount; ++i)
+        {
+            int c, z, t;
+            stack::coordinates(result, i, c, z, t);
+            frames.append(source.frames.at(stack::planeIndex(source.shape, positionsOf(QLatin1Char('C'), c),
+                                                             positionsOf(QLatin1Char('Z'), z), positionsOf(QLatin1Char('T'), t))));
+        }
+        present(frames, tr("Substack of %1").arg(source.title), &result);
     }
 
     void ImageAnalysis::makeMontage()
@@ -586,15 +1060,20 @@ namespace scopeone::ui
         {
             return;
         }
+        QList<QChar> letters;
+        const QStringList names = axisChoices(source, letters);
+        const int zIndex = static_cast<int>(letters.indexOf(QLatin1Char('Z')));
         const int count = static_cast<int>(source.frames.size());
         QList<ParameterField> fields{
+            ParameterField::options(tr("Tile along"), names, std::max(0, zIndex)),
             ParameterField::integer(tr("Columns"), static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count)))), 1, std::max(1, count)),
             ParameterField::real(tr("Scale"), 0.5, 0.05, 4.0, 2),
             ParameterField::integer(tr("Border width"), 2, 0, 100)};
         if (askParameters(m_window, tr("Montage"), fields))
         {
-            present({imageops::montage(source.frames, static_cast<int>(fields.at(0).value), fields.at(1).value,
-                                       static_cast<int>(fields.at(2).value))},
+            const QList<ImageFrame> frames = framesAlong(source, letters.at(fields.at(0).choice));
+            present({imageops::montage(frames, static_cast<int>(fields.at(1).value), fields.at(2).value,
+                                       static_cast<int>(fields.at(3).value))},
                     tr("Montage of %1").arg(source.title));
         }
     }
@@ -606,15 +1085,28 @@ namespace scopeone::ui
         {
             return;
         }
+        QList<QChar> letters;
+        const QStringList names = axisChoices(source, letters);
+        int axisIndex = std::max(0, static_cast<int>(letters.indexOf(QLatin1Char('Z'))));
+        if (letters.size() > 1)
+        {
+            QList<ParameterField> fields{ParameterField::options(tr("Plot along"), names, axisIndex)};
+            if (!askParameters(m_window, tr("Plot Z-axis Profile"), fields))
+            {
+                return;
+            }
+            axisIndex = fields.first().choice;
+        }
         ImageSceneModel::Markup shape;
         const bool hasShape = selectedShape(source, shape);
-        const QVector<double> values = imageops::zProfile(source.frames, hasShape ? &shape : nullptr,
-                                                          imageops::ProfileStat::Mean);
+        const QVector<double> values = imageops::zProfile(framesAlong(source, letters.at(axisIndex)),
+                                                          hasShape ? &shape : nullptr, imageops::ProfileStat::Mean);
         if (!m_profile)
         {
             m_profile = new ProfilePlotWindow(m_window);
         }
-        m_profile->setProfile(tr("Z-axis profile of %1").arg(source.title), tr("Slice"), tr("Mean"), values);
+        const QString axisTitle = source.hyper ? names.at(axisIndex) : tr("Slice");
+        m_profile->setProfile(tr("Profile of %1 along %2").arg(source.title, axisTitle), axisTitle, tr("Mean"), values);
         m_profile->show();
         m_profile->raise();
     }
@@ -626,7 +1118,21 @@ namespace scopeone::ui
         {
             return;
         }
-        OrthogonalViewsDialog dialog(source.frames, source.index, m_window);
+        QList<QChar> letters;
+        const QStringList names = axisChoices(source, letters);
+        int axisIndex = std::max(0, static_cast<int>(letters.indexOf(QLatin1Char('Z'))));
+        if (letters.size() > 1)
+        {
+            QList<ParameterField> fields{ParameterField::options(tr("Views along"), names, axisIndex)};
+            if (!askParameters(m_window, tr("Orthogonal Views"), fields))
+            {
+                return;
+            }
+            axisIndex = fields.first().choice;
+        }
+        int position = 0;
+        const QList<ImageFrame> frames = framesAlong(source, letters.at(axisIndex), &position);
+        OrthogonalViewsDialog dialog(frames, position, m_window);
         dialog.exec();
     }
 
@@ -636,28 +1142,14 @@ namespace scopeone::ui
     {
         QList<ParameterField> fields{ParameterField::real(tr("Rolling ball radius (pixels)"), 50.0, 1.0, 500.0, 1),
                                      ParameterField::check(tr("Light background"), false)};
-        if (askParameters(m_window, tr("Subtract Background"), fields))
+        if (askWithPreview(tr("Subtract Background"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
+                           { return imageops::subtractBackground(frame, v.at(0).value, v.at(1).checked); }))
         {
             const double radius = fields.at(0).value;
             const bool light = fields.at(1).checked;
             apply(tr("Subtract Background"), [radius, light](const ImageFrame& frame)
             {
                 return imageops::subtractBackground(frame, radius, light);
-            });
-        }
-    }
-
-    void ImageAnalysis::unsharpMask()
-    {
-        QList<ParameterField> fields{ParameterField::real(tr("Radius (sigma, pixels)"), 1.0, 0.5, 200.0, 1),
-                                     ParameterField::real(tr("Mask weight (0.1 to 0.9)"), 0.6, 0.1, 0.9, 2)};
-        if (askParameters(m_window, tr("Unsharp Mask"), fields))
-        {
-            const double sigma = fields.at(0).value;
-            const double weight = fields.at(1).value;
-            apply(tr("Unsharp Mask"), [sigma, weight](const ImageFrame& frame)
-            {
-                return imageops::unsharpMask(frame, sigma, weight);
             });
         }
     }
@@ -731,19 +1223,8 @@ namespace scopeone::ui
 
     void ImageAnalysis::enhanceLocalContrast()
     {
-        QList<ParameterField> fields{ParameterField::integer(tr("Block size (pixels)"), 127, 8, 2000),
-                                     ParameterField::integer(tr("Histogram bins"), 256, 16, 4096),
-                                     ParameterField::real(tr("Maximum slope"), 3.0, 1.0, 100.0, 1)};
-        if (askParameters(m_window, tr("Enhance Local Contrast"), fields))
-        {
-            const int block = static_cast<int>(fields.at(0).value);
-            const int bins = static_cast<int>(fields.at(1).value);
-            const double slope = fields.at(2).value;
-            apply(tr("Enhance Local Contrast"), [block, bins, slope](const ImageFrame& frame)
-            {
-                return imageops::localContrast(frame, block, bins, slope);
-            });
-        }
+        runModule(tr("Enhance Local Contrast"), QStringLiteral("clahe"), {},
+                  {QStringLiteral("block_size"), QStringLiteral("max_slope")});
     }
 
     // Writes the display range of the image into its data, so that what is shown is what is stored
@@ -772,25 +1253,18 @@ namespace scopeone::ui
         QList<ParameterField> fields{
             saltAndPepper ? ParameterField::real(tr("Percent of pixels"), 2.5, 0.0, 100.0, 2)
                           : ParameterField::real(tr("Standard deviation"), 25.0, 0.0, 100000.0, 1)};
-        if (askParameters(m_window, saltAndPepper ? tr("Add Salt and Pepper") : tr("Add Noise"), fields))
+        if (askWithPreview(saltAndPepper ? tr("Add Salt and Pepper") : tr("Add Noise"), fields,
+                           [saltAndPepper](const ImageFrame& frame, const QList<ParameterField>& v)
+                           {
+                               return saltAndPepper ? imageops::withSaltAndPepper(frame, v.first().value)
+                                                    : imageops::withGaussianNoise(frame, v.first().value);
+                           }))
         {
             const double amount = fields.first().value;
             apply(saltAndPepper ? tr("Salt and Pepper") : tr("Add Noise"), [amount, saltAndPepper](const ImageFrame& frame)
             {
                 return saltAndPepper ? imageops::withSaltAndPepper(frame, amount) : imageops::withGaussianNoise(frame, amount);
             });
-        }
-    }
-
-    void ImageAnalysis::topHat()
-    {
-        QList<ParameterField> fields{ParameterField::real(tr("Radius (pixels)"), 10.0, 1.0, 200.0, 1),
-                                     ParameterField::check(tr("Light background"), false)};
-        if (askParameters(m_window, tr("Top Hat"), fields))
-        {
-            const double radius = fields.at(0).value;
-            const bool light = fields.at(1).checked;
-            apply(tr("Top Hat"), [radius, light](const ImageFrame& frame) { return imageops::topHat(frame, radius, light); });
         }
     }
 
@@ -1011,11 +1485,44 @@ namespace scopeone::ui
             return;
         }
         const ImageFrame& frame = source.frames.first();
+        const int planes = static_cast<int>(source.frames.size());
         QList<ParameterField> fields{
             ParameterField::real(tr("Pixel size (µm)"), m_workspace->pixelSizeUm(source.layerKey), 0.0, 1.0e6, 4)};
+        // How the slices of a stack are arranged, when the file does not say so
+        static const QStringList orders{QStringLiteral("TZC"), QStringLiteral("TCZ"), QStringLiteral("ZTC"),
+                                        QStringLiteral("ZCT"), QStringLiteral("CTZ"), QStringLiteral("CZT")};
+        const bool canArrange = planes > 1 && m_workspace->document().isValid();
+        if (canArrange)
+        {
+            fields.append(ParameterField::integer(tr("Channels"), source.shape.channels, 1, planes));
+            fields.append(ParameterField::integer(tr("Slices (Z)"), source.shape.slices, 1, planes));
+            fields.append(ParameterField::integer(tr("Frames (T)"), source.shape.frames, 1, planes));
+            QStringList names;
+            for (const QString& order : orders)
+            {
+                names << tr("%1 (%2 slowest, %3 fastest)").arg(order, order.first(1), order.last(1));
+            }
+            fields.append(ParameterField::options(tr("Order"), names, std::max(0, static_cast<int>(orders.indexOf(source.shape.order)))));
+        }
         if (!askParameters(m_window, tr("Properties of %1").arg(source.title), fields))
         {
             return;
+        }
+        if (canArrange)
+        {
+            const int channels = static_cast<int>(fields.at(1).value);
+            const int slices = static_cast<int>(fields.at(2).value);
+            const int frames = static_cast<int>(fields.at(3).value);
+            if (channels * slices * frames != planes)
+            {
+                QMessageBox::warning(m_window, tr("Properties"),
+                                     tr("Channels times slices times frames must be %1, the number of images.").arg(planes));
+            }
+            else if (const auto session = m_workspace->documentSession())
+            {
+                session->setStackShape(channels, slices, frames, orders.at(fields.at(4).choice));
+                m_workspace->refreshStackShape(source.layerKey);
+            }
         }
         const double size = fields.first().value;
         const ImageDocumentInfo document = m_workspace->document();
@@ -1125,7 +1632,8 @@ namespace scopeone::ui
             const QString label = tr("Particle %1").arg(kept.size());
             if (display)
             {
-                m_results->addMeasurement(label, result, source.frames.size() > 1 ? source.index + 1 : 0, unitName);
+                m_results->addMeasurement(label, result, source.frames.size() > 1 ? source.index + 1 : 0, unitName,
+                                          source.hyper ? stack::positionText(source.shape, source.index) : QString());
             }
             if (addToManager && source.scene)
             {
@@ -1171,7 +1679,8 @@ namespace scopeone::ui
                 m_results->addMeasurement(label,
                                           imageops::measure(source.frames.at(index), shape, scale),
                                           source.frames.size() > 1 ? index + 1 : 0,
-                                          unit);
+                                          unit,
+                                          source.hyper ? stack::positionText(source.shape, index) : QString());
             }
         }
     }
