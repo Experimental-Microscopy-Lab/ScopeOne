@@ -800,8 +800,10 @@ namespace scopeone::ui
         connect(m_moduleList, &QListWidget::itemChanged,
                 this, &ImageProcessingWidget::onModuleItemChanged);
         new EmptyHint(m_moduleList, tr("No steps yet. Search a step below and press Add, or choose Add to Pipeline in the dialog of a Process command."));
-        layout->addWidget(m_moduleList);
-        auto* controls = new QHBoxLayout;
+        // The buttons stand to the right of the list, which leaves the whole width below it to the search box
+        auto* listRow = new QHBoxLayout;
+        listRow->addWidget(m_moduleList, 1);
+        auto* controls = new QVBoxLayout;
         m_moduleTypeCombo = new QComboBox(group);
         // The steps are listed by group, and the box finds them by any part of the group or the name
         static const QList<QPair<QString, QStringList>> groups{
@@ -851,15 +853,19 @@ namespace scopeone::ui
                 onAddModuleClicked();
             }
         });
-        controls->addWidget(m_moduleTypeCombo, 1);
         m_addModuleButton = new QPushButton(tr("Add"), group);
         m_removeModuleButton = new QPushButton(tr("Remove"), group);
         m_moveModuleUpButton = new QPushButton(tr("Up"), group);
         m_moveModuleDownButton = new QPushButton(tr("Down"), group);
-        fitButtonToText(m_addModuleButton);
-        fitButtonToText(m_removeModuleButton);
-        fitButtonToText(m_moveModuleUpButton);
-        fitButtonToText(m_moveModuleDownButton);
+        int buttonWidth = 0;
+        for (QPushButton* button : {m_addModuleButton, m_removeModuleButton, m_moveModuleUpButton, m_moveModuleDownButton})
+        {
+            buttonWidth = (std::max)(buttonWidth, button->fontMetrics().horizontalAdvance(button->text()) + 20);
+        }
+        for (QPushButton* button : {m_addModuleButton, m_removeModuleButton, m_moveModuleUpButton, m_moveModuleDownButton})
+        {
+            button->setFixedWidth(buttonWidth);
+        }
         connect(m_addModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onAddModuleClicked);
         connect(m_removeModuleButton, &QPushButton::clicked, this, &ImageProcessingWidget::onRemoveModuleClicked);
         connect(m_moveModuleUpButton, &QPushButton::clicked,
@@ -876,8 +882,12 @@ namespace scopeone::ui
         m_presetMenu = new QMenu(m_presetButton);
         m_presetButton->setMenu(m_presetMenu);
         connect(m_presetMenu, &QMenu::aboutToShow, this, &ImageProcessingWidget::fillPresetMenu);
+        m_presetButton->setFixedWidth(buttonWidth);
         controls->addWidget(m_presetButton);
-        layout->addLayout(controls);
+        controls->addStretch();
+        listRow->addLayout(controls);
+        layout->addLayout(listRow);
+        layout->addWidget(m_moduleTypeCombo);
         return group;
     }
 
