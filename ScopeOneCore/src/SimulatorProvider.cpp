@@ -215,6 +215,7 @@ namespace scopeone::core
             case ImageMode::Hologram: return QStringLiteral("Hologram");
             case ImageMode::Beads: return QStringLiteral("Fluorescent Beads");
             case ImageMode::RedBloodCells: return QStringLiteral("Red Blood Cells");
+            case ImageMode::Brillouin: return QStringLiteral("Brillouin");
             }
         }
         if (name == QStringLiteral("Resolution"))
@@ -263,7 +264,8 @@ namespace scopeone::core
             if (mode != QStringLiteral("Gradient")
                 && mode != QStringLiteral("Hologram")
                 && mode != QStringLiteral("Fluorescent Beads")
-                && mode != QStringLiteral("Red Blood Cells"))
+                && mode != QStringLiteral("Red Blood Cells")
+                && mode != QStringLiteral("Brillouin"))
             {
                 if (errorMessage)
                 {
@@ -275,12 +277,13 @@ namespace scopeone::core
             m_imageMode = mode == QStringLiteral("Hologram") ? ImageMode::Hologram
                         : mode == QStringLiteral("Fluorescent Beads") ? ImageMode::Beads
                         : mode == QStringLiteral("Red Blood Cells") ? ImageMode::RedBloodCells
+                        : mode == QStringLiteral("Brillouin") ? ImageMode::Brillouin
                         : ImageMode::Gradient;
             if (m_imageMode == ImageMode::Beads && m_beadsImage.isEmpty())
             {
                 rebuildBeadsImage();
             }
-            if (m_imageMode == ImageMode::RedBloodCells && m_cellPhase.empty())
+            if ((m_imageMode == ImageMode::RedBloodCells || m_imageMode == ImageMode::Brillouin) && m_cellPhase.empty())
             {
                 rebuildBloodCells();
             }
@@ -308,7 +311,7 @@ namespace scopeone::core
             {
                 rebuildBeadsImage();
             }
-            if (m_imageMode == ImageMode::RedBloodCells)
+            if (m_imageMode == ImageMode::RedBloodCells || m_imageMode == ImageMode::Brillouin)
             {
                 rebuildBloodCells();
             }
@@ -374,6 +377,7 @@ namespace scopeone::core
             return {QStringLiteral("Gradient"),
                     QStringLiteral("Hologram"),
                     QStringLiteral("Red Blood Cells"),
+                    QStringLiteral("Brillouin"),
                     QStringLiteral("Fluorescent Beads")};
         }
         if (accepts(cameraId) && name == QStringLiteral("Resolution"))
@@ -553,6 +557,30 @@ namespace scopeone::core
                     intensity = kReferenceAmplitude * kReferenceAmplitude
                               + object * object
                               + 2.0 * kReferenceAmplitude * object * std::cos(carrier + objectPhase);
+                }
+                else if (m_imageMode == ImageMode::Brillouin)
+                {
+                    // The image of a spectrometer. It holds one line of the sample after another, each in a band of
+                    // 32 rows. Along a band the columns are positions on the line, and across it the rows are the
+                    // frequency. Every position gives the Stokes and the anti-Stokes peak of the Brillouin
+                    // scattering, which lie 10 pixels from the center of the band for water, and further out where a
+                    // cell is thick, as the cell is stiffer.
+                    constexpr int kBandRows = 32;
+                    constexpr double kWaterShift = 10.0;
+                    constexpr double kCellShift = 2.4;
+                    constexpr double kPeakPhase = 6.28318530717958647692 * 0.06 / 0.633 * 2.4;
+                    constexpr double kWidth = 1.3;
+                    const int sensorX = m_roi.x() + x;
+                    const int sensorY = m_roi.y() + y;
+                    const int band = sensorY / kBandRows;
+                    const double offset = sensorY % kBandRows - 0.5 * (kBandRows - 1);
+                    const int sampleY = (std::min)(m_sensorHeight - 1, band * kBandRows + kBandRows / 2);
+                    const double thickness = std::clamp(
+                        m_cellPhase[static_cast<std::size_t>(sampleY) * m_sensorWidth + sensorX] / kPeakPhase, 0.0, 1.0);
+                    const double shift = kWaterShift + kCellShift * thickness;
+                    const double stokes = (offset + shift) / kWidth;
+                    const double antiStokes = (offset - shift) / kWidth;
+                    intensity = 8.0 + 180.0 * (1.0 / (1.0 + stokes * stokes) + 1.0 / (1.0 + antiStokes * antiStokes));
                 }
                 else
                 {

@@ -69,7 +69,8 @@ namespace scopeone::core
             Gradient,
             Hologram,
             Beads,
-            RedBloodCells
+            RedBloodCells,
+            Brillouin
         };
 
         bool accepts(const QString& cameraIdOrAll) const;
