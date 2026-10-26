@@ -27,6 +27,11 @@
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QHBoxLayout>
+#include <QDoubleSpinBox>
+#include <QCheckBox>
 #include <QToolButton>
 #include <QActionGroup>
 #include <QApplication>

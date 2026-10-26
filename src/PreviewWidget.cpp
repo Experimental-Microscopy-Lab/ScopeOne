@@ -1149,8 +1149,14 @@ namespace scopeone::ui
         return m_clippingWarning;
     }
 
+    // The mode of the active layer, or the default for the layers when none is active
     void PreviewWidget::setViewDimensionMode(ViewDimensionMode mode)
     {
+        if (!m_activeLayerKey.isEmpty())
+        {
+            setLayerDimensionMode(m_activeLayerKey, mode);
+            return;
+        }
         if (m_viewDimensionMode == mode)
         {
             return;
@@ -1164,9 +1170,60 @@ namespace scopeone::ui
         update();
     }
 
+    // Shows one layer as an image or as a surface, whatever the other layers are shown as
+    void PreviewWidget::setLayerDimensionMode(const QString& layerKey, ViewDimensionMode mode)
+    {
+        if (layerKey.isEmpty() || layerDimensionMode(layerKey) == mode)
+        {
+            return;
+        }
+        m_layerDimensionModes.insert(layerKey, mode);
+        m_surfaceOrbiting = false;
+        m_surfacePanning = false;
+        m_surfaceLayerKey.clear();
+        restoreToolCursor();
+        // Layers shown in different ways each need a place of their own
+        if (m_layerLayoutMode == LayerLayoutMode::Overlay && visibleLayerKeys().size() > 1)
+        {
+            setLayerLayoutMode(LayerLayoutMode::SideBySide);
+        }
+        emit layerDimensionModeChanged(layerKey, mode);
+        if (layerKey == m_activeLayerKey)
+        {
+            emit viewDimensionModeChanged(mode);
+        }
+        update();
+    }
+
+    // The mode of the layer that has the place under a point
+    PreviewWidget::ViewDimensionMode PreviewWidget::modeAt(const QPoint& widgetPos) const
+    {
+        if (m_layerDimensionModes.isEmpty())
+        {
+            return m_viewDimensionMode;
+        }
+        QMap<QString, FrameSourceState> frameSources;
+        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
+        std::vector<RenderItem> renderItems;
+        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+        ViewDimensionMode found = m_viewDimensionMode;
+        for (const RenderItem& item : renderItems)
+        {
+            if (item.area.contains(widgetPos))
+            {
+                found = layerDimensionMode(item.layerKey);
+                if (item.layerKey == m_activeLayerKey)
+                {
+                    break;
+                }
+            }
+        }
+        return found;
+    }
+
     void PreviewWidget::set3dZScale(float scale)
     {
-        const float nextScale = qBound(0.1f, scale, 10.0f);
+        const float nextScale = qBound(0.01f, scale, 10.0f);
         if (qFuzzyCompare(m_zScale, nextScale))
         {
             return;
@@ -1249,7 +1306,12 @@ namespace scopeone::ui
         {
             return;
         }
+        const ViewDimensionMode previousMode = layerDimensionMode(m_activeLayerKey);
         m_activeLayerKey = key;
+        if (layerDimensionMode(key) != previousMode)
+        {
+            emit viewDimensionModeChanged(layerDimensionMode(key));
+        }
         updateSliceBar();
         update();
     }
@@ -2995,7 +3057,81 @@ namespace scopeone::ui
             }
 
             m_placeholderLabel->hide();
-            if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+            // Each layer is drawn as an image or as a surface, as it was set
+            std::vector<RenderItem> flatItems;
+            std::vector<RenderItem> surfaceItems;
+            for (const RenderItem& item : renderItems)
+            {
+                (layerDimensionMode(item.layerKey) == ViewDimensionMode::ThreeDimensional ? surfaceItems : flatItems)
+                    .push_back(item);
+            }
+            if (!surfaceItems.empty() && !flatItems.empty())
+            {
+                glDisable(GL_DEPTH_TEST);
+                for (const RenderItem& item : flatItems)
+                {
+                    drawRenderItem(item);
+                }
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                glEnable(GL_SCISSOR_TEST);
+                for (const RenderItem& item : surfaceItems)
+                {
+                    applyScissorForRect(item.area);
+                    applyViewportForRect(item.area);
+                    glClear(GL_DEPTH_BUFFER_BIT);
+                    draw3dSurface(item, cameraForLayer(item.layerKey), item.area);
+                }
+                glDisable(GL_SCISSOR_TEST);
+                applyViewportForRect(rect());
+
+                QPainter p(this);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                if (m_sceneModel->hasMarkups() || m_draft.dragging || m_draft.polygonActive)
+                {
+                    drawMarkups(p, flatItems);
+                    drawActiveInteractionMarkup(p, flatItems);
+                }
+                if (m_scaleBarVisible)
+                {
+                    drawScaleBar(p, flatItems);
+                }
+                drawTileLabelsAndBadges(p, flatItems);
+                for (const RenderItem& item : surfaceItems)
+                {
+                    const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
+                        .intersected(QRect(item.area.x() + 8, item.area.y() + 8,
+                                           qMax(0, item.area.width() - 16), 42));
+                    p.setPen(Qt::NoPen);
+                    p.setBrush(QColor(0, 0, 0, 170));
+                    p.drawRoundedRect(panelRect, 5, 5);
+                    p.setPen(Qt::white);
+                    QFont font = p.font();
+                    font.setBold(true);
+                    p.setFont(font);
+                    p.drawText(panelRect.adjusted(8, 4, -8, -4), Qt::AlignLeft | Qt::AlignVCenter,
+                               tr("3D: %1").arg(layerName(item.layerKey)));
+                    p.setBrush(Qt::NoBrush);
+                    p.setPen(QPen(item.layerKey == m_activeLayerKey ? QColor(255, 220, 80) : QColor(220, 225, 230, 190),
+                                  item.layerKey == m_activeLayerKey ? 2 : 1));
+                    p.drawRect(item.area.adjusted(1, 1, -2, -2));
+                }
+                if (m_threeDimensionalColorbarVisible)
+                {
+                    const RenderItem* activeSurface = &surfaceItems.front();
+                    for (const RenderItem& item : surfaceItems)
+                    {
+                        if (item.layerKey == m_activeLayerKey)
+                        {
+                            activeSurface = &item;
+                            break;
+                        }
+                    }
+                    draw3dColorbar(p, *activeSurface, activeSurface->area);
+                }
+                return;
+            }
+            if (flatItems.empty())
             {
                 if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
                 {
@@ -3080,7 +3216,7 @@ namespace scopeone::ui
                 font.setBold(true);
                 p.setFont(font);
                 const QString title = tr("3D Surface: %1").arg(layerName(surfaceItem->layerKey));
-                const QString detail = tr("Z-Scale %1x%2").arg(m_zScale, 0, 'f', 1)
+                const QString detail = tr("Z-Scale %1x%2").arg(m_zScale, 0, 'f', 2)
                     .arg(m_wireframe3d ? tr(" | Wireframe") : QString());
                 const QRect panelRect(12, 12, 230, 52);
                 p.setPen(Qt::NoPen);
@@ -3932,7 +4068,7 @@ namespace scopeone::ui
     void PreviewWidget::contextMenuEvent(QContextMenuEvent* event)
     {
         // A right drag turns the 3D view, so it does not open a menu there
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        if (modeAt(event->pos()) == ViewDimensionMode::ThreeDimensional)
         {
             return;
         }
@@ -3943,7 +4079,7 @@ namespace scopeone::ui
     {
         emit activated();
         emit mousePositionChanged(event->pos());
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        if (modeAt(event->pos()) == ViewDimensionMode::ThreeDimensional)
         {
             const QString layerKey = layerKeyAt3dPosition(event->pos());
             if (layerKey.isEmpty())
@@ -4188,7 +4324,7 @@ namespace scopeone::ui
     // Toggles visibility of the layer under the double click
     void PreviewWidget::mouseDoubleClickEvent(QMouseEvent* event)
     {
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+        if (modeAt(event->pos()) == ViewDimensionMode::ThreeDimensional
             && event->button() == Qt::LeftButton)
         {
             const QString layerKey = layerKeyAt3dPosition(event->pos());
@@ -4245,7 +4381,7 @@ namespace scopeone::ui
     {
         emit mousePositionChanged(event->pos());
         update();
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        if (m_surfaceOrbiting || m_surfacePanning || modeAt(event->pos()) == ViewDimensionMode::ThreeDimensional)
         {
             if (m_surfaceOrbiting)
             {
@@ -4419,7 +4555,7 @@ namespace scopeone::ui
     void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
     {
         emit mousePositionChanged(event->pos());
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        if (m_surfaceOrbiting || m_surfacePanning || modeAt(event->pos()) == ViewDimensionMode::ThreeDimensional)
         {
             if (m_surfaceOrbiting && event->button() == Qt::LeftButton)
             {
@@ -4485,7 +4621,7 @@ namespace scopeone::ui
     // Handles control wheel zoom around the cursor anchor
     void PreviewWidget::wheelEvent(QWheelEvent* event)
     {
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        if (modeAt(event->position().toPoint()) == ViewDimensionMode::ThreeDimensional)
         {
             const QPoint widgetPos = event->position().toPoint();
             const QString layerKey = layerKeyAt3dPosition(widgetPos);
@@ -4580,7 +4716,7 @@ namespace scopeone::ui
     // Cancels active drawing modes from keyboard input
     void PreviewWidget::keyPressEvent(QKeyEvent* event)
     {
-        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional
+        if (layerDimensionMode(m_activeLayerKey) == ViewDimensionMode::ThreeDimensional
             && event->key() == Qt::Key_R)
         {
             reset3dCamera();

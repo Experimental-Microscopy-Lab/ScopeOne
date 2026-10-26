@@ -4,6 +4,7 @@
 #include <QMutexLocker>
 #include <QThread>
 #include <QUuid>
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -213,6 +214,7 @@ namespace scopeone::core
             case ImageMode::Gradient: return QStringLiteral("Gradient");
             case ImageMode::Hologram: return QStringLiteral("Hologram");
             case ImageMode::Beads: return QStringLiteral("Fluorescent Beads");
+            case ImageMode::RedBloodCells: return QStringLiteral("Red Blood Cells");
             }
         }
         if (name == QStringLiteral("Resolution"))
@@ -260,7 +262,8 @@ namespace scopeone::core
             const QString mode = value.trimmed();
             if (mode != QStringLiteral("Gradient")
                 && mode != QStringLiteral("Hologram")
-                && mode != QStringLiteral("Fluorescent Beads"))
+                && mode != QStringLiteral("Fluorescent Beads")
+                && mode != QStringLiteral("Red Blood Cells"))
             {
                 if (errorMessage)
                 {
@@ -271,10 +274,15 @@ namespace scopeone::core
             QMutexLocker locker(&m_mutex);
             m_imageMode = mode == QStringLiteral("Hologram") ? ImageMode::Hologram
                         : mode == QStringLiteral("Fluorescent Beads") ? ImageMode::Beads
+                        : mode == QStringLiteral("Red Blood Cells") ? ImageMode::RedBloodCells
                         : ImageMode::Gradient;
             if (m_imageMode == ImageMode::Beads && m_beadsImage.isEmpty())
             {
                 rebuildBeadsImage();
+            }
+            if (m_imageMode == ImageMode::RedBloodCells && m_cellPhase.empty())
+            {
+                rebuildBloodCells();
             }
             return true;
         }
@@ -294,9 +302,15 @@ namespace scopeone::core
             m_sensorHeight = resolution;
             m_roi = QRect(0, 0, resolution, resolution);
             m_beadsImage.clear();
+            m_cellAmplitude.clear();
+            m_cellPhase.clear();
             if (m_imageMode == ImageMode::Beads)
             {
                 rebuildBeadsImage();
+            }
+            if (m_imageMode == ImageMode::RedBloodCells)
+            {
+                rebuildBloodCells();
             }
             return true;
         }
@@ -359,6 +373,7 @@ namespace scopeone::core
         {
             return {QStringLiteral("Gradient"),
                     QStringLiteral("Hologram"),
+                    QStringLiteral("Red Blood Cells"),
                     QStringLiteral("Fluorescent Beads")};
         }
         if (accepts(cameraId) && name == QStringLiteral("Resolution"))
@@ -508,11 +523,36 @@ namespace scopeone::core
                                                    + (ny + 0.12) * (ny + 0.12)));
                     const double objectPhase = 18.0 * (nx * nx + ny * ny)
                                              + 0.015 * static_cast<double>(frame.frameIndex);
+                    // The +1 order of this carrier lies in the upper half of the spectrum, at (48, -32), which is
+                    // where the reconstruction looks for it, so that the phase comes out with the right sign
                     const double carrier = twoPi * (48.0 * sensorX / m_sensorWidth
-                                                     + 32.0 * sensorY / m_sensorHeight);
+                                                     - 32.0 * sensorY / m_sensorHeight);
                     intensity = 70.0
                               + 55.0 * objectAmplitude * objectAmplitude
                               + 120.0 * objectAmplitude * std::cos(carrier + objectPhase);
+                }
+                else if (m_imageMode == ImageMode::RedBloodCells)
+                {
+                    // An off axis hologram like the one above, of a thin layer of red blood cells. Besides
+                    // bending the fringes, the cells take some of the light, which dims the fringes over them.
+                    const int sensorX = m_roi.x() + x;
+                    const int sensorY = m_roi.y() + y;
+                    const std::size_t index = static_cast<std::size_t>(sensorY) * m_sensorWidth + sensorX;
+                    const double objectAmplitude = 0.8 * m_cellAmplitude[index];
+                    // The background is flat and the fringes stay where they are
+                    const double objectPhase = m_cellPhase[index];
+                    // The +1 order of this carrier lies in the upper half of the spectrum, at (48, -32), which is
+                    // where the reconstruction looks for it, so that the phase comes out with the right sign
+                    const double carrier = twoPi * (48.0 * sensorX / m_sensorWidth
+                                                     - 32.0 * sensorY / m_sensorHeight);
+                    // The reference wave is much stronger than the light of the cells, as it is in a real setup,
+                    // so the fringes have a contrast of about one half and the picture stays well inside the range
+                    constexpr double kReferenceAmplitude = 11.8;
+                    constexpr double kObjectScale = 4.1;
+                    const double object = kObjectScale * objectAmplitude;
+                    intensity = kReferenceAmplitude * kReferenceAmplitude
+                              + object * object
+                              + 2.0 * kReferenceAmplitude * object * std::cos(carrier + objectPhase);
                 }
                 else
                 {
@@ -532,6 +572,107 @@ namespace scopeone::core
     }
 
     // Build a static field of Gaussian PSFs for fast live preview
+    // Lays out red blood cells that do not touch, each a biconcave disc, and works out the amplitude and the phase that
+    // a plane wave takes on passing through them. The thickness follows the shape of Evans and Fung, scaled to a rim of
+    // 2.4 micrometers and a dimple of about 0.8, and the phase is 2 pi times the difference of the refractive index of
+    // the cell and the medium (0.06) times the thickness, over the wavelength (0.633 micrometers).
+    void SimulatorProvider::rebuildBloodCells()
+    {
+        const std::size_t count = static_cast<std::size_t>(m_sensorWidth) * m_sensorHeight;
+        m_cellAmplitude.assign(count, 1.0f);
+        m_cellPhase.assign(count, 0.0f);
+
+        constexpr double kC0 = 0.207161;
+        constexpr double kC2 = 2.002558;
+        constexpr double kC4 = -1.122762;
+        const auto shape = [](double rho)
+        {
+            return std::sqrt((std::max)(0.0, 1.0 - rho * rho)) * (kC0 + kC2 * rho * rho + kC4 * rho * rho * rho * rho);
+        };
+        double peak = 0.0;
+        for (int step = 0; step <= 1000; ++step)
+        {
+            peak = (std::max)(peak, shape(step / 1000.0));
+        }
+        constexpr double kPeakThicknessUm = 2.4;
+        constexpr double kPhasePerMicrometer = 6.28318530717958647692 * 0.06 / 0.633;
+
+        // The field is about 60 micrometers wide and a cell about 7.8 micrometers across
+        const double radiusBase = 0.065 * (std::min)(m_sensorWidth, m_sensorHeight);
+        struct Cell
+        {
+            double x;
+            double y;
+            double radius;
+            double squeeze;
+            double angle;
+        };
+        std::vector<Cell> cells;
+        std::mt19937 layoutGenerator(20240601u);
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        for (int attempt = 0; attempt < 4000 && cells.size() < 24; ++attempt)
+        {
+            Cell cell;
+            cell.radius = radiusBase * (0.9 + 0.2 * unit(layoutGenerator));
+            cell.squeeze = 0.85 + 0.15 * unit(layoutGenerator);
+            cell.angle = 3.14159265358979323846 * unit(layoutGenerator);
+            cell.x = cell.radius + unit(layoutGenerator) * (m_sensorWidth - 2.0 * cell.radius);
+            cell.y = cell.radius + unit(layoutGenerator) * (m_sensorHeight - 2.0 * cell.radius);
+            bool free = true;
+            for (const Cell& other : cells)
+            {
+                const double distance = std::hypot(cell.x - other.x, cell.y - other.y);
+                free = free && distance > 1.08 * (cell.radius + other.radius);
+            }
+            if (free)
+            {
+                cells.push_back(cell);
+            }
+        }
+
+        for (const Cell& cell : cells)
+        {
+            const int reach = static_cast<int>(std::ceil(cell.radius * 1.05));
+            const int minX = (std::max)(0, static_cast<int>(cell.x) - reach);
+            const int maxX = (std::min)(m_sensorWidth - 1, static_cast<int>(cell.x) + reach);
+            const int minY = (std::max)(0, static_cast<int>(cell.y) - reach);
+            const int maxY = (std::min)(m_sensorHeight - 1, static_cast<int>(cell.y) + reach);
+            const double cosine = std::cos(cell.angle);
+            const double sine = std::sin(cell.angle);
+            for (int y = minY; y <= maxY; ++y)
+            {
+                for (int x = minX; x <= maxX; ++x)
+                {
+                    const double dx = x + 0.5 - cell.x;
+                    const double dy = y + 0.5 - cell.y;
+                    // The cell is a little flattened along one direction
+                    const double u = (dx * cosine + dy * sine) / cell.radius;
+                    const double v = (-dx * sine + dy * cosine) / (cell.radius * cell.squeeze);
+                    const double rho = std::sqrt(u * u + v * v);
+                    if (rho >= 1.0)
+                    {
+                        continue;
+                    }
+                    const double thicknessUm = kPeakThicknessUm * shape(rho) / peak;
+                    const std::size_t index = static_cast<std::size_t>(y) * m_sensorWidth + x;
+                    m_cellPhase[index] = static_cast<float>(kPhasePerMicrometer * thicknessUm);
+                    // Hemoglobin takes light, more where the cell is thick, so the fringes lose contrast over a cell
+                    // and the cells show in the hologram itself as dim discs with bent fringes
+                    m_cellAmplitude[index] = static_cast<float>(1.0 - 0.5 * thicknessUm / kPeakThicknessUm);
+                }
+            }
+        }
+
+        // A microscope does not see the sharp edge of a cell: its resolution and the size of a pixel soften it. Without
+        // this the thickness drops to zero at the rim with an infinite slope, which spreads over the whole spectrum and
+        // comes back from the reconstruction as ripples around the cells.
+        const double blurSigma = (std::max)(1.0, 0.004 * (std::min)(m_sensorWidth, m_sensorHeight));
+        cv::Mat phaseMap(m_sensorHeight, m_sensorWidth, CV_32F, m_cellPhase.data());
+        cv::Mat amplitudeMap(m_sensorHeight, m_sensorWidth, CV_32F, m_cellAmplitude.data());
+        cv::GaussianBlur(phaseMap, phaseMap, cv::Size(0, 0), blurSigma, blurSigma, cv::BORDER_REPLICATE);
+        cv::GaussianBlur(amplitudeMap, amplitudeMap, cv::Size(0, 0), blurSigma, blurSigma, cv::BORDER_REPLICATE);
+    }
+
     void SimulatorProvider::rebuildBeadsImage()
     {
         std::vector<float> intensities(
