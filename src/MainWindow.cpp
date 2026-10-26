@@ -1,8 +1,8 @@
 #include "MainWindow.h"
 #include "CommandSearchBox.h"
 #include "ImageAnalysis.h"
-#include "NotificationOverlay.h"
 #include "ToolIcons.h"
+#include "UpdateChecker.h"
 #include "WelcomeOverlay.h"
 
 #include "scopeone/ScopeOneCore.h"
@@ -53,6 +53,7 @@
 #include <QProgressDialog>
 #include <QInputDialog>
 #include <QJsonObject>
+#include <QDateTime>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStatusBar>
@@ -730,8 +731,7 @@ namespace scopeone::ui
         connect(m_recordingWidget, &RecordingWidget::storageWarning, this,
                 [this](const QString& title, const QString& message)
                 {
-                    qWarning().noquote() << QStringLiteral("%1: %2").arg(title, message);
-                    m_notifications->show(NotificationOverlay::Level::Warning, title, message);
+                    notifyError(title, message);
                 });
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
@@ -969,7 +969,6 @@ namespace scopeone::ui
         setupTools();
 
         setupStatusBar();
-        m_notifications = new NotificationOverlay(this);
         setupDeviceControl();
         setupInspect();
         setupImageProcessing();
@@ -980,39 +979,33 @@ namespace scopeone::ui
         setupImageGallery();
         setTabPosition(Qt::LeftDockWidgetArea, QTabWidget::North);
         updateDockWidgetMenu();
-    }
 
-    // Lists the built-in and the saved arrangements of the panels
-    // The two arrangements that bring forward what the work needs, which the toolbar and the menu share
-    void MainWindow::ensureWorkspaceActions()
-    {
-        if (m_acquireWorkspaceAction)
+        // A newer release that an earlier check found stays visible until the application is updated
         {
-            return;
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            const QString version = settings.value(QStringLiteral("Updates/availableVersion")).toString();
+            if (!version.isEmpty() && UpdateChecker::isNewer(version, QCoreApplication::applicationVersion()))
+            {
+                showUpdateAvailable(version, QUrl(settings.value(QStringLiteral("Updates/availableUrl")).toString()));
+            }
         }
-        // Two arrangements that bring forward what the work needs; no panel is put away
-        const auto arrange = [this](bool acquire)
+
+        // Look for a newer release a few seconds after the start, at most once a day
+        QTimer::singleShot(8000, this, [this]()
         {
-            for (QDockWidget* dock : {m_controlDockWidget, m_viewDockWidget, m_analyzeDockWidget,
-                                      m_processDockWidget, m_consoleDockWidget})
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            if (!settings.value(QStringLiteral("Updates/checkAtStartup"), true).toBool())
             {
-                dock->show();
+                return;
             }
-            (acquire ? m_controlDockWidget : m_analyzeDockWidget)->raise();
-            if (acquire)
+            const qint64 now = QDateTime::currentSecsSinceEpoch();
+            if (now - settings.value(QStringLiteral("Updates/lastCheck"), 0).toLongLong() < 24 * 3600)
             {
-                m_recordingDockWidget->show();
-                m_recordingDockWidget->raise();
+                return;
             }
-        };
-        m_acquireWorkspaceAction = new QAction(tr("Acquire"), this);
-        m_acquireWorkspaceAction->setToolTip(tr("Bring the controls and the recording forward"));
-        m_analyzeWorkspaceAction = new QAction(tr("Analyze"), this);
-        m_analyzeWorkspaceAction->setToolTip(tr("Bring the analysis forward"));
-        connect(m_acquireWorkspaceAction, &QAction::triggered, this,
-                [arrange]() { arrange(true); });
-        connect(m_analyzeWorkspaceAction, &QAction::triggered, this,
-                [arrange]() { arrange(false); });
+            settings.setValue(QStringLiteral("Updates/lastCheck"), now);
+            checkForUpdates(false);
+        });
     }
 
     // Shows a panel of the analysis in a dock at the bottom, where it stays beside the image
@@ -1047,13 +1040,50 @@ namespace scopeone::ui
         dock->raise();
     }
 
+    // Lists the built-in and the saved arrangements of the panels
     void MainWindow::rebuildWorkspacesMenu()
     {
         m_workspacesMenu->clear();
 
-        ensureWorkspaceActions();
-        m_workspacesMenu->addAction(m_acquireWorkspaceAction);
-        m_workspacesMenu->addAction(m_analyzeWorkspaceAction);
+        // The built-in arrangements start from the default layout, so they do not depend on where
+        // the panels were moved to
+        const auto fromDefaultLayout = [this]()
+        {
+            if (!m_defaultWindowState.isEmpty())
+            {
+                restoreState(m_defaultWindowState, kWindowLayoutVersion);
+            }
+        };
+        // Acquire: the controls and the recording panel in front
+        connect(m_workspacesMenu->addAction(tr("Acquire (controls and recording)")), &QAction::triggered,
+                this, [this, fromDefaultLayout]()
+                {
+                    fromDefaultLayout();
+                    for (QDockWidget* dock : {m_controlDockWidget, m_recordingDockWidget})
+                    {
+                        dock->show();
+                    }
+                    m_controlDockWidget->raise();
+                    m_recordingDockWidget->raise();
+                });
+        // Analyze: the histogram and layers (View) under the selection and profile (Analyze), so
+        // both can be read together. The gallery comes forward and the acquisition panels go.
+        connect(m_workspacesMenu->addAction(tr("Analyze (view, inspect and gallery)")), &QAction::triggered,
+                this, [this, fromDefaultLayout]()
+                {
+                    fromDefaultLayout();
+                    m_controlDockWidget->hide();
+                    m_recordingDockWidget->hide();
+                    // View leaves the tabs and is put below Analyze
+                    removeDockWidget(m_viewDockWidget);
+                    addDockWidget(Qt::RightDockWidgetArea, m_viewDockWidget, Qt::Vertical);
+                    m_analyzeDockWidget->show();
+                    m_viewDockWidget->show();
+                    m_analyzeDockWidget->raise();
+                    resizeDocks({m_analyzeDockWidget, m_viewDockWidget}, {1, 1}, Qt::Vertical);
+                    m_imageGalleryDockWidget->show();
+                    m_imageGalleryDockWidget->raise();
+                });
         m_workspacesMenu->addSeparator();
 
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
@@ -1179,10 +1209,110 @@ namespace scopeone::ui
     void MainWindow::notifyError(const QString& title, const QString& message)
     {
         qWarning().noquote() << QStringLiteral("%1: %2").arg(title, message);
-        if (m_notifications)
+        // One line in the status bar. The tooltip has everything, and so does the console.
+        const QString firstLine = message.section(QLatin1Char('\n'), 0, 0).trimmed();
+        m_statusIsError = true;
+        m_statusMessageTimer->stop();
+        setStatusLabelText(m_statusMessageLabel,
+                           QStringLiteral("%1: %2").arg(title, firstLine),
+                           QStringLiteral("%1\n\n%2\n\n%3")
+                               .arg(title, message, tr("Click to open the Console.")));
+        // The color and weight are set on the label itself and not by a style sheet, so that the label keeps
+        // following the palette of the theme
+        QPalette errorPalette = m_statusMessageLabel->palette();
+        errorPalette.setColor(QPalette::WindowText, QColor(0xc0, 0x39, 0x2b));
+        m_statusMessageLabel->setPalette(errorPalette);
+        QFont errorFont = m_statusMessageLabel->font();
+        errorFont.setBold(true);
+        m_statusMessageLabel->setFont(errorFont);
+        m_statusMessageLabel->setCursor(Qt::PointingHandCursor);
+    }
+
+    // Shows the link to a newer release at the right of the status bar
+    void MainWindow::showUpdateAvailable(const QString& version, const QUrl& url)
+    {
+        m_statusUpdateLabel->setText(QStringLiteral("<a href=\"%1\">%2</a>")
+                                         .arg(url.toString().toHtmlEscaped(),
+                                              tr("Update available: %1").arg(version.toHtmlEscaped())));
+        m_statusUpdateLabel->setToolTip(tr("ScopeOne %1 is out. You are using %2. Click to open the release page.")
+                                            .arg(version, QCoreApplication::applicationVersion()));
+        m_statusUpdateLabel->show();
+    }
+
+    bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+    {
+        if (watched == m_statusMessageLabel && m_statusIsError
+            && event->type() == QEvent::MouseButtonRelease)
         {
-            m_notifications->show(NotificationOverlay::Level::Error, title, message);
+            // The full text of the error is in the console
+            m_consoleDockWidget->show();
+            m_consoleDockWidget->raise();
+            showStatusMessage(QString(), 0);
+            return true;
         }
+        // The welcome card follows the window and the viewer
+        if (m_welcome && m_welcome->isVisible()
+            && ((m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
+                || (watched == this && (event->type() == QEvent::Move || event->type() == QEvent::Resize))))
+        {
+            placeWelcome();
+        }
+        else if (watched == m_statusCursorLabel && event->type() == QEvent::MouseButtonPress)
+        {
+            QGuiApplication::clipboard()->setText(m_statusCursorLabel->text());
+            showStatusMessage(tr("Copied the pixel readout"), 2500);
+        }
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    void MainWindow::checkForUpdates(bool userInitiated)
+    {
+        if (!m_updateChecker)
+        {
+            m_updateChecker = new UpdateChecker(this);
+            connect(m_updateChecker, &UpdateChecker::updateAvailable, this,
+                    [this](const QString& version, const QUrl& url)
+                    {
+                        // Remembered, so that the link is there at the next start without asking again
+                        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                        settings.setValue(QStringLiteral("Updates/availableVersion"), version);
+                        settings.setValue(QStringLiteral("Updates/availableUrl"), url.toString());
+                        showUpdateAvailable(version, url);
+                        if (m_updateCheckUserInitiated)
+                        {
+                            showStatusMessage(tr("ScopeOne %1 is available").arg(version), 10000);
+                        }
+                    });
+            connect(m_updateChecker, &UpdateChecker::upToDate, this, [this](const QString& version)
+            {
+                QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                settings.remove(QStringLiteral("Updates/availableVersion"));
+                settings.remove(QStringLiteral("Updates/availableUrl"));
+                m_statusUpdateLabel->hide();
+                if (m_updateCheckUserInitiated)
+                {
+                    showStatusMessage(tr("ScopeOne is up to date (%1)").arg(version), 8000);
+                }
+            });
+            connect(m_updateChecker, &UpdateChecker::failed, this, [this](const QString& message)
+            {
+                // A check at startup that cannot reach GitHub is not worth a message
+                if (m_updateCheckUserInitiated)
+                {
+                    notifyError(tr("Could not check for updates"), message);
+                }
+                else
+                {
+                    qInfo().noquote() << QStringLiteral("Check for updates failed: %1").arg(message);
+                }
+            });
+        }
+        if (m_updateChecker->isChecking())
+        {
+            return;
+        }
+        m_updateCheckUserInitiated = userInitiated;
+        m_updateChecker->check();
     }
 
     // Create the shared status strip for transient and persistent state
@@ -1215,7 +1345,15 @@ namespace scopeone::ui
         m_imageOpenProgress->setToolTip(tr("Image loading progress"));
         m_imageOpenProgress->hide();
 
+        m_statusUpdateLabel = new QLabel(this);
+        m_statusUpdateLabel->setTextFormat(Qt::RichText);
+        m_statusUpdateLabel->setOpenExternalLinks(true);
+        m_statusUpdateLabel->setContentsMargins(8, 0, 8, 0);
+        m_statusUpdateLabel->hide();
+        m_statusMessageLabel->installEventFilter(this);
+
         bar->addWidget(m_statusMessageLabel, 1);
+        bar->addPermanentWidget(m_statusUpdateLabel);
         bar->addPermanentWidget(m_imageOpenProgress);
         bar->addPermanentWidget(m_statusCursorLabel);
         bar->addPermanentWidget(m_statusPreviewLabel);
@@ -1550,6 +1688,21 @@ namespace scopeone::ui
         connect(reportProblemAction, &QAction::triggered, this, []() {
             QDesktopServices::openUrl(QUrl(QStringLiteral(
                 "https://github.com/Experimental-Microscopy-Lab/ScopeOne/issues")));
+        });
+        helpMenu->addSeparator();
+        auto* checkUpdatesAction = helpMenu->addAction(tr("Check for &Updates..."));
+        connect(checkUpdatesAction, &QAction::triggered, this, [this]() { checkForUpdates(true); });
+        auto* updatesAtStartupAction = helpMenu->addAction(tr("Check for Updates at &Startup"));
+        updatesAtStartupAction->setCheckable(true);
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            updatesAtStartupAction->setChecked(
+                settings.value(QStringLiteral("Updates/checkAtStartup"), true).toBool());
+        }
+        connect(updatesAtStartupAction, &QAction::toggled, this, [](bool checked)
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            settings.setValue(QStringLiteral("Updates/checkAtStartup"), checked);
         });
         helpMenu->addSeparator();
         auto* aboutQtAction = helpMenu->addAction(tr("About &Qt"));
@@ -1948,6 +2101,15 @@ namespace scopeone::ui
     void MainWindow::showStatusMessage(const QString& message, int timeoutMs)
     {
         const QString text = message.trimmed().isEmpty() ? tr("Ready") : message;
+        if (m_statusIsError)
+        {
+            m_statusIsError = false;
+            m_statusMessageLabel->setPalette(QPalette());
+            QFont normalFont = m_statusMessageLabel->font();
+            normalFont.setBold(false);
+            m_statusMessageLabel->setFont(normalFont);
+            m_statusMessageLabel->unsetCursor();
+        }
         setStatusLabelText(m_statusMessageLabel, text, text);
         if (timeoutMs > 0)
         {
@@ -2157,22 +2319,6 @@ namespace scopeone::ui
         refreshRecentImagesMenu();
     }
 
-    bool MainWindow::eventFilter(QObject* watched, QEvent* event)
-    {
-        if (m_welcome && m_welcome->isVisible()
-            && ((m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
-                || (watched == this && (event->type() == QEvent::Move || event->type() == QEvent::Resize))))
-        {
-            placeWelcome();
-        }
-        else if (watched == m_statusCursorLabel && event->type() == QEvent::MouseButtonPress)
-        {
-            QGuiApplication::clipboard()->setText(m_statusCursorLabel->text());
-            showStatusMessage(tr("Copied the pixel readout"), 2500);
-        }
-        return QMainWindow::eventFilter(watched, event);
-    }
-
     // Puts the welcome card in the middle of the viewer, without taking its room
     void MainWindow::placeWelcome()
     {
@@ -2349,7 +2495,6 @@ namespace scopeone::ui
         if (!success)
         {
             notifyError(tr("Load Failed"), tr("Failed to load configuration: %1").arg(errorMessage));
-            showStatusMessage(tr("Configuration load failed"), 5000);
             qCritical().noquote() << QString("Configuration failed: %1").arg(errorMessage);
             return;
         }
@@ -2424,7 +2569,6 @@ namespace scopeone::ui
         if (!success)
         {
             notifyError(tr("Unload Failed"), tr("Failed to unload configuration: %1").arg(errorMessage));
-            showStatusMessage(tr("Configuration unload failed"), 5000);
             qCritical().noquote() << QString("Configuration unload failed: %1").arg(errorMessage);
             return;
         }
