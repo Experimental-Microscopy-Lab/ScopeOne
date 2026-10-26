@@ -868,7 +868,7 @@ namespace scopeone::ui
         m_viewDimensionCombo = new QComboBox(surfaceViewGroup);
         m_viewDimensionCombo->addItem(QStringLiteral("2D Flat Map"));
         m_viewDimensionCombo->addItem(QStringLiteral("3D Surface"));
-        m_viewDimensionCombo->setToolTip(QStringLiteral("Switch between the flat image and a displaced surface"));
+        m_viewDimensionCombo->setToolTip(QStringLiteral("Show the selected layer as a flat image or as a displaced surface. Other layers keep their own."));
 
         m_3dZScaleSlider = new QSlider(Qt::Horizontal, surfaceViewGroup);
         m_3dZScaleSlider->setRange(1, 100);
@@ -876,9 +876,11 @@ namespace scopeone::ui
         m_3dZScaleSlider->setToolTip(QStringLiteral("Height exaggeration from 0.1x to 10.0x"));
 
         m_3dZScaleSpinBox = new QDoubleSpinBox(surfaceViewGroup);
-        m_3dZScaleSpinBox->setRange(0.1, 10.0);
-        m_3dZScaleSpinBox->setSingleStep(0.1);
-        m_3dZScaleSpinBox->setDecimals(1);
+        // Down to a hundredth, because a small feature on a wide range of values stands up like a spike at 1x.
+        // The step follows the size of the value, so that it is as easy to go from 0.05 to 0.04 as from 5 to 4.
+        m_3dZScaleSpinBox->setRange(0.01, 10.0);
+        m_3dZScaleSpinBox->setDecimals(2);
+        m_3dZScaleSpinBox->setStepType(QAbstractSpinBox::AdaptiveDecimalStepType);
         m_3dZScaleSpinBox->setSuffix(QStringLiteral("x"));
         m_3dZScaleSpinBox->setValue(1.0);
         m_3dZScaleSpinBox->setFixedWidth(64);
@@ -1544,7 +1546,7 @@ namespace scopeone::ui
                 || type == QEvent::MouseButtonDblClick)
             {
                 const auto* mouse = static_cast<QMouseEvent*>(event);
-                if (mouse->modifiers() & Qt::AltModifier)
+                if ((mouse->modifiers() & Qt::AltModifier) && box->property("layerKey").isValid())
                 {
                     if (type == QEvent::MouseButtonPress)
                     {

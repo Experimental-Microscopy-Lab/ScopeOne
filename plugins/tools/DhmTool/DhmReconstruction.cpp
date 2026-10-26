@@ -2,7 +2,11 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include <QMutex>
+#include <QMutexLocker>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <queue>
@@ -161,18 +165,44 @@ namespace
         return mask;
     }
 
+    // Rolls the spectrum so that what lies at the shift comes to the origin, in four block copies
     void circularShift(const cv::Mat& source, cv::Mat& destination, int shiftX, int shiftY)
     {
+        const int rows = source.rows;
+        const int cols = source.cols;
+        const int sx = ((shiftX % cols) + cols) % cols;
+        const int sy = ((shiftY % rows) + rows) % rows;
         destination.create(source.size(), source.type());
-        for (int y = 0; y < source.rows; ++y)
+        const auto copyBlock = [&](int destinationX, int destinationY, int sourceX, int sourceY, int width, int height)
         {
-            const int sourceY = (y - shiftY + source.rows) % source.rows;
-            for (int x = 0; x < source.cols; ++x)
+            if (width > 0 && height > 0)
             {
-                const int sourceX = (x - shiftX + source.cols) % source.cols;
-                destination.at<cv::Vec2f>(y, x) = source.at<cv::Vec2f>(sourceY, sourceX);
+                source(cv::Rect(sourceX, sourceY, width, height))
+                    .copyTo(destination(cv::Rect(destinationX, destinationY, width, height)));
             }
+        };
+        copyBlock(sx, sy, 0, 0, cols - sx, rows - sy);
+        copyBlock(0, sy, cols - sx, 0, sx, rows - sy);
+        copyBlock(sx, 0, 0, rows - sy, cols - sx, sy);
+        copyBlock(0, 0, cols - sx, rows - sy, sx, sy);
+    }
+
+    // The window of a reconstruction stays the same from frame to frame, so it is made once and kept
+    cv::Mat cachedCircularMask(int width, int height, const cv::Point& center, int radius, bool softEdge, double sigma)
+    {
+        static QMutex mutex;
+        static cv::Mat mask;
+        static std::array<double, 7> key{};
+        const std::array<double, 7> wanted{static_cast<double>(width), static_cast<double>(height),
+                                           static_cast<double>(center.x), static_cast<double>(center.y),
+                                           static_cast<double>(radius), softEdge ? 1.0 : 0.0, sigma};
+        QMutexLocker locker(&mutex);
+        if (mask.empty() || key != wanted)
+        {
+            mask = circularMask(width, height, center, radius, softEdge, sigma);
+            key = wanted;
         }
+        return mask;
     }
 
     void applyMask(cv::Mat& spectrum, const cv::Mat& mask)
@@ -427,12 +457,12 @@ namespace scopeone::dhm
         cv::Mat filtered = spectrum.shiftedSpectrum.clone();
         const cv::Point sideband(spectrum.shiftedSpectrum.cols / 2 + sidebandX,
                                  spectrum.shiftedSpectrum.rows / 2 + sidebandY);
-        const cv::Mat mask = circularMask(spectrum.shiftedSpectrum.cols,
-                                          spectrum.shiftedSpectrum.rows,
-                                          sideband,
-                                          radius,
-                                          params.softEdge,
-                                          params.softEdgeSigma);
+        const cv::Mat mask = cachedCircularMask(spectrum.shiftedSpectrum.cols,
+                                                spectrum.shiftedSpectrum.rows,
+                                                sideband,
+                                                radius,
+                                                params.softEdge,
+                                                params.softEdgeSigma);
         applyMask(filtered, mask);
         progress(30);
 

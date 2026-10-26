@@ -6,6 +6,7 @@
 #include <QRect>
 #include <QTimer>
 #include <random>
+#include <vector>
 
 #include "scopeone/CameraProvider.h"
 #include "scopeone/HardwareProvider.h"
@@ -67,12 +68,15 @@ namespace scopeone::core
         {
             Gradient,
             Hologram,
-            Beads
+            Beads,
+            RedBloodCells,
+            Brillouin
         };
 
         bool accepts(const QString& cameraIdOrAll) const;
         ImageFrame makeFrame();
         void rebuildBeadsImage();
+        void rebuildBloodCells();
         void updateTimerInterval();
 
         QString m_providerId;
@@ -84,6 +88,9 @@ namespace scopeone::core
         double m_gaussianNoiseSigma{0.0};
         ImageMode m_imageMode{ImageMode::Gradient};
         QByteArray m_beadsImage;
+        // Amplitude and phase of the red blood cells in the field, for the hologram of them
+        std::vector<float> m_cellAmplitude;
+        std::vector<float> m_cellPhase;
         quint64 m_frameIndex{0};
         std::mt19937 m_randomGenerator{std::random_device{}()};
         FrameSink m_frameSink;

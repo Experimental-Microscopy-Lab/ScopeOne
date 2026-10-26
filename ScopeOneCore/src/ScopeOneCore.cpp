@@ -3298,6 +3298,8 @@ namespace scopeone::core
         }
         recordLayerFrame(toolLayerKey(sourceId));
         const QString layerKey = toolLayerKey(storedFrame.cameraId);
+        // Only a new layer is shown, so a layer the user hid stays hidden while the stream continues
+        const bool isNewLayer = m_imageSceneModel->layerIndex(layerKey) < 0;
         ensureSceneLayer(layerKey,
                          storedFrame.cameraId,
                          displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed(),
@@ -3306,7 +3308,10 @@ namespace scopeone::core
             layerKey,
             displayName.trimmed().isEmpty() ? storedFrame.cameraId : displayName.trimmed());
         m_imageSceneModel->updateLayerFrame(layerKey, storedFrame);
-        m_imageSceneModel->setLayerVisible(layerKey, true);
+        if (isNewLayer)
+        {
+            m_imageSceneModel->setLayerVisible(layerKey, true);
+        }
         m_latestHistogramStats.remove(layerKey);
         scheduleHistogramStats(layerKey, storedFrame);
         emit toolStreamFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);

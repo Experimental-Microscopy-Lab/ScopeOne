@@ -7,6 +7,7 @@
 #include <QOpenGLVertexArrayObject>
 #include <QElapsedTimer>
 #include <QMutex>
+#include <QHash>
 #include <QMap>
 #include <QString>
 #include <QStringList>
@@ -103,7 +104,15 @@ namespace scopeone::ui
         void setClippingWarningEnabled(bool enabled);
         bool isClippingWarningEnabled() const;
         void setViewDimensionMode(ViewDimensionMode mode);
-        ViewDimensionMode viewDimensionMode() const { return m_viewDimensionMode; }
+        // The mode of the layer that is active. Each layer has a mode of its own, so that one camera can be
+        // seen as an image and another as a surface at the same time; a layer that was not given one follows
+        // the default.
+        ViewDimensionMode viewDimensionMode() const { return layerDimensionMode(m_activeLayerKey); }
+        ViewDimensionMode layerDimensionMode(const QString& layerKey) const
+        {
+            return m_layerDimensionModes.value(layerKey, m_viewDimensionMode);
+        }
+        void setLayerDimensionMode(const QString& layerKey, ViewDimensionMode mode);
         void set3dZScale(float scale);
         float get3dZScale() const { return m_zScale; }
         void reset3dCamera();
@@ -134,6 +143,7 @@ signals:
         void scaleBarVisibilityChanged(bool visible);
         void clippingWarningChanged(bool enabled);
         void viewDimensionModeChanged(ViewDimensionMode mode);
+        void layerDimensionModeChanged(const QString& layerKey, ViewDimensionMode mode);
         void threeDimensionalZScaleChanged(float scale);
         void threeDimensionalWireframeChanged(bool enabled);
         void threeDimensionalColorbarVisibilityChanged(bool visible);
@@ -312,6 +322,8 @@ signals:
         GLint m_u3dColormap{-1}, m_u3dColormapLut{-1}, m_u3dShowClipping{-1};
         GLint m_u3dUvScale{-1}, m_u3dUvOffset{-1}, m_u3dLightDirection{-1};
         ViewDimensionMode m_viewDimensionMode{ViewDimensionMode::TwoDimensional};
+        QHash<QString, ViewDimensionMode> m_layerDimensionModes;
+        ViewDimensionMode modeAt(const QPoint& widgetPos) const;
         QMap<QString, Camera3dState> m_layerCameras3d;
         QMap<QString, int> m_layerSliceCounts;
         QMap<QString, int> m_layerSliceIndices;

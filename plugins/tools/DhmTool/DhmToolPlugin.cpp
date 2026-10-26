@@ -538,6 +538,9 @@ namespace
         {
             showPreview(m_inputPreview, input);
             m_stream->setProcessing(true);
+            // While the reconstruction follows the stream the controls stay as they are, and the progress of
+            // each frame is not shown, as both would flicker at the rate of the frames
+            const bool live = m_liveCheckBox->isChecked();
             const DhmParameters params = parameters();
             auto result = std::make_shared<scopeone::dhm::DhmResult>();
             m_task = new scopeone::ui::ScopeOneToolTask(
@@ -547,12 +550,15 @@ namespace
                     *result = scopeone::dhm::reconstruct(input, params, cancel, progress);
                 },
                 this);
-            connect(m_task, &scopeone::ui::ScopeOneToolTask::progressChanged, this,
-                    [this](int percent)
-                    {
-                        m_progress->setValue(percent);
-                        m_status->setText(QStringLiteral("Reconstructing %1%%").arg(percent));
-                    });
+            if (!live)
+            {
+                connect(m_task, &scopeone::ui::ScopeOneToolTask::progressChanged, this,
+                        [this](int percent)
+                        {
+                            m_progress->setValue(percent);
+                            m_status->setText(QStringLiteral("Reconstructing %1%%").arg(percent));
+                        });
+            }
             connect(m_task, &scopeone::ui::ScopeOneToolTask::finished, this,
                     [this, result]() { publishResult(*result); });
             connect(m_task, &scopeone::ui::ScopeOneToolTask::canceled, this,
@@ -560,12 +566,15 @@ namespace
             connect(m_task, &scopeone::ui::ScopeOneToolTask::failed, this,
                     [this](const QString& message) { finishTask(message); });
 
-            m_reconstructButton->setEnabled(false);
-            m_autoDetectButton->setEnabled(false);
-            m_layerComboBox->setEnabled(false);
+            if (!live)
+            {
+                m_reconstructButton->setEnabled(false);
+                m_autoDetectButton->setEnabled(false);
+                m_layerComboBox->setEnabled(false);
+                m_progress->setValue(0);
+                m_status->setText(QStringLiteral("Reconstructing 0%"));
+            }
             m_cancelButton->setEnabled(true);
-            m_progress->setValue(0);
-            m_status->setText(QStringLiteral("Reconstructing 0%"));
             m_task->start();
         }
 
@@ -635,8 +644,9 @@ namespace
 
         void finishTask(const QString& status)
         {
+            const bool live = m_liveCheckBox->isChecked();
             m_progress->setValue(status == QStringLiteral("DHM output ready") ? 100 : m_progress->value());
-            m_status->setText(status);
+            m_status->setText(live && status == QStringLiteral("DHM output ready") ? QStringLiteral("Live") : status);
             m_reconstructButton->setEnabled(true);
             m_autoDetectButton->setEnabled(true);
             m_layerComboBox->setEnabled(true);
