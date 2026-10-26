@@ -138,8 +138,7 @@ namespace scopeone::ui
         }
         m_rows.append({label, measurement, slice, unit, position});
         rebuild();
-        show();
-        raise();
+        emit attentionRequested();
     }
 
     void ResultsWindow::addValues(const QStringList& headers, const QList<double>& values)
@@ -152,8 +151,7 @@ namespace scopeone::ui
         m_plainHeaders = headers;
         m_plainRows.append(values);
         rebuild();
-        show();
-        raise();
+        emit attentionRequested();
     }
 
     QString ResultsWindow::cell(const Row& row, const QString& key) const

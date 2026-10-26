@@ -13,7 +13,9 @@ class QAction;
 class QComboBox;
 class QLabel;
 class QWidget;
+class QLabel;
 class QToolBar;
+class QToolButton;
 class QVBoxLayout;
 
 namespace scopeone::core
@@ -50,6 +52,8 @@ namespace scopeone::ui
         ~ImageWorkspace() override;
 
         QWidget* viewerHost() const;
+        // Moves the selection tools and the view controls into the toolbar of the window
+        void moveViewerControlsTo(QToolBar* target);
         void setLiveViewer(PreviewWidget* previewWidget);
         void activateLiveViewer();
         void setVisibleLayers(const QStringList& layerKeys, bool sideBySide = false);
@@ -133,6 +137,7 @@ namespace scopeone::ui
         void removeDocument(const QString& documentId);
         void connectViewer(PreviewWidget* previewWidget);
         void setupViewerToolbar();
+        void setupToolStrip();
         void updateViewerToolbar();
         void setActiveDocument(const QString& documentId);
         void publishChannels(Document& document);
@@ -143,6 +148,8 @@ namespace scopeone::ui
         QWidget* m_viewerHost{nullptr};
         QVBoxLayout* m_viewerLayout{nullptr};
         QToolBar* m_viewerToolbar{nullptr};
+        QWidget* m_toolStrip{nullptr};
+        QList<QPair<QToolButton*, int>> m_toolStripButtons;
         QAction* m_fitToWindowAction{nullptr};
         QAction* m_oneToOneAction{nullptr};
         QAction* m_dimensionAction{nullptr};

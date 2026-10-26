@@ -132,6 +132,9 @@ namespace scopeone::ui
         void refreshRecentConfigurationsMenu();
         void refreshRecentImagesMenu();
         void updateWelcome();
+        void placeWelcome();
+        void ensureWorkspaceActions();
+        void showBottomPanel(QWidget* panel, const QString& title);
         void saveSession();
         void restoreSessionPrompt();
         void unloadConfigurationWithConfirmation();
@@ -167,7 +170,13 @@ namespace scopeone::ui
         QMenu* m_recentConfigurationsMenu{nullptr};
         QMenu* m_recentImagesMenu{nullptr};
         WelcomeOverlay* m_welcome{nullptr};
+        bool m_welcomeClosed{false};
         QAction* m_liveAction{nullptr};
+        QAction* m_recordAction{nullptr};
+        QAction* m_acquireWorkspaceAction{nullptr};
+        QAction* m_analyzeWorkspaceAction{nullptr};
+        QHash<QWidget*, QDockWidget*> m_panelDocks;
+        QDockWidget* m_firstPanelDock{nullptr};
         QAction* m_openImageAction{nullptr};
         QList<QAction*> m_viewExportActions;
         QMenu* m_dockWidgetsMenu{nullptr};

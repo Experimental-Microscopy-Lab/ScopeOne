@@ -22,6 +22,10 @@ namespace scopeone::ui
         void loadConfigurationRequested();
         void imageChosen(const QString& path);
         void configurationChosen(const QString& path);
+        void closeRequested();
+
+    protected:
+        void paintEvent(QPaintEvent* event) override;
 
     private:
         QWidget* m_recentHost{nullptr};

@@ -38,6 +38,8 @@ namespace scopeone::ui
 
         void setAvailableCameras(const QStringList& cameraIds);
         bool snapToGallery(const QString& target);
+        // Starts the recording, or stops the one that runs, as the start button does
+        void toggleRecording() { onStartStopClicked(); }
 
     signals:
         // Storage that is too small for the recording, which the user should see at once

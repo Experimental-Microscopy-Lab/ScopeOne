@@ -1,5 +1,6 @@
 #include "ImageWorkspace.h"
 
+#include "AnalysisTools.h"
 #include "PreviewWidget.h"
 #include "scopeone/ImageSceneModel.h"
 
@@ -13,7 +14,11 @@
 #include <QSignalBlocker>
 #include <QSettings>
 #include <QToolBar>
+#include <QToolButton>
+#include <QWidgetAction>
 #include "StackAxes.h"
+#include <QButtonGroup>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QUuid>
 #include <algorithm>
@@ -70,6 +75,7 @@ namespace scopeone::ui
         m_viewerToolbar->setFloatable(false);
         m_viewerToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
         m_viewerLayout->addWidget(m_viewerToolbar);
+        setupToolStrip();
 
         setupViewerToolbar();
         const int viewerToolbarHeight = m_viewerToolbar->sizeHint().height();
@@ -477,10 +483,74 @@ namespace scopeone::ui
 
     }
 
+    // Moves the selection tools and the controls of the view into a toolbar of the window, so that the
+    // viewer needs no row or column of its own
+    void ImageWorkspace::moveViewerControlsTo(QToolBar* target)
+    {
+        for (const auto& entry : std::as_const(m_toolStripButtons))
+        {
+            target->addWidget(entry.first);
+        }
+        m_toolStrip->hide();
+        target->addSeparator();
+        const QList<QAction*> actions = m_viewerToolbar->actions();
+        for (QAction* action : actions)
+        {
+            m_viewerToolbar->removeAction(action);
+            target->addAction(action);
+            if (!qobject_cast<QWidgetAction*>(action))
+            {
+                if (auto* button = qobject_cast<QToolButton*>(target->widgetForAction(action)))
+                {
+                    button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+                }
+            }
+        }
+        m_viewerToolbar->hide();
+    }
+
+    void ImageWorkspace::setupToolStrip()
+    {
+        m_toolStrip = new QWidget(m_viewerHost);
+        auto* layout = new QVBoxLayout(m_toolStrip);
+        layout->setContentsMargins(3, 6, 3, 6);
+        layout->setSpacing(2);
+        auto* group = new QButtonGroup(m_toolStrip);
+        group->setExclusive(true);
+        for (const AnalysisToolSpec& spec : analysisToolSpecs())
+        {
+            auto* button = new QToolButton(m_toolStrip);
+            button->setCheckable(true);
+            button->setAutoRaise(true);
+            button->setIconSize(QSize(20, 20));
+            button->setFixedSize(28, 28);
+            button->setToolTip(QString::fromLatin1(spec.tip));
+            button->setIcon(toolIcon(spec.icon, m_toolStrip->palette(), m_toolStrip->devicePixelRatioF()));
+            group->addButton(button);
+            layout->addWidget(button);
+            m_toolStripButtons.append({button, static_cast<int>(spec.tool)});
+            connect(button, &QToolButton::clicked, this, [this, tool = spec.tool]()
+            {
+                if (PreviewWidget* preview = activePreviewWidget())
+                {
+                    preview->setAnalysisTool(tool);
+                }
+            });
+        }
+        m_toolStripButtons.first().first->setChecked(true);
+        layout->addStretch(1);
+    }
+
     void ImageWorkspace::setLiveViewer(PreviewWidget* previewWidget)
     {
         m_livePreviewWidget = previewWidget;
-        m_viewerLayout->addWidget(previewWidget, 1);
+        // The selection tools stand beside the image, as in ImageJ
+        auto* viewerRow = new QHBoxLayout;
+        viewerRow->setContentsMargins(0, 0, 0, 0);
+        viewerRow->setSpacing(0);
+        viewerRow->addWidget(m_toolStrip);
+        viewerRow->addWidget(previewWidget, 1);
+        m_viewerLayout->addLayout(viewerRow, 1);
         connectViewer(previewWidget);
         m_liveLayerKey = previewWidget->visibleLayerKeys().value(0);
         updateViewerToolbar();
@@ -1195,6 +1265,16 @@ namespace scopeone::ui
 
     void ImageWorkspace::connectViewer(PreviewWidget* preview)
     {
+        connect(preview, &PreviewWidget::analysisToolChanged, this, [this](PreviewWidget::AnalysisTool tool)
+        {
+            for (const auto& entry : std::as_const(m_toolStripButtons))
+            {
+                if (entry.second == static_cast<int>(tool))
+                {
+                    entry.first->setChecked(true);
+                }
+            }
+        });
         connect(preview, &PreviewWidget::layerClicked,
                 this, [this](const QString& layerKey) { setActiveLayerKey(layerKey); });
         connect(preview, &PreviewWidget::mousePositionChanged,

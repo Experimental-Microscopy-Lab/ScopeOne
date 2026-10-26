@@ -66,6 +66,29 @@ namespace scopeone::ui
     {
     }
 
+    // Shows a panel in the place the window gives it, or as a window of its own without one
+    void ImageAnalysis::showPanel(QWidget* panel, const QString& title)
+    {
+        if (m_panelPresenter)
+        {
+            m_panelPresenter(panel, title);
+            return;
+        }
+        panel->show();
+        panel->raise();
+    }
+
+    ResultsWindow* ImageAnalysis::results()
+    {
+        if (!m_results)
+        {
+            m_results = new ResultsWindow(m_window);
+            connect(m_results, &ResultsWindow::attentionRequested, this,
+                    [this]() { showPanel(m_results, tr("Results")); });
+        }
+        return m_results;
+    }
+
     void ImageAnalysis::addMenus(QMenuBar* menuBar, QAction* before)
     {
         QMenu* edit = new QMenu(tr("&Edit"), menuBar);
@@ -206,10 +229,12 @@ namespace scopeone::ui
         }
         const int planes = static_cast<int>(source.frames.size());
         const scopeone::core::StackShape shape = m_workspace->layerStackShape(source.layerKey);
-        if (shape.isHyperstack() && shape.channels * shape.slices * shape.frames == planes)
+        if (shape.channels * shape.slices * shape.frames == planes && planes > 1)
         {
+            // The file says which axes it has, one or several
             source.shape = shape;
-            source.hyper = true;
+            source.known = true;
+            source.hyper = shape.isHyperstack();
         }
         else
         {
@@ -230,7 +255,7 @@ namespace scopeone::ui
         QStringList names;
         for (const QChar letter : letters)
         {
-            names << stack::axisName(letter, !source.hyper);
+            names << stack::axisName(letter, !source.known);
         }
         return names;
     }
@@ -827,20 +852,11 @@ namespace scopeone::ui
         connect(measureAction, &QAction::triggered, this, [this]() { measure(); });
         connect(menu->addAction(tr("&Results")), &QAction::triggered, this, [this]()
         {
-            if (!m_results)
-            {
-                m_results = new ResultsWindow(m_window);
-            }
-            m_results->show();
-            m_results->raise();
+            showPanel(results(), tr("Results"));
         });
         connect(menu->addAction(tr("&Set Measurements...")), &QAction::triggered, this, [this]()
         {
-            if (!m_results)
-            {
-                m_results = new ResultsWindow(m_window);
-            }
-            m_results->chooseMeasurements();
+            results()->chooseMeasurements();
         });
         menu->addSeparator();
         QAction* managerAction = menu->addAction(tr("&ROI Manager"));
@@ -854,8 +870,7 @@ namespace scopeone::ui
                         [this](const QList<ImageSceneModel::Markup>& shapes, bool allSlices)
                         { measureShapes(shapes, allSlices); });
             }
-            m_roiManager->show();
-            m_roiManager->raise();
+            showPanel(m_roiManager, tr("ROI Manager"));
         });
         connect(menu->addAction(tr("Plot &Z-axis Profile")), &QAction::triggered, this, [this]() { plotZProfile(); });
         menu->addSeparator();
@@ -1105,10 +1120,9 @@ namespace scopeone::ui
         {
             m_profile = new ProfilePlotWindow(m_window);
         }
-        const QString axisTitle = source.hyper ? names.at(axisIndex) : tr("Slice");
+        const QString axisTitle = source.known ? names.at(axisIndex) : tr("Slice");
         m_profile->setProfile(tr("Profile of %1 along %2").arg(source.title, axisTitle), axisTitle, tr("Mean"), values);
-        m_profile->show();
-        m_profile->raise();
+        showPanel(m_profile, tr("Profile"));
     }
 
     void ImageAnalysis::showOrthogonalViews()
@@ -1608,9 +1622,9 @@ namespace scopeone::ui
         const double scale = pixelScale(source);
         const double unit = scale > 0.0 ? scale : 1.0;
         const QString unitName = scale > 0.0 ? QStringLiteral("µm") : QStringLiteral("pixel");
-        if (display && !m_results)
+        if (display)
         {
-            m_results = new ResultsWindow(m_window);
+            results();
         }
 
         QList<imageops::Particle> kept;
@@ -1661,10 +1675,7 @@ namespace scopeone::ui
         {
             return;
         }
-        if (!m_results)
-        {
-            m_results = new ResultsWindow(m_window);
-        }
+        results();
         const double scale = pixelScale(source);
         const QString unit = scale > 0.0 ? QStringLiteral("µm") : QStringLiteral("pixel");
         const int first = allSlices ? 0 : source.index;

@@ -8,6 +8,7 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/PluginManifest.h"
 #include "AboutDialog.h"
+#include "AnalysisTools.h"
 #include "Appearance.h"
 #include "InspectWidget.h"
 #include "ConsoleWidget.h"
@@ -26,6 +27,8 @@
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
+#include <QToolButton>
+#include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
 #include <QGuiApplication>
@@ -485,6 +488,9 @@ namespace scopeone::ui
                     }
 
                     m_imageWorkspace->openSession(session, QFileInfo(filePath).fileName());
+                    // The layers of the opened image are what comes next, so the View tab comes forward
+                    m_viewDockWidget->show();
+                    m_viewDockWidget->raise();
                     m_saveImageAsAction->setEnabled(true);
                     showStatusMessage(
                         tr("Opened %1").arg(QFileInfo(filePath).fileName()),
@@ -771,6 +777,11 @@ namespace scopeone::ui
                     setStatusLabelText(m_statusRecordingLabel,
                                        recording ? tr("Recording: Active") : tr("Recording: Idle"),
                                        recording ? tr("Recording is active") : tr("Recording is idle"));
+                    if (m_recordAction)
+                    {
+                        const QSignalBlocker blocker(m_recordAction);
+                        m_recordAction->setChecked(recording);
+                    }
                     showStatusMessage(recording ? tr("Recording started") : tr("Recording stopped"), 3000);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
@@ -800,6 +811,9 @@ namespace scopeone::ui
                         return;
                     }
                     m_imageWorkspace->openSession(session);
+                    // The layers of the opened image are what comes next, so the View tab comes forward
+                    m_viewDockWidget->show();
+                    m_viewDockWidget->raise();
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
@@ -936,12 +950,18 @@ namespace scopeone::ui
             settings.setValue(QStringLiteral("View/scaleBarVisible"), visible);
         });
         setCentralWidget(m_imageWorkspace->viewerHost());
-        m_welcome = new WelcomeOverlay(m_imageWorkspace->viewerHost());
+        m_welcome = new WelcomeOverlay(this);
+        installEventFilter(this);
         m_imageWorkspace->viewerHost()->installEventFilter(this);
         connect(m_welcome, &WelcomeOverlay::openImageRequested, this, &MainWindow::openImageDialog);
         connect(m_welcome, &WelcomeOverlay::loadConfigurationRequested, this, &MainWindow::loadConfigurationFromDialog);
         connect(m_welcome, &WelcomeOverlay::imageChosen, this, [this](const QString& path) { openImages({path}); });
         connect(m_welcome, &WelcomeOverlay::configurationChosen, this, &MainWindow::loadConfigurationPath);
+        connect(m_welcome, &WelcomeOverlay::closeRequested, this, [this]()
+        {
+            m_welcomeClosed = true;
+            m_welcome->hide();
+        });
         connect(m_previewWidget, &PreviewWidget::availableLayerKeysChanged, this, [this]() { updateWelcome(); });
         connect(m_imageWorkspace, &ImageWorkspace::documentsChanged, this, [this]() { updateWelcome(); });
         QTimer::singleShot(0, this, [this]() { updateWelcome(); });
@@ -963,29 +983,77 @@ namespace scopeone::ui
     }
 
     // Lists the built-in and the saved arrangements of the panels
-    void MainWindow::rebuildWorkspacesMenu()
+    // The two arrangements that bring forward what the work needs, which the toolbar and the menu share
+    void MainWindow::ensureWorkspaceActions()
     {
-        m_workspacesMenu->clear();
-
-        // Two arrangements that bring forward what the work needs
-        const auto bringForward = [this](QDockWidget* right, bool recording)
+        if (m_acquireWorkspaceAction)
+        {
+            return;
+        }
+        // Two arrangements that bring forward what the work needs; no panel is put away
+        const auto arrange = [this](bool acquire)
         {
             for (QDockWidget* dock : {m_controlDockWidget, m_viewDockWidget, m_analyzeDockWidget,
                                       m_processDockWidget, m_consoleDockWidget})
             {
                 dock->show();
             }
-            right->raise();
-            if (recording)
+            (acquire ? m_controlDockWidget : m_analyzeDockWidget)->raise();
+            if (acquire)
             {
                 m_recordingDockWidget->show();
                 m_recordingDockWidget->raise();
             }
         };
-        connect(m_workspacesMenu->addAction(tr("Acquire (controls and recording)")), &QAction::triggered,
-                this, [bringForward, this]() { bringForward(m_controlDockWidget, true); });
-        connect(m_workspacesMenu->addAction(tr("Analyze (inspect and process)")), &QAction::triggered,
-                this, [bringForward, this]() { bringForward(m_analyzeDockWidget, false); });
+        m_acquireWorkspaceAction = new QAction(tr("Acquire"), this);
+        m_acquireWorkspaceAction->setToolTip(tr("Bring the controls and the recording forward"));
+        m_analyzeWorkspaceAction = new QAction(tr("Analyze"), this);
+        m_analyzeWorkspaceAction->setToolTip(tr("Bring the analysis forward"));
+        connect(m_acquireWorkspaceAction, &QAction::triggered, this,
+                [arrange]() { arrange(true); });
+        connect(m_analyzeWorkspaceAction, &QAction::triggered, this,
+                [arrange]() { arrange(false); });
+    }
+
+    // Shows a panel of the analysis in a dock at the bottom, where it stays beside the image
+    void MainWindow::showBottomPanel(QWidget* panel, const QString& title)
+    {
+        QDockWidget* dock = m_panelDocks.value(panel);
+        if (!dock)
+        {
+            dock = new QDockWidget(title, this);
+            dock->setObjectName(title.simplified().remove(QLatin1Char(' ')) + QStringLiteral("PanelDock"));
+            dock->setWidget(panel);
+            dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+            if (!m_firstPanelDock)
+            {
+                addDockWidget(Qt::BottomDockWidgetArea, dock);
+                m_firstPanelDock = dock;
+            }
+            else if (title == tr("Profile"))
+            {
+                tabifyDockWidget(m_firstPanelDock, dock);
+            }
+            else
+            {
+                addDockWidget(Qt::BottomDockWidgetArea, dock);
+                splitDockWidget(m_firstPanelDock, dock, Qt::Horizontal);
+            }
+            m_panelDocks.insert(panel, dock);
+            // A height that shows a few rows of a table; it can be dragged to another
+            resizeDocks({dock}, {qMax(200, height() / 4)}, Qt::Vertical);
+        }
+        dock->show();
+        dock->raise();
+    }
+
+    void MainWindow::rebuildWorkspacesMenu()
+    {
+        m_workspacesMenu->clear();
+
+        ensureWorkspaceActions();
+        m_workspacesMenu->addAction(m_acquireWorkspaceAction);
+        m_workspacesMenu->addAction(m_analyzeWorkspaceAction);
         m_workspacesMenu->addSeparator();
 
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
@@ -1387,6 +1455,10 @@ namespace scopeone::ui
         giveIcon(m_openImageAction, ToolIconKind::Open, tr("Open Image"));
         giveIcon(togglePreviewAction, ToolIconKind::Live, tr("Live preview"));
         giveIcon(snapAction, ToolIconKind::Snap, tr("Snap an image"));
+        m_recordAction = new QAction(tr("Record"), this);
+        m_recordAction->setCheckable(true);
+        giveIcon(m_recordAction, ToolIconKind::Record, tr("Start or stop recording"));
+        connect(m_recordAction, &QAction::triggered, this, [this]() { m_recordingWidget->toggleRecording(); });
         giveIcon(autoContrastAction, ToolIconKind::Contrast, tr("Auto contrast"));
         auto* mainToolBar = addToolBar(tr("Main"));
         mainToolBar->setObjectName(QStringLiteral("MainToolBar"));
@@ -1398,8 +1470,14 @@ namespace scopeone::ui
         mainToolBar->addSeparator();
         mainToolBar->addAction(togglePreviewAction);
         mainToolBar->addAction(snapAction);
+        mainToolBar->addAction(m_recordAction);
         mainToolBar->addSeparator();
         mainToolBar->addAction(autoContrastAction);
+
+        // The selection tools and the controls of the view share this row, so the viewer needs none of its own
+        mainToolBar->addSeparator();
+        m_imageWorkspace->moveViewerControlsTo(mainToolBar);
+
 
         // Saving or copying what the viewer shows
         auto* saveViewAction = new QAction(tr("Save View as Image..."), this);
@@ -1436,6 +1514,17 @@ namespace scopeone::ui
             const QString& title) { presentSession(session, title); });
         m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
         m_imageAnalysis->setContextActions(m_viewExportActions);
+        m_imageAnalysis->setPanelPresenter([this](QWidget* panel, const QString& title) { showBottomPanel(panel, title); });
+        connect(m_previewWidget, &PreviewWidget::analysisToolChanged, this, [this](PreviewWidget::AnalysisTool tool)
+        {
+            for (const AnalysisToolSpec& spec : analysisToolSpecs())
+            {
+                if (spec.tool == tool)
+                {
+                    showStatusMessage(QString::fromLatin1(spec.tip), 0);
+                }
+            }
+        });
         connect(m_previewWidget, &PreviewWidget::contextMenuRequested,
                 m_imageAnalysis, &ImageAnalysis::showContextMenu);
         connect(m_imageAnalysis, &ImageAnalysis::pipelineStepRequested, this,
@@ -2070,9 +2159,11 @@ namespace scopeone::ui
 
     bool MainWindow::eventFilter(QObject* watched, QEvent* event)
     {
-        if (m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize && m_welcome)
+        if (m_welcome && m_welcome->isVisible()
+            && ((m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
+                || (watched == this && (event->type() == QEvent::Move || event->type() == QEvent::Resize))))
         {
-            m_welcome->setGeometry(m_imageWorkspace->viewerHost()->rect());
+            placeWelcome();
         }
         else if (watched == m_statusCursorLabel && event->type() == QEvent::MouseButtonPress)
         {
@@ -2082,7 +2173,16 @@ namespace scopeone::ui
         return QMainWindow::eventFilter(watched, event);
     }
 
-    // The welcome page covers the viewer while nothing is open
+    // Puts the welcome card in the middle of the viewer, without taking its room
+    void MainWindow::placeWelcome()
+    {
+        const QWidget* host = m_imageWorkspace->viewerHost();
+        m_welcome->adjustSize();
+        const QPoint center = host->mapToGlobal(host->rect().center());
+        m_welcome->move(center - QPoint(m_welcome->width() / 2, m_welcome->height() / 2));
+    }
+
+    // The welcome card lies over the viewer while nothing is open
     void MainWindow::updateWelcome()
     {
         if (!m_welcome)
@@ -2107,10 +2207,20 @@ namespace scopeone::ui
             };
             m_welcome->setRecent(existing(settings.value(QStringLiteral("RecentImages")).toStringList()),
                                  existing(settings.value(QStringLiteral("RecentConfigurations")).toStringList()));
-            m_welcome->setGeometry(m_imageWorkspace->viewerHost()->rect());
-            m_welcome->raise();
         }
-        m_welcome->setVisible(empty);
+        else
+        {
+            m_welcomeClosed = false;
+        }
+        if (empty && !m_welcomeClosed)
+        {
+            m_welcome->show();
+            placeWelcome();
+        }
+        else
+        {
+            m_welcome->hide();
+        }
     }
 
     // Remembers the images that are open, to offer them again at the next start

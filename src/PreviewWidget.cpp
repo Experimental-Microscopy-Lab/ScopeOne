@@ -328,11 +328,7 @@ namespace scopeone::ui
                 this, [this](int index)
                 {
                     m_layerSliceIndices[m_activeLayerKey] = index;
-                    const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
-                    const bool compact = m_sliceBar->width() < 260;
-                    m_sliceLabel->setText(
-                        compact ? tr("%1/%2").arg(index + 1).arg(sliceCount)
-                                : tr("Slice %1 / %2").arg(index + 1).arg(sliceCount));
+                    m_sliceLabel->setText(sliceLabelText(index + 1, m_sliceBar->width() < 260));
                     emit layerSliceIndexRequested(m_activeLayerKey, index);
                 });
         connect(m_slicePlayButton, &QPushButton::toggled,
@@ -559,6 +555,44 @@ namespace scopeone::ui
         }
         updateImageDisplay();
         return layerKey;
+    }
+
+    // Moves one slice along an axis, or along the only one the image has; it stops at the ends
+    void PreviewWidget::stepSlice(QChar axis, int delta)
+    {
+        scopeone::core::StackShape shape;
+        if (activeStackShape(shape) && shape.isHyperstack())
+        {
+            const int index = axis == QLatin1Char('C') ? 0 : (axis == QLatin1Char('Z') ? 1 : 2);
+            QSlider* slider = m_axisSliders[index];
+            if (slider->isVisible())
+            {
+                slider->setValue(std::clamp(slider->value() + delta, slider->minimum(), slider->maximum()));
+            }
+            return;
+        }
+        if (m_sliceSlider->isVisible())
+        {
+            m_sliceSlider->setValue(std::clamp(m_sliceSlider->value() + delta, m_sliceSlider->minimum(),
+                                               m_sliceSlider->maximum()));
+        }
+    }
+
+    // "Z 3 / 12" for an image that has only the Z axis, and likewise for time or channels, else "Slice 3 / 12"
+    QString PreviewWidget::sliceLabelText(int current, bool compact) const
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (compact)
+        {
+            return tr("%1/%2").arg(current).arg(sliceCount);
+        }
+        QString name = tr("Slice");
+        scopeone::core::StackShape shape;
+        if (activeStackShape(shape) && shape.axisCount() == 1)
+        {
+            name = shape.slices > 1 ? QStringLiteral("Z") : (shape.frames > 1 ? QStringLiteral("T") : QStringLiteral("C"));
+        }
+        return tr("%1 %2 / %3").arg(name).arg(current).arg(sliceCount);
     }
 
     void PreviewWidget::setLayerComposite(const QString& layerKey, bool composite)
@@ -2742,57 +2776,47 @@ namespace scopeone::ui
         updateSliceBarGeometry();
     }
 
+    // The bar of the slices lies under the images and takes its room, so it never covers them
     void PreviewWidget::updateSliceBarGeometry()
     {
-        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
-        if (sliceCount <= 1)
+        const auto hideBar = [this]()
         {
             m_sliceBar->hide();
-            return;
-        }
-
-        QMap<QString, FrameSourceState> frameSources;
-        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
-        std::vector<RenderItem> renderItems;
-        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
-
-        QRect cell;
-        for (const RenderItem& item : renderItems)
-        {
-            if (item.layerKey == m_activeLayerKey)
+            if (m_sliceBarReserve != 0)
             {
-                cell = item.area;
-                break;
+                m_sliceBarReserve = 0;
+                update();
             }
-        }
-
-        if (cell.isEmpty() || cell.width() < 80)
+        };
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1 || width() < 80)
         {
-            m_sliceBar->hide();
+            hideBar();
             return;
         }
 
-        const int margin = 8;
+        const int margin = 6;
         scopeone::core::StackShape barShape;
         const bool barKnown = activeStackShape(barShape);
         const bool barComposite = barKnown && barShape.channels > 1 && m_layerComposite.value(m_activeLayerKey, false);
         const int rows = barKnown && barShape.isHyperstack() ? std::max(1, barShape.axisCount() - (barComposite ? 1 : 0)) : 1;
         const int barHeight = 8 + rows * 20;
-        const int maxBarWidth = cell.width() - 2 * margin;
+        const int barWidth = width() - 2 * margin;
 
-        const bool compact = maxBarWidth < 260;
-        const bool ultraCompact = maxBarWidth < 160;
+        const bool compact = barWidth < 260;
+        const bool ultraCompact = barWidth < 160;
 
         m_slicePlayButton->setVisible(!ultraCompact);
-        const int currentSlice = m_sliceSlider->value() + 1;
-        m_sliceLabel->setText(compact ? tr("%1/%2").arg(currentSlice).arg(sliceCount)
-                                      : tr("Slice %1 / %2").arg(currentSlice).arg(sliceCount));
+        m_sliceLabel->setText(sliceLabelText(m_sliceSlider->value() + 1, compact));
 
-        m_sliceBar->setMaximumSize(maxBarWidth, barHeight);
-        m_sliceBar->setGeometry(cell.x() + margin,
-                                cell.y() + cell.height() - barHeight - margin,
-                                maxBarWidth,
-                                barHeight);
+        const int reserve = barHeight + 2 * margin;
+        if (m_sliceBarReserve != reserve)
+        {
+            m_sliceBarReserve = reserve;
+            update();
+        }
+        m_sliceBar->setMaximumSize(barWidth, barHeight);
+        m_sliceBar->setGeometry(margin, height() - barHeight - margin, barWidth, barHeight);
         m_sliceBar->show();
         m_sliceBar->raise();
     }
@@ -2807,7 +2831,7 @@ namespace scopeone::ui
         }
 
         const int w = width();
-        const int h = height();
+        const int h = std::max(40, height() - m_sliceBarReserve);
 
         if (count == 1)
         {
@@ -3696,8 +3720,13 @@ namespace scopeone::ui
         {
             cancelDraft();
         }
+        const bool changed = m_analysisTool != tool;
         m_analysisTool = tool;
         restoreToolCursor();
+        if (changed)
+        {
+            emit analysisToolChanged(tool);
+        }
     }
 
     // Shows the crosshair while a shape tool or a pending draft is active
@@ -4598,6 +4627,20 @@ namespace scopeone::ui
         if (event->key() == Qt::Key_Escape)
         {
             m_sceneModel->selectOnly(QString());
+            event->accept();
+            return;
+        }
+
+        // , and . step through time, < and > through Z, and Ctrl with , and . through the channels
+        if (event->key() == Qt::Key_Comma || event->key() == Qt::Key_Period
+            || event->key() == Qt::Key_Less || event->key() == Qt::Key_Greater)
+        {
+            const bool forward = event->key() == Qt::Key_Period || event->key() == Qt::Key_Greater;
+            const QChar axis = (event->modifiers() & Qt::ControlModifier)
+                                   ? QLatin1Char('C')
+                                   : ((event->key() == Qt::Key_Less || event->key() == Qt::Key_Greater) ? QLatin1Char('Z')
+                                                                                                         : QLatin1Char('T'));
+            stepSlice(axis, forward ? 1 : -1);
             event->accept();
             return;
         }

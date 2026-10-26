@@ -715,7 +715,8 @@ namespace scopeone::core
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         QString realTimeProcessingSource() const;
         bool setRealTimeProcessingSource(const QString& cameraId);
-        ProcessingRecipe processingRecipe() const;
+        // The recipe of the shared pipeline, or of the pipeline that a camera runs
+        ProcessingRecipe processingRecipe(const QString& cameraId = QString()) const;
         bool applyProcessingRecipe(const ProcessingRecipe& recipe, QString* errorMessage = nullptr);
         ImageFrame processFrame(const ImageFrame& frame) const;
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
@@ -725,14 +726,25 @@ namespace scopeone::core
             const ProcessingModuleDescriptor& descriptor,
             std::function<std::unique_ptr<ProcessingModule>()> factory);
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
-        std::unique_ptr<ProcessingPipeline> createProcessingPipeline() const;
-        QList<ProcessingModuleInfo> processingModules() const;
-        bool addProcessingModule(const QString& moduleId);
-        bool removeProcessingModule(int index);
-        bool moveProcessingModule(int from, int to);
-        bool setProcessingModuleEnabled(int index, bool enabled);
-        bool setProcessingModuleParameters(int index, const QVariantMap& parameters);
-        bool resetProcessingModuleState(int index);
+        // A pipeline made of copies of the steps that the camera runs, which are those of the shared
+        // pipeline when no camera is named or the camera has none of its own
+        std::unique_ptr<ProcessingPipeline> createProcessingPipeline(const QString& cameraId = QString()) const;
+        // The steps a camera runs: its own, or those of the shared pipeline. An empty camera id names the
+        // shared pipeline, which the cameras without a pipeline of their own use. The functions that
+        // change steps work on the pipeline of the camera itself, and fail for a camera that has none.
+        QList<ProcessingModuleInfo> processingModules(const QString& cameraId = QString()) const;
+        bool addProcessingModule(const QString& moduleId, const QString& cameraId = QString());
+        bool removeProcessingModule(int index, const QString& cameraId = QString());
+        bool moveProcessingModule(int from, int to, const QString& cameraId = QString());
+        bool setProcessingModuleEnabled(int index, bool enabled, const QString& cameraId = QString());
+        bool setProcessingModuleParameters(int index, const QVariantMap& parameters,
+                                           const QString& cameraId = QString());
+        bool resetProcessingModuleState(int index, const QString& cameraId = QString());
+        // Whether a camera has a pipeline of its own, and giving it one (a copy of the shared pipeline to
+        // start from) or taking it away so that the camera uses the shared pipeline again
+        bool hasOwnProcessingPipeline(const QString& cameraId) const;
+        bool setOwnProcessingPipeline(const QString& cameraId, bool own);
+        QStringList camerasWithOwnProcessingPipeline() const;
         quint64 requestImageProcessing(const ImageFrame& frame,
                                        const QString& sourceId = QString());
         quint64 requestRecordingSessionStackProcessing(const QString& sessionId,

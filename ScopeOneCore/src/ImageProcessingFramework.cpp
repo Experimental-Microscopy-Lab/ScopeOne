@@ -232,6 +232,68 @@ namespace scopeone::core::internal
         return m_definition;
     }
 
+    // Returns the pipeline a camera runs: its own, or else the shared one
+    ProcessingPipelineDefinition& ImageProcessingManager::definitionFor(const QString& cameraId)
+    {
+        QMutexLocker locker(&m_definitionsMutex);
+        const auto it = m_cameraDefinitions.constFind(cameraId.trimmed());
+        return it != m_cameraDefinitions.constEnd() ? *it.value() : m_definition;
+    }
+
+    ProcessingPipelineDefinition* ImageProcessingManager::cameraDefinition(const QString& cameraId)
+    {
+        QMutexLocker locker(&m_definitionsMutex);
+        const auto it = m_cameraDefinitions.constFind(cameraId.trimmed());
+        return it != m_cameraDefinitions.constEnd() ? it.value().get() : nullptr;
+    }
+
+    ProcessingPipelineDefinition& ImageProcessingManager::createCameraDefinition(const QString& cameraId)
+    {
+        QMutexLocker locker(&m_definitionsMutex);
+        auto& slot = m_cameraDefinitions[cameraId.trimmed()];
+        if (!slot)
+        {
+            slot = std::make_shared<ProcessingPipelineDefinition>();
+        }
+        return *slot;
+    }
+
+    bool ImageProcessingManager::removeCameraDefinition(const QString& cameraId)
+    {
+        QMutexLocker locker(&m_definitionsMutex);
+        return m_cameraDefinitions.remove(cameraId.trimmed()) > 0;
+    }
+
+    QStringList ImageProcessingManager::cameraDefinitionIds() const
+    {
+        QMutexLocker locker(&m_definitionsMutex);
+        QStringList ids = m_cameraDefinitions.keys();
+        ids.sort();
+        return ids;
+    }
+
+    bool ImageProcessingManager::anyModules() const
+    {
+        if (m_definition.moduleCount() > 0)
+        {
+            return true;
+        }
+        QMutexLocker locker(&m_definitionsMutex);
+        for (const auto& definition : m_cameraDefinitions)
+        {
+            if (definition->moduleCount() > 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::shared_ptr<ProcessingPipelineRuntime> ImageProcessingManager::createRuntimeFor(const QString& cameraId)
+    {
+        return definitionFor(cameraId).createRuntime();
+    }
+
     // Enables or disables real time processing for incoming frames
     void ImageProcessingManager::enableRealTimeProcessing(bool enabled)
     {
@@ -418,7 +480,7 @@ namespace scopeone::core::internal
             return it.value();
         }
 
-        auto pipeline = m_definition.createRuntime();
+        auto pipeline = createRuntimeFor(cameraKey);
         pipelines.insert(cameraKey, pipeline);
         return pipeline;
     }

@@ -42,6 +42,9 @@ namespace scopeone::ui
 
         // Where a new image is shown
         void setPresenter(Presenter presenter) { m_presenter = std::move(presenter); }
+        // Where the panels of results, selections and profiles are shown, such as a dock of the window
+        using PanelPresenter = std::function<void(QWidget*, const QString&)>;
+        void setPanelPresenter(PanelPresenter presenter) { m_panelPresenter = std::move(presenter); }
         // Adds the menus to the menu bar in front of the given action
         void addMenus(QMenuBar* menuBar, QAction* before);
         // Shows the commands that are used most on an image at the given screen position
@@ -66,6 +69,8 @@ namespace scopeone::ui
             // single series along the time axis, and hyper is false.
             scopeone::core::StackShape shape;
             bool hyper{false};
+            // The file or the recording says how its slices are arranged, which can be along one axis only
+            bool known{false};
         };
         enum class Scope { Cancel, Current, All };
 
@@ -83,6 +88,8 @@ namespace scopeone::ui
         void apply(const QString& title, const FrameOperation& operation);
 
         void bindShortcuts();
+        void showPanel(QWidget* panel, const QString& title);
+        ResultsWindow* results();
         static QAction* findAction(QMenu* menu, const QString& name);
         void buildEditMenu(QMenu* menu);
         void buildImageMenu(QMenu* menu);
@@ -143,6 +150,7 @@ namespace scopeone::ui
         ImageWorkspace* m_workspace{nullptr};
         QWidget* m_window{nullptr};
         Presenter m_presenter;
+        PanelPresenter m_panelPresenter;
         QList<QMenu*> m_menus;
         QList<QAction*> m_contextActions;
         QPointer<ResultsWindow> m_results;

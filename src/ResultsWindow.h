@@ -17,6 +17,10 @@ namespace scopeone::ui
     {
         Q_OBJECT
 
+    signals:
+        // New rows were added, so the table should be brought into view
+        void attentionRequested();
+
     public:
         explicit ResultsWindow(QWidget* parent = nullptr);
 

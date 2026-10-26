@@ -78,6 +78,8 @@ namespace scopeone::ui
         // How the slices of a layer are arranged along the channel, Z and time axes
         void setLayerStackShape(const QString& layerKey, const scopeone::core::StackShape& shape);
         void setLayerComposite(const QString& layerKey, bool composite);
+        void stepSlice(QChar axis, int delta);
+        QString sliceLabelText(int current, bool compact) const;
         QString setGraphToolLayerFrame(const QString& layerId,
                                        const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
@@ -152,6 +154,7 @@ signals:
                       int sourceRoiY);
         void imageFilesDropped(const QStringList& filePaths);
         void contextMenuRequested(const QPoint& globalPosition);
+        void analysisToolChanged(AnalysisTool tool);
 
     protected:
         void initializeGL() override;
@@ -277,6 +280,8 @@ signals:
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
         QWidget* m_sliceBar{nullptr};
+        // Height at the bottom that the bar of the slices takes from the images
+        int m_sliceBarReserve{0};
         QSlider* m_sliceSlider{nullptr};
         QLabel* m_sliceLabel{nullptr};
         QPushButton* m_slicePlayButton{nullptr};

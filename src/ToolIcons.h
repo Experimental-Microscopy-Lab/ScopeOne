@@ -18,7 +18,8 @@ namespace scopeone::ui
         Open,
         Live,
         Snap,
-        Contrast
+        Contrast,
+        Record
     };
 
     // A line drawing of a selection tool, in the colors of the palette so that it follows the

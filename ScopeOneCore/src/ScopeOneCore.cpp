@@ -4432,7 +4432,7 @@ namespace scopeone::core
         {
             return false;
         }
-        if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
+        if (enabled && !m_managers->imageProcessingManager->anyModules())
         {
             return false;
         }
@@ -4522,11 +4522,11 @@ namespace scopeone::core
     }
 
     // Captures the ordered processing pipeline as a replayable recipe
-    ProcessingRecipe ScopeOneCore::processingRecipe() const
+    ProcessingRecipe ScopeOneCore::processingRecipe(const QString& cameraId) const
     {
         ProcessingRecipe recipe;
         recipe.bitDepth = processingBitDepth();
-        const QList<ProcessingModuleInfo> modules = processingModules();
+        const QList<ProcessingModuleInfo> modules = processingModules(cameraId);
         recipe.modules.reserve(modules.size());
         for (const ProcessingModuleInfo& module : modules)
         {
@@ -4679,16 +4679,84 @@ namespace scopeone::core
         return m_managers->processingModuleRegistry->create(moduleId);
     }
 
-    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline() const
+    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline(const QString& cameraId) const
     {
-        return std::make_unique<ProcessingPipeline>();
+        auto pipeline = std::make_unique<ProcessingPipeline>();
+        for (const ProcessingModuleInfo& info : processingModules(cameraId))
+        {
+            std::unique_ptr<ProcessingModule> module = m_managers->processingModuleRegistry->create(info.id());
+            if (!module)
+            {
+                continue;
+            }
+            module->setParameters(info.parameters());
+            module->setEnabled(info.enabled());
+            pipeline->addModule(std::move(module));
+        }
+        return pipeline;
+    }
+
+    bool ScopeOneCore::hasOwnProcessingPipeline(const QString& cameraId) const
+    {
+        return !cameraId.trimmed().isEmpty()
+               && m_managers->imageProcessingManager->cameraDefinition(cameraId) != nullptr;
+    }
+
+    QStringList ScopeOneCore::camerasWithOwnProcessingPipeline() const
+    {
+        return m_managers->imageProcessingManager->cameraDefinitionIds();
+    }
+
+    // Gives a camera a pipeline of its own, which starts as a copy of the shared one, or takes it away
+    bool ScopeOneCore::setOwnProcessingPipeline(const QString& cameraId, bool own)
+    {
+        const QString camera = cameraId.trimmed();
+        if (camera.isEmpty() || isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ImageProcessingManager* manager = m_managers->imageProcessingManager;
+        if (own)
+        {
+            if (manager->cameraDefinition(camera))
+            {
+                return true;
+            }
+            ProcessingPipelineDefinition& definition = manager->createCameraDefinition(camera);
+            for (const ProcessingModuleInfo& info : processingModules())
+            {
+                std::unique_ptr<ProcessingModule> module = m_managers->processingModuleRegistry->create(info.id());
+                if (!module)
+                {
+                    continue;
+                }
+                module->setParameters(info.parameters());
+                module->setEnabled(info.enabled());
+                definition.addModule(std::move(module));
+            }
+        }
+        else if (!manager->removeCameraDefinition(camera))
+        {
+            return true;
+        }
+        manager->clearRuntimePipelines();
+        emit processingModulesChanged();
+        return true;
+    }
+
+    // The pipeline that steps are changed in: the shared one for no camera, or the one of the camera
+    static ProcessingPipelineDefinition* editableDefinition(ImageProcessingManager* manager, const QString& cameraId)
+    {
+        return cameraId.trimmed().isEmpty() ? &manager->definition() : manager->cameraDefinition(cameraId);
     }
 
     // Export processing module descriptions for the UI
-    QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
+    QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules(
+        const QString& cameraId) const
     {
         QList<ProcessingModuleInfo> out;
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definitionFor(
+            cameraId.trimmed().isEmpty() ? QString() : cameraId);
 
         out.reserve(definition.moduleCount());
         definition.forEachModule([this, &out](const ProcessingModule* module)
@@ -4705,13 +4773,18 @@ namespace scopeone::core
     }
 
     // Add a processing module to the editable pipeline
-    bool ScopeOneCore::addProcessingModule(const QString& moduleId)
+    bool ScopeOneCore::addProcessingModule(const QString& moduleId, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         std::unique_ptr<ProcessingModule> module =
             m_managers->processingModuleRegistry->create(moduleId);
         if (!module) return false;
@@ -4723,19 +4796,24 @@ namespace scopeone::core
     }
 
     // Remove a processing module and drop stale runtime clones
-    bool ScopeOneCore::removeProcessingModule(int index)
+    bool ScopeOneCore::removeProcessingModule(int index, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         if (!definition.removeModule(index))
         {
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        if (definition.moduleCount() == 0)
+        if (!m_managers->imageProcessingManager->anyModules())
         {
             setRealTimeProcessingEnabled(false);
         }
@@ -4744,13 +4822,18 @@ namespace scopeone::core
     }
 
     // Move one editable processing module and rebuild runtime pipelines
-    bool ScopeOneCore::moveProcessingModule(int from, int to)
+    bool ScopeOneCore::moveProcessingModule(int from, int to, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         if (!definition.moveModule(from, to))
         {
             return false;
@@ -4761,13 +4844,18 @@ namespace scopeone::core
     }
 
     // Enable or bypass one editable processing module
-    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled)
+    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         bool updated = false;
         if (!definition.withModule(index, [enabled, &updated](ProcessingModule* module)
         {
@@ -4786,13 +4874,19 @@ namespace scopeone::core
     }
 
     // Update module parameters and rebuild per camera runtime modules
-    bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
+    bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters,
+                                                      const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         const bool updated = definition.withModule(index, [&parameters](ProcessingModule* module)
         {
             module->setParameters(parameters);
@@ -4807,13 +4901,18 @@ namespace scopeone::core
     }
 
     // Reset module state when the selected module owns runtime buffers
-    bool ScopeOneCore::resetProcessingModuleState(int index)
+    bool ScopeOneCore::resetProcessingModuleState(int index, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         bool resetRuntimeState = false;
         const bool found = definition.withModule(index, [&resetRuntimeState](ProcessingModule* module)
         {
@@ -4835,7 +4934,7 @@ namespace scopeone::core
     quint64 ScopeOneCore::requestImageProcessing(const ImageFrame& frame,
                                                  const QString& sourceId)
     {
-        if (!frame.isValid() || processingModules().isEmpty())
+        if (!frame.isValid() || processingModules(frame.cameraId).isEmpty())
         {
             return 0;
         }
@@ -4843,7 +4942,7 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(frame.cameraId);
         const int bitDepth = static_cast<int>(processingBitDepth());
         auto* watcher = new QFutureWatcher<ProcessingResult>(this);
         connect(watcher, &QFutureWatcher<ProcessingResult>::finished,
@@ -4884,7 +4983,7 @@ namespace scopeone::core
             || sourceCameraId.isEmpty()
             || frameCount <= 0
             || frameCount > (std::numeric_limits<int>::max)()
-            || processingModules().isEmpty())
+            || processingModules(sourceCameraId).isEmpty())
         {
             return 0;
         }
@@ -4892,9 +4991,9 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(sourceCameraId);
         const int bitDepth = static_cast<int>(processingBitDepth());
-        const ProcessingRecipe recipe = processingRecipe();
+        const ProcessingRecipe recipe = processingRecipe(sourceCameraId);
         auto* watcher = new QFutureWatcher<OfflineProcessingResult>(this);
         connect(watcher, &QFutureWatcher<OfflineProcessingResult>::finished,
                 this, [this, watcher, requestId, cancelToken]()
@@ -4978,7 +5077,7 @@ namespace scopeone::core
     quint64 ScopeOneCore::requestLayerStackProcessing(const QString& layerKey)
     {
         const QString sourceId = sourceIdFromLayerKey(layerKey);
-        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules().isEmpty())
+        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules(sourceId).isEmpty())
         {
             return 0;
         }
@@ -5015,7 +5114,7 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(sourceId);
         const int bitDepth = static_cast<int>(processingBitDepth());
 
         struct LayerStackProcessingResult

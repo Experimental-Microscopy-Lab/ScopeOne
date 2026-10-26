@@ -133,6 +133,14 @@ namespace scopeone::ui
                 painter.drawEllipse(QPointF(10.0, 11.0), 3.0, 3.0);
                 break;
             }
+            case ToolIconKind::Record:
+                // A red disc, whatever the theme
+                painter.save();
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(0xd0, 0x40, 0x3a));
+                painter.drawEllipse(QPointF(10.0, 10.0), 6.0, 6.0);
+                painter.restore();
+                break;
             case ToolIconKind::Contrast:
             {
                 // A circle with one half filled
