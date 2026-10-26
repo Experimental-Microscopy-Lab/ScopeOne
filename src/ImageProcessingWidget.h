@@ -2,6 +2,7 @@
 
 #include "scopeone/ScopeOneCore.h"
 
+#include <QJsonArray>
 #include <QWidget>
 #include <memory>
 
@@ -9,8 +10,11 @@ class QListWidget;
 class QListWidgetItem;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QPushButton;
+class QToolButton;
+class QMenu;
 class QProgressBar;
 class QRadioButton;
 class QStackedWidget;
@@ -29,6 +33,9 @@ namespace scopeone::ui
                                        QWidget* parent = nullptr);
         ~ImageProcessingWidget() override = default;
 
+        // Puts a module with the given parameters at the end of the pipeline
+        void addModule(const QString& moduleId, const QVariantMap& parameters);
+
     signals:
         // A problem the user should see, which does not stop anything else
         void problem(const QString& title, const QString& message);
@@ -40,6 +47,15 @@ namespace scopeone::ui
 
     private:
         void onAddModuleClicked();
+        void onTargetChanged();
+        void onTargetButtonClicked();
+        void refreshTargets();
+        bool pipelineEditable() const;
+        bool anyPipelineHasSteps() const;
+        void fillPresetMenu();
+        void savePreset();
+        void applyPipeline(const QJsonArray& steps);
+        QJsonArray currentPipeline() const;
         void onRemoveModuleClicked();
         void onMoveModuleUpClicked();
         void onMoveModuleDownClicked();
@@ -81,10 +97,18 @@ namespace scopeone::ui
         QListWidget* m_moduleList{nullptr};
         QPushButton* m_addModuleButton{nullptr};
         QPushButton* m_removeModuleButton{nullptr};
+        QToolButton* m_presetButton{nullptr};
+        // The camera whose pipeline the list shows, or empty for the shared one that cameras without a pipeline of their own use
+        QString m_targetCamera;
+        QComboBox* m_targetCombo{nullptr};
+        QLabel* m_targetInfo{nullptr};
+        QPushButton* m_targetButton{nullptr};
+        QMenu* m_presetMenu{nullptr};
         QPushButton* m_moveModuleUpButton{nullptr};
         QPushButton* m_moveModuleDownButton{nullptr};
         QComboBox* m_moduleTypeCombo{nullptr};
         QStackedWidget* m_configStack{nullptr};
+        QGroupBox* m_configGroup{nullptr};
         QWidget* m_emptyConfigWidget{nullptr};
         quint64 m_offlineProcessingRequestId{0};
         bool m_directProcessingRequest{false};

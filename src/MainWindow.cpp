@@ -1,11 +1,15 @@
 #include "MainWindow.h"
 #include "CommandSearchBox.h"
 #include "ImageAnalysis.h"
+#include "ToolIcons.h"
 #include "UpdateChecker.h"
+#include "WelcomeOverlay.h"
 
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/PluginManifest.h"
 #include "AboutDialog.h"
+#include "AnalysisTools.h"
+#include "Appearance.h"
 #include "InspectWidget.h"
 #include "ConsoleWidget.h"
 #include "DeviceControlWidget.h"
@@ -23,7 +27,12 @@
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
+#include <QToolButton>
+#include <QActionGroup>
 #include <QApplication>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QToolBar>
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDebug>
@@ -92,7 +101,7 @@ namespace scopeone::ui
                 label->setMaximumWidth(maxWidth);
             }
             label->setToolTip(tooltip);
-            label->setStyleSheet(QStringLiteral("padding: 0 8px;"));
+            label->setContentsMargins(8, 0, 8, 0);
         }
 
         // Update a status label without redundant repaints
@@ -126,33 +135,6 @@ namespace scopeone::ui
             }
 #endif
             return {};
-        }
-
-        // Apply the requested Qt widget style
-        void applyWidgetStyle(const QString& widgetStyle)
-        {
-            if (widgetStyle != QStringLiteral("default") && !widgetStyle.isEmpty())
-            {
-                QApplication::setStyle(QStyleFactory::create(widgetStyle));
-            }
-        }
-
-        // Apply the requested Qt color scheme
-        void applyColorScheme(const QString& colorScheme)
-        {
-            QStyleHints* styleHints = QApplication::styleHints();
-            if (colorScheme == QStringLiteral("light"))
-            {
-                styleHints->setColorScheme(Qt::ColorScheme::Light);
-            }
-            else if (colorScheme == QStringLiteral("dark"))
-            {
-                styleHints->setColorScheme(Qt::ColorScheme::Dark);
-            }
-            else
-            {
-                styleHints->unsetColorScheme();
-            }
         }
 
         void updateSessionPresentation(
@@ -317,6 +299,7 @@ namespace scopeone::ui
         }
 
         saveWindowLayout();
+        saveSession();
 
         // Core shutdown stops and finalizes the recording; confirm before cutting it short
         if (m_scopeonecore->isRecording())
@@ -461,6 +444,11 @@ namespace scopeone::ui
                 this, [this](bool running)
                 {
                     m_previewRunning = running;
+                    if (m_liveAction)
+                    {
+                        const QSignalBlocker blocker(m_liveAction);
+                        m_liveAction->setChecked(running);
+                    }
                     m_previewWidget->resetLiveFrameRates();
                     m_deviceControlWidget->setPreviewRunning(running);
                     m_deviceControlWidget->setControlTargetEnabled(!running);
@@ -501,6 +489,9 @@ namespace scopeone::ui
                     }
 
                     m_imageWorkspace->openSession(session, QFileInfo(filePath).fileName());
+                    // The layers of the opened image are what comes next, so the View tab comes forward
+                    m_viewDockWidget->show();
+                    m_viewDockWidget->raise();
                     m_saveImageAsAction->setEnabled(true);
                     showStatusMessage(
                         tr("Opened %1").arg(QFileInfo(filePath).fileName()),
@@ -541,8 +532,17 @@ namespace scopeone::ui
                     m_previewWidget->setLayerSliceCount(
                         layerKey,
                         m_imageWorkspace->layerSliceCount(layerKey));
+                    m_previewWidget->setLayerStackShape(layerKey, m_imageWorkspace->layerStackShape(layerKey));
+                    m_previewWidget->setLayerComposite(layerKey, m_imageWorkspace->isComposite(layerKey));
                     schedulePreviewCursorStatusRefresh();
                 });
+        connect(m_imageWorkspace, &ImageWorkspace::stackShapeChanged, this, [this](const QString& layerKey)
+        {
+            m_previewWidget->setLayerStackShape(layerKey, m_imageWorkspace->layerStackShape(layerKey));
+            m_previewWidget->setLayerComposite(layerKey, m_imageWorkspace->isComposite(layerKey));
+        });
+        connect(m_previewWidget, &PreviewWidget::layerCompositeRequested, this,
+                [this](const QString& layerKey, bool enabled) { m_imageWorkspace->setComposite(layerKey, enabled); });
         connect(m_previewWidget, &PreviewWidget::layerSliceIndexRequested,
                 this, [this](const QString& layerKey, int sliceIndex)
                 {
@@ -728,6 +728,11 @@ namespace scopeone::ui
                     showStatusMessage(message, success ? 5000 : 8000);
                 });
 
+        connect(m_recordingWidget, &RecordingWidget::storageWarning, this,
+                [this](const QString& title, const QString& message)
+                {
+                    notifyError(title, message);
+                });
         connect(m_recordingWidget, &RecordingWidget::gallerySessionCaptured,
                 this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
@@ -772,6 +777,11 @@ namespace scopeone::ui
                     setStatusLabelText(m_statusRecordingLabel,
                                        recording ? tr("Recording: Active") : tr("Recording: Idle"),
                                        recording ? tr("Recording is active") : tr("Recording is idle"));
+                    if (m_recordAction)
+                    {
+                        const QSignalBlocker blocker(m_recordAction);
+                        m_recordAction->setChecked(recording);
+                    }
                     showStatusMessage(recording ? tr("Recording started") : tr("Recording stopped"), 3000);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
@@ -801,6 +811,9 @@ namespace scopeone::ui
                         return;
                     }
                     m_imageWorkspace->openSession(session);
+                    // The layers of the opened image are what comes next, so the View tab comes forward
+                    m_viewDockWidget->show();
+                    m_viewDockWidget->raise();
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
@@ -937,6 +950,22 @@ namespace scopeone::ui
             settings.setValue(QStringLiteral("View/scaleBarVisible"), visible);
         });
         setCentralWidget(m_imageWorkspace->viewerHost());
+        m_welcome = new WelcomeOverlay(this);
+        installEventFilter(this);
+        m_imageWorkspace->viewerHost()->installEventFilter(this);
+        connect(m_welcome, &WelcomeOverlay::openImageRequested, this, &MainWindow::openImageDialog);
+        connect(m_welcome, &WelcomeOverlay::loadConfigurationRequested, this, &MainWindow::loadConfigurationFromDialog);
+        connect(m_welcome, &WelcomeOverlay::imageChosen, this, [this](const QString& path) { openImages({path}); });
+        connect(m_welcome, &WelcomeOverlay::configurationChosen, this, &MainWindow::loadConfigurationPath);
+        connect(m_welcome, &WelcomeOverlay::closeRequested, this, [this]()
+        {
+            m_welcomeClosed = true;
+            m_welcome->hide();
+        });
+        connect(m_previewWidget, &PreviewWidget::availableLayerKeysChanged, this, [this]() { updateWelcome(); });
+        connect(m_imageWorkspace, &ImageWorkspace::documentsChanged, this, [this]() { updateWelcome(); });
+        QTimer::singleShot(0, this, [this]() { updateWelcome(); });
+        QTimer::singleShot(400, this, &MainWindow::restoreSessionPrompt);
         setupTools();
 
         setupStatusBar();
@@ -977,6 +1006,38 @@ namespace scopeone::ui
             settings.setValue(QStringLiteral("Updates/lastCheck"), now);
             checkForUpdates(false);
         });
+    }
+
+    // Shows a panel of the analysis in a dock at the bottom, where it stays beside the image
+    void MainWindow::showBottomPanel(QWidget* panel, const QString& title)
+    {
+        QDockWidget* dock = m_panelDocks.value(panel);
+        if (!dock)
+        {
+            dock = new QDockWidget(title, this);
+            dock->setObjectName(title.simplified().remove(QLatin1Char(' ')) + QStringLiteral("PanelDock"));
+            dock->setWidget(panel);
+            dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+            if (!m_firstPanelDock)
+            {
+                addDockWidget(Qt::BottomDockWidgetArea, dock);
+                m_firstPanelDock = dock;
+            }
+            else if (title == tr("Profile"))
+            {
+                tabifyDockWidget(m_firstPanelDock, dock);
+            }
+            else
+            {
+                addDockWidget(Qt::BottomDockWidgetArea, dock);
+                splitDockWidget(m_firstPanelDock, dock, Qt::Horizontal);
+            }
+            m_panelDocks.insert(panel, dock);
+            // A height that shows a few rows of a table; it can be dragged to another
+            resizeDocks({dock}, {qMax(200, height() / 4)}, Qt::Vertical);
+        }
+        dock->show();
+        dock->raise();
     }
 
     // Lists the built-in and the saved arrangements of the panels
@@ -1156,8 +1217,14 @@ namespace scopeone::ui
                            QStringLiteral("%1: %2").arg(title, firstLine),
                            QStringLiteral("%1\n\n%2\n\n%3")
                                .arg(title, message, tr("Click to open the Console.")));
-        m_statusMessageLabel->setStyleSheet(
-            QStringLiteral("padding: 0 8px; color: #c0392b; font-weight: bold;"));
+        // The color and weight are set on the label itself and not by a style sheet, so that the label keeps
+        // following the palette of the theme
+        QPalette errorPalette = m_statusMessageLabel->palette();
+        errorPalette.setColor(QPalette::WindowText, QColor(0xc0, 0x39, 0x2b));
+        m_statusMessageLabel->setPalette(errorPalette);
+        QFont errorFont = m_statusMessageLabel->font();
+        errorFont.setBold(true);
+        m_statusMessageLabel->setFont(errorFont);
         m_statusMessageLabel->setCursor(Qt::PointingHandCursor);
     }
 
@@ -1182,6 +1249,18 @@ namespace scopeone::ui
             m_consoleDockWidget->raise();
             showStatusMessage(QString(), 0);
             return true;
+        }
+        // The welcome card follows the window and the viewer
+        if (m_welcome && m_welcome->isVisible()
+            && ((m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
+                || (watched == this && (event->type() == QEvent::Move || event->type() == QEvent::Resize))))
+        {
+            placeWelcome();
+        }
+        else if (watched == m_statusCursorLabel && event->type() == QEvent::MouseButtonPress)
+        {
+            QGuiApplication::clipboard()->setText(m_statusCursorLabel->text());
+            showStatusMessage(tr("Copied the pixel readout"), 2500);
         }
         return QMainWindow::eventFilter(watched, event);
     }
@@ -1246,6 +1325,7 @@ namespace scopeone::ui
         configureStatusLabel(m_statusMessageLabel, 260, 0, tr("Latest operation message"));
 
         m_statusCursorLabel = new QLabel(tr("X: -  Y: - | -"), this);
+        m_statusCursorLabel->installEventFilter(this);
         configureStatusLabel(m_statusCursorLabel, 260, 480, tr("Pixel readout"));
 
         m_statusPreviewLabel = new QLabel(tr("Preview: Idle"), this);
@@ -1268,7 +1348,7 @@ namespace scopeone::ui
         m_statusUpdateLabel = new QLabel(this);
         m_statusUpdateLabel->setTextFormat(Qt::RichText);
         m_statusUpdateLabel->setOpenExternalLinks(true);
-        m_statusUpdateLabel->setStyleSheet(QStringLiteral("padding: 0 8px;"));
+        m_statusUpdateLabel->setContentsMargins(8, 0, 8, 0);
         m_statusUpdateLabel->hide();
         m_statusMessageLabel->installEventFilter(this);
 
@@ -1310,14 +1390,20 @@ namespace scopeone::ui
                 this, &MainWindow::unloadConfigurationWithConfirmation);
         fileMenu->addSeparator();
         auto* openImageAction = fileMenu->addAction(tr("&Open Image..."));
+        m_openImageAction = openImageAction;
         openImageAction->setShortcut(QKeySequence::Open);
         connect(openImageAction, &QAction::triggered, this, &MainWindow::openImageDialog);
+        m_recentImagesMenu = fileMenu->addMenu(tr("Recent &Images"));
+        connect(m_recentImagesMenu, &QMenu::aboutToShow, this, &MainWindow::refreshRecentImagesMenu);
+        refreshRecentImagesMenu();
         m_saveImageAsAction = fileMenu->addAction(tr("Save Image &As..."));
+        m_saveImageAsAction->setShortcut(QKeySequence::Save);
         m_saveImageAsAction->setEnabled(false);
         connect(m_saveImageAsAction, &QAction::triggered,
                 m_imageWorkspace, [this]() { m_imageWorkspace->saveDocumentAs(); });
         fileMenu->addSeparator();
         auto* exitAction = fileMenu->addAction(tr("E&xit"));
+        exitAction->setShortcut(QKeySequence::Quit);
         connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
         auto* viewMenu = menuBar()->addMenu(tr("&View"));
@@ -1343,7 +1429,8 @@ namespace scopeone::ui
         });
 
         auto* zoomInAction = viewMenu->addAction(tr("Zoom &In"));
-        zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++"))});
+        zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++")),
+                                     QKeySequence(Qt::Key_Plus), QKeySequence(Qt::Key_Equal)});
         connect(zoomInAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(false);
@@ -1351,7 +1438,7 @@ namespace scopeone::ui
         });
 
         auto* zoomOutAction = viewMenu->addAction(tr("Zoom &Out"));
-        zoomOutAction->setShortcut(QKeySequence::ZoomOut);
+        zoomOutAction->setShortcuts({QKeySequence::ZoomOut, QKeySequence(Qt::Key_Minus)});
         connect(zoomOutAction, &QAction::triggered, this, [this]()
         {
             m_previewWidget->setFitToWindow(false);
@@ -1494,6 +1581,69 @@ namespace scopeone::ui
         });
         addAction(autoContrastAction);
 
+        // The main commands as buttons, using the actions of the menus
+        m_liveAction = togglePreviewAction;
+        m_liveAction->setCheckable(true);
+        const auto giveIcon = [this](QAction* action, ToolIconKind kind, const QString& tip)
+        {
+            action->setIcon(toolIcon(kind, palette(), devicePixelRatioF(), 22));
+            const QString keys = action->shortcut().toString(QKeySequence::NativeText);
+            action->setToolTip(keys.isEmpty() ? tip : QStringLiteral("%1 (%2)").arg(tip, keys));
+        };
+        giveIcon(m_openImageAction, ToolIconKind::Open, tr("Open Image"));
+        giveIcon(togglePreviewAction, ToolIconKind::Live, tr("Live preview"));
+        giveIcon(snapAction, ToolIconKind::Snap, tr("Snap an image"));
+        m_recordAction = new QAction(tr("Record"), this);
+        m_recordAction->setCheckable(true);
+        giveIcon(m_recordAction, ToolIconKind::Record, tr("Start or stop recording"));
+        connect(m_recordAction, &QAction::triggered, this, [this]() { m_recordingWidget->toggleRecording(); });
+        giveIcon(autoContrastAction, ToolIconKind::Contrast, tr("Auto contrast"));
+        auto* mainToolBar = addToolBar(tr("Main"));
+        mainToolBar->setObjectName(QStringLiteral("MainToolBar"));
+        mainToolBar->setMovable(false);
+        mainToolBar->setFloatable(false);
+        mainToolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        mainToolBar->setIconSize(QSize(22, 22));
+        mainToolBar->addAction(m_openImageAction);
+        mainToolBar->addSeparator();
+        mainToolBar->addAction(togglePreviewAction);
+        mainToolBar->addAction(snapAction);
+        mainToolBar->addAction(m_recordAction);
+        mainToolBar->addSeparator();
+        mainToolBar->addAction(autoContrastAction);
+
+        // The selection tools and the controls of the view share this row, so the viewer needs none of its own
+        mainToolBar->addSeparator();
+        m_imageWorkspace->moveViewerControlsTo(mainToolBar);
+
+
+        // Saving or copying what the viewer shows
+        auto* saveViewAction = new QAction(tr("Save View as Image..."), this);
+        connect(saveViewAction, &QAction::triggered, this, [this]()
+        {
+            PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
+            if (!preview)
+            {
+                return;
+            }
+            const QString path = QFileDialog::getSaveFileName(this, tr("Save View"), QStringLiteral("view.png"),
+                                                              tr("PNG image (*.png);;TIFF image (*.tif)"));
+            if (!path.isEmpty() && preview->grabFramebuffer().save(path))
+            {
+                showStatusMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 4000);
+            }
+        });
+        auto* copyViewAction = new QAction(tr("Copy View to Clipboard"), this);
+        connect(copyViewAction, &QAction::triggered, this, [this]()
+        {
+            if (PreviewWidget* preview = m_imageWorkspace->activePreviewWidget())
+            {
+                QGuiApplication::clipboard()->setImage(preview->grabFramebuffer());
+                showStatusMessage(tr("Copied the view"), 3000);
+            }
+        });
+        m_viewExportActions = {saveViewAction, copyViewAction};
+
         auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
         // Image, Process and Analyze come before Tools, as in ImageJ
         m_imageAnalysis = new ImageAnalysis(m_scopeonecore, m_imageWorkspace, this, this);
@@ -1501,6 +1651,27 @@ namespace scopeone::ui
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
             const QString& title) { presentSession(session, title); });
         m_imageAnalysis->addMenus(menuBar(), toolsMenu->menuAction());
+        m_imageAnalysis->setContextActions(m_viewExportActions);
+        m_imageAnalysis->setPanelPresenter([this](QWidget* panel, const QString& title) { showBottomPanel(panel, title); });
+        connect(m_previewWidget, &PreviewWidget::analysisToolChanged, this, [this](PreviewWidget::AnalysisTool tool)
+        {
+            for (const AnalysisToolSpec& spec : analysisToolSpecs())
+            {
+                if (spec.tool == tool)
+                {
+                    showStatusMessage(QString::fromLatin1(spec.tip), 0);
+                }
+            }
+        });
+        connect(m_previewWidget, &PreviewWidget::contextMenuRequested,
+                m_imageAnalysis, &ImageAnalysis::showContextMenu);
+        connect(m_imageAnalysis, &ImageAnalysis::pipelineStepRequested, this,
+                [this](const QString& moduleId, const QVariantMap& parameters)
+        {
+            m_imageProcessingWidget->addModule(moduleId, parameters);
+            m_processDockWidget->show();
+            m_processDockWidget->raise();
+        });
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
         auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
@@ -1872,12 +2043,6 @@ namespace scopeone::ui
     {
         constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        applyWidgetStyle(settings.value(
-            QStringLiteral("Appearance/Style"),
-            QStringLiteral("default")).toString());
-        applyColorScheme(settings.value(
-            QStringLiteral("Appearance/ColorScheme"),
-            QStringLiteral("system")).toString());
 
         const qint64 recordedMaxBytes = settings
                                         .value(
@@ -1939,7 +2104,10 @@ namespace scopeone::ui
         if (m_statusIsError)
         {
             m_statusIsError = false;
-            m_statusMessageLabel->setStyleSheet(QStringLiteral("padding: 0 8px;"));
+            m_statusMessageLabel->setPalette(QPalette());
+            QFont normalFont = m_statusMessageLabel->font();
+            normalFont.setBold(false);
+            m_statusMessageLabel->setFont(normalFont);
             m_statusMessageLabel->unsetCursor();
         }
         setStatusLabelText(m_statusMessageLabel, text, text);
@@ -2104,10 +2272,164 @@ namespace scopeone::ui
 
     void MainWindow::openImages(const QStringList& filePaths)
     {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QStringList recent = settings.value(QStringLiteral("RecentImages")).toStringList();
         for (const QString& filePath : filePaths)
         {
-            m_scopeonecore->openImage(filePath);
+            // A file with several images asks which of them to open
+            int series = -1;
+            bool everySeries = false;
+            const auto images = scopeone::core::ScopeOneCore::imageSeries(filePath);
+            if (images.size() > 1)
+            {
+                QStringList items{tr("All planes as one stack"), tr("Every image on its own")};
+                for (const auto& image : images)
+                {
+                    items << tr("%1 (%2 channels, %3 slices, %4 frames)").arg(image.name).arg(image.shape.channels)
+                                 .arg(image.shape.slices).arg(image.shape.frames);
+                }
+                bool accepted = false;
+                const QString chosen = QInputDialog::getItem(
+                    this, tr("Open Image"), tr("%1 holds %2 images.").arg(QFileInfo(filePath).fileName()).arg(images.size()),
+                    items, 0, false, &accepted);
+                if (!accepted)
+                {
+                    continue;
+                }
+                const int position = static_cast<int>(items.indexOf(chosen));
+                everySeries = position == 1;
+                series = position >= 2 ? position - 2 : -1;
+            }
+            if (everySeries)
+            {
+                for (int i = 0; i < images.size(); ++i)
+                {
+                    m_scopeonecore->openImage(filePath, i);
+                }
+            }
+            else
+            {
+                m_scopeonecore->openImage(filePath, series);
+            }
+            const QString absolute = QFileInfo(filePath).absoluteFilePath();
+            recent.removeAll(absolute);
+            recent.prepend(absolute);
         }
+        settings.setValue(QStringLiteral("RecentImages"), recent.mid(0, kMaxRecentConfigurations));
+        refreshRecentImagesMenu();
+    }
+
+    // Puts the welcome card in the middle of the viewer, without taking its room
+    void MainWindow::placeWelcome()
+    {
+        const QWidget* host = m_imageWorkspace->viewerHost();
+        m_welcome->adjustSize();
+        const QPoint center = host->mapToGlobal(host->rect().center());
+        m_welcome->move(center - QPoint(m_welcome->width() / 2, m_welcome->height() / 2));
+    }
+
+    // The welcome card lies over the viewer while nothing is open
+    void MainWindow::updateWelcome()
+    {
+        if (!m_welcome)
+        {
+            return;
+        }
+        const bool empty = m_previewWidget->availableLayerKeys().isEmpty() && m_imageWorkspace->documents().isEmpty();
+        if (empty)
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            const auto existing = [](const QStringList& paths)
+            {
+                QStringList found;
+                for (const QString& path : paths)
+                {
+                    if (QFileInfo(path).isFile())
+                    {
+                        found.append(path);
+                    }
+                }
+                return found;
+            };
+            m_welcome->setRecent(existing(settings.value(QStringLiteral("RecentImages")).toStringList()),
+                                 existing(settings.value(QStringLiteral("RecentConfigurations")).toStringList()));
+        }
+        else
+        {
+            m_welcomeClosed = false;
+        }
+        if (empty && !m_welcomeClosed)
+        {
+            m_welcome->show();
+            placeWelcome();
+        }
+        else
+        {
+            m_welcome->hide();
+        }
+    }
+
+    // Remembers the images that are open, to offer them again at the next start
+    void MainWindow::saveSession()
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QStringList titles;
+        for (const auto& document : m_imageWorkspace->documents())
+        {
+            titles.append(document.title);
+        }
+        QStringList open;
+        for (const QString& path : settings.value(QStringLiteral("RecentImages")).toStringList())
+        {
+            const QFileInfo info(path);
+            if (info.isFile() && (titles.contains(info.fileName()) || titles.contains(info.completeBaseName())))
+            {
+                open.append(path);
+            }
+        }
+        settings.setValue(QStringLiteral("Session/OpenImages"), open);
+    }
+
+    void MainWindow::restoreSessionPrompt()
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QStringList paths = settings.value(QStringLiteral("Session/OpenImages")).toStringList();
+        settings.remove(QStringLiteral("Session/OpenImages"));
+        if (paths.isEmpty() || !m_imageWorkspace->documents().isEmpty())
+        {
+            return;
+        }
+        const auto answer = QMessageBox::question(
+            this, tr("Restore Session"),
+            tr("Open the %n image(s) from the last session again?", nullptr, static_cast<int>(paths.size())));
+        if (answer == QMessageBox::Yes)
+        {
+            openImages(paths);
+        }
+    }
+
+    // Rebuild the recent images menu from persistent paths
+    void MainWindow::refreshRecentImagesMenu()
+    {
+        m_recentImagesMenu->clear();
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QStringList stored = settings.value(QStringLiteral("RecentImages")).toStringList();
+        QStringList valid;
+        for (const QString& path : stored)
+        {
+            if (!QFileInfo(path).isFile())
+            {
+                continue;
+            }
+            valid.append(path);
+            connect(m_recentImagesMenu->addAction(QDir::toNativeSeparators(path)), &QAction::triggered, this,
+                    [this, path]() { openImages({path}); });
+        }
+        if (valid != stored)
+        {
+            settings.setValue(QStringLiteral("RecentImages"), valid);
+        }
+        m_recentImagesMenu->setEnabled(!valid.isEmpty());
     }
 
     // Display image coordinates and pixel value under the cursor

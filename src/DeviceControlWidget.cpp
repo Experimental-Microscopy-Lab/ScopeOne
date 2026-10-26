@@ -6,11 +6,21 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QContextMenuEvent>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QDropEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QIcon>
+#include <QLinearGradient>
+#include <QMessageBox>
+#include <QMouseEvent>
+#include <QPixmap>
+#include <QShortcut>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -130,6 +140,67 @@ namespace scopeone::ui
         }
 
     protected:
+        // Quick choices of the display range, from the counts of the histogram
+        void contextMenuEvent(QContextMenuEvent* event) override
+        {
+            if (!m_stats.hasData() || m_stats.histogram.empty() || !m_levelsCallback)
+            {
+                return;
+            }
+            QMenu menu(this);
+            QAction* tenth = menu.addAction(QStringLiteral("Saturate 0.1%"));
+            QAction* one = menu.addAction(QStringLiteral("Saturate 1%"));
+            QAction* extremes = menu.addAction(QStringLiteral("Minimum to Maximum"));
+            QAction* full = menu.addAction(QStringLiteral("Full Range"));
+            QAction* chosen = menu.exec(event->globalPos());
+            if (!chosen)
+            {
+                return;
+            }
+            if (chosen == full)
+            {
+                m_levelsCallback(0, m_domainMax);
+                return;
+            }
+            if (chosen == extremes)
+            {
+                m_levelsCallback(static_cast<int>(m_stats.minVal), static_cast<int>(m_stats.maxVal));
+                return;
+            }
+            const double percent = chosen == tenth ? 0.1 : (chosen == one ? 1.0 : 0.0);
+            const int size = static_cast<int>(m_stats.histogram.size());
+            qint64 total = 0;
+            for (const int count : m_stats.histogram)
+            {
+                total += count;
+            }
+            const double limit = total * percent / 200.0;
+            qint64 running = 0;
+            int low = 0;
+            for (int i = 0; i < size; ++i)
+            {
+                running += m_stats.histogram[static_cast<size_t>(i)];
+                if (running > limit)
+                {
+                    low = i;
+                    break;
+                }
+            }
+            running = 0;
+            int high = size - 1;
+            for (int i = size - 1; i >= 0; --i)
+            {
+                running += m_stats.histogram[static_cast<size_t>(i)];
+                if (running > limit)
+                {
+                    high = i;
+                    break;
+                }
+            }
+            const auto level = [this, size](int bin) { return size > 1 ? bin * m_domainMax / (size - 1) : 0; };
+            m_levelsCallback(level(low), qMax(level(high), level(low) + 1));
+        }
+
         void paintEvent(QPaintEvent*) override
         {
             QPainter painter(this);
@@ -549,6 +620,7 @@ namespace scopeone::ui
         connect(m_sceneModel, &scopeone::core::ImageSceneModel::layerDisplayChanged,
                 this, [this](const QString& layerKey)
                 {
+                    refreshLayerSwatch(layerKey);
                     if (layerKey == currentLayerKey())
                     {
                         refreshPreviewLayerSettings();
@@ -666,6 +738,12 @@ namespace scopeone::ui
         m_layerTable->setEditTriggers(QAbstractItemView::DoubleClicked
                                       | QAbstractItemView::EditKeyPressed);
         m_layerTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_layerTable->setDragEnabled(true);
+        m_layerTable->setAcceptDrops(true);
+        m_layerTable->viewport()->setAcceptDrops(true);
+        m_layerTable->setDragDropMode(QAbstractItemView::DragDrop);
+        m_layerTable->setDropIndicatorShown(true);
+        m_layerTable->viewport()->installEventFilter(this);
         m_layerTable->setShowGrid(false);
         m_layerTable->setMinimumHeight(94);
         m_layerTable->setMaximumHeight(150);
@@ -706,14 +784,6 @@ namespace scopeone::ui
         m_selectedLayerLabel = new QLabel(QStringLiteral("No layer selected"), m_layerSettingsGroup);
         m_selectedLayerLabel->setWordWrap(true);
 
-        m_layerMoveUpButton = new QPushButton(QStringLiteral("Up"), m_layerSettingsGroup);
-        m_layerMoveDownButton = new QPushButton(QStringLiteral("Down"), m_layerSettingsGroup);
-        m_layerRemoveButton = new QPushButton(QStringLiteral("Remove"), m_layerSettingsGroup);
-        auto* openImageButton = new QPushButton(QStringLiteral("Open..."), m_layerSettingsGroup);
-        fitButtonToText(m_layerMoveUpButton);
-        fitButtonToText(m_layerMoveDownButton);
-        fitButtonToText(m_layerRemoveButton);
-        fitButtonToText(openImageButton);
 
         m_layerOpacitySpinBox = new QSpinBox(m_layerSettingsGroup);
         m_layerOpacitySpinBox->setRange(0, 100);
@@ -735,21 +805,16 @@ namespace scopeone::ui
         m_scaleBarCheckBox->setChecked(true);
 
         layerSettingsLayout->addWidget(m_selectedLayerLabel, 0, 0, 1, 6);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Order:"), m_layerSettingsGroup), 1, 0);
-        layerSettingsLayout->addWidget(m_layerMoveUpButton, 1, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerMoveDownButton, 1, 2, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(m_layerRemoveButton, 1, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(openImageButton, 1, 4, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 2, 0);
-        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 2, 1, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 2, 2);
-        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 2, 3, Qt::AlignLeft);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 3, 0);
-        layerSettingsLayout->addWidget(m_layerColormapComboBox, 3, 1);
-        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 3, 2);
-        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 3, 3, 1, 3);
-        layerSettingsLayout->addWidget(m_clippingCheckBox, 4, 0, 1, 3);
-        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 4, 3, 1, 3);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Opacity:"), m_layerSettingsGroup), 1, 0);
+        layerSettingsLayout->addWidget(m_layerOpacitySpinBox, 1, 1, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Gamma:"), m_layerSettingsGroup), 1, 2);
+        layerSettingsLayout->addWidget(m_layerGammaSpinBox, 1, 3, Qt::AlignLeft);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Color:"), m_layerSettingsGroup), 2, 0);
+        layerSettingsLayout->addWidget(m_layerColormapComboBox, 2, 1);
+        layerSettingsLayout->addWidget(new QLabel(QStringLiteral("Blend:"), m_layerSettingsGroup), 2, 2);
+        layerSettingsLayout->addWidget(m_layerBlendingComboBox, 2, 3, 1, 3);
+        layerSettingsLayout->addWidget(m_clippingCheckBox, 3, 0, 1, 3);
+        layerSettingsLayout->addWidget(m_scaleBarCheckBox, 3, 3, 1, 3);
 
         auto* transformGroup = new QGroupBox(QStringLiteral("Transform"), this);
         auto* transformLayout = new QGridLayout(transformGroup);
@@ -879,18 +944,18 @@ namespace scopeone::ui
                 this, &DeviceControlWidget::onPreviewLayerTableItemChanged);
         connect(m_layerTable, &QTableWidget::customContextMenuRequested,
                 this, &DeviceControlWidget::showLayerContextMenu);
-        connect(m_layerMoveUpButton, &QPushButton::clicked,
-                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), -1); });
-        connect(m_layerMoveDownButton, &QPushButton::clicked,
-                this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), 1); });
-        connect(m_layerRemoveButton, &QPushButton::clicked,
-                this, [this]()
-                {
-                    m_scopeonecore->removeStaticFrame(
-                        scopeone::core::ScopeOneCore::sourceIdFromLayerKey(currentLayerKey()));
-                });
-        connect(openImageButton, &QPushButton::clicked,
-                this, &DeviceControlWidget::onOpenImageClicked);
+        auto* deleteShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), m_layerTable);
+        deleteShortcut->setContext(Qt::WidgetShortcut);
+        connect(deleteShortcut, &QShortcut::activated, this, [this]() { removeSelectedLayer(); });
+        auto* duplicateShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+D")), m_layerTable);
+        duplicateShortcut->setContext(Qt::WidgetShortcut);
+        connect(duplicateShortcut, &QShortcut::activated, this, [this]() { onPreviewLayerDuplicateClicked(); });
+        auto* moveUpShortcut = new QShortcut(QKeySequence(QStringLiteral("Alt+Up")), m_layerTable);
+        moveUpShortcut->setContext(Qt::WidgetShortcut);
+        connect(moveUpShortcut, &QShortcut::activated, this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), -1); });
+        auto* moveDownShortcut = new QShortcut(QKeySequence(QStringLiteral("Alt+Down")), m_layerTable);
+        moveDownShortcut->setContext(Qt::WidgetShortcut);
+        connect(moveDownShortcut, &QShortcut::activated, this, [this]() { m_sceneModel->moveLayer(currentLayerKey(), 1); });
         connect(m_layerOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, &DeviceControlWidget::onPreviewLayerOpacityChanged);
         connect(m_layerGammaSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -971,10 +1036,11 @@ namespace scopeone::ui
             visibleCheckBox->setProperty("layerKey", layerKey);
             connect(visibleCheckBox, &QCheckBox::toggled,
                     this, &DeviceControlWidget::onPreviewLayerVisibleToggled);
+            visibleCheckBox->installEventFilter(this);
             m_layerTable->setCellWidget(row, 0, visibleCheckBox);
 
             QTableWidgetItem* nameItem = new QTableWidgetItem(m_previewWidget->layerName(layerKey));
-            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
+            nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable | Qt::ItemIsDragEnabled);
             nameItem->setData(Qt::UserRole, layerKey);
             m_layerTable->setItem(row, 1, nameItem);
 
@@ -984,6 +1050,7 @@ namespace scopeone::ui
             m_layerTable->setItem(row, 2, infoItem);
 
             m_layerRows.insert(layerKey, visibleCheckBox);
+            refreshLayerSwatch(layerKey);
             m_layerTable->setRowHeight(row, 26);
             ++row;
         };
@@ -1120,12 +1187,6 @@ namespace scopeone::ui
         m_layerHistogramWidget->setLevels(
             layer.display.levelMin, layer.display.levelMax, layer.display.levelDomainMax);
 
-        const int row = m_layerTable->currentRow();
-        m_layerMoveUpButton->setEnabled(row > 0);
-        m_layerMoveDownButton->setEnabled(row < m_layerTable->rowCount() - 1);
-        m_layerRemoveButton->setEnabled(
-            m_sceneModel == m_scopeonecore->imageSceneModel()
-            && scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey));
         m_layerOpacitySpinBox->setEnabled(m_layerBlendingComboBox->currentText() != QStringLiteral("Opaque"));
 
         const QString sourceId = selectedLayerSourceId();
@@ -1205,6 +1266,10 @@ namespace scopeone::ui
     {
         auto* checkBox = qobject_cast<QCheckBox*>(sender());
         const QString layerKey = checkBox->property("layerKey").toString();
+        const bool checked = checkBox->isChecked();
+        // The layer is shown or hidden first, because choosing its row can rebuild the table and
+        // reset the check boxes to what the preview shows
+        m_sceneModel->setLayerVisible(layerKey, checked);
         for (int row = 0; row < m_layerTable->rowCount(); ++row)
         {
             QTableWidgetItem* item = m_layerTable->item(row, 1);
@@ -1214,7 +1279,12 @@ namespace scopeone::ui
                 break;
             }
         }
-        m_sceneModel->setLayerVisible(layerKey, checkBox->isChecked());
+        const auto it = m_layerRows.constFind(layerKey);
+        if (it != m_layerRows.constEnd())
+        {
+            const QSignalBlocker blocker(it.value());
+            it.value()->setChecked(checked);
+        }
     }
 
     void DeviceControlWidget::onPreviewLayerOpacityChanged(int value)
@@ -1312,10 +1382,23 @@ namespace scopeone::ui
         }
 
         m_layerTable->setCurrentCell(row, 1);
+        const QString layerKey = currentLayerKey();
         QMenu menu(this);
         QAction* renameAction = menu.addAction(QStringLiteral("Rename"));
         QAction* duplicateAction = menu.addAction(QStringLiteral("Duplicate Layer"));
+        QAction* removeAction = menu.addAction(QStringLiteral("Remove Layer"));
+        removeAction->setEnabled(canRemoveSelectedLayer());
+        menu.addSeparator();
+        QAction* soloAction = menu.addAction(QStringLiteral("Show Only This Layer"));
+        QAction* showAllAction = menu.addAction(QStringLiteral("Show All Layers"));
+        menu.addSeparator();
+        QAction* autoLevelsAction = menu.addAction(QStringLiteral("Auto Levels"));
+        QAction* copyLevelsAction = menu.addAction(QStringLiteral("Copy Levels to All Layers"));
         QAction* selectedAction = menu.exec(m_layerTable->viewport()->mapToGlobal(pos));
+        if (!selectedAction)
+        {
+            return;
+        }
         if (selectedAction == renameAction)
         {
             m_layerTable->editItem(m_layerTable->item(row, 1));
@@ -1324,26 +1407,197 @@ namespace scopeone::ui
         {
             onPreviewLayerDuplicateClicked();
         }
+        else if (selectedAction == removeAction)
+        {
+            removeSelectedLayer();
+        }
+        else if (selectedAction == soloAction)
+        {
+            m_sceneModel->setVisibleLayers({layerKey});
+            applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
+        }
+        else if (selectedAction == showAllAction)
+        {
+            m_sceneModel->setVisibleLayers(m_layerRows.keys());
+            applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
+        }
+        else if (selectedAction == autoLevelsAction)
+        {
+            m_workspace->autoLayerLevels(layerKey);
+        }
+        else if (selectedAction == copyLevelsAction)
+        {
+            scopeone::core::DocumentLayer source;
+            if (m_sceneModel->findLayer(layerKey, source))
+            {
+                for (const QString& key : m_layerRows.keys())
+                {
+                    m_sceneModel->setLayerDisplayLevels(key, source.display.levelMin, source.display.levelMax,
+                                                        source.display.levelDomainMax);
+                }
+            }
+        }
     }
 
-    // Open image files as workspace documents
-    void DeviceControlWidget::onOpenImageClicked()
+    // Only images that were opened or made can be removed, not the live cameras
+    bool DeviceControlWidget::canRemoveSelectedLayer() const
     {
-        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        const QStringList filePaths = QFileDialog::getOpenFileNames(
-            this,
-            tr("Open Image"),
-            settings.value(QStringLiteral("LastImageDirectory"), QDir::homePath()).toString(),
-            tr("Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)"));
-        if (!filePaths.isEmpty())
+        return m_sceneModel == m_scopeonecore->imageSceneModel()
+            && scopeone::core::ScopeOneCore::isStaticLayerKey(currentLayerKey());
+    }
+
+    // Takes the selected layer away after the user agrees
+    void DeviceControlWidget::removeSelectedLayer()
+    {
+        if (!canRemoveSelectedLayer())
         {
-            settings.setValue(QStringLiteral("LastImageDirectory"),
-                              QFileInfo(filePaths.first()).absolutePath());
+            return;
         }
-        for (const QString& filePath : filePaths)
+        const QString layerKey = currentLayerKey();
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Remove Layer"),
+            QStringLiteral("Remove the layer \"%1\"?").arg(m_previewWidget->layerName(layerKey)));
+        if (answer == QMessageBox::Yes)
         {
-            m_scopeonecore->openImage(filePath);
+            m_scopeonecore->removeStaticFrame(scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey));
         }
+    }
+
+    // Shows one layer alone, or all of them when it already is the only one
+    void DeviceControlWidget::showOnlyLayer(const QString& layerKey)
+    {
+        QStringList shown;
+        for (auto it = m_layerRows.constBegin(); it != m_layerRows.constEnd(); ++it)
+        {
+            if (it.value()->isChecked())
+            {
+                shown.append(it.key());
+            }
+        }
+        const bool alone = shown.size() == 1 && shown.first() == layerKey;
+        m_sceneModel->setVisibleLayers(alone ? m_layerRows.keys() : QStringList{layerKey});
+        applyPreviewVisibility(m_previewWidget->visibleLayerKeys(), false);
+    }
+
+    // Shows the color of the layer in front of its name
+    void DeviceControlWidget::refreshLayerSwatch(const QString& layerKey)
+    {
+        scopeone::core::DocumentLayer layer;
+        if (!m_sceneModel->findLayer(layerKey, layer))
+        {
+            return;
+        }
+        static const QHash<QString, QList<QColor>> stops{
+            {QStringLiteral("Gray"), {QColor(40, 40, 40), QColor(235, 235, 235)}},
+            {QStringLiteral("Inverted Gray"), {QColor(235, 235, 235), QColor(40, 40, 40)}},
+            {QStringLiteral("Green"), {QColor(0, 40, 0), QColor(0, 255, 0)}},
+            {QStringLiteral("Magenta"), {QColor(40, 0, 40), QColor(255, 0, 255)}},
+            {QStringLiteral("Cyan"), {QColor(0, 40, 40), QColor(0, 255, 255)}},
+            {QStringLiteral("Red"), {QColor(40, 0, 0), QColor(255, 0, 0)}},
+            {QStringLiteral("Blue"), {QColor(0, 0, 40), QColor(0, 80, 255)}},
+            {QStringLiteral("Yellow"), {QColor(40, 40, 0), QColor(255, 255, 0)}},
+            {QStringLiteral("Fire"), {QColor(0, 0, 0), QColor(220, 40, 0), QColor(255, 240, 120)}},
+            {QStringLiteral("Ice"), {QColor(0, 0, 60), QColor(0, 140, 255), QColor(220, 255, 255)}},
+            {QStringLiteral("Viridis"), {QColor(68, 1, 84), QColor(33, 145, 140), QColor(253, 231, 37)}},
+            {QStringLiteral("Inferno"), {QColor(0, 0, 4), QColor(187, 55, 84), QColor(252, 255, 164)}},
+            {QStringLiteral("Magma"), {QColor(0, 0, 4), QColor(183, 55, 121), QColor(252, 253, 191)}},
+            {QStringLiteral("Cividis"), {QColor(0, 32, 77), QColor(124, 123, 120), QColor(253, 231, 55)}},
+            {QStringLiteral("Jet"), {QColor(0, 0, 160), QColor(0, 255, 0), QColor(160, 0, 0)}},
+            {QStringLiteral("Rainbow"), {QColor(130, 0, 200), QColor(0, 200, 0), QColor(255, 0, 0)}},
+            {QStringLiteral("Turbo"), {QColor(48, 18, 59), QColor(164, 252, 60), QColor(122, 4, 3)}},
+        };
+        QList<QColor> colors = stops.value(layer.display.colormap);
+        if (colors.isEmpty())
+        {
+            colors = {QColor(40, 40, 40), QColor(235, 235, 235)};
+        }
+        QPixmap swatch(18, 10);
+        QLinearGradient gradient(0, 0, 18, 0);
+        for (int i = 0; i < colors.size(); ++i)
+        {
+            gradient.setColorAt(colors.size() == 1 ? 0.0 : static_cast<double>(i) / (colors.size() - 1), colors.at(i));
+        }
+        QPainter painter(&swatch);
+        painter.fillRect(swatch.rect(), gradient);
+        painter.setPen(QColor(120, 120, 120));
+        painter.drawRect(swatch.rect().adjusted(0, 0, -1, -1));
+        painter.end();
+        for (int row = 0; row < m_layerTable->rowCount(); ++row)
+        {
+            QTableWidgetItem* item = m_layerTable->item(row, 1);
+            if (item && item->data(Qt::UserRole).toString() == layerKey)
+            {
+                const QSignalBlocker blocker(m_layerTable);
+                item->setIcon(QIcon(swatch));
+                return;
+            }
+        }
+    }
+
+    // Alt click on a check box shows one layer alone, and a drop in the list moves the layer
+    bool DeviceControlWidget::eventFilter(QObject* watched, QEvent* event)
+    {
+        if (auto* box = qobject_cast<QCheckBox*>(watched))
+        {
+            const QEvent::Type type = event->type();
+            if (type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease
+                || type == QEvent::MouseButtonDblClick)
+            {
+                const auto* mouse = static_cast<QMouseEvent*>(event);
+                if (mouse->modifiers() & Qt::AltModifier)
+                {
+                    if (type == QEvent::MouseButtonPress)
+                    {
+                        showOnlyLayer(box->property("layerKey").toString());
+                    }
+                    return true;
+                }
+                // A click anywhere in the cell switches the layer, not only on the small box
+                if (mouse->button() == Qt::LeftButton)
+                {
+                    if (type != QEvent::MouseButtonRelease)
+                    {
+                        box->toggle();
+                    }
+                    return true;
+                }
+            }
+        }
+        else if (m_layerTable && watched == m_layerTable->viewport())
+        {
+            const QEvent::Type type = event->type();
+            if (type == QEvent::DragEnter || type == QEvent::DragMove)
+            {
+                auto* drag = static_cast<QDragMoveEvent*>(event);
+                if (drag->source() == m_layerTable)
+                {
+                    drag->setDropAction(Qt::MoveAction);
+                    drag->accept();
+                    return true;
+                }
+            }
+            else if (type == QEvent::Drop)
+            {
+                auto* drop = static_cast<QDropEvent*>(event);
+                if (drop->source() == m_layerTable)
+                {
+                    const int from = m_layerTable->currentRow();
+                    int to = m_layerTable->rowAt(drop->position().toPoint().y());
+                    if (to < 0)
+                    {
+                        to = m_layerTable->rowCount() - 1;
+                    }
+                    if (from >= 0 && to != from)
+                    {
+                        m_sceneModel->moveLayer(currentLayerKey(), to - from);
+                    }
+                    drop->setDropAction(Qt::IgnoreAction);
+                    drop->accept();
+                    return true;
+                }
+            }
+        }
+        return QWidget::eventFilter(watched, event);
     }
 
     void DeviceControlWidget::onLayerHistogramReady(

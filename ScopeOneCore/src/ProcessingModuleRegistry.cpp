@@ -6,6 +6,7 @@
 #include "internal/FrequencyDomainFilterModule.h"
 #include "internal/MaskModule.h"
 #include "internal/GaussianBlurModule.h"
+#include "internal/ImageOperationModules.h"
 #include "internal/IFFTModule.h"
 #include "internal/SpatiotemporalBinningModule.h"
 #include "scopeone/PluginManifest.h"
@@ -193,6 +194,8 @@ namespace scopeone::core::internal
                   choiceParameter("operation", "Operation", 0,
                                   {"Subtract", "Add", "Multiply", "Divide"})},
                  true});
+
+            registerImageOperationModules(registry);
         }
     }
 

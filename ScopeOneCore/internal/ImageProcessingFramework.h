@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QStringList>
 #include <QMutex>
 #include <QThreadPool>
 #include <QHash>
@@ -55,7 +56,18 @@ namespace scopeone::core::internal
         explicit ImageProcessingManager(QObject* parent = nullptr);
         ~ImageProcessingManager() override;
 
+        // The pipeline that cameras without one of their own use
         ProcessingPipelineDefinition& definition();
+        // The pipeline a camera runs: its own, or else the shared one
+        ProcessingPipelineDefinition& definitionFor(const QString& cameraId);
+        // The pipeline of a camera of its own, or none
+        ProcessingPipelineDefinition* cameraDefinition(const QString& cameraId);
+        ProcessingPipelineDefinition& createCameraDefinition(const QString& cameraId);
+        bool removeCameraDefinition(const QString& cameraId);
+        QStringList cameraDefinitionIds() const;
+        // Whether the shared pipeline or any pipeline of a camera has a module
+        bool anyModules() const;
+        std::shared_ptr<ProcessingPipelineRuntime> createRuntimeFor(const QString& cameraId);
 
         void enableRealTimeProcessing(bool enabled);
         bool isRealTimeProcessingEnabled() const { return m_realTimeEnabled; }
@@ -95,6 +107,8 @@ namespace scopeone::core::internal
         ImageFrame frameFromResult(ProcessingResult result);
 
         ProcessingPipelineDefinition m_definition;
+        QHash<QString, std::shared_ptr<ProcessingPipelineDefinition>> m_cameraDefinitions;
+        mutable QMutex m_definitionsMutex;
         QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>> m_livePipelines;
         QHash<QString, std::shared_ptr<ProcessingPipelineRuntime>> m_offlinePipelines;
         std::atomic<bool> m_realTimeEnabled;

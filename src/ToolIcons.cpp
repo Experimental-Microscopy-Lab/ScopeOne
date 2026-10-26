@@ -96,6 +96,66 @@ namespace scopeone::ui
                 painter.drawEllipse(QPointF(10.0, 10.0), 2.0, 2.0);
                 painter.restore();
                 break;
+            case ToolIconKind::Open:
+            {
+                // A folder with a tab
+                QPainterPath folder;
+                folder.moveTo(2.5, 5.0);
+                folder.lineTo(8.0, 5.0);
+                folder.lineTo(9.8, 7.0);
+                folder.lineTo(17.5, 7.0);
+                folder.lineTo(17.5, 15.5);
+                folder.lineTo(2.5, 15.5);
+                folder.closeSubpath();
+                painter.drawPath(folder);
+                break;
+            }
+            case ToolIconKind::Live:
+            {
+                // A play triangle in a ring
+                painter.drawEllipse(QRectF(2.5, 2.5, 15.0, 15.0));
+                QPolygonF triangle;
+                triangle << QPointF(8.2, 6.6) << QPointF(8.2, 13.4) << QPointF(13.6, 10.0);
+                painter.save();
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(color);
+                painter.drawPolygon(triangle);
+                painter.restore();
+                break;
+            }
+            case ToolIconKind::Snap:
+            {
+                // A camera
+                painter.drawRoundedRect(QRectF(2.5, 6.0, 15.0, 10.0), 1.5, 1.5);
+                painter.drawLine(QPointF(7.0, 6.0), QPointF(8.2, 3.8));
+                painter.drawLine(QPointF(8.2, 3.8), QPointF(11.8, 3.8));
+                painter.drawLine(QPointF(11.8, 3.8), QPointF(13.0, 6.0));
+                painter.drawEllipse(QPointF(10.0, 11.0), 3.0, 3.0);
+                break;
+            }
+            case ToolIconKind::Record:
+                // A red disc, whatever the theme
+                painter.save();
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(0xd0, 0x40, 0x3a));
+                painter.drawEllipse(QPointF(10.0, 10.0), 6.0, 6.0);
+                painter.restore();
+                break;
+            case ToolIconKind::Contrast:
+            {
+                // A circle with one half filled
+                painter.drawEllipse(QRectF(2.5, 2.5, 15.0, 15.0));
+                QPainterPath half;
+                half.moveTo(10.0, 2.5);
+                half.arcTo(QRectF(2.5, 2.5, 15.0, 15.0), 90.0, 180.0);
+                half.closeSubpath();
+                painter.save();
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(color);
+                painter.drawPath(half);
+                painter.restore();
+                break;
+            }
             }
         }
 

@@ -28,6 +28,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMetaObject>
+#include <QRegularExpression>
 #include <QMutex>
 #include <QStringList>
 #include <QSysInfo>
@@ -61,7 +62,191 @@ namespace
         QString sourceId;
         std::vector<scopeone::core::ImageFrame> slices;
         QString errorMessage;
+        int channels{0};
+        int zSlices{0};
+        int frames{0};
+        QString order;
     };
+
+    // The text in the ImageDescription tag of the first image of a TIFF file, which holds the
+    // OME or ImageJ description of its axes. Empty for other files.
+    QString tiffDescription(const QString& filePath)
+    {
+        QFile file(filePath);
+        if (!file.open(QIODevice::ReadOnly))
+        {
+            return {};
+        }
+        const QByteArray head = file.read(16);
+        if (head.size() < 8)
+        {
+            return {};
+        }
+        const bool little = head.startsWith("II");
+        if (!little && !head.startsWith("MM"))
+        {
+            return {};
+        }
+        const auto number = [little](const QByteArray& bytes, int offset, int size) -> quint64
+        {
+            quint64 value = 0;
+            for (int i = 0; i < size; ++i)
+            {
+                const int index = little ? offset + size - 1 - i : offset + i;
+                value = (value << 8) | static_cast<quint8>(bytes.at(index));
+            }
+            return value;
+        };
+        const int version = static_cast<int>(number(head, 2, 2));
+        const bool big = version == 43;
+        if (version != 42 && !big)
+        {
+            return {};
+        }
+        const quint64 ifd = big ? number(head, 8, 8) : number(head, 4, 4);
+        if (!file.seek(static_cast<qint64>(ifd)))
+        {
+            return {};
+        }
+        const int countSize = big ? 8 : 2;
+        const int entrySize = big ? 20 : 12;
+        const QByteArray countBytes = file.read(countSize);
+        if (countBytes.size() < countSize)
+        {
+            return {};
+        }
+        const quint64 entries = number(countBytes, 0, countSize);
+        for (quint64 i = 0; i < entries && i < 4096; ++i)
+        {
+            const QByteArray entry = file.read(entrySize);
+            if (entry.size() < entrySize)
+            {
+                return {};
+            }
+            if (number(entry, 0, 2) != 270)
+            {
+                continue;
+            }
+            const quint64 length = big ? number(entry, 4, 8) : number(entry, 4, 4);
+            const int inlineSize = big ? 8 : 4;
+            if (length <= static_cast<quint64>(inlineSize))
+            {
+                return QString::fromLatin1(entry.mid(big ? 12 : 8, static_cast<int>(length))).remove(QChar(0));
+            }
+            const quint64 offset = big ? number(entry, 12, 8) : number(entry, 8, 4);
+            if (length > 16u * 1024 * 1024 || !file.seek(static_cast<qint64>(offset)))
+            {
+                return {};
+            }
+            return QString::fromUtf8(file.read(static_cast<qint64>(length))).remove(QChar(0));
+        }
+        return {};
+    }
+
+    // Reads the numbers of channels, Z positions and time points from an OME or ImageJ description,
+    // and keeps them when they fill the planes of the file
+    void readStackShape(const QString& filePath, size_t planeCount, ImageOpenTask& task)
+    {
+        const QString text = tiffDescription(filePath);
+        if (text.isEmpty())
+        {
+            return;
+        }
+        int channels = 0;
+        int slices = 0;
+        int frames = 0;
+        QString order = QStringLiteral("TZC");
+        const auto integerAfter = [&text](const QString& pattern) -> int
+        {
+            const QRegularExpressionMatch match = QRegularExpression(pattern).match(text);
+            return match.hasMatch() ? match.captured(1).toInt() : 0;
+        };
+        if (text.contains(QStringLiteral("<OME")))
+        {
+            channels = integerAfter(QStringLiteral("SizeC=\"(\\d+)\""));
+            slices = integerAfter(QStringLiteral("SizeZ=\"(\\d+)\""));
+            frames = integerAfter(QStringLiteral("SizeT=\"(\\d+)\""));
+            const QRegularExpressionMatch match =
+                QRegularExpression(QStringLiteral("DimensionOrder=\"XY([CZT]{3})\"")).match(text);
+            if (match.hasMatch())
+            {
+                // The file lists the axes from the fastest to the slowest
+                order = QString(match.captured(1)).last(1) + match.captured(1).mid(1, 1) + match.captured(1).first(1);
+            }
+        }
+        else if (text.startsWith(QStringLiteral("ImageJ=")))
+        {
+            channels = integerAfter(QStringLiteral("channels=(\\d+)"));
+            slices = integerAfter(QStringLiteral("slices=(\\d+)"));
+            frames = integerAfter(QStringLiteral("frames=(\\d+)"));
+        }
+        channels = qMax(1, channels);
+        slices = qMax(1, slices);
+        frames = qMax(1, frames);
+        if (static_cast<size_t>(channels) * slices * frames != planeCount)
+        {
+            return;
+        }
+        task.channels = channels;
+        task.zSlices = slices;
+        task.frames = frames;
+        task.order = order;
+    }
+
+    // The images that an OME description lists, with the planes of each following those of the one
+    // before. Empty unless there are several and they fill the planes of the file.
+    QList<scopeone::core::ScopeOneCore::ImageSeries> omeSeries(const QString& text, size_t planeCount)
+    {
+        QList<scopeone::core::ScopeOneCore::ImageSeries> series;
+        if (!text.contains(QStringLiteral("<OME")))
+        {
+            return series;
+        }
+        QRegularExpressionMatchIterator images = QRegularExpression(
+            QStringLiteral("<Image\\b([^>]*)>(.*?)</Image>"), QRegularExpression::DotMatchesEverythingOption)
+            .globalMatch(text);
+        int first = 0;
+        while (images.hasNext())
+        {
+            const QRegularExpressionMatch image = images.next();
+            const QRegularExpressionMatch pixels = QRegularExpression(QStringLiteral("<Pixels\\b([^>]*)>"))
+                .match(image.captured(2));
+            if (!pixels.hasMatch())
+            {
+                return {};
+            }
+            const QString attributes = pixels.captured(1);
+            const auto integer = [&attributes](const QString& name)
+            {
+                const QRegularExpressionMatch match =
+                    QRegularExpression(QStringLiteral("\\b%1=\"(\\d+)\"").arg(name)).match(attributes);
+                return match.hasMatch() ? match.captured(1).toInt() : 1;
+            };
+            scopeone::core::ScopeOneCore::ImageSeries entry;
+            const QRegularExpressionMatch name =
+                QRegularExpression(QStringLiteral("\\bName=\"([^\"]*)\"")).match(image.captured(1));
+            entry.name = name.hasMatch() ? name.captured(1) : QStringLiteral("Image %1").arg(series.size() + 1);
+            entry.shape.channels = qMax(1, integer(QStringLiteral("SizeC")));
+            entry.shape.slices = qMax(1, integer(QStringLiteral("SizeZ")));
+            entry.shape.frames = qMax(1, integer(QStringLiteral("SizeT")));
+            const QRegularExpressionMatch order =
+                QRegularExpression(QStringLiteral("DimensionOrder=\"XY([CZT]{3})\"")).match(attributes);
+            if (order.hasMatch())
+            {
+                const QString letters = order.captured(1);
+                entry.shape.order = letters.last(1) + letters.mid(1, 1) + letters.first(1);
+            }
+            entry.firstPlane = first;
+            entry.planeCount = entry.shape.channels * entry.shape.slices * entry.shape.frames;
+            first += entry.planeCount;
+            series.append(entry);
+        }
+        if (series.size() < 2 || static_cast<size_t>(first) != planeCount)
+        {
+            return {};
+        }
+        return series;
+    }
 
     scopeone::core::ImageFrame convertOpenedImage(
         const cv::Mat& image,
@@ -116,20 +301,25 @@ namespace
     bool readImageSlices(const QString& filePath,
                          const QString& sourceId,
                          std::vector<scopeone::core::ImageFrame>& slices,
-                         const std::function<void(size_t, size_t)>& progress)
+                         const std::function<void(size_t, size_t)>& progress,
+                         size_t firstPage = 0,
+                         size_t pageCount = 0)
     {
         constexpr size_t kImageReadBatchSize = 8;
-        const size_t sliceCount = cv::imcount(filePath.toStdString(), cv::IMREAD_UNCHANGED);
-        if (sliceCount == 0)
+        const size_t pagesInFile = cv::imcount(filePath.toStdString(), cv::IMREAD_UNCHANGED);
+        if (pagesInFile == 0 || firstPage >= pagesInFile)
         {
             return false;
         }
+        const size_t sliceCount = pageCount == 0 ? pagesInFile - firstPage
+                                                 : (std::min)(pageCount, pagesInFile - firstPage);
 
         slices.reserve(sliceCount);
-        for (size_t start = 0; start < sliceCount; start += kImageReadBatchSize)
+        for (size_t offset = 0; offset < sliceCount; offset += kImageReadBatchSize)
         {
+            const size_t start = firstPage + offset;
             std::vector<cv::Mat> images;
-            const int count = static_cast<int>((std::min)(kImageReadBatchSize, sliceCount - start));
+            const int count = static_cast<int>((std::min)(kImageReadBatchSize, sliceCount - offset));
             if (!cv::imreadmulti(filePath.toStdString(),
                                  images,
                                  static_cast<int>(start),
@@ -2918,7 +3108,66 @@ namespace scopeone::core
     }
 
     // Open an image file as a frame-backed session
-    void ScopeOneCore::openImage(const QString& filePath)
+    QList<ScopeOneCore::ImageSeries> ScopeOneCore::imageSeries(const QString& filePath)
+    {
+        const QString path = QDir::cleanPath(filePath.trimmed());
+        const QString text = tiffDescription(path);
+        if (text.isEmpty())
+        {
+            return {};
+        }
+        return omeSeries(text, cv::imcount(path.toStdString(), cv::IMREAD_UNCHANGED));
+    }
+
+    QList<ImageFrame> ScopeOneCore::readImageFrames(const QString& filePath, QString* errorMessage)
+    {
+        std::vector<ImageFrame> slices;
+        if (!readImageSlices(QDir::cleanPath(filePath.trimmed()), QStringLiteral("batch:%1").arg(QFileInfo(filePath).completeBaseName()),
+                             slices, [](size_t, size_t) {}))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Failed to read image file: %1").arg(filePath);
+            }
+            return {};
+        }
+        QList<ImageFrame> frames;
+        for (ImageFrame& slice : slices)
+        {
+            frames.append(std::move(slice));
+        }
+        return frames;
+    }
+
+    bool ScopeOneCore::writeImageFrames(const QList<ImageFrame>& frames, const QString& filePath, QString* errorMessage)
+    {
+        std::vector<cv::Mat> images;
+        for (const ImageFrame& frame : frames)
+        {
+            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
+            {
+                continue;
+            }
+            images.emplace_back(frame.height, frame.width, frame.isMono16() ? CV_16UC1 : CV_8UC1,
+                                const_cast<char*>(frame.bytes.constData()), static_cast<size_t>(frame.stride));
+        }
+        bool written = false;
+        try
+        {
+            written = !images.empty() && cv::imwritemulti(filePath.toStdString(), images);
+        }
+        catch (const cv::Exception&)
+        {
+            written = false;
+        }
+        if (!written && errorMessage)
+        {
+            *errorMessage = QStringLiteral("Failed to write image file: %1").arg(filePath);
+        }
+        return written;
+    }
+
+    void ScopeOneCore::openImage(const QString& filePath, int series)
     {
         const QString cleanedPath = QDir::cleanPath(filePath.trimmed());
         const QFileInfo fileInfo(cleanedPath);
@@ -2960,6 +3209,10 @@ namespace scopeone::core
                     ExperimentPlan plan;
                     plan.cameraIds = {task.sourceId};
                     plan.baseName = task.displayName;
+                    plan.stackChannels = task.channels;
+                    plan.stackSlices = task.zSlices;
+                    plan.stackFrames = task.frames;
+                    plan.stackOrder = task.order;
                     const auto session = createFrameSession(frames, plan);
                     emit imageOpenFinished(
                         task.filePath,
@@ -2970,7 +3223,7 @@ namespace scopeone::core
 
         watcher->setFuture(QtConcurrent::run(
             m_sessionFrameThreadPool.get(),
-            [this, cleanedPath, filePath]()
+            [this, cleanedPath, filePath, series]()
             {
                 ImageOpenTask task;
                 task.filePath = filePath;
@@ -2991,6 +3244,12 @@ namespace scopeone::core
                         Qt::QueuedConnection);
                 };
 
+                const QList<ImageSeries> images = series >= 0 ? imageSeries(cleanedPath) : QList<ImageSeries>{};
+                const bool chosen = series >= 0 && series < images.size();
+                if (chosen)
+                {
+                    task.displayName += QStringLiteral(" - %1").arg(images.at(series).name);
+                }
                 if (!readImageSlices(
                         cleanedPath,
                         task.sourceId,
@@ -3003,10 +3262,24 @@ namespace scopeone::core
                                 QStringLiteral("Converting slice %1 / %2")
                                     .arg(static_cast<qulonglong>(completed))
                                     .arg(static_cast<qulonglong>(total)));
-                        }))
+                        },
+                        chosen ? static_cast<size_t>(images.at(series).firstPlane) : 0,
+                        chosen ? static_cast<size_t>(images.at(series).planeCount) : 0))
                 {
                     task.errorMessage = QStringLiteral("Failed to read image file: %1")
                                             .arg(filePath);
+                }
+                else if (chosen)
+                {
+                    const StackShape& shape = images.at(series).shape;
+                    task.channels = shape.channels;
+                    task.zSlices = shape.slices;
+                    task.frames = shape.frames;
+                    task.order = shape.order;
+                }
+                else
+                {
+                    readStackShape(cleanedPath, task.slices.size(), task);
                 }
                 return task;
             }));
@@ -4159,7 +4432,7 @@ namespace scopeone::core
         {
             return false;
         }
-        if (enabled && m_managers->imageProcessingManager->definition().moduleCount() == 0)
+        if (enabled && !m_managers->imageProcessingManager->anyModules())
         {
             return false;
         }
@@ -4249,11 +4522,11 @@ namespace scopeone::core
     }
 
     // Captures the ordered processing pipeline as a replayable recipe
-    ProcessingRecipe ScopeOneCore::processingRecipe() const
+    ProcessingRecipe ScopeOneCore::processingRecipe(const QString& cameraId) const
     {
         ProcessingRecipe recipe;
         recipe.bitDepth = processingBitDepth();
-        const QList<ProcessingModuleInfo> modules = processingModules();
+        const QList<ProcessingModuleInfo> modules = processingModules(cameraId);
         recipe.modules.reserve(modules.size());
         for (const ProcessingModuleInfo& module : modules)
         {
@@ -4406,16 +4679,84 @@ namespace scopeone::core
         return m_managers->processingModuleRegistry->create(moduleId);
     }
 
-    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline() const
+    std::unique_ptr<ProcessingPipeline> ScopeOneCore::createProcessingPipeline(const QString& cameraId) const
     {
-        return std::make_unique<ProcessingPipeline>();
+        auto pipeline = std::make_unique<ProcessingPipeline>();
+        for (const ProcessingModuleInfo& info : processingModules(cameraId))
+        {
+            std::unique_ptr<ProcessingModule> module = m_managers->processingModuleRegistry->create(info.id());
+            if (!module)
+            {
+                continue;
+            }
+            module->setParameters(info.parameters());
+            module->setEnabled(info.enabled());
+            pipeline->addModule(std::move(module));
+        }
+        return pipeline;
+    }
+
+    bool ScopeOneCore::hasOwnProcessingPipeline(const QString& cameraId) const
+    {
+        return !cameraId.trimmed().isEmpty()
+               && m_managers->imageProcessingManager->cameraDefinition(cameraId) != nullptr;
+    }
+
+    QStringList ScopeOneCore::camerasWithOwnProcessingPipeline() const
+    {
+        return m_managers->imageProcessingManager->cameraDefinitionIds();
+    }
+
+    // Gives a camera a pipeline of its own, which starts as a copy of the shared one, or takes it away
+    bool ScopeOneCore::setOwnProcessingPipeline(const QString& cameraId, bool own)
+    {
+        const QString camera = cameraId.trimmed();
+        if (camera.isEmpty() || isRealTimeProcessingEnabled())
+        {
+            return false;
+        }
+        ImageProcessingManager* manager = m_managers->imageProcessingManager;
+        if (own)
+        {
+            if (manager->cameraDefinition(camera))
+            {
+                return true;
+            }
+            ProcessingPipelineDefinition& definition = manager->createCameraDefinition(camera);
+            for (const ProcessingModuleInfo& info : processingModules())
+            {
+                std::unique_ptr<ProcessingModule> module = m_managers->processingModuleRegistry->create(info.id());
+                if (!module)
+                {
+                    continue;
+                }
+                module->setParameters(info.parameters());
+                module->setEnabled(info.enabled());
+                definition.addModule(std::move(module));
+            }
+        }
+        else if (!manager->removeCameraDefinition(camera))
+        {
+            return true;
+        }
+        manager->clearRuntimePipelines();
+        emit processingModulesChanged();
+        return true;
+    }
+
+    // The pipeline that steps are changed in: the shared one for no camera, or the one of the camera
+    static ProcessingPipelineDefinition* editableDefinition(ImageProcessingManager* manager, const QString& cameraId)
+    {
+        return cameraId.trimmed().isEmpty() ? &manager->definition() : manager->cameraDefinition(cameraId);
     }
 
     // Export processing module descriptions for the UI
-    QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules() const
+    QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> ScopeOneCore::processingModules(
+        const QString& cameraId) const
     {
         QList<ProcessingModuleInfo> out;
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definitionFor(
+            cameraId.trimmed().isEmpty() ? QString() : cameraId);
 
         out.reserve(definition.moduleCount());
         definition.forEachModule([this, &out](const ProcessingModule* module)
@@ -4432,13 +4773,18 @@ namespace scopeone::core
     }
 
     // Add a processing module to the editable pipeline
-    bool ScopeOneCore::addProcessingModule(const QString& moduleId)
+    bool ScopeOneCore::addProcessingModule(const QString& moduleId, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         std::unique_ptr<ProcessingModule> module =
             m_managers->processingModuleRegistry->create(moduleId);
         if (!module) return false;
@@ -4450,19 +4796,24 @@ namespace scopeone::core
     }
 
     // Remove a processing module and drop stale runtime clones
-    bool ScopeOneCore::removeProcessingModule(int index)
+    bool ScopeOneCore::removeProcessingModule(int index, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         if (!definition.removeModule(index))
         {
             return false;
         }
         m_managers->imageProcessingManager->clearRuntimePipelines();
-        if (definition.moduleCount() == 0)
+        if (!m_managers->imageProcessingManager->anyModules())
         {
             setRealTimeProcessingEnabled(false);
         }
@@ -4471,13 +4822,18 @@ namespace scopeone::core
     }
 
     // Move one editable processing module and rebuild runtime pipelines
-    bool ScopeOneCore::moveProcessingModule(int from, int to)
+    bool ScopeOneCore::moveProcessingModule(int from, int to, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         if (!definition.moveModule(from, to))
         {
             return false;
@@ -4488,13 +4844,18 @@ namespace scopeone::core
     }
 
     // Enable or bypass one editable processing module
-    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled)
+    bool ScopeOneCore::setProcessingModuleEnabled(int index, bool enabled, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         bool updated = false;
         if (!definition.withModule(index, [enabled, &updated](ProcessingModule* module)
         {
@@ -4513,13 +4874,19 @@ namespace scopeone::core
     }
 
     // Update module parameters and rebuild per camera runtime modules
-    bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters)
+    bool ScopeOneCore::setProcessingModuleParameters(int index, const QVariantMap& parameters,
+                                                      const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         const bool updated = definition.withModule(index, [&parameters](ProcessingModule* module)
         {
             module->setParameters(parameters);
@@ -4534,13 +4901,18 @@ namespace scopeone::core
     }
 
     // Reset module state when the selected module owns runtime buffers
-    bool ScopeOneCore::resetProcessingModuleState(int index)
+    bool ScopeOneCore::resetProcessingModuleState(int index, const QString& cameraId)
     {
         if (isRealTimeProcessingEnabled())
         {
             return false;
         }
-        ProcessingPipelineDefinition& definition = m_managers->imageProcessingManager->definition();
+        ProcessingPipelineDefinition* target = editableDefinition(m_managers->imageProcessingManager, cameraId);
+        if (!target)
+        {
+            return false;
+        }
+        ProcessingPipelineDefinition& definition = *target;
         bool resetRuntimeState = false;
         const bool found = definition.withModule(index, [&resetRuntimeState](ProcessingModule* module)
         {
@@ -4562,7 +4934,7 @@ namespace scopeone::core
     quint64 ScopeOneCore::requestImageProcessing(const ImageFrame& frame,
                                                  const QString& sourceId)
     {
-        if (!frame.isValid() || processingModules().isEmpty())
+        if (!frame.isValid() || processingModules(frame.cameraId).isEmpty())
         {
             return 0;
         }
@@ -4570,7 +4942,7 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(frame.cameraId);
         const int bitDepth = static_cast<int>(processingBitDepth());
         auto* watcher = new QFutureWatcher<ProcessingResult>(this);
         connect(watcher, &QFutureWatcher<ProcessingResult>::finished,
@@ -4611,7 +4983,7 @@ namespace scopeone::core
             || sourceCameraId.isEmpty()
             || frameCount <= 0
             || frameCount > (std::numeric_limits<int>::max)()
-            || processingModules().isEmpty())
+            || processingModules(sourceCameraId).isEmpty())
         {
             return 0;
         }
@@ -4619,9 +4991,9 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(sourceCameraId);
         const int bitDepth = static_cast<int>(processingBitDepth());
-        const ProcessingRecipe recipe = processingRecipe();
+        const ProcessingRecipe recipe = processingRecipe(sourceCameraId);
         auto* watcher = new QFutureWatcher<OfflineProcessingResult>(this);
         connect(watcher, &QFutureWatcher<OfflineProcessingResult>::finished,
                 this, [this, watcher, requestId, cancelToken]()
@@ -4705,7 +5077,7 @@ namespace scopeone::core
     quint64 ScopeOneCore::requestLayerStackProcessing(const QString& layerKey)
     {
         const QString sourceId = sourceIdFromLayerKey(layerKey);
-        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules().isEmpty())
+        if (sourceId.isEmpty() || !m_layerStacks.contains(sourceId) || processingModules(sourceId).isEmpty())
         {
             return 0;
         }
@@ -4742,7 +5114,7 @@ namespace scopeone::core
         const quint64 requestId = ++m_nextProcessingRequestId;
         auto cancelToken = std::make_shared<std::atomic_bool>(false);
         m_processingRequestCancelTokens.insert(requestId, cancelToken);
-        auto pipeline = m_managers->imageProcessingManager->definition().createRuntime();
+        auto pipeline = m_managers->imageProcessingManager->createRuntimeFor(sourceId);
         const int bitDepth = static_cast<int>(processingBitDepth());
 
         struct LayerStackProcessingResult

@@ -252,6 +252,14 @@ namespace scopeone::core
             {
                 return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
             }
+            // Sets how the planes of the images are arranged along the channel, Z and time axes
+            void setStackShape(int channels, int slices, int frames, const QString& order)
+            {
+                m_manifest.plan.stackChannels = channels;
+                m_manifest.plan.stackSlices = slices;
+                m_manifest.plan.stackFrames = frames;
+                m_manifest.plan.stackOrder = order;
+            }
             // Sets the size of a pixel of the images of a camera in this session, in micrometers
             void setPixelSizeUm(const QString& cameraId, double pixelSizeUm)
             {
@@ -598,7 +606,23 @@ namespace scopeone::core
         ImageFrame publishStaticFrame(const QString& sourceId,
                                       const ImageFrame& frame,
                                       const QString& displayName = QString());
-        void openImage(const QString& filePath);
+        // One image of a file that holds several, such as the positions of an OME-TIFF
+        struct ImageSeries
+        {
+            QString name;
+            int firstPlane{0};
+            int planeCount{0};
+            StackShape shape;
+        };
+        // The images of a file, which is empty when the file holds one image
+        static QList<ImageSeries> imageSeries(const QString& filePath);
+        // Opens an image file. A negative series opens all of its planes as one image.
+        void openImage(const QString& filePath, int series = -1);
+        // Reads all the planes of an image file at once, for work that goes through many files
+        static QList<ImageFrame> readImageFrames(const QString& filePath, QString* errorMessage = nullptr);
+        // Writes planes as a multi page TIFF file
+        static bool writeImageFrames(const QList<ImageFrame>& frames, const QString& filePath,
+                                     QString* errorMessage = nullptr);
         int layerSliceCount(const QString& layerKey) const;
         bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         ImageFrame publishToolStreamFrame(const QString& sourceId,
@@ -691,7 +715,8 @@ namespace scopeone::core
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         QString realTimeProcessingSource() const;
         bool setRealTimeProcessingSource(const QString& cameraId);
-        ProcessingRecipe processingRecipe() const;
+        // The recipe of the shared pipeline, or of the pipeline that a camera runs
+        ProcessingRecipe processingRecipe(const QString& cameraId = QString()) const;
         bool applyProcessingRecipe(const ProcessingRecipe& recipe, QString* errorMessage = nullptr);
         ImageFrame processFrame(const ImageFrame& frame) const;
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
@@ -701,14 +726,25 @@ namespace scopeone::core
             const ProcessingModuleDescriptor& descriptor,
             std::function<std::unique_ptr<ProcessingModule>()> factory);
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
-        std::unique_ptr<ProcessingPipeline> createProcessingPipeline() const;
-        QList<ProcessingModuleInfo> processingModules() const;
-        bool addProcessingModule(const QString& moduleId);
-        bool removeProcessingModule(int index);
-        bool moveProcessingModule(int from, int to);
-        bool setProcessingModuleEnabled(int index, bool enabled);
-        bool setProcessingModuleParameters(int index, const QVariantMap& parameters);
-        bool resetProcessingModuleState(int index);
+        // A pipeline made of copies of the steps that the camera runs, which are those of the shared
+        // pipeline when no camera is named or the camera has none of its own
+        std::unique_ptr<ProcessingPipeline> createProcessingPipeline(const QString& cameraId = QString()) const;
+        // The steps a camera runs: its own, or those of the shared pipeline. An empty camera id names the
+        // shared pipeline, which the cameras without a pipeline of their own use. The functions that
+        // change steps work on the pipeline of the camera itself, and fail for a camera that has none.
+        QList<ProcessingModuleInfo> processingModules(const QString& cameraId = QString()) const;
+        bool addProcessingModule(const QString& moduleId, const QString& cameraId = QString());
+        bool removeProcessingModule(int index, const QString& cameraId = QString());
+        bool moveProcessingModule(int from, int to, const QString& cameraId = QString());
+        bool setProcessingModuleEnabled(int index, bool enabled, const QString& cameraId = QString());
+        bool setProcessingModuleParameters(int index, const QVariantMap& parameters,
+                                           const QString& cameraId = QString());
+        bool resetProcessingModuleState(int index, const QString& cameraId = QString());
+        // Whether a camera has a pipeline of its own, and giving it one (a copy of the shared pipeline to
+        // start from) or taking it away so that the camera uses the shared pipeline again
+        bool hasOwnProcessingPipeline(const QString& cameraId) const;
+        bool setOwnProcessingPipeline(const QString& cameraId, bool own);
+        QStringList camerasWithOwnProcessingPipeline() const;
         quint64 requestImageProcessing(const ImageFrame& frame,
                                        const QString& sourceId = QString());
         quint64 requestRecordingSessionStackProcessing(const QString& sessionId,

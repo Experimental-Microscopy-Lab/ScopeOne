@@ -38,8 +38,12 @@ namespace scopeone::ui
 
         void setAvailableCameras(const QStringList& cameraIds);
         bool snapToGallery(const QString& target);
+        // Starts the recording, or stops the one that runs, as the start button does
+        void toggleRecording() { onStartStopClicked(); }
 
     signals:
+        // Storage that is too small for the recording, which the user should see at once
+        void storageWarning(const QString& title, const QString& message);
         void gallerySessionCaptured(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
 
@@ -162,5 +166,7 @@ namespace scopeone::ui
         bool m_isRecording{false};
         bool m_writerFinalizing{false};
         bool m_storageQueryPending{false};
+        bool m_lowStorageWarned{false};
+        qint64 m_warnedEstimate{0};
     };
 }

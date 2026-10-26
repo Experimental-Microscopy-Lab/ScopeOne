@@ -89,6 +89,9 @@ set(SCOPEONE_UI_SOURCES
         src/ImageAnalysis.cpp
         src/CommandSearchBox.cpp
         src/OrthogonalViewsDialog.cpp
+        src/Appearance.cpp
+        src/EmptyHint.cpp
+        src/WelcomeOverlay.cpp
         src/UpdateChecker.cpp
         src/DevicePropertyWidget.cpp
         src/ConfigPresetWidget.cpp
@@ -122,6 +125,9 @@ set(SCOPEONE_UI_HEADERS
         src/ImageAnalysis.h
         src/CommandSearchBox.h
         src/OrthogonalViewsDialog.h
+        src/Appearance.h
+        src/EmptyHint.h
+        src/WelcomeOverlay.h
         src/UpdateChecker.h
         src/DevicePropertyWidget.h
         src/ConfigPresetWidget.h

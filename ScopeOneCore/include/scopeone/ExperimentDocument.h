@@ -139,6 +139,13 @@ namespace scopeone::core
         double exposureMs{0.0};
         double pixelSizeUm{0.0};
         std::vector<RecordingAxis> order{RecordingAxis::Time, RecordingAxis::Z, RecordingAxis::XY};
+        // The shape of an image read from a file, when the file says how its planes are arranged.
+        // Zero means that it does not, and the shape then follows from the Z positions and channels.
+        int stackChannels{0};
+        int stackSlices{0};
+        int stackFrames{0};
+        // The letters T, Z and C from the slowest to the fastest changing axis
+        QString stackOrder;
         std::vector<QPointF> positions;
         // Names of the positions and the focus position of each one. Either list is empty or
         // as long as positions; a position without a name is called Position N and one without
@@ -348,6 +355,27 @@ namespace scopeone::core
     // Order of the time, Z and channel axes of the plan from the slowest to the fastest
     // changing one, as the letters T, Z and C. Every letter appears exactly once.
     SCOPEONE_CORE_EXPORT QString omeAcquisitionOrder(const ExperimentPlan& plan);
+
+    // How the planes of an image are arranged along the channel, Z and time axes
+    struct StackShape
+    {
+        int channels{1};
+        int slices{1};
+        int frames{1};
+        // The letters T, Z and C from the slowest to the fastest changing axis
+        QString order{QStringLiteral("TZC")};
+
+        int axisSize(QChar axis) const
+        {
+            return axis == QLatin1Char('C') ? channels : axis == QLatin1Char('Z') ? slices : frames;
+        }
+        int axisCount() const { return (channels > 1) + (slices > 1) + (frames > 1); }
+        // At least two axes with more than one step, so one slider is not enough
+        bool isHyperstack() const { return axisCount() >= 2; }
+    };
+    // The shape of the planes of a session. Without a shape known from the file, and when the plan has
+    // several positions or the planes do not fill the axes, the planes are a single series.
+    SCOPEONE_CORE_EXPORT StackShape stackShapeOf(const ExperimentPlan& plan, int planeCount);
 
     // Position of an event among the planes of one OME image, counting from zero
     SCOPEONE_CORE_EXPORT quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event);

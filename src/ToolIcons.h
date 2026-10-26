@@ -14,7 +14,12 @@ namespace scopeone::ui
         Freehand,
         Line,
         Point,
-        Wand
+        Wand,
+        Open,
+        Live,
+        Snap,
+        Contrast,
+        Record
     };
 
     // A line drawing of a selection tool, in the colors of the palette so that it follows the

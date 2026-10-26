@@ -89,6 +89,7 @@ set(CORE_SOURCES
         src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
+        src/ImageOperationModules.cpp
         src/FFTModule.cpp
         src/FrequencyDomainFilterModule.cpp
         src/MaskModule.cpp
@@ -146,6 +147,7 @@ set(CORE_HEADERS
         internal/SignalSourceManager.h
         internal/SpatiotemporalBinningModule.h
         internal/GaussianBlurModule.h
+        internal/ImageOperationModules.h
         internal/FFTModule.h
         internal/FrequencyDomainFilterModule.h
         internal/MaskModule.h

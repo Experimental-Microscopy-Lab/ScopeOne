@@ -1327,6 +1327,18 @@ namespace scopeone::ui
         if (availableBytes >= 0)
         {
             details.append(QStringLiteral("%1 free").arg(formatByteCount(availableBytes)));
+            constexpr qint64 kLowStorageBytes = 5ll * 1024 * 1024 * 1024;
+            if (availableBytes < kLowStorageBytes && !m_lowStorageWarned)
+            {
+                m_lowStorageWarned = true;
+                emit storageWarning(QStringLiteral("Low disk space"),
+                                    QStringLiteral("Only %1 is free where the recording is saved.")
+                                        .arg(formatByteCount(availableBytes)));
+            }
+            else if (availableBytes > 2 * kLowStorageBytes)
+            {
+                m_lowStorageWarned = false;
+            }
         }
 
         const QStringList cameraIds = selectedCameraIds();
@@ -1368,6 +1380,13 @@ namespace scopeone::ui
             if (availableBytes >= 0 && estimate > availableBytes)
             {
                 details.append(QStringLiteral("insufficient free space"));
+                if (estimate != m_warnedEstimate)
+                {
+                    m_warnedEstimate = estimate;
+                    emit storageWarning(QStringLiteral("Not enough disk space"),
+                                        QStringLiteral("The recording needs about %1 but %2 is free.")
+                                            .arg(formatByteCount(estimate), formatByteCount(availableBytes)));
+                }
             }
         }
 

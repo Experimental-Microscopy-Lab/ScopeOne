@@ -17,12 +17,17 @@ namespace scopeone::ui
     {
         Q_OBJECT
 
+    signals:
+        // New rows were added, so the table should be brought into view
+        void attentionRequested();
+
     public:
         explicit ResultsWindow(QWidget* parent = nullptr);
 
         // Adds a row for one measured selection. slice counts from one, and is zero without a stack.
+        // For a stack with several axes, position names the plane, such as C1 Z3 T5, and is shown for slice.
         void addMeasurement(const QString& label, const imageops::Measurement& measurement, int slice,
-                            const QString& unit);
+                            const QString& unit, const QString& position = QString());
         // Adds a row of plain values, for example the intensity at one slice of a stack
         void addValues(const QStringList& headers, const QList<double>& values);
         void chooseMeasurements();
@@ -34,6 +39,7 @@ namespace scopeone::ui
             imageops::Measurement measurement;
             int slice{0};
             QString unit;
+            QString position;
         };
         struct Column
         {

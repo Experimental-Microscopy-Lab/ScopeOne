@@ -23,6 +23,7 @@ class QTimer;
 namespace scopeone::ui
 {
     class ImageAnalysis;
+    class WelcomeOverlay;
     class UpdateChecker;
 }
 
@@ -63,6 +64,7 @@ namespace scopeone::ui
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        bool eventFilter(QObject* watched, QEvent* event) override;
 
     private:
         void setupUI();
@@ -105,9 +107,6 @@ namespace scopeone::ui
         // found, and one at startup only speaks up when there is a newer version.
         void checkForUpdates(bool userInitiated);
 
-    protected:
-        bool eventFilter(QObject* watched, QEvent* event) override;
-
     private:
         void showUpdateAvailable(const QString& version, const QUrl& url);
         void setCursorStatus(const QString& text);
@@ -138,6 +137,12 @@ namespace scopeone::ui
         void loadConfigurationFromDialog();
         void loadConfigurationPath(const QString& configPath);
         void refreshRecentConfigurationsMenu();
+        void refreshRecentImagesMenu();
+        void updateWelcome();
+        void placeWelcome();
+        void showBottomPanel(QWidget* panel, const QString& title);
+        void saveSession();
+        void restoreSessionPrompt();
         void unloadConfigurationWithConfirmation();
         void setFullScreenEnabled(bool enabled);
 
@@ -169,6 +174,15 @@ namespace scopeone::ui
         InspectWidget* m_inspectWidget{nullptr};
 
         QMenu* m_recentConfigurationsMenu{nullptr};
+        QMenu* m_recentImagesMenu{nullptr};
+        WelcomeOverlay* m_welcome{nullptr};
+        bool m_welcomeClosed{false};
+        QAction* m_liveAction{nullptr};
+        QAction* m_recordAction{nullptr};
+        QHash<QWidget*, QDockWidget*> m_panelDocks;
+        QDockWidget* m_firstPanelDock{nullptr};
+        QAction* m_openImageAction{nullptr};
+        QList<QAction*> m_viewExportActions;
         QMenu* m_dockWidgetsMenu{nullptr};
         QByteArray m_defaultWindowState;
 

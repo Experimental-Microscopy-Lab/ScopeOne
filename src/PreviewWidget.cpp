@@ -15,7 +15,9 @@
 #include <QSettings>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QCheckBox>
 #include <QSlider>
+#include <QContextMenuEvent>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QKeyEvent>
@@ -278,26 +280,55 @@ namespace scopeone::ui
             "QWidget { background: rgba(20, 24, 28, 220); border-radius: 5px; }"
             "QLabel { color: white; }"
             "QPushButton { color: white; padding: 2px 6px; }"));
+        // One row for each axis, one above the other as in Fiji, and the play button beside them
         auto* sliceLayout = new QHBoxLayout(m_sliceBar);
         sliceLayout->setContentsMargins(6, 2, 6, 2);
         sliceLayout->setSpacing(4);
+        auto* rowsLayout = new QVBoxLayout;
+        rowsLayout->setSpacing(1);
         m_sliceLabel = new QLabel(m_sliceBar);
         m_sliceSlider = new QSlider(Qt::Horizontal, m_sliceBar);
         m_sliceSlider->setMinimumWidth(30);
         m_slicePlayButton = new QPushButton(QStringLiteral("Play"), m_sliceBar);
         m_slicePlayButton->setCheckable(true);
-        sliceLayout->addWidget(m_sliceLabel);
-        sliceLayout->addWidget(m_sliceSlider, 1);
-        sliceLayout->addWidget(m_slicePlayButton);
+        auto* singleRow = new QHBoxLayout;
+        singleRow->addWidget(m_sliceLabel);
+        singleRow->addWidget(m_sliceSlider, 1);
+        rowsLayout->addLayout(singleRow);
+        const int axisLabelWidth = fontMetrics().horizontalAdvance(QStringLiteral("C 9999/9999")) + 4;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            m_axisLabels[axis] = new QLabel(m_sliceBar);
+            m_axisLabels[axis]->setMinimumWidth(axisLabelWidth);
+            m_axisSliders[axis] = new QSlider(Qt::Horizontal, m_sliceBar);
+            m_axisSliders[axis]->setMinimumWidth(30);
+            m_axisLabels[axis]->hide();
+            m_axisSliders[axis]->hide();
+            auto* axisRow = new QHBoxLayout;
+            axisRow->addWidget(m_axisLabels[axis]);
+            axisRow->addWidget(m_axisSliders[axis], 1);
+            rowsLayout->addLayout(axisRow);
+            connect(m_axisSliders[axis], &QSlider::valueChanged, this, [this](int) { onAxisSliderChanged(); });
+        }
+        sliceLayout->addLayout(rowsLayout, 1);
+        auto* sideLayout = new QVBoxLayout;
+        sideLayout->setSpacing(1);
+        sideLayout->addWidget(m_slicePlayButton);
+        m_compositeCheck = new QCheckBox(tr("Composite"), m_sliceBar);
+        m_compositeCheck->setStyleSheet(QStringLiteral("QCheckBox { color: white; }"));
+        m_compositeCheck->hide();
+        connect(m_compositeCheck, &QCheckBox::toggled, this, [this](bool enabled)
+        {
+            m_layerComposite.insert(m_activeLayerKey, enabled);
+            emit layerCompositeRequested(m_activeLayerKey, enabled);
+        });
+        sideLayout->addWidget(m_compositeCheck);
+        sliceLayout->addLayout(sideLayout);
         connect(m_sliceSlider, &QSlider::valueChanged,
                 this, [this](int index)
                 {
                     m_layerSliceIndices[m_activeLayerKey] = index;
-                    const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
-                    const bool compact = m_sliceBar->width() < 260;
-                    m_sliceLabel->setText(
-                        compact ? tr("%1/%2").arg(index + 1).arg(sliceCount)
-                                : tr("Slice %1 / %2").arg(index + 1).arg(sliceCount));
+                    m_sliceLabel->setText(sliceLabelText(index + 1, m_sliceBar->width() < 260));
                     emit layerSliceIndexRequested(m_activeLayerKey, index);
                 });
         connect(m_slicePlayButton, &QPushButton::toggled,
@@ -318,6 +349,15 @@ namespace scopeone::ui
         connect(&m_sliceTimer, &QTimer::timeout,
                 this, [this]()
                 {
+                    scopeone::core::StackShape shape;
+                    if (activeStackShape(shape) && shape.isHyperstack())
+                    {
+                        // The slider of time, or of Z when there is no time, goes round
+                        const int axis = shape.frames > 1 ? 2 : (shape.slices > 1 ? 1 : 0);
+                        m_axisSliders[axis]->setValue(
+                            (m_axisSliders[axis]->value() + 1) % (m_axisSliders[axis]->maximum() + 1));
+                        return;
+                    }
                     m_sliceSlider->setValue(
                         (m_sliceSlider->value() + 1) % (m_sliceSlider->maximum() + 1));
                 });
@@ -515,6 +555,102 @@ namespace scopeone::ui
         }
         updateImageDisplay();
         return layerKey;
+    }
+
+    // Moves one slice along an axis, or along the only one the image has; it stops at the ends
+    void PreviewWidget::stepSlice(QChar axis, int delta)
+    {
+        scopeone::core::StackShape shape;
+        if (activeStackShape(shape) && shape.isHyperstack())
+        {
+            const int index = axis == QLatin1Char('C') ? 0 : (axis == QLatin1Char('Z') ? 1 : 2);
+            QSlider* slider = m_axisSliders[index];
+            if (slider->isVisible())
+            {
+                slider->setValue(std::clamp(slider->value() + delta, slider->minimum(), slider->maximum()));
+            }
+            return;
+        }
+        if (m_sliceSlider->isVisible())
+        {
+            m_sliceSlider->setValue(std::clamp(m_sliceSlider->value() + delta, m_sliceSlider->minimum(),
+                                               m_sliceSlider->maximum()));
+        }
+    }
+
+    // "Z 3 / 12" for an image that has only the Z axis, and likewise for time or channels, else "Slice 3 / 12"
+    QString PreviewWidget::sliceLabelText(int current, bool compact) const
+    {
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (compact)
+        {
+            return tr("%1/%2").arg(current).arg(sliceCount);
+        }
+        QString name = tr("Slice");
+        scopeone::core::StackShape shape;
+        if (activeStackShape(shape) && shape.axisCount() == 1)
+        {
+            name = shape.slices > 1 ? QStringLiteral("Z") : (shape.frames > 1 ? QStringLiteral("T") : QStringLiteral("C"));
+        }
+        return tr("%1 %2 / %3").arg(name).arg(current).arg(sliceCount);
+    }
+
+    void PreviewWidget::setLayerComposite(const QString& layerKey, bool composite)
+    {
+        m_layerComposite.insert(layerKey, composite);
+        updateSliceBar();
+    }
+
+    void PreviewWidget::setLayerStackShape(const QString& layerKey, const scopeone::core::StackShape& shape)
+    {
+        m_layerStackShapes.insert(layerKey, shape);
+        updateSliceBar();
+    }
+
+    // The shape of the active layer, when it has one that fits the slices
+    bool PreviewWidget::activeStackShape(scopeone::core::StackShape& shape) const
+    {
+        const auto found = m_layerStackShapes.constFind(m_activeLayerKey);
+        if (found == m_layerStackShapes.constEnd())
+        {
+            return false;
+        }
+        shape = found.value();
+        return shape.channels * shape.slices * shape.frames == m_layerSliceCounts.value(m_activeLayerKey, 1);
+    }
+
+    // Picks the slice that the positions on the axis sliders stand for
+    void PreviewWidget::onAxisSliderChanged()
+    {
+        scopeone::core::StackShape shape;
+        if (!activeStackShape(shape))
+        {
+            return;
+        }
+        // The axis sliders are in the order channel, Z, time
+        const bool composite = m_layerComposite.value(m_activeLayerKey, false) && shape.channels > 1;
+        const auto value = [this, composite](QChar letter)
+        {
+            if (composite && letter == QLatin1Char('C'))
+            {
+                return 0;
+            }
+            const int axis = letter == QLatin1Char('C') ? 0 : (letter == QLatin1Char('Z') ? 1 : 2);
+            return m_axisSliders[axis]->value();
+        };
+        int index = 0;
+        for (const QChar letter : shape.order)
+        {
+            index = index * shape.axisSize(letter) + value(letter);
+        }
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const QChar letter = QLatin1Char(axis == 0 ? 'C' : (axis == 1 ? 'Z' : 'T'));
+            m_axisLabels[axis]->setText(tr("%1 %2/%3").arg(letter).arg(m_axisSliders[axis]->value() + 1)
+                                            .arg(shape.axisSize(letter)));
+        }
+        m_layerSliceIndices[m_activeLayerKey] = index;
+        emit layerSliceIndexRequested(m_activeLayerKey, index);
     }
 
     void PreviewWidget::setLayerSliceCount(const QString& layerKey, int sliceCount)
@@ -2583,56 +2719,104 @@ namespace scopeone::ui
             const QSignalBlocker blocker(m_sliceSlider);
             m_sliceSlider->setValue(m_layerSliceIndices.value(m_activeLayerKey));
         }
+        scopeone::core::StackShape shape;
+        const bool known = activeStackShape(shape);
+        const bool composite = known && shape.channels > 1 && m_layerComposite.value(m_activeLayerKey, false);
+        {
+            const QSignalBlocker blocker(m_compositeCheck);
+            m_compositeCheck->setChecked(composite);
+        }
+        m_compositeCheck->setVisible(known && shape.channels > 1);
+        // With the channels on top of each other they have no slider, and a stack of channels only has none
+        if (composite && shape.axisCount() - 1 == 0)
+        {
+            m_sliceBar->show();
+            m_sliceSlider->hide();
+            m_sliceLabel->hide();
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                m_axisSliders[axis]->hide();
+                m_axisLabels[axis]->hide();
+            }
+            updateSliceBarGeometry();
+            return;
+        }
+        const bool axes = known && shape.isHyperstack();
+        m_sliceSlider->setVisible(!axes);
+        m_sliceLabel->setVisible(!axes);
+        int rest = m_layerSliceIndices.value(m_activeLayerKey);
+        int coordinates[3]{0, 0, 0};
+        if (axes)
+        {
+            // Splits the slice number into positions on the axes, starting from the fastest one
+            for (int i = shape.order.size() - 1; i >= 0; --i)
+            {
+                const QChar letter = shape.order.at(i);
+                const int axis = letter == QLatin1Char('C') ? 0 : (letter == QLatin1Char('Z') ? 1 : 2);
+                const int size = shape.axisSize(letter);
+                coordinates[axis] = rest % size;
+                rest /= size;
+            }
+        }
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const QChar letter = QLatin1Char(axis == 0 ? 'C' : (axis == 1 ? 'Z' : 'T'));
+            const int size = axes ? shape.axisSize(letter) : 1;
+            const bool shown = axes && size > 1 && !(composite && letter == QLatin1Char('C'));
+            m_axisSliders[axis]->setVisible(shown);
+            m_axisLabels[axis]->setVisible(shown);
+            if (shown)
+            {
+                const QSignalBlocker blocker(m_axisSliders[axis]);
+                m_axisSliders[axis]->setRange(0, size - 1);
+                m_axisSliders[axis]->setValue(coordinates[axis]);
+                m_axisLabels[axis]->setText(tr("%1 %2/%3").arg(letter).arg(coordinates[axis] + 1).arg(size));
+            }
+        }
         updateSliceBarGeometry();
     }
 
+    // The bar of the slices lies under the images and takes its room, so it never covers them
     void PreviewWidget::updateSliceBarGeometry()
     {
-        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
-        if (sliceCount <= 1)
+        const auto hideBar = [this]()
         {
             m_sliceBar->hide();
-            return;
-        }
-
-        QMap<QString, FrameSourceState> frameSources;
-        std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
-        std::vector<RenderItem> renderItems;
-        buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
-
-        QRect cell;
-        for (const RenderItem& item : renderItems)
-        {
-            if (item.layerKey == m_activeLayerKey)
+            if (m_sliceBarReserve != 0)
             {
-                cell = item.area;
-                break;
+                m_sliceBarReserve = 0;
+                update();
             }
-        }
-
-        if (cell.isEmpty() || cell.width() < 80)
+        };
+        const int sliceCount = m_layerSliceCounts.value(m_activeLayerKey, 1);
+        if (sliceCount <= 1 || width() < 80)
         {
-            m_sliceBar->hide();
+            hideBar();
             return;
         }
 
-        const int margin = 8;
-        const int barHeight = 28;
-        const int maxBarWidth = cell.width() - 2 * margin;
+        const int margin = 6;
+        scopeone::core::StackShape barShape;
+        const bool barKnown = activeStackShape(barShape);
+        const bool barComposite = barKnown && barShape.channels > 1 && m_layerComposite.value(m_activeLayerKey, false);
+        const int rows = barKnown && barShape.isHyperstack() ? std::max(1, barShape.axisCount() - (barComposite ? 1 : 0)) : 1;
+        const int barHeight = 8 + rows * 20;
+        const int barWidth = width() - 2 * margin;
 
-        const bool compact = maxBarWidth < 260;
-        const bool ultraCompact = maxBarWidth < 160;
+        const bool compact = barWidth < 260;
+        const bool ultraCompact = barWidth < 160;
 
         m_slicePlayButton->setVisible(!ultraCompact);
-        const int currentSlice = m_sliceSlider->value() + 1;
-        m_sliceLabel->setText(compact ? tr("%1/%2").arg(currentSlice).arg(sliceCount)
-                                      : tr("Slice %1 / %2").arg(currentSlice).arg(sliceCount));
+        m_sliceLabel->setText(sliceLabelText(m_sliceSlider->value() + 1, compact));
 
-        m_sliceBar->setMaximumSize(maxBarWidth, barHeight);
-        m_sliceBar->setGeometry(cell.x() + margin,
-                                cell.y() + cell.height() - barHeight - margin,
-                                maxBarWidth,
-                                barHeight);
+        const int reserve = barHeight + 2 * margin;
+        if (m_sliceBarReserve != reserve)
+        {
+            m_sliceBarReserve = reserve;
+            update();
+        }
+        m_sliceBar->setMaximumSize(barWidth, barHeight);
+        m_sliceBar->setGeometry(margin, height() - barHeight - margin, barWidth, barHeight);
         m_sliceBar->show();
         m_sliceBar->raise();
     }
@@ -2647,7 +2831,7 @@ namespace scopeone::ui
         }
 
         const int w = width();
-        const int h = height();
+        const int h = std::max(40, height() - m_sliceBarReserve);
 
         if (count == 1)
         {
@@ -3536,8 +3720,13 @@ namespace scopeone::ui
         {
             cancelDraft();
         }
+        const bool changed = m_analysisTool != tool;
         m_analysisTool = tool;
         restoreToolCursor();
+        if (changed)
+        {
+            emit analysisToolChanged(tool);
+        }
     }
 
     // Shows the crosshair while a shape tool or a pending draft is active
@@ -3740,6 +3929,16 @@ namespace scopeone::ui
     }
 
     // Starts active drawing interactions from a mouse press
+    void PreviewWidget::contextMenuEvent(QContextMenuEvent* event)
+    {
+        // A right drag turns the 3D view, so it does not open a menu there
+        if (m_viewDimensionMode == ViewDimensionMode::ThreeDimensional)
+        {
+            return;
+        }
+        emit contextMenuRequested(event->globalPos());
+    }
+
     void PreviewWidget::mousePressEvent(QMouseEvent* event)
     {
         emit activated();
@@ -4428,6 +4627,20 @@ namespace scopeone::ui
         if (event->key() == Qt::Key_Escape)
         {
             m_sceneModel->selectOnly(QString());
+            event->accept();
+            return;
+        }
+
+        // , and . step through time, < and > through Z, and Ctrl with , and . through the channels
+        if (event->key() == Qt::Key_Comma || event->key() == Qt::Key_Period
+            || event->key() == Qt::Key_Less || event->key() == Qt::Key_Greater)
+        {
+            const bool forward = event->key() == Qt::Key_Period || event->key() == Qt::Key_Greater;
+            const QChar axis = (event->modifiers() & Qt::ControlModifier)
+                                   ? QLatin1Char('C')
+                                   : ((event->key() == Qt::Key_Less || event->key() == Qt::Key_Greater) ? QLatin1Char('Z')
+                                                                                                         : QLatin1Char('T'));
+            stepSlice(axis, forward ? 1 : -1);
             event->accept();
             return;
         }

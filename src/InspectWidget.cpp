@@ -1,5 +1,6 @@
 #include "InspectWidget.h"
 #include "ImageWorkspace.h"
+#include "AnalysisTools.h"
 #include "PreviewWidget.h"
 #include "scopeone/ImageSceneModel.h"
 
@@ -47,12 +48,23 @@ namespace scopeone::ui
                        : QStringLiteral("raw");
         }
 
+        // A long name is shortened in the middle, so that it does not widen the panel
+        QString shortened(const QString& text, int limit = 22)
+        {
+            if (text.size() <= limit)
+            {
+                return text;
+            }
+            const int half = (limit - 1) / 2;
+            return text.left(half) + QChar(0x2026) + text.right(half);
+        }
+
         QString inspectLayerTitle(const QString& layerKey, bool active)
         {
             const QString cameraId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
             return QStringLiteral("%1 - %2 [%3]")
-                .arg(active ? QStringLiteral("Active Layer") : QStringLiteral("Layer"),
-                     cameraId,
+                .arg(active ? QStringLiteral("Active") : QStringLiteral("Layer"),
+                     shortened(cameraId),
                      inspectLayerSourceLabel(layerKey));
         }
 
@@ -595,36 +607,10 @@ namespace scopeone::ui
         auto* selectionLayout = new QVBoxLayout(selectionGroup);
         auto* toolButtons = new QHBoxLayout();
         toolButtons->setSpacing(2);
-        // A row of icons like the toolbar of ImageJ. The tools are exclusive.
-        struct ToolSpec
-        {
-            ToolIconKind icon;
-            PreviewWidget::AnalysisTool tool;
-            const char* tip;
-        };
-        const ToolSpec toolSpecs[] = {
-            {ToolIconKind::Select, PreviewWidget::AnalysisTool::Select,
-             "Select: click a shape to select it, drag it to move it"},
-            {ToolIconKind::Rectangle, PreviewWidget::AnalysisTool::Rectangle,
-             "Rectangle: drag on the image"},
-            {ToolIconKind::Ellipse, PreviewWidget::AnalysisTool::Ellipse,
-             "Ellipse: drag on the image over the rectangle that holds it"},
-            {ToolIconKind::Polygon, PreviewWidget::AnalysisTool::Polygon,
-             "Polygon: click the corners. Double-click, Enter or a click on the first corner closes it. "
-             "Backspace takes back a corner and Esc cancels."},
-            {ToolIconKind::Freehand, PreviewWidget::AnalysisTool::Freehand,
-             "Freehand: drag along the outline. It closes when the button is released."},
-            {ToolIconKind::Line, PreviewWidget::AnalysisTool::Line,
-             "Line: drag on the image to plot the profile along it"},
-            {ToolIconKind::Point, PreviewWidget::AnalysisTool::Point,
-             "Point: click to read one pixel"},
-            {ToolIconKind::Wand, PreviewWidget::AnalysisTool::Wand,
-             "Wand: click a region to select the connected pixels of a similar value. "
-             "The tolerance is set in Analyze > Wand Tolerance."},
-        };
+        // The tools themselves are in the strip beside the viewer; these buttons keep the panel working
         auto* toolGroup = new QButtonGroup(this);
         toolGroup->setExclusive(true);
-        for (const ToolSpec& spec : toolSpecs)
+        for (const AnalysisToolSpec& spec : analysisToolSpecs())
         {
             ToolButton entry;
             entry.button = new QToolButton(selectionGroup);
@@ -636,7 +622,7 @@ namespace scopeone::ui
             entry.icon = spec.icon;
             entry.tool = static_cast<int>(spec.tool);
             toolGroup->addButton(entry.button);
-            toolButtons->addWidget(entry.button);
+            entry.button->hide();
             m_toolButtons.append(entry);
         }
         m_toolButtons.first().button->setChecked(true);
@@ -738,6 +724,7 @@ namespace scopeone::ui
     {
         const QString normalizedLayerKey = layerKey.trimmed();
         auto* group = new QGroupBox(inspectLayerTitle(normalizedLayerKey, false), m_contentContainer);
+        group->setToolTip(scopeone::core::ScopeOneCore::sourceIdFromLayerKey(normalizedLayerKey));
         auto* layout = new QVBoxLayout(group);
         LayerInfoGroup infoGroup;
         infoGroup.layerKey = normalizedLayerKey;

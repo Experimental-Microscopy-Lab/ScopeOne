@@ -4012,6 +4012,37 @@ namespace scopeone::core
         return order;
     }
 
+    StackShape stackShapeOf(const ExperimentPlan& plan, int planeCount)
+    {
+        StackShape shape;
+        if (plan.stackChannels > 0 || plan.stackSlices > 0 || plan.stackFrames > 0)
+        {
+            shape.channels = qMax(1, plan.stackChannels);
+            shape.slices = qMax(1, plan.stackSlices);
+            shape.frames = qMax(1, plan.stackFrames);
+            if (plan.stackOrder.size() == 3)
+            {
+                shape.order = plan.stackOrder;
+            }
+            return shape;
+        }
+        if (plan.positions.size() > 1)
+        {
+            return shape;
+        }
+        const int channels = qMax(1, static_cast<int>(plan.channels.size()));
+        const int slices = qMax(1, static_cast<int>(plan.zPositions.size()));
+        if (planeCount <= 0 || planeCount % (channels * slices) != 0)
+        {
+            return shape;
+        }
+        shape.channels = channels;
+        shape.slices = slices;
+        shape.frames = planeCount / (channels * slices);
+        shape.order = omeAcquisitionOrder(plan);
+        return shape;
+    }
+
     quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event)
     {
         const quint64 framesPerBurst = static_cast<quint64>((std::max)(1, plan.framesPerBurst));

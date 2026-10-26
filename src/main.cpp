@@ -5,6 +5,7 @@
 #include "AppVersion.h"
 #include "scopeone/ScopeOneCore.h"
 #include "ConsoleWidget.h"
+#include "Appearance.h"
 #include "MainWindow.h"
 #include "PluginManagerDialog.h"
 
@@ -22,6 +23,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral(SCOPEONE_APP_NAME));
     QCoreApplication::setApplicationVersion(QStringLiteral(SCOPEONE_APP_VERSION_STRING));
     app.setStyle(QStringLiteral("Fusion"));
+    scopeone::ui::applyStoredAppearance();
     app.setWindowIcon(QIcon(":/Scopeone_Icon.svg"));
     scopeone::ui::ConsoleWidget::installQtMessageHandler();
 

@@ -1,5 +1,6 @@
 #include "ImageProcessingWidget.h"
 
+#include "EmptyHint.h"
 #include "ImageWorkspace.h"
 
 #include "scopeone/ScopeOneCore.h"
@@ -8,11 +9,17 @@
 #include <QAbstractSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDoubleSpinBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMenu>
+#include <QToolButton>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -54,6 +61,17 @@ namespace scopeone::ui
         void fitButtonToText(QPushButton* button)
         {
             button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 20);
+        }
+
+        // Lets the combo boxes be as narrow as the panel is, whatever their longest entry is
+        void narrowCombos(QWidget* root)
+        {
+            for (QComboBox* combo : root->findChildren<QComboBox*>())
+            {
+                combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                combo->setMinimumContentsLength(10);
+                combo->setSizePolicy(QSizePolicy::Ignored, combo->sizePolicy().verticalPolicy());
+            }
         }
 
         class MaskPreviewWidget final : public QWidget
@@ -292,8 +310,9 @@ namespace scopeone::ui
             ModuleConfigWidget(scopeone::core::ScopeOneCore* core,
                                int moduleIndex,
                                const ProcessingModuleInfo& info,
+                               const QString& cameraId,
                                QWidget* parent)
-                : QWidget(parent), m_core(core), m_moduleIndex(moduleIndex)
+                : QWidget(parent), m_core(core), m_moduleIndex(moduleIndex), m_cameraId(cameraId)
             {
                 auto* layout = new QVBoxLayout(this);
                 auto* group = new QGroupBox(info.name(), this);
@@ -305,7 +324,7 @@ namespace scopeone::ui
                     preview->setParametersChanged([this, preview](const QVariantMap& parameters)
                     {
                         preview->setParameters(parameters);
-                        m_core->setProcessingModuleParameters(m_moduleIndex, parameters);
+                        m_core->setProcessingModuleParameters(m_moduleIndex, parameters, m_cameraId);
                     });
                     form->addRow(preview);
                     m_maskPreview = preview;
@@ -327,7 +346,7 @@ namespace scopeone::ui
                     auto* resetButton = new QPushButton(tr("Reset State"), this);
                     connect(resetButton, &QPushButton::clicked, this, [this]()
                     {
-                        m_core->resetProcessingModuleState(m_moduleIndex);
+                        m_core->resetProcessingModuleState(m_moduleIndex, m_cameraId);
                     });
                     layout->addWidget(resetButton);
                 }
@@ -453,11 +472,12 @@ namespace scopeone::ui
                 {
                     parameters.insert(it.key(), editorValue(it.key()));
                 }
-                m_core->setProcessingModuleParameters(m_moduleIndex, parameters);
+                m_core->setProcessingModuleParameters(m_moduleIndex, parameters, m_cameraId);
             }
 
             scopeone::core::ScopeOneCore* m_core;
             int m_moduleIndex;
+            QString m_cameraId;
             QHash<QString, QWidget*> m_editors;
             QHash<QString, ProcessingParameterDescriptor> m_descriptors;
             MaskPreviewWidget* m_maskPreview{nullptr};
@@ -473,10 +493,13 @@ namespace scopeone::ui
         setBackgroundRole(QPalette::Window);
         m_processingRunning = core->isRealTimeProcessingEnabled();
         setupUI();
+        narrowCombos(this);
+        refreshTargets();
 
         connect(core, &scopeone::core::ScopeOneCore::processingModulesChanged,
                 this, [this]()
                 {
+                    refreshTargets();
                     updateModuleList();
                     updateConfigWidget();
                     updateRunButtons();
@@ -486,7 +509,7 @@ namespace scopeone::ui
                 {
                     if (moduleIndex == m_moduleList->currentRow())
                     {
-                        const auto modules = m_scopeonecore->processingModules();
+                        const auto modules = m_scopeonecore->processingModules(m_targetCamera);
                         if (moduleIndex >= 0 && moduleIndex < modules.size())
                         {
                             static_cast<ModuleConfigWidget*>(m_configStack->currentWidget())
@@ -654,9 +677,11 @@ namespace scopeone::ui
         contentLayout->addWidget(inputGroup);
         contentLayout->addWidget(pipelineGroup);
         contentLayout->addWidget(parametersGroup, 1);
-        contentLayout->addWidget(executionGroup);
         scrollArea->setWidget(content);
-        mainLayout->addWidget(scrollArea);
+        mainLayout->addWidget(scrollArea, 1);
+        // The controls that run the steps stay in view below the scrolling part
+        mainLayout->addWidget(executionGroup);
+        mainLayout->setContentsMargins(5, 0, 5, 5);
     }
 
     QWidget* ImageProcessingWidget::setupInputControls()
@@ -755,18 +780,77 @@ namespace scopeone::ui
     {
         auto* group = new QGroupBox(tr("Pipeline"), this);
         auto* layout = new QVBoxLayout(group);
+        // Which camera the steps below are for, and whether it has steps of its own
+        auto* targetRow = new QHBoxLayout;
+        targetRow->addWidget(new QLabel(tr("Steps for"), group));
+        m_targetCombo = new QComboBox(group);
+        targetRow->addWidget(m_targetCombo, 1);
+        layout->addLayout(targetRow);
+        m_targetInfo = new QLabel(group);
+        m_targetInfo->setWordWrap(true);
+        layout->addWidget(m_targetInfo);
+        m_targetButton = new QPushButton(group);
+        layout->addWidget(m_targetButton);
+        connect(m_targetCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                [this](int) { onTargetChanged(); });
+        connect(m_targetButton, &QPushButton::clicked, this, &ImageProcessingWidget::onTargetButtonClicked);
         m_moduleList = new QListWidget(group);
         connect(m_moduleList, &QListWidget::currentRowChanged,
                 this, &ImageProcessingWidget::onModuleSelectionChanged);
         connect(m_moduleList, &QListWidget::itemChanged,
                 this, &ImageProcessingWidget::onModuleItemChanged);
+        new EmptyHint(m_moduleList, tr("No steps yet. Search a step below and press Add, or choose Add to Pipeline in the dialog of a Process command."));
         layout->addWidget(m_moduleList);
         auto* controls = new QHBoxLayout;
         m_moduleTypeCombo = new QComboBox(group);
-        for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
+        // The steps are listed by group, and the box finds them by any part of the group or the name
+        static const QList<QPair<QString, QStringList>> groups{
+            {QStringLiteral("Filters"), {QStringLiteral("gaussian_blur"), QStringLiteral("filter"), QStringLiteral("sharpen"),
+                                         QStringLiteral("find_edges"), QStringLiteral("unsharp_mask"), QStringLiteral("top_hat")}},
+            {QStringLiteral("Intensity"), {QStringLiteral("math"), QStringLiteral("invert"), QStringLiteral("threshold"),
+                                           QStringLiteral("clahe"), QStringLiteral("equalize"),
+                                           QStringLiteral("background_calibration")}},
+            {QStringLiteral("Binary"), {QStringLiteral("binary"), QStringLiteral("distance_map"), QStringLiteral("watershed"),
+                                         QStringLiteral("mask")}},
+            {QStringLiteral("Geometry"), {QStringLiteral("flip"), QStringLiteral("rotate_90"),
+                                          QStringLiteral("spatiotemporal_binning")}},
+            {QStringLiteral("Stack"), {QStringLiteral("rolling_projection"), QStringLiteral("differential_rolling")}},
+            {QStringLiteral("Fourier"), {QStringLiteral("fft"), QStringLiteral("frequency_domain_filter"),
+                                         QStringLiteral("ifft")}}};
+        QList<ProcessingModuleDescriptor> remaining = m_scopeonecore->availableProcessingModules();
+        for (const auto& group : groups)
         {
-            m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
+            for (const QString& id : group.second)
+            {
+                for (qsizetype index = 0; index < remaining.size(); ++index)
+                {
+                    if (remaining.at(index).id == id)
+                    {
+                        m_moduleTypeCombo->addItem(tr("%1 / %2").arg(group.first, remaining.at(index).name), id);
+                        remaining.removeAt(index);
+                        break;
+                    }
+                }
+            }
         }
+        for (const ProcessingModuleDescriptor& descriptor : remaining)
+        {
+            m_moduleTypeCombo->addItem(tr("Other / %1").arg(descriptor.name), descriptor.id);
+        }
+        m_moduleTypeCombo->setEditable(true);
+        m_moduleTypeCombo->setInsertPolicy(QComboBox::NoInsert);
+        m_moduleTypeCombo->completer()->setFilterMode(Qt::MatchContains);
+        m_moduleTypeCombo->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+        m_moduleTypeCombo->lineEdit()->setPlaceholderText(tr("Search steps"));
+        connect(m_moduleTypeCombo->lineEdit(), &QLineEdit::returnPressed, this, [this]()
+        {
+            const int found = m_moduleTypeCombo->findText(m_moduleTypeCombo->currentText(), Qt::MatchContains);
+            if (found >= 0)
+            {
+                m_moduleTypeCombo->setCurrentIndex(found);
+                onAddModuleClicked();
+            }
+        });
         controls->addWidget(m_moduleTypeCombo, 1);
         m_addModuleButton = new QPushButton(tr("Add"), group);
         m_removeModuleButton = new QPushButton(tr("Remove"), group);
@@ -786,13 +870,21 @@ namespace scopeone::ui
         controls->addWidget(m_moveModuleUpButton);
         controls->addWidget(m_moveModuleDownButton);
         controls->addWidget(m_removeModuleButton);
+        m_presetButton = new QToolButton(group);
+        m_presetButton->setText(tr("Presets"));
+        m_presetButton->setPopupMode(QToolButton::InstantPopup);
+        m_presetMenu = new QMenu(m_presetButton);
+        m_presetButton->setMenu(m_presetMenu);
+        connect(m_presetMenu, &QMenu::aboutToShow, this, &ImageProcessingWidget::fillPresetMenu);
+        controls->addWidget(m_presetButton);
         layout->addLayout(controls);
         return group;
     }
 
     QWidget* ImageProcessingWidget::setupModuleConfig()
     {
-        auto* group = new QGroupBox(tr("Step Parameters"), this);
+        m_configGroup = new QGroupBox(tr("Step Parameters"), this);
+        auto* group = m_configGroup;
         auto* layout = new QVBoxLayout(group);
         m_configStack = new QStackedWidget(group);
         m_emptyConfigWidget = new QWidget(m_configStack);
@@ -807,7 +899,7 @@ namespace scopeone::ui
     void ImageProcessingWidget::updateModuleList()
     {
         const int currentRow = m_moduleList->currentRow();
-        const auto modules = m_scopeonecore->processingModules();
+        const auto modules = m_scopeonecore->processingModules(m_targetCamera);
         const QSignalBlocker blocker(m_moduleList);
         m_moduleList->clear();
         for (int index = 0; index < modules.size(); ++index)
@@ -840,13 +932,16 @@ namespace scopeone::ui
             widget->deleteLater();
         }
         m_configStack->setCurrentWidget(m_emptyConfigWidget);
+        m_configGroup->setTitle(tr("Step Parameters"));
         const int row = m_moduleList->currentRow();
-        const auto modules = m_scopeonecore->processingModules();
+        const auto modules = m_scopeonecore->processingModules(m_targetCamera);
         if (row < 0 || row >= modules.size())
         {
             return;
         }
-        auto* editor = new ModuleConfigWidget(m_scopeonecore, row, modules.at(row), m_configStack);
+        m_configGroup->setTitle(tr("Step Parameters: %1. %2").arg(row + 1).arg(modules.at(row).name()));
+        auto* editor = new ModuleConfigWidget(m_scopeonecore, row, modules.at(row), m_targetCamera, m_configStack);
+        narrowCombos(editor);
         m_configStack->addWidget(editor);
         m_configStack->setCurrentWidget(editor);
     }
@@ -854,22 +949,27 @@ namespace scopeone::ui
     void ImageProcessingWidget::updateRunButtons()
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
-        const bool hasModules = !m_scopeonecore->processingModules().isEmpty();
+        const bool hasModules = !m_scopeonecore->processingModules(m_targetCamera).isEmpty();
         const bool idle = m_offlineProcessingRequestId == 0;
+        // The steps of a camera that runs the shared ones can only be looked at
+        const bool editable = !running && idle && pipelineEditable();
         m_processingBitDepthCombo->setEnabled(!running && idle);
-        m_moduleList->setEnabled(!running && idle);
-        m_moduleTypeCombo->setEnabled(!running && idle);
-        m_addModuleButton->setEnabled(!running && idle);
-        m_removeModuleButton->setEnabled(!running && idle && m_moduleList->currentRow() >= 0);
-        m_moveModuleUpButton->setEnabled(!running && idle && m_moduleList->currentRow() > 0);
-        m_moveModuleDownButton->setEnabled(!running && idle
+        m_moduleList->setEnabled(editable);
+        m_moduleTypeCombo->setEnabled(editable);
+        m_addModuleButton->setEnabled(editable);
+        m_removeModuleButton->setEnabled(editable && m_moduleList->currentRow() >= 0);
+        m_moveModuleUpButton->setEnabled(editable && m_moduleList->currentRow() > 0);
+        m_moveModuleDownButton->setEnabled(editable
                                            && m_moduleList->currentRow() >= 0
                                            && m_moduleList->currentRow() < m_moduleList->count() - 1);
-        m_configStack->setEnabled(!running && idle);
+        m_configStack->setEnabled(editable);
+        m_presetButton->setEnabled(editable);
+        m_targetCombo->setEnabled(!running && idle);
+        m_targetButton->setEnabled(!running && idle);
 
         const bool liveMode = m_liveModeRadio->isChecked();
         const QString sourceType = m_sourceCombo->currentData(Qt::UserRole).toString();
-        const bool hasPipeline = hasModules;
+        const bool hasPipeline = anyPipelineHasSteps();
         const QString sourceId = m_sourceCombo->currentData(Qt::UserRole + 1).toString();
         const bool hasSource = !sourceType.isEmpty();
         const bool sourceAvailable = hasSource
@@ -901,14 +1001,14 @@ namespace scopeone::ui
                                                 : tr("Start Live Pipeline")
                                       : tr("Run Processing"));
         m_executeButton->setEnabled(liveMode
-                                         ? idle && (running || hasModules)
+                                         ? idle && (running || anyPipelineHasSteps())
                                          : canRun);
         QString runDisabledReason;
         if (!idle)
         {
             runDisabledReason = tr("A processing run is already in progress");
         }
-        else if (liveMode && !running && !hasModules)
+        else if (liveMode && !running && !anyPipelineHasSteps())
         {
             runDisabledReason = tr("Add at least one pipeline step first");
         }
@@ -967,6 +1067,7 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::refreshSources()
     {
+        refreshTargets();
         const QString currentType = m_sourceCombo->currentData(Qt::UserRole).toString();
         const QString currentFirst = m_sourceCombo->currentData(Qt::UserRole + 1).toString();
         const QString currentSecond = m_sourceCombo->currentData(Qt::UserRole + 2).toString();
@@ -1111,7 +1212,7 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::onAddModuleClicked()
     {
-        if (!m_scopeonecore->addProcessingModule(m_moduleTypeCombo->currentData().toString()))
+        if (!m_scopeonecore->addProcessingModule(m_moduleTypeCombo->currentData().toString(), m_targetCamera))
         {
             emit problem(tr("Warning"), tr("Failed to add processing module"));
             return;
@@ -1120,10 +1221,250 @@ namespace scopeone::ui
         m_moduleList->setCurrentRow(m_moduleList->count() - 1);
     }
 
+    // Whether the steps shown can be changed: those of the shared pipeline, or of a camera with its own
+    bool ImageProcessingWidget::pipelineEditable() const
+    {
+        return m_targetCamera.isEmpty() || m_scopeonecore->hasOwnProcessingPipeline(m_targetCamera);
+    }
+
+    // Whether any pipeline, the shared one or one of a camera, has a step, which is what live processing needs
+    bool ImageProcessingWidget::anyPipelineHasSteps() const
+    {
+        if (!m_scopeonecore->processingModules().isEmpty())
+        {
+            return true;
+        }
+        for (const QString& cameraId : m_scopeonecore->camerasWithOwnProcessingPipeline())
+        {
+            if (!m_scopeonecore->processingModules(cameraId).isEmpty())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Lists the cameras to choose from, each saying whether it has steps of its own, and explains the choice
+    void ImageProcessingWidget::refreshTargets()
+    {
+        if (!m_targetCombo)
+        {
+            return;
+        }
+        const QSignalBlocker blocker(m_targetCombo);
+        m_targetCombo->clear();
+        m_targetCombo->addItem(tr("All cameras (shared steps)"), QString{});
+        QStringList cameras = m_scopeonecore->cameraIds();
+        for (const QString& cameraId : m_scopeonecore->camerasWithOwnProcessingPipeline())
+        {
+            if (!cameras.contains(cameraId))
+            {
+                cameras.append(cameraId);
+            }
+        }
+        for (const QString& cameraId : cameras)
+        {
+            m_targetCombo->addItem(m_scopeonecore->hasOwnProcessingPipeline(cameraId)
+                                       ? tr("%1  \u2014 own steps").arg(cameraId)
+                                       : tr("%1  \u2014 shared steps").arg(cameraId),
+                                   cameraId);
+        }
+        int index = m_targetCombo->findData(m_targetCamera);
+        if (index < 0)
+        {
+            m_targetCamera.clear();
+            index = 0;
+        }
+        m_targetCombo->setCurrentIndex(index);
+
+        if (m_targetCamera.isEmpty())
+        {
+            m_targetInfo->setText(tr("Every camera that has no steps of its own runs these."));
+            m_targetButton->hide();
+        }
+        else if (m_scopeonecore->hasOwnProcessingPipeline(m_targetCamera))
+        {
+            m_targetInfo->setText(tr("%1 runs its own steps.").arg(m_targetCamera));
+            m_targetButton->setText(tr("Use the shared steps instead"));
+            m_targetButton->show();
+        }
+        else
+        {
+            m_targetInfo->setText(tr("%1 runs the shared steps, shown here as they are. To change them for this camera only, give it its own.")
+                                      .arg(m_targetCamera));
+            m_targetButton->setText(tr("Give %1 its own steps").arg(m_targetCamera));
+            m_targetButton->show();
+        }
+    }
+
+    void ImageProcessingWidget::onTargetChanged()
+    {
+        m_targetCamera = m_targetCombo->currentData().toString();
+        refreshTargets();
+        updateModuleList();
+        updateConfigWidget();
+        updateRunButtons();
+    }
+
+    // Gives the camera steps of its own, starting from a copy of the shared ones, or takes them away
+    void ImageProcessingWidget::onTargetButtonClicked()
+    {
+        if (m_targetCamera.isEmpty())
+        {
+            return;
+        }
+        if (m_scopeonecore->hasOwnProcessingPipeline(m_targetCamera))
+        {
+            if (!m_scopeonecore->processingModules(m_targetCamera).isEmpty()
+                && QMessageBox::question(this, tr("Use the shared steps"),
+                                         tr("Remove the steps of %1? It will run the shared steps again.")
+                                             .arg(m_targetCamera)) != QMessageBox::Yes)
+            {
+                return;
+            }
+            m_scopeonecore->setOwnProcessingPipeline(m_targetCamera, false);
+        }
+        else
+        {
+            m_scopeonecore->setOwnProcessingPipeline(m_targetCamera, true);
+        }
+    }
+
+    void ImageProcessingWidget::addModule(const QString& moduleId, const QVariantMap& parameters)
+    {
+        // A camera that has no steps of its own cannot take one; the step goes to the shared steps and the
+        // list changes to them, so that the step can be seen
+        if (!pipelineEditable())
+        {
+            m_targetCamera.clear();
+            refreshTargets();
+            updateModuleList();
+        }
+        if (!m_scopeonecore->addProcessingModule(moduleId, m_targetCamera))
+        {
+            emit problem(tr("Warning"), tr("Failed to add processing module"));
+            return;
+        }
+        const int index = static_cast<int>(m_scopeonecore->processingModules(m_targetCamera).size()) - 1;
+        m_scopeonecore->setProcessingModuleParameters(index, parameters, m_targetCamera);
+        updateModuleList();
+        m_moduleList->setCurrentRow(index);
+    }
+
+    // The pipeline as a list of steps with their parameters, as it is kept in a preset
+    QJsonArray ImageProcessingWidget::currentPipeline() const
+    {
+        QJsonArray steps;
+        for (const auto& module : m_scopeonecore->processingModules(m_targetCamera))
+        {
+            QJsonObject step;
+            step.insert(QStringLiteral("id"), module.id());
+            step.insert(QStringLiteral("enabled"), module.enabled());
+            step.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(module.parameters()));
+            steps.append(step);
+        }
+        return steps;
+    }
+
+    // Replaces the pipeline by the steps of a preset
+    void ImageProcessingWidget::applyPipeline(const QJsonArray& steps)
+    {
+        while (!m_scopeonecore->processingModules(m_targetCamera).isEmpty())
+        {
+            m_scopeonecore->removeProcessingModule(0, m_targetCamera);
+        }
+        for (const QJsonValue& value : steps)
+        {
+            const QJsonObject step = value.toObject();
+            addModule(step.value(QStringLiteral("id")).toString(),
+                      step.value(QStringLiteral("parameters")).toObject().toVariantMap());
+            m_scopeonecore->setProcessingModuleEnabled(
+                static_cast<int>(m_scopeonecore->processingModules(m_targetCamera).size()) - 1,
+                step.value(QStringLiteral("enabled")).toBool(true), m_targetCamera);
+        }
+        updateModuleList();
+    }
+
+    void ImageProcessingWidget::savePreset()
+    {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(this, tr("Save Preset"), tr("Name of the preset"),
+                                                   QLineEdit::Normal, QString(), &accepted).trimmed();
+        if (!accepted || name.isEmpty())
+        {
+            return;
+        }
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        presets.insert(name, currentPipeline());
+        settings.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(presets).toJson(QJsonDocument::Compact));
+    }
+
+    void ImageProcessingWidget::fillPresetMenu()
+    {
+        m_presetMenu->clear();
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        connect(m_presetMenu->addAction(tr("Save Pipeline as Preset...")), &QAction::triggered, this,
+                &ImageProcessingWidget::savePreset);
+        m_presetMenu->addSeparator();
+        QMenu* removeMenu = new QMenu(tr("Delete Preset"), m_presetMenu);
+        for (auto it = presets.begin(); it != presets.end(); ++it)
+        {
+            const QString name = it.key();
+            const QJsonArray steps = it.value().toArray();
+            connect(m_presetMenu->addAction(name), &QAction::triggered, this, [this, steps]() { applyPipeline(steps); });
+            connect(removeMenu->addAction(name), &QAction::triggered, this, [name]()
+            {
+                QSettings stored(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+                QJsonObject all = QJsonDocument::fromJson(stored.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+                all.remove(name);
+                stored.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(all).toJson(QJsonDocument::Compact));
+            });
+        }
+        if (presets.isEmpty())
+        {
+            m_presetMenu->addAction(tr("No presets saved"))->setEnabled(false);
+        }
+        else
+        {
+            m_presetMenu->addMenu(removeMenu);
+        }
+        m_presetMenu->addSeparator();
+        connect(m_presetMenu->addAction(tr("Import from File...")), &QAction::triggered, this, [this]()
+        {
+            const QString path = QFileDialog::getOpenFileName(this, tr("Import Pipeline"), QString(),
+                                                              tr("Pipeline (*.json)"));
+            if (path.isEmpty())
+            {
+                return;
+            }
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly))
+            {
+                applyPipeline(QJsonDocument::fromJson(file.readAll()).array());
+            }
+        });
+        connect(m_presetMenu->addAction(tr("Export to File...")), &QAction::triggered, this, [this]()
+        {
+            const QString path = QFileDialog::getSaveFileName(this, tr("Export Pipeline"), QStringLiteral("pipeline.json"),
+                                                              tr("Pipeline (*.json)"));
+            if (path.isEmpty())
+            {
+                return;
+            }
+            QFile file(path);
+            if (file.open(QIODevice::WriteOnly))
+            {
+                file.write(QJsonDocument(currentPipeline()).toJson());
+            }
+        });
+    }
+
     void ImageProcessingWidget::onRemoveModuleClicked()
     {
         const int row = m_moduleList->currentRow();
-        if (row < 0 || !m_scopeonecore->removeProcessingModule(row))
+        if (row < 0 || !m_scopeonecore->removeProcessingModule(row, m_targetCamera))
         {
             emit problem(tr("Warning"), tr("Failed to remove processing module"));
             return;
@@ -1139,7 +1480,7 @@ namespace scopeone::ui
     void ImageProcessingWidget::onModuleItemChanged(QListWidgetItem* item)
     {
         const int row = m_moduleList->row(item);
-        m_scopeonecore->setProcessingModuleEnabled(row, item->checkState() == Qt::Checked);
+        m_scopeonecore->setProcessingModuleEnabled(row, item->checkState() == Qt::Checked, m_targetCamera);
     }
 
     void ImageProcessingWidget::onMoveModuleUpClicked()
@@ -1149,7 +1490,7 @@ namespace scopeone::ui
         {
             return;
         }
-        if (m_scopeonecore->moveProcessingModule(row, row - 1))
+        if (m_scopeonecore->moveProcessingModule(row, row - 1, m_targetCamera))
         {
             m_moduleList->setCurrentRow(row - 1);
         }
@@ -1162,7 +1503,7 @@ namespace scopeone::ui
         {
             return;
         }
-        if (m_scopeonecore->moveProcessingModule(row, row + 1))
+        if (m_scopeonecore->moveProcessingModule(row, row + 1, m_targetCamera))
         {
             m_moduleList->setCurrentRow(row + 1);
         }

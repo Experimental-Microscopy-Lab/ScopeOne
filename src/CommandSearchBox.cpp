@@ -7,6 +7,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QScreen>
+#include <QSettings>
 
 #include <algorithm>
 
@@ -92,15 +93,41 @@ namespace scopeone::ui
         const QStringList words = text().toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
         m_popup->clear();
         m_shown.clear();
-        if (words.isEmpty())
-        {
-            m_popup->hide();
-            return;
-        }
+        const QStringList recent = QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"))
+                                       .value(QStringLiteral("CommandSearch/recent")).toStringList();
         // The menus change while the application runs, so the commands are read again for each search
-        if (m_commands.isEmpty() || words.size() == 1)
+        if (m_commands.isEmpty() || words.size() <= 1)
         {
             collect();
+        }
+        if (words.isEmpty())
+        {
+            // Nothing typed yet: the commands used last
+            for (const QString& name : recent)
+            {
+                for (int index = 0; index < m_commands.size(); ++index)
+                {
+                    if (m_commands.at(index).name == name)
+                    {
+                        const Command& command = m_commands.at(index);
+                        auto* item = new QListWidgetItem(
+                            command.shortcut.isEmpty() ? command.name
+                                                       : command.name + QStringLiteral("      [") + command.shortcut + QLatin1Char(']'),
+                            m_popup);
+                        item->setFlags(command.action->isEnabled() ? item->flags() : (item->flags() & ~Qt::ItemIsEnabled));
+                        m_shown.append(index);
+                        break;
+                    }
+                }
+            }
+            if (m_popup->count() == 0)
+            {
+                m_popup->hide();
+                return;
+            }
+            m_popup->setCurrentRow(0);
+            showPopup();
+            return;
         }
         QList<QPair<int, int>> matches;
         for (int index = 0; index < m_commands.size(); ++index)
@@ -115,7 +142,10 @@ namespace scopeone::ui
             }
             if (all)
             {
-                matches.append({name.startsWith(words.first()) ? 0 : (name.contains(words.first()) ? 1 : 2), index});
+                // Begins with the word, holds it, or only the path does; a command used lately comes first
+                const int rank = name.startsWith(words.first()) ? 0 : (name.contains(words.first()) ? 1 : 2);
+                const qsizetype used = recent.indexOf(command.name);
+                matches.append({rank * 100 + static_cast<int>(used >= 0 ? used : 99), index});
             }
         }
         std::stable_sort(matches.begin(), matches.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -172,6 +202,13 @@ namespace scopeone::ui
             return;
         }
         QAction* action = m_commands.at(m_shown.at(row)).action;
+        {
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            QStringList recent = settings.value(QStringLiteral("CommandSearch/recent")).toStringList();
+            recent.removeAll(m_commands.at(m_shown.at(row)).name);
+            recent.prepend(m_commands.at(m_shown.at(row)).name);
+            settings.setValue(QStringLiteral("CommandSearch/recent"), recent.mid(0, 8));
+        }
         m_popup->hide();
         clear();
         clearFocus();

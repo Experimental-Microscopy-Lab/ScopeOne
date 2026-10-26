@@ -19,6 +19,7 @@
 #include <QVector2D>
 #include <functional>
 #include <vector>
+#include "scopeone/ExperimentDocument.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ImageFrame.h"
 
@@ -32,6 +33,7 @@ class QMouseEvent;
 class QPainter;
 class QPointF;
 class QPushButton;
+class QCheckBox;
 class QSlider;
 class QWheelEvent;
 class QWidget;
@@ -73,6 +75,11 @@ namespace scopeone::ui
         QString setGraphStaticLayerFrame(const QString& layerId,
                                          const scopeone::core::ImageFrame& frame);
         void setLayerSliceCount(const QString& layerKey, int sliceCount);
+        // How the slices of a layer are arranged along the channel, Z and time axes
+        void setLayerStackShape(const QString& layerKey, const scopeone::core::StackShape& shape);
+        void setLayerComposite(const QString& layerKey, bool composite);
+        void stepSlice(QChar axis, int delta);
+        QString sliceLabelText(int current, bool compact) const;
         QString setGraphToolLayerFrame(const QString& layerId,
                                        const scopeone::core::ImageFrame& frame);
         bool removeStaticLayer(const QString& layerKey);
@@ -134,6 +141,8 @@ signals:
         void stageZStepRequested(double dzScale, bool big);
         void layerClicked(const QString& layerKey);
         void layerSliceIndexRequested(const QString& layerKey, int sliceIndex);
+        // The user switched the display of the channels of a layer on top of each other
+        void layerCompositeRequested(const QString& layerKey, bool enabled);
         void activated();
         void mousePositionChanged(const QPoint& widgetPos);
         void roiDrawn(const QString& cameraId,
@@ -144,12 +153,15 @@ signals:
                       int sourceRoiX,
                       int sourceRoiY);
         void imageFilesDropped(const QStringList& filePaths);
+        void contextMenuRequested(const QPoint& globalPosition);
+        void analysisToolChanged(AnalysisTool tool);
 
     protected:
         void initializeGL() override;
         void resizeGL(int, int) override;
         void paintGL() override;
         void mousePressEvent(QMouseEvent* event) override;
+        void contextMenuEvent(QContextMenuEvent* event) override;
         void mouseDoubleClickEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
@@ -268,6 +280,8 @@ signals:
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
         QWidget* m_sliceBar{nullptr};
+        // Height at the bottom that the bar of the slices takes from the images
+        int m_sliceBarReserve{0};
         QSlider* m_sliceSlider{nullptr};
         QLabel* m_sliceLabel{nullptr};
         QPushButton* m_slicePlayButton{nullptr};
@@ -301,6 +315,13 @@ signals:
         QMap<QString, Camera3dState> m_layerCameras3d;
         QMap<QString, int> m_layerSliceCounts;
         QMap<QString, int> m_layerSliceIndices;
+        QMap<QString, scopeone::core::StackShape> m_layerStackShapes;
+        QMap<QString, bool> m_layerComposite;
+        QCheckBox* m_compositeCheck{nullptr};
+        bool activeStackShape(scopeone::core::StackShape& shape) const;
+        void onAxisSliderChanged();
+        QSlider* m_axisSliders[3]{nullptr, nullptr, nullptr};
+        QLabel* m_axisLabels[3]{nullptr, nullptr, nullptr};
         float m_zScale{1.0f};
         bool m_wireframe3d{false};
         bool m_threeDimensionalColorbarVisible{true};
