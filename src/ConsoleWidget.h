@@ -15,9 +15,12 @@ class QLineEdit;
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QTabWidget;
 
 namespace scopeone::ui
 {
+    class TerminalWidget;
+
     class ConsoleWidget : public QWidget
     {
         Q_OBJECT
@@ -82,6 +85,8 @@ namespace scopeone::ui
         QLabel* m_messageCountLabel{nullptr};
         QLineEdit* m_searchInput{nullptr};
         QLineEdit* m_commandInput{nullptr};
+        QTabWidget* m_tabs{nullptr};
+        TerminalWidget* m_terminal{nullptr};
 
         bool m_showTimestamps{true};
         bool m_autoScroll{true};

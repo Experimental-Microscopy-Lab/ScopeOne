@@ -72,6 +72,8 @@ set(SCOPEONE_UI_SOURCES
         src/ImageToolsDialog.cpp
         src/PreviewWidget.cpp
         src/ConsoleWidget.cpp
+        src/PtyProcess.cpp
+        src/TerminalWidget.cpp
         src/AboutDialog.cpp
         src/SettingsDialog.cpp
         src/PluginManagerDialog.cpp
@@ -109,6 +111,8 @@ set(SCOPEONE_UI_HEADERS
         src/ImageToolsDialog.h
         src/PreviewWidget.h
         src/ConsoleWidget.h
+        src/PtyProcess.h
+        src/TerminalWidget.h
         src/AboutDialog.h
         src/SettingsDialog.h
         src/PluginManagerDialog.h
@@ -152,6 +156,8 @@ if (UNIX AND NOT APPLE)
             BUILD_RPATH "$ORIGIN"
             INSTALL_RPATH "$ORIGIN/${CMAKE_INSTALL_LIBDIR}"
     )
+    # forkpty for the console terminal
+    target_link_libraries(ScopeOne PRIVATE util)
 endif ()
 target_link_libraries(ScopeOne PRIVATE
         scopeone::ScopeOneCore
