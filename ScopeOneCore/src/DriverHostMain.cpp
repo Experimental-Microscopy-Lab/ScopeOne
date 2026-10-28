@@ -19,6 +19,20 @@
 #include <QThread>
 #include <QTimer>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <QWinEventNotifier>
+#include <windows.h>
+#include <tlhelp32.h>
+#else
+#include <QSocketNotifier>
+#include <csignal>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -2944,6 +2958,61 @@ namespace scopeone::core::internal
         m_runtimeThread.wait();
         m_runtime = nullptr;
     }
+
+    // Quit through the normal shutdown path when the launching app dies or a
+    // termination signal arrives, so shared memory is released instead of leaked
+    void quitWithLauncher(QCoreApplication& app)
+    {
+#ifdef Q_OS_WIN
+        DWORD parentPid = 0;
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        for (BOOL found = Process32FirstW(snapshot, &entry); found;
+             found = Process32NextW(snapshot, &entry))
+        {
+            if (entry.th32ProcessID == GetCurrentProcessId())
+            {
+                parentPid = entry.th32ParentProcessID;
+                break;
+            }
+        }
+        CloseHandle(snapshot);
+
+        auto* parentExit = new QWinEventNotifier(OpenProcess(SYNCHRONIZE, FALSE, parentPid), &app);
+        QObject::connect(parentExit, &QWinEventNotifier::activated,
+                         &app, []() { QCoreApplication::quit(); });
+#else
+        // An orphan is adopted by init or a subreaper, which changes the parent pid
+        const pid_t parentPid = ::getppid();
+        auto* parentCheck = new QTimer(&app);
+        QObject::connect(parentCheck, &QTimer::timeout, &app, [parentPid]()
+        {
+            if (::getppid() != parentPid)
+            {
+                QCoreApplication::quit();
+            }
+        });
+        parentCheck->start(500);
+
+        static int signalPipe[2];
+        ::socketpair(AF_UNIX, SOCK_STREAM, 0, signalPipe);
+        struct sigaction action{};
+        action.sa_handler = [](int)
+        {
+            const char byte = 1;
+            [[maybe_unused]] const ssize_t written = ::write(signalPipe[0], &byte, 1);
+        };
+        sigemptyset(&action.sa_mask);
+        for (const int signalNumber : {SIGTERM, SIGINT, SIGHUP})
+        {
+            ::sigaction(signalNumber, &action, nullptr);
+        }
+        auto* signalNotifier = new QSocketNotifier(signalPipe[1], QSocketNotifier::Read, &app);
+        QObject::connect(signalNotifier, &QSocketNotifier::activated,
+                         &app, []() { QCoreApplication::quit(); });
+#endif
+    }
 } // namespace scopeone::core::internal
 
 // Launch one provider in an isolated DriverHost process
@@ -3091,6 +3160,7 @@ int main(int argc, char* argv[])
         return 2;
     }
 
+    scopeone::core::internal::quitWithLauncher(app);
     return app.exec();
 }
 
