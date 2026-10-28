@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -95,16 +96,26 @@ namespace scopeone::core::internal::driverhost
         return QStringLiteral("ScopeOne.DriverHost.%1.ctrl").arg(deviceId);
     }
 
+    // On Unix the System V key is a file that ftok reads, so keep it out of the working directory
+    inline QString sharedMemoryKeyPath(const QString& name)
+    {
+#ifdef Q_OS_WIN
+        return name;
+#else
+        return QDir::tempPath() + QLatin1Char('/') + name;
+#endif
+    }
+
     inline QString sharedMemoryKey(const QString& deviceId)
     {
-        return QStringLiteral("ScopeOne.DriverHost.%1.shm").arg(deviceId);
+        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.shm").arg(deviceId));
     }
 
     inline QString sharedMemoryKey(const QString& hostKey, int cameraIndex)
     {
-        return QStringLiteral("ScopeOne.DriverHost.%1.%2.shm")
-            .arg(hostKey)
-            .arg(cameraIndex);
+        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.%2.shm")
+                                       .arg(hostKey)
+                                       .arg(cameraIndex));
     }
 
     inline QString encodeUInt64(quint64 value)

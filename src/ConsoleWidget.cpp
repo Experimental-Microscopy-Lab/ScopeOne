@@ -1,4 +1,5 @@
 #include "ConsoleWidget.h"
+#include "TerminalWidget.h"
 #include <QMetaObject>
 #include <QScrollBar>
 #include <QPushButton>
@@ -24,6 +25,7 @@
 #include <QMutexLocker>
 #include <QRegularExpression>
 #include <QShortcut>
+#include <QTabWidget>
 #include <QTextEdit>
 #include <QTextStream>
 #include <QtCore/qlogging.h>
@@ -142,10 +144,17 @@ namespace scopeone::ui
         }
     }
 
-    // Build the console text view and interactive command controls
+    // Build the log tab with its command line, and the terminal tab beside it
     void ConsoleWidget::setupUI()
     {
-        auto* mainLayout = new QVBoxLayout(this);
+        auto* outerLayout = new QVBoxLayout(this);
+        outerLayout->setContentsMargins(0, 0, 0, 0);
+        m_tabs = new QTabWidget(this);
+        m_tabs->setDocumentMode(true);
+        outerLayout->addWidget(m_tabs);
+
+        auto* logPage = new QWidget(m_tabs);
+        auto* mainLayout = new QVBoxLayout(logPage);
         mainLayout->setContentsMargins(6, 6, 6, 6);
         mainLayout->setSpacing(6);
 
@@ -235,6 +244,10 @@ namespace scopeone::ui
         commandLayout->addWidget(m_commandInput, 1);
         commandLayout->addWidget(runButton);
         mainLayout->addLayout(commandLayout, 0);
+
+        m_terminal = new TerminalWidget(m_tabs);
+        m_tabs->addTab(logPage, tr("Log"));
+        m_tabs->addTab(m_terminal, tr("Terminal"));
     }
 
     // Append one message and trim old history
@@ -466,6 +479,12 @@ namespace scopeone::ui
             clearMessages();
             return;
         }
+        if (verb == QStringLiteral("terminal"))
+        {
+            m_tabs->setCurrentWidget(m_terminal);
+            m_terminal->setFocus();
+            return;
+        }
         if (verb == QStringLiteral("help") || verb == QStringLiteral("?"))
         {
             showHelp();
@@ -663,6 +682,7 @@ namespace scopeone::ui
                         "  zoom <percent>                  Set preview zoom\n"
                         "  auto                            Auto-stretch active layer\n"
                         "  status                          Show application status\n"
+                        "  terminal                        Open the system terminal tab\n"
                         "  api <type> [json]               Send a raw Local API request"),
                     QStringLiteral("INFO"));
     }
