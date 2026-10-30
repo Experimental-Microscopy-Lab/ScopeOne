@@ -27,6 +27,7 @@ namespace scopeone::ui
                                    const QString& microManagerDirectory,
                                    const QString& widgetStyle,
                                    const QString& colorScheme,
+                                   const QString& pythonInterpreter,
                                    QWidget* parent)
         : QDialog(parent)
     {
@@ -99,6 +100,41 @@ namespace scopeone::ui
                         m_microManagerDirectoryEdit->setText(QDir::toNativeSeparators(directory));
                     }
                 });
+
+        // The interpreter that runs Python processing modules, which needs numpy and scopeone
+        auto* pythonRow = new QWidget(this);
+        auto* pythonLayout = new QHBoxLayout(pythonRow);
+        pythonLayout->setContentsMargins(0, 0, 0, 0);
+        pythonLayout->setSpacing(6);
+        m_pythonInterpreterEdit = new QLineEdit(pythonInterpreter, pythonRow);
+#ifdef Q_OS_WIN
+        m_pythonInterpreterEdit->setPlaceholderText(QStringLiteral("python"));
+#else
+        m_pythonInterpreterEdit->setPlaceholderText(QStringLiteral("python3"));
+#endif
+        m_pythonInterpreterEdit->setToolTip(
+            QStringLiteral("Runs Python processing modules. It needs numpy and the scopeone package. "
+                           "SCOPEONE_PYTHON overrides it. Takes effect after restart."));
+        pythonLayout->addWidget(m_pythonInterpreterEdit, 1);
+        auto* pythonBrowseButton = new QToolButton(pythonRow);
+        pythonBrowseButton->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+        pythonBrowseButton->setToolTip(QStringLiteral("Select Python interpreter"));
+        pythonBrowseButton->setAutoRaise(true);
+        pythonLayout->addWidget(pythonBrowseButton);
+        formLayout->addRow(QStringLiteral("Python Interpreter"), pythonRow);
+
+        connect(pythonBrowseButton, &QToolButton::clicked,
+                this, [this]()
+                {
+                    const QString path = QFileDialog::getOpenFileName(
+                        this,
+                        QStringLiteral("Select Python Interpreter"),
+                        m_pythonInterpreterEdit->text().trimmed());
+                    if (!path.isEmpty())
+                    {
+                        m_pythonInterpreterEdit->setText(QDir::toNativeSeparators(path));
+                    }
+                });
         layout->addLayout(formLayout);
 
         auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -147,6 +183,12 @@ namespace scopeone::ui
     QString SettingsDialog::widgetStyle() const
     {
         return m_widgetStyleComboBox->currentData().toString();
+    }
+
+    // Return the interpreter for Python processing modules, empty for the default one
+    QString SettingsDialog::pythonInterpreter() const
+    {
+        return m_pythonInterpreterEdit->text().trimmed();
     }
 
     // Return the selected application color scheme

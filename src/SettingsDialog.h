@@ -17,17 +17,20 @@ namespace scopeone::ui
                                  const QString& microManagerDirectory,
                                  const QString& widgetStyle,
                                  const QString& colorScheme,
+                                 const QString& pythonInterpreter,
                                  QWidget* parent = nullptr);
 
         qint64 maxPendingWriteBytes() const;
         QString microManagerDirectory() const;
         QString widgetStyle() const;
         QString colorScheme() const;
+        QString pythonInterpreter() const;
 
     private:
         QLineEdit* m_recordingBufferLimitEdit{nullptr};
         QLineEdit* m_microManagerDirectoryEdit{nullptr};
         QComboBox* m_widgetStyleComboBox{nullptr};
         QComboBox* m_colorSchemeComboBox{nullptr};
+        QLineEdit* m_pythonInterpreterEdit{nullptr};
     };
 }

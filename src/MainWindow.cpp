@@ -2230,6 +2230,7 @@ namespace scopeone::ui
                               adapterPaths.value(0),
                               widgetStyle,
                               colorScheme,
+                              settings.value(QStringLiteral("Python/Interpreter")).toString(),
                               this);
         if (dialog.exec() != QDialog::Accepted)
         {
@@ -2252,6 +2253,7 @@ namespace scopeone::ui
         settings.setValue(QStringLiteral("Hardware/MicroManagerDirectory"), microManagerDirectory);
         settings.setValue(QStringLiteral("Appearance/Style"), selectedWidgetStyle);
         settings.setValue(QStringLiteral("Appearance/ColorScheme"), selectedColorScheme);
+        settings.setValue(QStringLiteral("Python/Interpreter"), dialog.pythonInterpreter());
         m_scopeonecore->setRecordingMaxPendingWriteBytes(recordedMaxBytes);
         applyWidgetStyle(selectedWidgetStyle);
         applyColorScheme(selectedColorScheme);

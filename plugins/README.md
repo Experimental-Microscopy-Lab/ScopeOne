@@ -87,6 +87,7 @@ restart.
 
 Each module in a pipeline runs in its own Python process (`python -m scopeone.processing
 serve script.py`). That interpreter needs numpy and the `scopeone` package
-(`pip install ScopeOneCore/python/scopeone`). Set `SCOPEONE_PYTHON` to choose it; otherwise
-ScopeOne runs `python3` (`python` on Windows). Output printed by a module goes to the log, and
-an exception in it shows as the error of that pipeline step.
+(`pip install ScopeOneCore/python/scopeone`). Choose it under **Settings > Python
+Interpreter**, or with `SCOPEONE_PYTHON`, which takes precedence; otherwise ScopeOne runs
+`python3` (`python` on Windows). Output printed by a module goes to the log, and an exception
+in it shows as the error of that pipeline step.

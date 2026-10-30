@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QProcess>
+#include <QSettings>
 #include <QThread>
 
 #include <memory>
@@ -26,13 +27,20 @@ namespace
     using scopeone::core::ProcessingParameterType;
     using scopeone::core::ProcessingResult;
 
-    // SCOPEONE_PYTHON picks the interpreter, which needs numpy and the scopeone package
+    // SCOPEONE_PYTHON, else the interpreter of the Settings dialog, picks the interpreter,
+    // which needs numpy and the scopeone package
     QString pythonExecutable()
     {
         const QString configured = qEnvironmentVariable("SCOPEONE_PYTHON");
         if (!configured.isEmpty())
         {
             return configured;
+        }
+        const QString selected = QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"))
+                                     .value(QStringLiteral("Python/Interpreter")).toString();
+        if (!selected.isEmpty())
+        {
+            return selected;
         }
 #ifdef Q_OS_WIN
         return QStringLiteral("python");
