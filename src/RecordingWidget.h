@@ -17,10 +17,6 @@ class QSpinBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
-namespace scopeone::gui
-{
-    class CollapsibleSection;
-}
 class QPushButton;
 class QListWidget;
 class QTableWidget;
@@ -28,6 +24,8 @@ class QTimer;
 
 namespace scopeone::ui
 {
+    class CollapsibleSection;
+
     class RecordingWidget : public QWidget
     {
         Q_OBJECT
@@ -94,11 +92,11 @@ namespace scopeone::ui
         QCheckBox* m_pyramidCheck{nullptr};
         QComboBox* m_formatCombo{nullptr};
 
-        scopeone::gui::CollapsibleSection* m_timeSection{nullptr};
-        scopeone::gui::CollapsibleSection* m_zSection{nullptr};
-        scopeone::gui::CollapsibleSection* m_positionSection{nullptr};
-        scopeone::gui::CollapsibleSection* m_channelSection{nullptr};
-        scopeone::gui::CollapsibleSection* m_advancedSection{nullptr};
+        CollapsibleSection* m_timeSection{nullptr};
+        CollapsibleSection* m_zSection{nullptr};
+        CollapsibleSection* m_positionSection{nullptr};
+        CollapsibleSection* m_channelSection{nullptr};
+        CollapsibleSection* m_advancedSection{nullptr};
 
         QSpinBox* m_framesSpin{nullptr};
         QDoubleSpinBox* m_mdaIntervalSpin{nullptr};

@@ -64,77 +64,81 @@ endif ()
 
 set(SCOPEONE_UI_SOURCES
         src/main.cpp
-        src/InspectWidget.cpp
-        src/MainWindow.cpp
-        src/ImageProcessingWidget.cpp
-        src/ImageGalleryWidget.cpp
-        src/ImageWorkspace.cpp
-        src/ImageToolsDialog.cpp
-        src/PreviewWidget.cpp
-        src/ConsoleWidget.cpp
-        src/PtyProcess.cpp
-        src/TerminalWidget.cpp
-        src/AboutDialog.cpp
-        src/SettingsDialog.cpp
-        src/PluginManagerDialog.cpp
-        src/DeviceControlWidget.cpp
-        src/RecordingWidget.cpp
-        src/RecordingWidgetSettings.cpp
-        src/PositionListFile.cpp
-        src/CollapsibleSection.cpp
-        src/ToolIcons.cpp
-        src/ParameterDialog.cpp
-        src/ResultsWindow.cpp
-        src/RoiManagerWindow.cpp
-        src/ProfilePlotWindow.cpp
-        src/ImageAnalysis.cpp
-        src/CommandSearchBox.cpp
-        src/OrthogonalViewsDialog.cpp
-        src/Appearance.cpp
-        src/EmptyHint.cpp
-        src/WelcomeOverlay.cpp
-        src/UpdateChecker.cpp
-        src/DevicePropertyWidget.cpp
+        src/CameraScaleDialog.cpp
         src/ConfigPresetWidget.cpp
+        src/DeviceControlWidget.cpp
+        src/DevicePropertyWidget.cpp
+        src/PositionListFile.cpp
+        src/RecordingWidget.cpp
+        src/StageMosaicDialog.cpp
+        src/PluginManagerDialog.cpp
         src/ScopeOneLocalApiServer.cpp
         src/ScopeOneToolPlugin.cpp
+        src/AboutDialog.cpp
+        src/Appearance.cpp
+        src/CollapsibleSection.cpp
+        src/CommandSearchBox.cpp
+        src/ConsoleWidget.cpp
+        src/EmptyHint.cpp
+        src/MainWindow.cpp
+        src/PtyProcess.cpp
+        src/SettingsDialog.cpp
+        src/TerminalWidget.cpp
+        src/ToolIcons.cpp
+        src/UpdateChecker.cpp
+        src/WelcomeOverlay.cpp
+        src/ImageAnalysis.cpp
+        src/ImageGalleryWidget.cpp
+        src/ImageProcessingWidget.cpp
+        src/ImageWorkspace.cpp
+        src/InspectWidget.cpp
+        src/OrthogonalViewsDialog.cpp
+        src/ParameterDialog.cpp
+        src/ParticleDetectionDialog.cpp
+        src/PreviewWidget.cpp
+        src/ProfilePlotWindow.cpp
+        src/ResultsWindow.cpp
+        src/RoiManagerWindow.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
 set(SCOPEONE_UI_HEADERS
-        src/InspectWidget.h
-        src/MainWindow.h
-        src/ImageProcessingWidget.h
-        src/ImageGalleryWidget.h
-        src/ImageWorkspace.h
-        src/ImageToolsDialog.h
-        src/PreviewWidget.h
-        src/ConsoleWidget.h
-        src/PtyProcess.h
-        src/TerminalWidget.h
-        src/AboutDialog.h
-        src/SettingsDialog.h
-        src/PluginManagerDialog.h
-        src/DeviceControlWidget.h
-        src/RecordingWidget.h
-        src/PositionListFile.h
-        src/CollapsibleSection.h
-        src/ToolIcons.h
-        src/ParameterDialog.h
-        src/ResultsWindow.h
-        src/RoiManagerWindow.h
-        src/ProfilePlotWindow.h
-        src/ImageAnalysis.h
-        src/CommandSearchBox.h
-        src/OrthogonalViewsDialog.h
-        src/Appearance.h
-        src/EmptyHint.h
-        src/WelcomeOverlay.h
-        src/UpdateChecker.h
-        src/DevicePropertyWidget.h
+        src/CameraScaleDialog.h
         src/ConfigPresetWidget.h
+        src/DeviceControlWidget.h
+        src/DevicePropertyWidget.h
+        src/PositionListFile.h
+        src/RecordingWidget.h
+        src/StageMosaicDialog.h
+        src/PluginManagerDialog.h
         src/ScopeOneLocalApiServer.h
         src/ScopeOneToolPlugin.h
+        src/AboutDialog.h
+        src/Appearance.h
+        src/CollapsibleSection.h
+        src/CommandSearchBox.h
+        src/ConsoleWidget.h
+        src/EmptyHint.h
+        src/MainWindow.h
+        src/PtyProcess.h
+        src/SettingsDialog.h
+        src/TerminalWidget.h
+        src/ToolIcons.h
+        src/UpdateChecker.h
+        src/WelcomeOverlay.h
+        src/ImageAnalysis.h
+        src/ImageGalleryWidget.h
+        src/ImageProcessingWidget.h
+        src/ImageWorkspace.h
+        src/InspectWidget.h
+        src/OrthogonalViewsDialog.h
+        src/ParameterDialog.h
+        src/ParticleDetectionDialog.h
+        src/PreviewWidget.h
+        src/ProfilePlotWindow.h
+        src/ResultsWindow.h
+        src/RoiManagerWindow.h
+        src/StackAxes.h
 )
 
 if (WIN32)
@@ -147,7 +151,7 @@ qt_add_executable(ScopeOne
         ${SCOPEONE_UI_HEADERS}
 )
 qt_add_executable(ScopeOneMcpServer
-        src/ScopeOneMcpServer.cpp
+        mcp/ScopeOneMcpServer.cpp
 )
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeOne PROPERTIES

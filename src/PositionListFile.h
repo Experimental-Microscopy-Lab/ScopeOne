@@ -5,7 +5,7 @@
 
 #include <optional>
 
-namespace scopeone::gui
+namespace scopeone::ui
 {
     // One stage position of a position list
     struct ListedPosition

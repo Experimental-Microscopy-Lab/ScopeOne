@@ -7,7 +7,7 @@ class QFormLayout;
 class QToolButton;
 class QWidget;
 
-namespace scopeone::gui
+namespace scopeone::ui
 {
     // A titled block of a form that can be folded away. The title can carry a short summary of
     // the settings inside, so a folded block still tells what it is set to.

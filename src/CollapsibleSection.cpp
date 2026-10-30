@@ -4,7 +4,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
-namespace scopeone::gui
+namespace scopeone::ui
 {
     CollapsibleSection::CollapsibleSection(const QString& title, QWidget* parent)
         : QFrame(parent)

@@ -1,6 +1,5 @@
 #include "InspectWidget.h"
 #include "ImageWorkspace.h"
-#include "AnalysisTools.h"
 #include "PreviewWidget.h"
 #include "scopeone/ImageSceneModel.h"
 

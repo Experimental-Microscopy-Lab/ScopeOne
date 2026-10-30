@@ -6,7 +6,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 
-namespace scopeone::gui
+namespace scopeone::ui
 {
     namespace
     {
