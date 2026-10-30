@@ -154,4 +154,8 @@ def main(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    # Run inside the imported scopeone.processing, where the scripts register their modules,
+    # not in this __main__ copy of it
+    from scopeone.processing import main as _main
+
+    _main(sys.argv)
