@@ -7,7 +7,7 @@ name = "scopeone"
 version = "0.1.0"
 description = "External Python API for ScopeOne"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.14.*"
 license = {text = "MIT"}
 authors = [
     {name = "Tianyi Zhao"}
@@ -20,15 +20,12 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
 
 dependencies = [
-    "numpy==2.4.6",
+    "numpy==2.5.3",
     "pywin32==311; platform_system == 'Windows'",
 ]
 

@@ -9,8 +9,8 @@ Requires Python 3.10 or later and a running ScopeOne desktop application.
 Create and activate an isolated Conda environment:
 
 ```powershell
-conda create -n scopeone python=3.13
-conda activate scopeone
+conda create -n ScopeOne python=3.14.7
+conda activate ScopeOne
 ```
 
 Install from this source checkout:
