@@ -1,4 +1,4 @@
-#include "ImageOps.h"
+#include "scopeone/ImageOps.h"
 
 #include <QSize>
 
@@ -6,9 +6,8 @@
 #include <numeric>
 #include <random>
 
-namespace scopeone::ui::imageops
+namespace scopeone::core::imageops
 {
-    using scopeone::core::ImagePixelFormat;
 
     namespace
     {
@@ -813,7 +812,11 @@ namespace scopeone::ui::imageops
 
     int autoThreshold(const ImageFrame& frame, ThresholdMethod method)
     {
-        const std::vector<qint64> histogram = histogramOf(frame);
+        return autoThreshold(histogramOf(frame), method);
+    }
+
+    int autoThreshold(const std::vector<qint64>& histogram, ThresholdMethod method)
+    {
         const int bins = static_cast<int>(histogram.size());
         qint64 total = 0;
         double weighted = 0.0;
@@ -1647,7 +1650,18 @@ namespace scopeone::ui::imageops
 
     ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram)
     {
-        const std::vector<qint64> counts = histogram ? *histogram : histogramOf(frame);
+        const std::vector<float> lookup = equalizationTable(histogram ? *histogram : histogramOf(frame), sqrtCounts);
+        const int top = static_cast<int>(lookup.size()) - 1;
+        std::vector<float> values = toFloat(frame);
+        for (float& value : values)
+        {
+            value = lookup[static_cast<size_t>(std::clamp(static_cast<int>(value), 0, top))];
+        }
+        return fromFloat(values, frame, frame.width, frame.height);
+    }
+
+    std::vector<float> equalizationTable(const std::vector<qint64>& counts, bool sqrtCounts)
+    {
         const int top = static_cast<int>(counts.size()) - 1;
         std::vector<double> weight(counts.size());
         for (size_t i = 0; i < counts.size(); ++i)
@@ -1672,12 +1686,7 @@ namespace scopeone::ui::imageops
             running += delta;
         }
         lookup[static_cast<size_t>(top)] = static_cast<float>(top);
-        std::vector<float> values = toFloat(frame);
-        for (float& value : values)
-        {
-            value = lookup[static_cast<size_t>(std::clamp(static_cast<int>(value), 0, top))];
-        }
-        return fromFloat(values, frame, frame.width, frame.height);
+        return lookup;
     }
 
     ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma)

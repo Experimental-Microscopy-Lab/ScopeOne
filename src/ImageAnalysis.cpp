@@ -39,7 +39,7 @@ namespace scopeone::ui
                 uchar* row = picture.scanLine(y);
                 for (int x = 0; x < frame.width; ++x)
                 {
-                    row[x] = static_cast<uchar>(std::clamp((imageops::pixelAt(frame, x, y) - low) * scale, 0.0, 255.0));
+                    row[x] = static_cast<uchar>(std::clamp((core::imageops::pixelAt(frame, x, y) - low) * scale, 0.0, 255.0));
                 }
             }
             return picture;
@@ -50,7 +50,7 @@ namespace scopeone::ui
         {
             const int width = std::min(frame.width, 420);
             const int height = std::min(frame.height, 320);
-            return imageops::crop(frame, QRect((frame.width - width) / 2, (frame.height - height) / 2, width, height));
+            return core::imageops::crop(frame, QRect((frame.width - width) / 2, (frame.height - height) / 2, width, height));
         }
     } // namespace
 
@@ -222,7 +222,7 @@ namespace scopeone::ui
             source.title = tr("Live image");
             source.frames.append(m_workspace->frameForLayer(source.layerKey));
         }
-        if (source.frames.isEmpty() || !imageops::isMono(source.frames.first()))
+        if (source.frames.isEmpty() || !core::imageops::isMono(source.frames.first()))
         {
             QMessageBox::information(m_window, tr("No image"), tr("There is no 8 bit or 16 bit gray image to work on."));
             return false;
@@ -403,7 +403,7 @@ namespace scopeone::ui
         {
             for (int x = 0; x < part.width; ++x)
             {
-                const int value = imageops::pixelAt(part, x, y);
+                const int value = core::imageops::pixelAt(part, x, y);
                 low = std::min(low, value);
                 high = std::max(high, value);
             }
@@ -575,11 +575,11 @@ namespace scopeone::ui
                 [this, text, moduleId, preset, askKeys]() { runModule(text, moduleId, preset, askKeys); });
     }
 
-    void ImageAnalysis::addBinary(QMenu* menu, const QString& text, imageops::BinaryOperation operation)
+    void ImageAnalysis::addBinary(QMenu* menu, const QString& text, BinaryOperation operation)
     {
         connect(menu->addAction(text), &QAction::triggered, this, [this, text, operation]()
         {
-            using Operation = imageops::BinaryOperation;
+            using Operation = BinaryOperation;
             if (operation == Operation::Watershed)
             {
                 runModule(text, QStringLiteral("watershed"), {}, {QStringLiteral("tolerance")});
@@ -633,7 +633,7 @@ namespace scopeone::ui
             ImageSceneModel::Markup shape;
             if (requireSelection(source, shape))
             {
-                const QRect box = imageops::selectionBounds(shape);
+                const QRect box = core::imageops::selectionBounds(shape);
                 source.scene->remove(shape.id);
                 const QString id = source.scene->createRect(source.layerKey, box, shape.label);
                 source.scene->selectOnly(id);
@@ -645,7 +645,7 @@ namespace scopeone::ui
             ImageSceneModel::Markup shape;
             if (requireSelection(source, shape))
             {
-                replaceWithPolygon(source, shape, imageops::convexHull(imageops::selectionCorners(shape)));
+                replaceWithPolygon(source, shape, core::imageops::convexHull(core::imageops::selectionCorners(shape)));
             }
         });
         connect(selection->addAction(tr("Fit &Ellipse")), &QAction::triggered, this, [this]()
@@ -654,7 +654,7 @@ namespace scopeone::ui
             ImageSceneModel::Markup shape;
             if (requireSelection(source, shape))
             {
-                replaceWithPolygon(source, shape, imageops::fittedEllipse(source.frames.first().width,
+                replaceWithPolygon(source, shape, core::imageops::fittedEllipse(source.frames.first().width,
                                                                           source.frames.first().height, shape));
             }
         });
@@ -736,16 +736,16 @@ namespace scopeone::ui
 
         QMenu* binary = menu->addMenu(tr("Bin&ary"));
         connect(binary->addAction(tr("&Make Binary")), &QAction::triggered, this, [this]() { thresholdImage(); });
-        addBinary(binary, tr("&Erode..."), imageops::BinaryOperation::Erode);
-        addBinary(binary, tr("&Dilate..."), imageops::BinaryOperation::Dilate);
-        addBinary(binary, tr("&Open..."), imageops::BinaryOperation::Open);
-        addBinary(binary, tr("&Close..."), imageops::BinaryOperation::Close);
-        addBinary(binary, tr("&Fill Holes"), imageops::BinaryOperation::FillHoles);
-        addBinary(binary, tr("Out&line"), imageops::BinaryOperation::Outline);
-        addBinary(binary, tr("&Invert"), imageops::BinaryOperation::Invert);
+        addBinary(binary, tr("&Erode..."), BinaryOperation::Erode);
+        addBinary(binary, tr("&Dilate..."), BinaryOperation::Dilate);
+        addBinary(binary, tr("&Open..."), BinaryOperation::Open);
+        addBinary(binary, tr("&Close..."), BinaryOperation::Close);
+        addBinary(binary, tr("&Fill Holes"), BinaryOperation::FillHoles);
+        addBinary(binary, tr("Out&line"), BinaryOperation::Outline);
+        addBinary(binary, tr("&Invert"), BinaryOperation::Invert);
         binary->addSeparator();
-        addBinary(binary, tr("&Watershed..."), imageops::BinaryOperation::Watershed);
-        addBinary(binary, tr("&Skeletonize"), imageops::BinaryOperation::Skeletonize);
+        addBinary(binary, tr("&Watershed..."), BinaryOperation::Watershed);
+        addBinary(binary, tr("&Skeletonize"), BinaryOperation::Skeletonize);
         addModuleCommand(binary, tr("Distance &Map"), QStringLiteral("distance_map"), {}, {});
 
         menu->addSeparator();
@@ -909,8 +909,8 @@ namespace scopeone::ui
             QMessageBox::information(m_window, tr("Crop"), tr("Draw a selection to crop to."));
             return;
         }
-        const QRect area = imageops::selectionBounds(shape);
-        apply(tr("Crop"), [area](const ImageFrame& frame) { return imageops::crop(frame, area); });
+        const QRect area = core::imageops::selectionBounds(shape);
+        apply(tr("Crop"), [area](const ImageFrame& frame) { return core::imageops::crop(frame, area); });
     }
 
     void ImageAnalysis::scaleImage()
@@ -919,12 +919,12 @@ namespace scopeone::ui
                                      ParameterField::real(tr("Y scale"), 0.5, 0.01, 20.0, 3),
                                      ParameterField::check(tr("Interpolate"), true)};
         if (askWithPreview(tr("Scale"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
-                           { return imageops::scaled(frame, v.at(0).value, v.at(1).value, v.at(2).checked); }))
+                           { return core::imageops::scaled(frame, v.at(0).value, v.at(1).value, v.at(2).checked); }))
         {
             const double x = fields.at(0).value;
             const double y = fields.at(1).value;
             const bool smooth = fields.at(2).checked;
-            apply(tr("Scale"), [x, y, smooth](const ImageFrame& frame) { return imageops::scaled(frame, x, y, smooth); });
+            apply(tr("Scale"), [x, y, smooth](const ImageFrame& frame) { return core::imageops::scaled(frame, x, y, smooth); });
         }
     }
 
@@ -934,14 +934,14 @@ namespace scopeone::ui
                                      ParameterField::check(tr("Interpolate"), true),
                                      ParameterField::check(tr("Enlarge image to fit result"), false)};
         if (askWithPreview(tr("Rotate"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
-                           { return imageops::rotated(frame, v.at(0).value, v.at(1).checked, v.at(2).checked); }))
+                           { return core::imageops::rotated(frame, v.at(0).value, v.at(1).checked, v.at(2).checked); }))
         {
             const double angle = fields.at(0).value;
             const bool smooth = fields.at(1).checked;
             const bool grow = fields.at(2).checked;
             apply(tr("Rotate"), [angle, smooth, grow](const ImageFrame& frame)
             {
-                return imageops::rotated(frame, angle, smooth, grow);
+                return core::imageops::rotated(frame, angle, smooth, grow);
             });
         }
     }
@@ -982,10 +982,10 @@ namespace scopeone::ui
         {
             return;
         }
-        static const imageops::Projection methods[] = {
-            imageops::Projection::Max, imageops::Projection::Average, imageops::Projection::Sum,
-            imageops::Projection::Min, imageops::Projection::StdDev, imageops::Projection::Median};
-        const imageops::Projection method = methods[fields.at(3).choice];
+        static const core::imageops::Projection methods[] = {
+            core::imageops::Projection::Max, core::imageops::Projection::Average, core::imageops::Projection::Sum,
+            core::imageops::Projection::Min, core::imageops::Projection::StdDev, core::imageops::Projection::Median};
+        const core::imageops::Projection method = methods[fields.at(3).choice];
         const QChar axis = letters.at(fields.at(0).choice);
         const int size = source.shape.axisSize(axis);
         const int start = std::clamp(static_cast<int>(fields.at(1).value) - 1, 0, size - 1);
@@ -1006,7 +1006,7 @@ namespace scopeone::ui
                 stack::coordinate(c, z, t, axis) = step;
                 line.append(source.frames.at(stack::planeIndex(source.shape, c, z, t)));
             }
-            projections.append(imageops::zProject(line, 0, static_cast<int>(line.size()) - 1, method));
+            projections.append(core::imageops::zProject(line, 0, static_cast<int>(line.size()) - 1, method));
         }
         present(projections, tr("Projection of %1").arg(source.title), &result);
     }
@@ -1087,7 +1087,7 @@ namespace scopeone::ui
         if (askParameters(m_window, tr("Montage"), fields))
         {
             const QList<ImageFrame> frames = framesAlong(source, letters.at(fields.at(0).choice));
-            present({imageops::montage(frames, static_cast<int>(fields.at(1).value), fields.at(2).value,
+            present({core::imageops::montage(frames, static_cast<int>(fields.at(1).value), fields.at(2).value,
                                        static_cast<int>(fields.at(3).value))},
                     tr("Montage of %1").arg(source.title));
         }
@@ -1114,8 +1114,8 @@ namespace scopeone::ui
         }
         ImageSceneModel::Markup shape;
         const bool hasShape = selectedShape(source, shape);
-        const QVector<double> values = imageops::zProfile(framesAlong(source, letters.at(axisIndex)),
-                                                          hasShape ? &shape : nullptr, imageops::ProfileStat::Mean);
+        const QVector<double> values = core::imageops::zProfile(framesAlong(source, letters.at(axisIndex)),
+                                                          hasShape ? &shape : nullptr, core::imageops::ProfileStat::Mean);
         if (!m_profile)
         {
             m_profile = new ProfilePlotWindow(m_window);
@@ -1157,13 +1157,13 @@ namespace scopeone::ui
         QList<ParameterField> fields{ParameterField::real(tr("Rolling ball radius (pixels)"), 50.0, 1.0, 500.0, 1),
                                      ParameterField::check(tr("Light background"), false)};
         if (askWithPreview(tr("Subtract Background"), fields, [](const ImageFrame& frame, const QList<ParameterField>& v)
-                           { return imageops::subtractBackground(frame, v.at(0).value, v.at(1).checked); }))
+                           { return core::imageops::subtractBackground(frame, v.at(0).value, v.at(1).checked); }))
         {
             const double radius = fields.at(0).value;
             const bool light = fields.at(1).checked;
             apply(tr("Subtract Background"), [radius, light](const ImageFrame& frame)
             {
-                return imageops::subtractBackground(frame, radius, light);
+                return core::imageops::subtractBackground(frame, radius, light);
             });
         }
     }
@@ -1193,16 +1193,16 @@ namespace scopeone::ui
         const bool equalize = fields.at(2).checked;
         const bool wholeStack = fields.at(3).checked && source.frames.size() > 1;
         const ImageFrame& current = source.frames.at(source.index);
-        const std::vector<qint64> histogram = imageops::histogramOfFrames(
+        const std::vector<qint64> histogram = core::imageops::histogramOfFrames(
             wholeStack ? source.frames : QList<ImageFrame>{current});
 
         if (!normalize && !equalize)
         {
-            const imageops::LevelRange range = imageops::saturatedRange(histogram, saturated);
+            const core::imageops::LevelRange range = core::imageops::saturatedRange(histogram, saturated);
             if (source.scene)
             {
                 source.scene->setLayerAutoStretchEnabled(source.layerKey, false);
-                source.scene->setLayerDisplayLevels(source.layerKey, range.low, range.high, imageops::maxValue(current));
+                source.scene->setLayerDisplayLevels(source.layerKey, range.low, range.high, core::imageops::maxValue(current));
             }
             return;
         }
@@ -1211,14 +1211,14 @@ namespace scopeone::ui
         {
             return;
         }
-        const imageops::LevelRange range = imageops::saturatedRange(histogram, saturated);
+        const core::imageops::LevelRange range = core::imageops::saturatedRange(histogram, saturated);
         const auto operation = [&](const ImageFrame& frame)
         {
             if (equalize)
             {
-                return imageops::equalized(frame, true, wholeStack ? &histogram : nullptr);
+                return core::imageops::equalized(frame, true, wholeStack ? &histogram : nullptr);
             }
-            return imageops::stretched(frame, range.low, range.high);
+            return core::imageops::stretched(frame, range.low, range.high);
         };
         QList<ImageFrame> result;
         if (scope == Scope::All)
@@ -1258,7 +1258,7 @@ namespace scopeone::ui
         const int high = layer.display.levelMax;
         apply(tr("Apply Display Range"), [low, high](const ImageFrame& frame)
         {
-            return imageops::stretched(frame, low, high);
+            return core::imageops::stretched(frame, low, high);
         });
     }
 
@@ -1270,14 +1270,14 @@ namespace scopeone::ui
         if (askWithPreview(saltAndPepper ? tr("Add Salt and Pepper") : tr("Add Noise"), fields,
                            [saltAndPepper](const ImageFrame& frame, const QList<ParameterField>& v)
                            {
-                               return saltAndPepper ? imageops::withSaltAndPepper(frame, v.first().value)
-                                                    : imageops::withGaussianNoise(frame, v.first().value);
+                               return saltAndPepper ? core::imageops::withSaltAndPepper(frame, v.first().value)
+                                                    : core::imageops::withGaussianNoise(frame, v.first().value);
                            }))
         {
             const double amount = fields.first().value;
             apply(saltAndPepper ? tr("Salt and Pepper") : tr("Add Noise"), [amount, saltAndPepper](const ImageFrame& frame)
             {
-                return saltAndPepper ? imageops::withSaltAndPepper(frame, amount) : imageops::withGaussianNoise(frame, amount);
+                return saltAndPepper ? core::imageops::withSaltAndPepper(frame, amount) : core::imageops::withGaussianNoise(frame, amount);
             });
         }
     }
@@ -1308,11 +1308,11 @@ namespace scopeone::ui
         }
         const ImageFrame first = m_workspace->currentFrame(ids.at(fields.at(0).choice));
         const ImageFrame second = m_workspace->currentFrame(ids.at(fields.at(2).choice));
-        if (!imageops::isMono(first) || !imageops::isMono(second))
+        if (!core::imageops::isMono(first) || !core::imageops::isMono(second))
         {
             return;
         }
-        present({imageops::calculate(first, second, static_cast<imageops::CalculatorOperation>(fields.at(1).choice))},
+        present({core::imageops::calculate(first, second, static_cast<core::imageops::CalculatorOperation>(fields.at(1).choice))},
                 tr("Result of %1").arg(fields.at(1).choices.at(fields.at(1).choice)));
     }
 
@@ -1422,7 +1422,7 @@ namespace scopeone::ui
         if (askParameters(m_window, tr("Enlarge"), fields))
         {
             replaceWithPolygon(source, shape,
-                               imageops::enlargedOutline(source.frames.first().width, source.frames.first().height,
+                               core::imageops::enlargedOutline(source.frames.first().width, source.frames.first().height,
                                                          shape, fields.first().value));
         }
     }
@@ -1438,7 +1438,7 @@ namespace scopeone::ui
         QList<ParameterField> fields{ParameterField::real(tr("Angle (degrees)"), 15.0, -360.0, 360.0, 1)};
         if (askParameters(m_window, tr("Rotate Selection"), fields))
         {
-            replaceWithPolygon(source, shape, imageops::rotatedCorners(shape, fields.first().value));
+            replaceWithPolygon(source, shape, core::imageops::rotatedCorners(shape, fields.first().value));
         }
     }
 
@@ -1454,7 +1454,7 @@ namespace scopeone::ui
                                      ParameterField::real(tr("Y scale factor"), 1.5, 0.05, 20.0, 2)};
         if (askParameters(m_window, tr("Scale Selection"), fields))
         {
-            replaceWithPolygon(source, shape, imageops::scaledCorners(shape, fields.at(0).value, fields.at(1).value));
+            replaceWithPolygon(source, shape, core::imageops::scaledCorners(shape, fields.at(0).value, fields.at(1).value));
         }
     }
 
@@ -1467,7 +1467,7 @@ namespace scopeone::ui
         {
             return;
         }
-        ImageFrame mask = imageops::selectionMask(source.frames.first().width, source.frames.first().height, shape);
+        ImageFrame mask = core::imageops::selectionMask(source.frames.first().width, source.frames.first().height, shape);
         mask.cameraId = source.frames.first().cameraId;
         present({mask}, tr("Mask of %1").arg(source.title));
     }
@@ -1482,7 +1482,7 @@ namespace scopeone::ui
         }
         QSignalBlocker blocker(source.scene);
         int number = 0;
-        for (const imageops::Particle& particle : imageops::findParticles(source.frames.at(source.index)))
+        for (const core::imageops::Particle& particle : core::imageops::findParticles(source.frames.at(source.index)))
         {
             source.scene->createPolygon(source.layerKey, particle.outline, tr("Selection %1").arg(++number));
         }
@@ -1581,8 +1581,8 @@ namespace scopeone::ui
         {
             for (int x = 0; binary && x < image.width; ++x)
             {
-                const int value = imageops::pixelAt(image, x, y);
-                binary = value == 0 || value == imageops::maxValue(image) || value == 255;
+                const int value = core::imageops::pixelAt(image, x, y);
+                binary = value == 0 || value == core::imageops::maxValue(image) || value == 255;
             }
         }
         QList<ParameterField> fields{
@@ -1605,9 +1605,9 @@ namespace scopeone::ui
         ImageFrame mask = image;
         if (!binary)
         {
-            const int limit = imageops::autoThreshold(image, static_cast<imageops::ThresholdMethod>(fields.at(4).choice));
-            mask = fields.at(5).checked ? imageops::thresholded(image, 0, limit)
-                                        : imageops::thresholded(image, limit + 1, imageops::maxValue(image));
+            const int limit = core::imageops::autoThreshold(image, static_cast<core::imageops::ThresholdMethod>(fields.at(4).choice));
+            mask = fields.at(5).checked ? core::imageops::thresholded(image, 0, limit)
+                                        : core::imageops::thresholded(image, limit + 1, core::imageops::maxValue(image));
         }
         const double minSize = fields.at(0).value;
         const double maxSize = fields.at(1).value;
@@ -1627,15 +1627,15 @@ namespace scopeone::ui
             results();
         }
 
-        QList<imageops::Particle> kept;
+        QList<core::imageops::Particle> kept;
         QSignalBlocker blocker(addToManager ? source.scene : nullptr);
-        for (const imageops::Particle& particle : imageops::findParticles(mask))
+        for (const core::imageops::Particle& particle : core::imageops::findParticles(mask))
         {
             if (excludeEdges && particle.touchesEdge)
             {
                 continue;
             }
-            const imageops::Measurement result = imageops::measureParticle(image, particle, scale, includeHoles);
+            const core::imageops::Measurement result = core::imageops::measureParticle(image, particle, scale, includeHoles);
             const double size = result.area / (unit * unit);
             if (size < minSize || size > maxSize || result.circularity < minCircularity
                 || result.circularity > maxCircularity)
@@ -1661,7 +1661,7 @@ namespace scopeone::ui
         }
         if (show != 0 && !kept.isEmpty())
         {
-            ImageFrame shown = imageops::particleImage(kept, image.width, image.height, show == 2);
+            ImageFrame shown = core::imageops::particleImage(kept, image.width, image.height, show == 2);
             shown.cameraId = image.cameraId;
             present({shown}, tr("%1 of %2").arg(show == 2 ? tr("Count Masks") : tr("Masks"), source.title));
         }
@@ -1688,7 +1688,7 @@ namespace scopeone::ui
             for (int index = first; index <= last; ++index)
             {
                 m_results->addMeasurement(label,
-                                          imageops::measure(source.frames.at(index), shape, scale),
+                                          core::imageops::measure(source.frames.at(index), shape, scale),
                                           source.frames.size() > 1 ? index + 1 : 0,
                                           unit,
                                           source.hyper ? stack::positionText(source.shape, index) : QString());

@@ -1,6 +1,6 @@
 #include "OrthogonalViewsDialog.h"
 
-#include "ImageOps.h"
+#include "scopeone/ImageOps.h"
 
 #include <QGridLayout>
 #include <QLabel>
@@ -103,7 +103,7 @@ namespace scopeone::ui
             {
                 for (int x = 0; x < frame.width; x += step)
                 {
-                    const double value = imageops::pixelAt(frame, x, y);
+                    const double value = core::imageops::pixelAt(frame, x, y);
                     m_low = seen ? std::min(m_low, value) : value;
                     m_high = seen ? std::max(m_high, value) : value;
                     seen = true;
@@ -178,7 +178,7 @@ namespace scopeone::ui
         {
             for (int x = 0; x < width; ++x)
             {
-                xy.scanLine(y)[x] = gray(imageops::pixelAt(slice, x, y));
+                xy.scanLine(y)[x] = gray(core::imageops::pixelAt(slice, x, y));
             }
         }
         // Slices on the vertical axis, along the row of the cross hair
@@ -187,7 +187,7 @@ namespace scopeone::ui
         {
             for (int x = 0; x < width; ++x)
             {
-                xz.scanLine(z)[x] = gray(imageops::pixelAt(m_frames.at(z), x, m_y));
+                xz.scanLine(z)[x] = gray(core::imageops::pixelAt(m_frames.at(z), x, m_y));
             }
         }
         // Slices on the horizontal axis, along the column of the cross hair
@@ -196,7 +196,7 @@ namespace scopeone::ui
         {
             for (int z = 0; z < depth; ++z)
             {
-                yz.scanLine(y)[z] = gray(imageops::pixelAt(m_frames.at(z), m_x, y));
+                yz.scanLine(y)[z] = gray(core::imageops::pixelAt(m_frames.at(z), m_x, y));
             }
         }
         m_xy->setImage(xy, QPoint(m_x, m_y));

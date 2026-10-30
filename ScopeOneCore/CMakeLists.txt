@@ -77,6 +77,7 @@ set(CORE_SOURCES
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
         src/SimulatorProvider.cpp
+        src/ImageOps.cpp
         src/ImageSceneModel.cpp
         src/MMCoreManager.cpp
         src/FrameBufferUtils.cpp
@@ -129,6 +130,7 @@ set(CORE_HEADERS
         internal/AcquisitionEngine.h
         internal/CameraRuntimeControl.h
         include/scopeone/SimulatorProvider.h
+        include/scopeone/ImageOps.h
         include/scopeone/ImageSceneModel.h
         internal/HardwareRuntime.h
         internal/MicroManagerProvider.h

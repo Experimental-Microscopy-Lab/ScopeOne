@@ -1,5 +1,5 @@
 #include "PreviewWidget.h"
-#include "ImageOps.h"
+#include "scopeone/ImageOps.h"
 
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
@@ -4051,7 +4051,7 @@ namespace scopeone::ui
         // A freehand path has a corner for every few pixels of the way, which are too many to keep
         if (draft.dragging)
         {
-            corners = imageops::simplifiedOutline(corners, 0.8);
+            corners = core::imageops::simplifiedOutline(corners, 0.8);
         }
         if (corners.size() < 3)
         {
@@ -4232,7 +4232,7 @@ namespace scopeone::ui
                                                     wandDisplay, wandSize))
                     {
                         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-                        const QList<QPoint> outline = imageops::wandOutline(
+                        const QList<QPoint> outline = core::imageops::wandOutline(
                             wandProcessed ? wandState.processedFrame : wandState.rawFrame,
                             target.imagePos,
                             settings.value(QStringLiteral("Wand/tolerance"), 0).toInt());

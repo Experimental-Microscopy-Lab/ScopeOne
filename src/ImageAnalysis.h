@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ImageOps.h"
+#include "scopeone/ImageOps.h"
 #include "ParameterDialog.h"
 #include "StackAxes.h"
 #include "scopeone/ScopeOneCore.h"
@@ -26,6 +26,8 @@ namespace scopeone::ui
     class ProfilePlotWindow;
     class ResultsWindow;
     class RoiManagerWindow;
+
+    enum class BinaryOperation { Erode, Dilate, Open, Close, FillHoles, Outline, Invert, Watershed, Skeletonize };
 
     // The Image, Process and Analyze menus in the manner of ImageJ. Every command works on the
     // active image, or on all of its slices, and puts its result in a new image.
@@ -108,7 +110,7 @@ namespace scopeone::ui
         void addFilter(QMenu* menu, const QString& text, int kind, double radius);
         void addMath(QMenu* menu, const QString& text, int operation, bool needsValue,
                      double value);
-        void addBinary(QMenu* menu, const QString& text, imageops::BinaryOperation operation);
+        void addBinary(QMenu* menu, const QString& text, BinaryOperation operation);
         void addImageCommand(QMenu* menu, const QString& text, const FrameOperation& operation);
 
         void duplicateImage();

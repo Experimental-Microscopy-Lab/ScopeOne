@@ -1,10 +1,7 @@
 #include "internal/ParticleAnalysis.h"
 
 #include "internal/FrameBufferUtils.h"
-
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-#include <vector>
+#include "scopeone/ImageOps.h"
 
 namespace scopeone::core::internal
 {
@@ -25,31 +22,13 @@ namespace scopeone::core::internal
             return false;
         }
 
-        const int type = frame.isMono16() ? CV_16UC1 : CV_8UC1;
-        const cv::Mat image(frame.height,
-                            frame.width,
-                            type,
-                            const_cast<char*>(frame.bytes.constData()),
-                            static_cast<size_t>(frame.stride));
-        cv::Mat thresholdMask;
-        cv::compare(image,
-                    cv::Scalar(qBound(0, threshold, frame.maxValue())),
-                    thresholdMask,
-                    cv::CMP_GE);
-
-        cv::Mat labels;
-        cv::Mat stats;
-        cv::Mat centroids;
-        const int componentCount = cv::connectedComponentsWithStats(
-            thresholdMask,
-            labels,
-            stats,
-            centroids,
-            8);
-        std::vector<uchar> accepted(static_cast<size_t>(componentCount), 0);
-        for (int label = 1; label < componentCount; ++label)
+        // The same particles and measurements as Analyze Particles in the menus
+        const ImageFrame mask = imageops::thresholded(
+            frame, qBound(0, threshold, frame.maxValue()), frame.maxValue());
+        QList<imageops::Particle> accepted;
+        for (const imageops::Particle& found : imageops::findParticles(mask))
         {
-            const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+            const int area = static_cast<int>(found.pixels.size());
             if (area < minArea || area > maxArea)
             {
                 continue;
@@ -60,37 +39,16 @@ namespace scopeone::core::internal
                 continue;
             }
 
+            const imageops::Measurement measurement = imageops::measureParticle(frame, found, 0.0, false);
             ScopeOneCore::ParticleMeasurement particle;
             particle.area = area;
-            particle.bounds = QRect(stats.at<int>(label, cv::CC_STAT_LEFT),
-                                    stats.at<int>(label, cv::CC_STAT_TOP),
-                                    stats.at<int>(label, cv::CC_STAT_WIDTH),
-                                    stats.at<int>(label, cv::CC_STAT_HEIGHT));
-            particle.centroid = QPointF(centroids.at<double>(label, 0),
-                                        centroids.at<double>(label, 1));
+            particle.bounds = found.bounds;
+            particle.centroid = QPointF(measurement.centroidX, measurement.centroidY);
             result.particles.append(particle);
-            accepted[static_cast<size_t>(label)] = 1;
+            accepted.append(found);
         }
 
-        cv::Mat filtered = cv::Mat::zeros(labels.size(), CV_8UC1);
-        for (int y = 0; y < labels.rows; ++y)
-        {
-            const int* labelRow = labels.ptr<int>(y);
-            uchar* outputRow = filtered.ptr<uchar>(y);
-            for (int x = 0; x < labels.cols; ++x)
-            {
-                const int label = labelRow[x];
-                if (label > 0 && accepted[static_cast<size_t>(label)] != 0)
-                {
-                    outputRow[x] = 255;
-                }
-            }
-        }
-
-        result.mask = makeMono8Frame(frame.cameraId,
-                                     frame.width,
-                                     frame.height,
-                                     copyMatBytes(filtered));
+        result.mask = imageops::particleImage(accepted, frame.width, frame.height, false);
         copyFrameMetadata(frame, result.mask);
         return result.mask.isValid();
     }

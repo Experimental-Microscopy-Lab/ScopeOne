@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ImageOps.h"
+#include "scopeone/ImageOps.h"
 
 #include <QList>
 #include <QString>
@@ -26,7 +26,7 @@ namespace scopeone::ui
 
         // Adds a row for one measured selection. slice counts from one, and is zero without a stack.
         // For a stack with several axes, position names the plane, such as C1 Z3 T5, and is shown for slice.
-        void addMeasurement(const QString& label, const imageops::Measurement& measurement, int slice,
+        void addMeasurement(const QString& label, const core::imageops::Measurement& measurement, int slice,
                             const QString& unit, const QString& position = QString());
         // Adds a row of plain values, for example the intensity at one slice of a stack
         void addValues(const QStringList& headers, const QList<double>& values);
@@ -36,7 +36,7 @@ namespace scopeone::ui
         struct Row
         {
             QString label;
-            imageops::Measurement measurement;
+            core::imageops::Measurement measurement;
             int slice{0};
             QString unit;
             QString position;

@@ -2,6 +2,7 @@
 
 #include "scopeone/ImageFrame.h"
 #include "scopeone/ImageSceneModel.h"
+#include "scopeone/scopeone_core_export.h"
 
 #include <QList>
 #include <QPoint>
@@ -17,14 +18,13 @@
 // Operations on the images of ScopeOne in the manner of ImageJ: measurements of selections,
 // stack tools, transforms, filters, math and binary operations. They work on mono 8 bit and
 // 16 bit frames and make new frames, so the images they start from stay as they are.
-namespace scopeone::ui::imageops
+namespace scopeone::core::imageops
 {
-    using scopeone::core::ImageFrame;
-    using Markup = scopeone::core::ImageSceneModel::Markup;
-    using MarkupType = scopeone::core::DocumentMarkupType;
+    using Markup = ImageSceneModel::Markup;
+    using MarkupType = DocumentMarkupType;
 
-    bool isMono(const ImageFrame& frame);
-    int maxValue(const ImageFrame& frame);
+    SCOPEONE_CORE_EXPORT bool isMono(const ImageFrame& frame);
+    SCOPEONE_CORE_EXPORT int maxValue(const ImageFrame& frame);
 
     inline int pixelAt(const ImageFrame& frame, int x, int y)
     {
@@ -129,9 +129,9 @@ namespace scopeone::ui::imageops
     }
 
     // The smallest rectangle that holds the selection, in pixels
-    QRect selectionBounds(const Markup& markup);
+    SCOPEONE_CORE_EXPORT QRect selectionBounds(const Markup& markup);
     // Length of the outline, or of the line, in pixels
-    double selectionPerimeter(const Markup& markup);
+    SCOPEONE_CORE_EXPORT double selectionPerimeter(const Markup& markup);
 
     // What ImageJ measures of a selection. Lengths and areas follow scale, the size of a pixel
     // in the unit of the image, and are in pixels when it is zero.
@@ -164,64 +164,64 @@ namespace scopeone::ui::imageops
         double majorAxis{0.0};
         double minorAxis{0.0};
     };
-    Measurement measure(const ImageFrame& frame, const Markup& markup, double scale);
+    SCOPEONE_CORE_EXPORT Measurement measure(const ImageFrame& frame, const Markup& markup, double scale);
 
     // ---- changing selections
 
     // The pixels of the selection as an 8 bit frame of the given size, 255 inside
-    ImageFrame selectionMask(int width, int height, const Markup& selection);
+    SCOPEONE_CORE_EXPORT ImageFrame selectionMask(int width, int height, const Markup& selection);
     // Corners of the outline as a polygon. A rectangle gives its four corners and an ellipse
     // a ring of points on it.
-    QList<QPoint> selectionCorners(const Markup& selection);
-    QList<QPoint> convexHull(const QList<QPoint>& points);
+    SCOPEONE_CORE_EXPORT QList<QPoint> selectionCorners(const Markup& selection);
+    SCOPEONE_CORE_EXPORT QList<QPoint> convexHull(const QList<QPoint>& points);
     // The outline of the selection grown by the given number of pixels, or shrunk when negative.
     // Empty when nothing is left.
-    QList<QPoint> enlargedOutline(int width, int height, const Markup& selection, double pixels);
+    SCOPEONE_CORE_EXPORT QList<QPoint> enlargedOutline(int width, int height, const Markup& selection, double pixels);
     // The ellipse that has the same second moments as the selection, as a polygon
-    QList<QPoint> fittedEllipse(int width, int height, const Markup& selection);
-    QList<QPoint> rotatedCorners(const Markup& selection, double degrees);
-    QList<QPoint> scaledCorners(const Markup& selection, double factorX, double factorY);
+    SCOPEONE_CORE_EXPORT QList<QPoint> fittedEllipse(int width, int height, const Markup& selection);
+    SCOPEONE_CORE_EXPORT QList<QPoint> rotatedCorners(const Markup& selection, double degrees);
+    SCOPEONE_CORE_EXPORT QList<QPoint> scaledCorners(const Markup& selection, double factorX, double factorY);
     // The outline of the pixels that touch the seed and differ from it by at most tolerance
-    QList<QPoint> wandOutline(const ImageFrame& frame, const QPoint& seed, int tolerance);
+    SCOPEONE_CORE_EXPORT QList<QPoint> wandOutline(const ImageFrame& frame, const QPoint& seed, int tolerance);
     // Fewer corners, with every point of the outline within epsilon of the result
-    QList<QPoint> simplifiedOutline(const QList<QPoint>& points, double epsilon);
+    SCOPEONE_CORE_EXPORT QList<QPoint> simplifiedOutline(const QList<QPoint>& points, double epsilon);
 
     // ---- frames
 
     // A frame like the given one in format and identity, with the given size and zeroed pixels
-    ImageFrame blankFrame(const ImageFrame& like, int width, int height);
-    std::vector<float> toFloat(const ImageFrame& frame);
+    SCOPEONE_CORE_EXPORT ImageFrame blankFrame(const ImageFrame& like, int width, int height);
+    SCOPEONE_CORE_EXPORT std::vector<float> toFloat(const ImageFrame& frame);
     // Rounds and clamps to the range of the frame. The result has the format of like.
-    ImageFrame fromFloat(const std::vector<float>& values, const ImageFrame& like, int width, int height);
+    SCOPEONE_CORE_EXPORT ImageFrame fromFloat(const std::vector<float>& values, const ImageFrame& like, int width, int height);
 
     // ---- stacks
 
     enum class Projection { Max, Average, Sum, Min, StdDev, Median };
-    ImageFrame zProject(const QList<ImageFrame>& frames, int first, int last, Projection method);
-    QList<ImageFrame> substack(const QList<ImageFrame>& frames, int first, int last, int step);
-    ImageFrame montage(const QList<ImageFrame>& frames, int columns, double scale, int border);
+    SCOPEONE_CORE_EXPORT ImageFrame zProject(const QList<ImageFrame>& frames, int first, int last, Projection method);
+    SCOPEONE_CORE_EXPORT QList<ImageFrame> substack(const QList<ImageFrame>& frames, int first, int last, int step);
+    SCOPEONE_CORE_EXPORT ImageFrame montage(const QList<ImageFrame>& frames, int columns, double scale, int border);
 
     enum class ProfileStat { Mean, Sum, Min, Max };
     // One value per frame, over the selection or over the whole frame when roi is null
-    QVector<double> zProfile(const QList<ImageFrame>& frames, const Markup* roi, ProfileStat stat);
+    SCOPEONE_CORE_EXPORT QVector<double> zProfile(const QList<ImageFrame>& frames, const Markup* roi, ProfileStat stat);
 
     // ---- geometry
 
-    ImageFrame crop(const ImageFrame& frame, const QRect& area);
-    ImageFrame scaled(const ImageFrame& frame, double factorX, double factorY, bool smooth);
+    SCOPEONE_CORE_EXPORT ImageFrame crop(const ImageFrame& frame, const QRect& area);
+    SCOPEONE_CORE_EXPORT ImageFrame scaled(const ImageFrame& frame, double factorX, double factorY, bool smooth);
     // Turns the image by an angle in degrees, clockwise. With grow the image is made large
     // enough to hold the turned image.
-    ImageFrame rotated(const ImageFrame& frame, double degrees, bool smooth, bool grow);
+    SCOPEONE_CORE_EXPORT ImageFrame rotated(const ImageFrame& frame, double degrees, bool smooth, bool grow);
 
     // ---- filters
 
     // Takes away the slowly changing background with a rolling ball of the given radius
-    ImageFrame subtractBackground(const ImageFrame& frame, double radius, bool lightBackground);
+    SCOPEONE_CORE_EXPORT ImageFrame subtractBackground(const ImageFrame& frame, double radius, bool lightBackground);
 
     // ---- contrast and noise
 
     // One count for every value that a frame can have, over all the given frames
-    std::vector<qint64> histogramOfFrames(const QList<ImageFrame>& frames);
+    SCOPEONE_CORE_EXPORT std::vector<qint64> histogramOfFrames(const QList<ImageFrame>& frames);
     // The values between which all pixels lie but for the given percentage, which is split
     // between the dark and the bright end
     struct LevelRange
@@ -229,14 +229,16 @@ namespace scopeone::ui::imageops
         int low{0};
         int high{0};
     };
-    LevelRange saturatedRange(const std::vector<qint64>& histogram, double saturatedPercent);
+    SCOPEONE_CORE_EXPORT LevelRange saturatedRange(const std::vector<qint64>& histogram, double saturatedPercent);
     // Stretches the values from low to high over the whole range of the frame
-    ImageFrame stretched(const ImageFrame& frame, int low, int high);
+    SCOPEONE_CORE_EXPORT ImageFrame stretched(const ImageFrame& frame, int low, int high);
     // Spreads the values so that all of them are about equally frequent. With sqrtCounts the
     // counts are square rooted first, which keeps the look more natural, as ImageJ does.
-    ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram = nullptr);
-    ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma);
-    ImageFrame withSaltAndPepper(const ImageFrame& frame, double percent);
+    SCOPEONE_CORE_EXPORT ImageFrame equalized(const ImageFrame& frame, bool sqrtCounts, const std::vector<qint64>* histogram = nullptr);
+    // The new value of every value of the histogram after equalizing
+    SCOPEONE_CORE_EXPORT std::vector<float> equalizationTable(const std::vector<qint64>& histogram, bool sqrtCounts);
+    SCOPEONE_CORE_EXPORT ImageFrame withGaussianNoise(const ImageFrame& frame, double sigma);
+    SCOPEONE_CORE_EXPORT ImageFrame withSaltAndPepper(const ImageFrame& frame, double percent);
     // Keeps what is smaller than the disc: bright detail on a dark background, or with
     // lightBackground dark detail on a bright one
 
@@ -244,16 +246,15 @@ namespace scopeone::ui::imageops
 
 
     enum class CalculatorOperation { Add, Subtract, Multiply, Divide, And, Or, Xor, Min, Max, Average, Difference };
-    ImageFrame calculate(const ImageFrame& first, const ImageFrame& second, CalculatorOperation operation);
+    SCOPEONE_CORE_EXPORT ImageFrame calculate(const ImageFrame& first, const ImageFrame& second, CalculatorOperation operation);
 
     // ---- thresholds and binary images
 
     enum class ThresholdMethod { IsoData, Otsu, Mean, Triangle };
-    int autoThreshold(const ImageFrame& frame, ThresholdMethod method);
+    SCOPEONE_CORE_EXPORT int autoThreshold(const std::vector<qint64>& histogram, ThresholdMethod method);
+    SCOPEONE_CORE_EXPORT int autoThreshold(const ImageFrame& frame, ThresholdMethod method);
     // Pixels from low to high become 255 and the others 0, in an 8 bit frame
-    ImageFrame thresholded(const ImageFrame& frame, double low, double high);
-
-    enum class BinaryOperation { Erode, Dilate, Open, Close, FillHoles, Outline, Invert, Watershed, Skeletonize };
+    SCOPEONE_CORE_EXPORT ImageFrame thresholded(const ImageFrame& frame, double low, double high);
 
     // ---- particles
 
@@ -269,10 +270,10 @@ namespace scopeone::ui::imageops
         double perimeter{0.0};
     };
     // Pixels above zero are the particles
-    QList<Particle> findParticles(const ImageFrame& mask);
+    SCOPEONE_CORE_EXPORT QList<Particle> findParticles(const ImageFrame& mask);
     // Measures a particle on an image. A particle does not include the holes in it unless
     // includeHoles, in which case everything inside the outline counts.
-    Measurement measureParticle(const ImageFrame& image, const Particle& particle, double scale, bool includeHoles);
+    SCOPEONE_CORE_EXPORT Measurement measureParticle(const ImageFrame& image, const Particle& particle, double scale, bool includeHoles);
     // A frame in which every particle has its number, or 255, as its value
-    ImageFrame particleImage(const QList<Particle>& particles, int width, int height, bool numbered);
+    SCOPEONE_CORE_EXPORT ImageFrame particleImage(const QList<Particle>& particles, int width, int height, bool numbered);
 }

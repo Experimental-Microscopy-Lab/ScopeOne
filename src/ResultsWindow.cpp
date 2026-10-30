@@ -127,7 +127,7 @@ namespace scopeone::ui
         rebuild();
     }
 
-    void ResultsWindow::addMeasurement(const QString& label, const imageops::Measurement& measurement,
+    void ResultsWindow::addMeasurement(const QString& label, const core::imageops::Measurement& measurement,
                                        int slice, const QString& unit, const QString& position)
     {
         // Rows of another kind are not mixed into one table
@@ -156,7 +156,7 @@ namespace scopeone::ui
 
     QString ResultsWindow::cell(const Row& row, const QString& key) const
     {
-        const imageops::Measurement& m = row.measurement;
+        const core::imageops::Measurement& m = row.measurement;
         const auto number = [](double value) { return QString::number(value, 'g', 6); };
         const QString unit = row.unit;
         if (key == QLatin1String("label")) return row.label;

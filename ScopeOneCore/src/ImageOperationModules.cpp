@@ -1,6 +1,7 @@
 #include "internal/ImageOperationModules.h"
 #include "internal/FrameBufferUtils.h"
 #include "internal/ProcessingModuleRegistry.h"
+#include "scopeone/ImageOps.h"
 
 #include <algorithm>
 #include <cmath>
@@ -246,131 +247,18 @@ namespace scopeone::core::internal
             return dst;
         }
 
-        std::vector<double> histogramOf(const cv::Mat& src, int limit)
+        std::vector<qint64> histogramOf(const cv::Mat& src, int limit)
         {
-            std::vector<double> histogram(static_cast<size_t>(limit) + 1, 0.0);
+            std::vector<qint64> histogram(static_cast<size_t>(limit) + 1, 0);
             for (int y = 0; y < src.rows; ++y)
             {
                 for (int x = 0; x < src.cols; ++x)
                 {
                     const int v = src.type() == CV_8UC1 ? src.at<uchar>(y, x) : src.at<quint16>(y, x);
-                    histogram[static_cast<size_t>(std::min(v, limit))] += 1.0;
+                    ++histogram[static_cast<size_t>(std::min(v, limit))];
                 }
             }
             return histogram;
-        }
-
-        int autoLevel(const std::vector<double>& histogram, int method)
-        {
-            const int n = static_cast<int>(histogram.size());
-            double total = 0.0;
-            double sum = 0.0;
-            for (int i = 0; i < n; ++i)
-            {
-                total += histogram[static_cast<size_t>(i)];
-                sum += i * histogram[static_cast<size_t>(i)];
-            }
-            if (total <= 0.0)
-            {
-                return 0;
-            }
-            const double mean = sum / total;
-            if (method == 2)
-            {
-                return static_cast<int>(mean);
-            }
-            if (method == 1)
-            {
-                // Isodata: the level halfway between the means on both sides
-                int level = static_cast<int>(mean);
-                for (int iteration = 0; iteration < 1000; ++iteration)
-                {
-                    double lowCount = 0.0, lowSum = 0.0, highCount = 0.0, highSum = 0.0;
-                    for (int i = 0; i < n; ++i)
-                    {
-                        const double c = histogram[static_cast<size_t>(i)];
-                        if (i <= level)
-                        {
-                            lowCount += c;
-                            lowSum += i * c;
-                        }
-                        else
-                        {
-                            highCount += c;
-                            highSum += i * c;
-                        }
-                    }
-                    if (lowCount <= 0.0 || highCount <= 0.0)
-                    {
-                        break;
-                    }
-                    const int next = static_cast<int>((lowSum / lowCount + highSum / highCount) / 2.0);
-                    if (next == level)
-                    {
-                        break;
-                    }
-                    level = next;
-                }
-                return level;
-            }
-            if (method == 0)
-            {
-                // Otsu: the level that tells the two sides apart best
-                double lowCount = 0.0, lowSum = 0.0, best = -1.0;
-                int level = 0;
-                for (int i = 0; i < n; ++i)
-                {
-                    lowCount += histogram[static_cast<size_t>(i)];
-                    lowSum += i * histogram[static_cast<size_t>(i)];
-                    const double highCount = total - lowCount;
-                    if (lowCount <= 0.0 || highCount <= 0.0)
-                    {
-                        continue;
-                    }
-                    const double difference = lowSum / lowCount - (sum - lowSum) / highCount;
-                    const double between = lowCount * highCount * difference * difference;
-                    if (between > best)
-                    {
-                        best = between;
-                        level = i;
-                    }
-                }
-                return level;
-            }
-            // Triangle: the level furthest from the line from the peak to the far end
-            int peak = 0;
-            int first = 0;
-            int last = n - 1;
-            while (first < n - 1 && histogram[static_cast<size_t>(first)] == 0.0) ++first;
-            while (last > 0 && histogram[static_cast<size_t>(last)] == 0.0) --last;
-            for (int i = first; i <= last; ++i)
-            {
-                if (histogram[static_cast<size_t>(i)] > histogram[static_cast<size_t>(peak)])
-                {
-                    peak = i;
-                }
-            }
-            const bool flip = (peak - first) < (last - peak);
-            const int end = flip ? first : last;
-            const double dx = end - peak;
-            const double dy = -histogram[static_cast<size_t>(peak)];
-            const double norm = std::sqrt(dx * dx + dy * dy);
-            double bestDistance = -1.0;
-            int level = peak;
-            const int from = std::min(peak, end);
-            const int to = std::max(peak, end);
-            for (int i = from; i <= to; ++i)
-            {
-                const double distance = std::abs(dy * (i - peak) - dx * (histogram[static_cast<size_t>(i)]
-                                                                         - histogram[static_cast<size_t>(peak)]))
-                                        / (norm > 0.0 ? norm : 1.0);
-                if (distance > bestDistance)
-                {
-                    bestDistance = distance;
-                    level = i;
-                }
-            }
-            return level;
         }
 
         cv::Mat thresholdOperation(const cv::Mat& src, int limit, const QVariantMap& p)
@@ -384,7 +272,11 @@ namespace scopeone::core::internal
                 cv::inRange(src, cv::Scalar(low), cv::Scalar(high), mask);
                 return mask;
             }
-            const int level = autoLevel(histogramOf(src, limit), method - 1);
+            // The choices after Fixed, in the order the descriptor lists them
+            constexpr imageops::ThresholdMethod methods[] = {
+                imageops::ThresholdMethod::Otsu, imageops::ThresholdMethod::IsoData,
+                imageops::ThresholdMethod::Mean, imageops::ThresholdMethod::Triangle};
+            const int level = imageops::autoThreshold(histogramOf(src, limit), methods[method - 1]);
             if (p.value("select").toInt() == 0)
             {
                 cv::compare(src, level, mask, cv::CMP_GT);
@@ -481,27 +373,6 @@ namespace scopeone::core::internal
             cv::Mat dst;
             clahe->apply(src, dst);
             return dst;
-        }
-
-        // Spreads the values so that all of them are about equally frequent
-        cv::Mat equalizeOperation(const cv::Mat& src, int limit, bool squareRoot)
-        {
-            const std::vector<double> histogram = histogramOf(src, limit);
-            std::vector<double> weights(histogram.size());
-            double total = 0.0;
-            for (size_t i = 0; i < histogram.size(); ++i)
-            {
-                weights[i] = squareRoot ? std::sqrt(histogram[i]) : histogram[i];
-                total += weights[i];
-            }
-            std::vector<float> table(histogram.size());
-            double running = 0.0;
-            for (size_t i = 0; i < histogram.size(); ++i)
-            {
-                running += weights[i];
-                table[i] = total > 0.0 ? rounded(running / total * limit, limit) : static_cast<float>(i);
-            }
-            return applyTable(src, table, limit);
         }
 
         cv::Mat objectMask(const cv::Mat& src)
@@ -843,7 +714,9 @@ namespace scopeone::core::internal
             }
             else if (m_id == QLatin1String("equalize"))
             {
-                result = equalizeOperation(src, limit, m_params.value("sqrt_counts").toBool());
+                result = applyTable(src, imageops::equalizationTable(histogramOf(src, limit),
+                                                                     m_params.value("sqrt_counts").toBool()),
+                                    limit);
             }
             else if (m_id == QLatin1String("distance_map"))
             {
