@@ -3,7 +3,7 @@
 #include "scopeone/ToolFrameStream.h"
 #include "scopeone/ToolPlugin.h"
 #include "scopeone/ToolTask.h"
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ToolPlugin.h"
 #include "scopeone/ImageSceneModel.h"
 
 #include <QCheckBox>
@@ -261,7 +261,7 @@ namespace
                     [this]()
                     {
                         const QString layerKey = m_layerComboBox->currentData().toString();
-                        m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+                        m_sourceId = scopeone::ui::ScopeOneToolCore::sourceIdFromLayerKey(layerKey);
                         m_stream->setSourceId(m_sourceId);
                         startReconstruction();
                     });
@@ -301,7 +301,7 @@ namespace
                                                            m_context.currentLayerKey());
                         if (frame.isValid())
                         {
-                            m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+                            m_sourceId = scopeone::ui::ScopeOneToolCore::sourceIdFromLayerKey(layerKey);
                             m_stream->setSourceId(m_sourceId);
                             queueFrame(frame);
                         }
@@ -509,7 +509,7 @@ namespace
                 m_status->setText(QStringLiteral("No hologram layer available"));
                 return;
             }
-            m_sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey);
+            m_sourceId = scopeone::ui::ScopeOneToolCore::sourceIdFromLayerKey(layerKey);
             m_stream->setSourceId(m_sourceId);
             queueFrame(input);
         }
@@ -609,11 +609,11 @@ namespace
                 return;
             }
 
-            const QString outputLayer = scopeone::core::ScopeOneCore::toolLayerKey(stored.cameraId);
+            const QString outputLayer = scopeone::ui::ScopeOneToolCore::toolLayerKey(stored.cameraId);
             if (m_shownInputSourceId != m_sourceId || m_shownOutputLayerKey != outputLayer)
             {
                 QStringList layers;
-                const QString rawLayer = scopeone::core::ScopeOneCore::rawLayerKey(m_sourceId);
+                const QString rawLayer = scopeone::ui::ScopeOneToolCore::rawLayerKey(m_sourceId);
                 if (m_context.core().graphFrame(rawLayer).isValid())
                 {
                     layers.append(rawLayer);
@@ -699,7 +699,7 @@ namespace
                                 public scopeone::ui::ScopeOneToolPlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneToolPlugin_iid FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID ScopeOneToolPlugin_iid FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::ui::ScopeOneToolPlugin)
 
     public:

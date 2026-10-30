@@ -10,7 +10,7 @@ namespace scopeone::plugins
                                 public scopeone::core::SignalSourcePlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::core::SignalSourcePlugin)
 
     public:

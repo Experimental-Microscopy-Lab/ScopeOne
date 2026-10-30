@@ -11,7 +11,7 @@ namespace
                                     public scopeone::ui::ScopeOneToolPlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneToolPlugin_iid FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID ScopeOneToolPlugin_iid FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::ui::ScopeOneToolPlugin)
 
     public:

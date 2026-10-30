@@ -15,18 +15,6 @@ else ()
     unset(SCOPEONE_CUDA_NVCC_EXECUTABLE CACHE)
 endif ()
 
-function(scopeone_add_plugin target kind)
-    set_target_properties(${target} PROPERTIES
-        PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/${kind}"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/${kind}"
-    )
-    install(TARGETS ${target}
-        RUNTIME DESTINATION "plugins/${kind}"
-        LIBRARY DESTINATION "plugins/${kind}"
-    )
-endfunction()
-
 add_subdirectory(hardware)
 add_subdirectory(tools)
 if (SCOPEONE_ENABLE_INFERENCE)

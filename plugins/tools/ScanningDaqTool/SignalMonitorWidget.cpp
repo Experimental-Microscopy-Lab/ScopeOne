@@ -1,6 +1,6 @@
 #include "SignalMonitorWidget.h"
 
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ToolPlugin.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -240,7 +240,7 @@ namespace scopeone::plugins
         double m_windowSeconds{10.0};
     };
 
-    SignalMonitorWidget::SignalMonitorWidget(scopeone::core::ScopeOneCore* core,
+    SignalMonitorWidget::SignalMonitorWidget(scopeone::ui::ScopeOneToolCore* core,
                                              scopeone::ui::ScopeOneToolContext& context,
                                              QWidget* parent)
         : QWidget(parent)
@@ -359,16 +359,16 @@ namespace scopeone::plugins
             m_serpentineCheck->setEnabled(editable);
             m_mirrorHorizontalCheck->setEnabled(editable);
         });
-        connect(m_core, &scopeone::core::ScopeOneCore::signalTimeSeriesReady,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::signalTimeSeriesReady,
                 this, &SignalMonitorWidget::handleTimeSeries);
-        connect(m_core, &scopeone::core::ScopeOneCore::signalSourceStateChanged,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::signalSourceStateChanged,
                 this, &SignalMonitorWidget::handleStateChanged);
-        connect(m_core, &scopeone::core::ScopeOneCore::signalSourceError,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::signalSourceError,
                 this, [](const QString&, const QString& message)
                 {
                     qCritical().noquote() << message;
                 });
-        connect(m_core, &scopeone::core::ScopeOneCore::staticFramePublished,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::staticFramePublished,
                 this,
                 [this](const QString& sourceId,
                        const QString&,
@@ -382,10 +382,10 @@ namespace scopeone::plugins
                     }
                     m_scanLayerShown = true;
                     m_context.showLayers({
-                        scopeone::core::ScopeOneCore::staticLayerKey(sourceId)});
+                        scopeone::ui::ScopeOneToolCore::staticLayerKey(sourceId)});
                 });
-        connect(m_core, &scopeone::core::ScopeOneCore::scanImageSessionReady,
-                this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::scanImageSessionReady,
+                this, [this](const std::shared_ptr<scopeone::core::RecordingSessionData>& session)
                 {
                     m_statusLabel->setText(
                         tr("Scan session ready: %1 frames")

@@ -45,6 +45,7 @@ add_library(ScopeOneInference SHARED
     include/scopeone/inference/TensorInfo.h
 )
 add_library(scopeone::Inference ALIAS ScopeOneInference)
+scopeone_plugin_manifest(ScopeOneInference)
 
 set_target_properties(ScopeOneInference PROPERTIES
     EXPORT_NAME Inference

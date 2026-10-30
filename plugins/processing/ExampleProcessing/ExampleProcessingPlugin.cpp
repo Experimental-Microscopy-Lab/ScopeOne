@@ -26,7 +26,7 @@ namespace
                                           public scopeone::core::ProcessingPlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::core::ProcessingPlugin)
 
     public:

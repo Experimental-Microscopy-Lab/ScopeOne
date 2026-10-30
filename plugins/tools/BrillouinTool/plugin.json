@@ -2,6 +2,6 @@
   "id": "scopeone.brillouin.map",
   "name": "Brillouin Map",
   "version": "1.0.0",
-  "scopeOneApi": 2,
+  "scopeOneApi": 3,
   "kind": "tool"
 }

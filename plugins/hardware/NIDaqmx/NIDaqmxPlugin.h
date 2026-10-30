@@ -10,7 +10,7 @@ namespace scopeone::plugins
                                public scopeone::core::DaqDevicePlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID SCOPEONE_DAQ_DEVICE_PLUGIN_IID FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID SCOPEONE_DAQ_DEVICE_PLUGIN_IID FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::core::DaqDevicePlugin)
 
     public:

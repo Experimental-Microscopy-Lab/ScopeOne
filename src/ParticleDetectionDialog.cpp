@@ -32,10 +32,11 @@ namespace scopeone::ui
     }
 
     // Create a particle detection tool
-    ParticleDetectionDialog::ParticleDetectionDialog(ScopeOneToolContext& context,
+    ParticleDetectionDialog::ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
+                                                     ScopeOneToolContext& context,
                                                      QWidget* parent)
         : QDialog(parent)
-          , m_core(&context.core())
+          , m_core(core)
           , m_context(context)
     {
         setWindowTitle(tr("Particle Detection"));

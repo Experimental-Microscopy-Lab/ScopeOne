@@ -280,7 +280,7 @@ namespace
                                         public scopeone::core::DriverHostProviderPlugin
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "plugin.json")
+        Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "scopeone_plugin.json")
         Q_INTERFACES(scopeone::core::DriverHostProviderPlugin)
 
     public:

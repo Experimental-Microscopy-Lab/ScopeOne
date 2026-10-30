@@ -21,7 +21,8 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        StageMosaicDialog(ScopeOneToolContext& context,
+        StageMosaicDialog(scopeone::core::ScopeOneCore* core,
+                          ScopeOneToolContext& context,
                           QWidget* parent = nullptr);
 
         void reject() override;

@@ -1,6 +1,6 @@
 #include "DaqControlWidget.h"
 
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ToolPlugin.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -70,7 +70,7 @@ namespace scopeone::plugins
         }
     }
 
-    DaqControlWidget::DaqControlWidget(scopeone::core::ScopeOneCore* core,
+    DaqControlWidget::DaqControlWidget(scopeone::ui::ScopeOneToolCore* core,
                                        QWidget* parent)
         : QWidget(parent)
           , m_core(core)
@@ -235,14 +235,14 @@ namespace scopeone::plugins
         {
             m_core->stopDaqSession(m_activeDeviceId);
         });
-        connect(m_core, &scopeone::core::ScopeOneCore::daqStateChanged,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::daqStateChanged,
                 this, &DaqControlWidget::handleStateChanged);
-        connect(m_core, &scopeone::core::ScopeOneCore::daqError,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::daqError,
                 this, [](const QString&, const QString& message)
                 {
                     qCritical().noquote() << message;
                 });
-        connect(m_core, &scopeone::core::ScopeOneCore::daqInputDataReady,
+        connect(m_core, &scopeone::ui::ScopeOneToolCore::daqInputDataReady,
                 this, [this](const scopeone::core::DaqInputChunk& chunk)
                 {
                     if (chunk.deviceId != m_activeDeviceId)

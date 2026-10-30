@@ -869,7 +869,7 @@ namespace scopeone::core
     }
 
     // Return a stored frame from memory or saved disk output
-    ImageFrame ScopeOneCore::RecordingSessionData::imageFrameAt(const QString& cameraId, int index) const
+    ImageFrame RecordingSessionData::imageFrameAt(const QString& cameraId, int index) const
     {
         const QString trimmedCameraId = cameraId.trimmed();
         const ImageFrame* frame = frameAt(trimmedCameraId, index);
@@ -877,7 +877,7 @@ namespace scopeone::core
     }
 
     // Build a frame-backed recording session for gallery and save sinks
-    std::shared_ptr<ScopeOneCore::RecordingSessionData> ScopeOneCore::RecordingSessionData::fromImageFrames(
+    std::shared_ptr<ScopeOneCore::RecordingSessionData> RecordingSessionData::fromImageFrames(
         const QList<ImageFrame>& frames,
         const ExperimentPlan& capturePlan)
     {
@@ -958,7 +958,7 @@ namespace scopeone::core
     }
 
     // Return one buffered frame by camera and index
-    const ImageFrame* ScopeOneCore::RecordingSessionData::frameAt(const QString& cameraId, int index) const
+    const ImageFrame* RecordingSessionData::frameAt(const QString& cameraId, int index) const
     {
         const auto it = m_frames.constFind(cameraId.trimmed());
         if (it == m_frames.constEnd()
@@ -971,7 +971,7 @@ namespace scopeone::core
     }
 
     // Read one frame from a saved output file
-    ImageFrame ScopeOneCore::RecordingSessionData::outputImageFrameAt(const QString& cameraId, int index) const
+    ImageFrame RecordingSessionData::outputImageFrameAt(const QString& cameraId, int index) const
     {
         if (index < 0)
         {

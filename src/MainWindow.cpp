@@ -1147,26 +1147,27 @@ namespace scopeone::ui
     // Register built in tools and discover external tool plugins
     void MainWindow::setupTools()
     {
+        m_toolCore = new ScopeOneToolCore(*m_scopeonecore, m_scopeonecore);
         m_toolRegistry = std::make_unique<ToolRegistry>(*this);
         m_toolRegistry->registerTool(
             {QStringLiteral("scopeone.scale"), tr("&Scale..."), {}, ToolWindowMode::Modal, true},
-            [](ScopeOneToolContext& context, QWidget* parent)
+            [this](ScopeOneToolContext&, QWidget* parent)
             {
-                return new CameraScaleDialog(&context.core(), parent);
+                return new CameraScaleDialog(m_scopeonecore, parent);
             });
         m_toolRegistry->registerTool(
             {QStringLiteral("scopeone.stage_mosaic"), tr("Stage &Mosaic..."), {},
              ToolWindowMode::ModelessSingleton},
-            [](ScopeOneToolContext& context, QWidget* parent)
+            [this](ScopeOneToolContext& context, QWidget* parent)
             {
-                return new StageMosaicDialog(context, parent);
+                return new StageMosaicDialog(m_scopeonecore, context, parent);
             });
         m_toolRegistry->registerTool(
             {QStringLiteral("scopeone.particle_detection"), tr("&Particle Detection..."), {},
              ToolWindowMode::ModelessSingleton},
-            [](ScopeOneToolContext& context, QWidget* parent)
+            [this](ScopeOneToolContext& context, QWidget* parent)
             {
-                return new ParticleDetectionDialog(context, parent);
+                return new ParticleDetectionDialog(m_scopeonecore, context, parent);
             });
 
         for (const QString& directory : scopeone::core::pluginDirectories(
@@ -1179,9 +1180,9 @@ namespace scopeone::ui
         }
     }
 
-    scopeone::core::ScopeOneCore& MainWindow::core() const
+    ScopeOneToolCore& MainWindow::core() const
     {
-        return *m_scopeonecore;
+        return *m_toolCore;
     }
 
     QString MainWindow::currentLayerKey() const

@@ -87,6 +87,7 @@ set(CORE_SOURCES
         src/ProcessingPipeline.cpp
         src/ToolTask.cpp
         src/ToolFrameStream.cpp
+        src/ToolPlugin.cpp
         src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
@@ -161,6 +162,7 @@ set(CORE_HEADERS
         internal/CameraBackend.h
         internal/CameraManager.h
         include/scopeone/scopeone_core_export.h
+        include/scopeone/RecordingSession.h
         include/scopeone/ScopeOneCore.h
 )
 
@@ -331,6 +333,7 @@ install(EXPORT ScopeOneCoreTargets
 install(FILES
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfig.cmake"
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfigVersion.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScopeOnePlugin.cmake"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ScopeOneCore"
 )
 

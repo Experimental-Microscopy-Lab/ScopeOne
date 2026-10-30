@@ -26,6 +26,7 @@ add_library(ScopeOneCuda SHARED
         include/scopeone/cuda/GpuRealFrame.h
 )
 add_library(scopeone::Cuda ALIAS ScopeOneCuda)
+scopeone_plugin_manifest(ScopeOneCuda)
 
 set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING
         "Target CUDA architectures")

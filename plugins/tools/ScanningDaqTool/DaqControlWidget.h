@@ -15,9 +15,9 @@ class QSpinBox;
 class QTableWidget;
 class QWidget;
 
-namespace scopeone::core
+namespace scopeone::ui
 {
-    class ScopeOneCore;
+    class ScopeOneToolCore;
 }
 
 namespace scopeone::plugins
@@ -27,7 +27,7 @@ namespace scopeone::plugins
         Q_OBJECT
 
     public:
-        explicit DaqControlWidget(scopeone::core::ScopeOneCore* core,
+        explicit DaqControlWidget(scopeone::ui::ScopeOneToolCore* core,
                                   QWidget* parent = nullptr);
 
     private:
@@ -45,7 +45,7 @@ namespace scopeone::plugins
                                 scopeone::core::DaqState state,
                                 const QString& message);
 
-        scopeone::core::ScopeOneCore* m_core{nullptr};
+        scopeone::ui::ScopeOneToolCore* m_core{nullptr};
         QComboBox* m_deviceCombo{nullptr};
         QLabel* m_productLabel{nullptr};
         QLabel* m_resourcesLabel{nullptr};

@@ -1,13 +1,12 @@
 #include "scopeone/ToolFrameStream.h"
-#include "scopeone/ScopeOneCore.h"
+#include "scopeone/ToolPlugin.h"
 
 namespace scopeone::ui
 {
-    ScopeOneToolFrameStream::ScopeOneToolFrameStream(scopeone::core::ScopeOneCore& core,
-                                                     QObject* parent)
-        : QObject(parent), m_core(core)
+    ScopeOneToolFrameStream::ScopeOneToolFrameStream(ScopeOneToolCore& core, QObject* parent)
+        : QObject(parent)
     {
-        connect(&m_core, &scopeone::core::ScopeOneCore::previewRawFrameReady,
+        connect(&core, &ScopeOneToolCore::previewRawFrameReady,
                 this, &ScopeOneToolFrameStream::acceptFrame);
     }
 

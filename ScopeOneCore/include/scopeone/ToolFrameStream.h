@@ -6,19 +6,16 @@
 #include <QObject>
 #include <QString>
 
-namespace scopeone::core
-{
-    class ScopeOneCore;
-}
-
 namespace scopeone::ui
 {
+    class ScopeOneToolCore;
+
     class SCOPEONE_SDK_EXPORT ScopeOneToolFrameStream final : public QObject
     {
         Q_OBJECT
 
     public:
-        explicit ScopeOneToolFrameStream(scopeone::core::ScopeOneCore& core,
+        explicit ScopeOneToolFrameStream(ScopeOneToolCore& core,
                                           QObject* parent = nullptr);
 
         void setSourceId(const QString& cameraId);
@@ -33,7 +30,6 @@ namespace scopeone::ui
     private:
         void acceptFrame(const scopeone::core::ImageFrame& frame);
 
-        scopeone::core::ScopeOneCore& m_core;
         QString m_sourceId;
         scopeone::core::ImageFrame m_pendingFrame;
         bool m_enabled{true};

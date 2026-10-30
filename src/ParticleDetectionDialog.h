@@ -21,7 +21,8 @@ namespace scopeone::ui
         Q_OBJECT
 
     public:
-        ParticleDetectionDialog(ScopeOneToolContext& context,
+        ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
+                                ScopeOneToolContext& context,
                                 QWidget* parent = nullptr);
 
         void reject() override;

@@ -14,9 +14,9 @@ class QLabel;
 class QPushButton;
 class QSpinBox;
 
-namespace scopeone::core
+namespace scopeone::ui
 {
-    class ScopeOneCore;
+    class ScopeOneToolCore;
 }
 
 namespace scopeone::plugins
@@ -28,7 +28,7 @@ namespace scopeone::plugins
         Q_OBJECT
 
     public:
-        explicit SignalMonitorWidget(scopeone::core::ScopeOneCore* core,
+        explicit SignalMonitorWidget(scopeone::ui::ScopeOneToolCore* core,
                                      scopeone::ui::ScopeOneToolContext& context,
                                      QWidget* parent = nullptr);
 
@@ -44,7 +44,7 @@ namespace scopeone::plugins
         scopeone::core::SignalSourceDescriptor currentDescriptor() const;
         QVariantMap sourceSettings() const;
 
-        scopeone::core::ScopeOneCore* m_core{nullptr};
+        scopeone::ui::ScopeOneToolCore* m_core{nullptr};
         scopeone::ui::ScopeOneToolContext& m_context;
         QComboBox* m_sourceCombo{nullptr};
         QFormLayout* m_sourceForm{nullptr};

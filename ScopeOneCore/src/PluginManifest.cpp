@@ -138,6 +138,7 @@ namespace scopeone::core
         const QString version = metadata.value(QStringLiteral("version")).toString().trimmed();
         const QString kind = metadata.value(QStringLiteral("kind")).toString().trimmed();
         const int apiVersion = metadata.value(QStringLiteral("scopeOneApi")).toInt();
+        const QString coreVersion = metadata.value(QStringLiteral("scopeOneCore")).toString();
         const QString expectedKindName = pluginKindName(expectedKind);
 
         QString error;
@@ -158,6 +159,15 @@ namespace scopeone::core
         else if (apiVersion != pluginApiVersion(expectedKind))
         {
             error = QStringLiteral("unsupported ScopeOne plugin API %1").arg(apiVersion);
+        }
+        // Plugins share C++ types with the Core, so they load only into the MAJOR.MINOR release
+        // they were built against. The VERSION file changes that release when the SDK changes.
+        else if (coreVersion.section(QLatin1Char('.'), 0, 1)
+                 != QStringLiteral(SCOPEONE_CORE_VERSION_STRING).section(QLatin1Char('.'), 0, 1))
+        {
+            error = QStringLiteral("built against ScopeOne Core %1, rebuild it for %2")
+                        .arg(coreVersion.isEmpty() ? QStringLiteral("unknown") : coreVersion,
+                             QStringLiteral(SCOPEONE_CORE_VERSION_STRING));
         }
 
         if (!error.isEmpty())
