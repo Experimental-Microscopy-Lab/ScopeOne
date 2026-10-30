@@ -25,12 +25,17 @@
 #endif
 #include <QWinEventNotifier>
 #include <windows.h>
-#include <tlhelp32.h>
 #else
 #include <QSocketNotifier>
 #include <csignal>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#ifdef Q_OS_MACOS
+#include <sys/event.h>
+#else
+#include <sys/syscall.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -2960,43 +2965,60 @@ namespace scopeone::core::internal
     }
 
     // Quit through the normal shutdown path when the launching app dies or a
-    // termination signal arrives, so shared memory is released instead of leaked
-    void quitWithLauncher(QCoreApplication& app)
+    // termination signal arrives, so shared memory is released instead of leaked.
+    // Called before the runtime starts; events seen meanwhile quit once exec runs.
+    // Returns false when the launcher is already gone.
+    bool quitWithLauncher(QCoreApplication& app, qint64 launcherPid)
     {
 #ifdef Q_OS_WIN
-        DWORD parentPid = 0;
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        PROCESSENTRY32W entry{};
-        entry.dwSize = sizeof(entry);
-        for (BOOL found = Process32FirstW(snapshot, &entry); found;
-             found = Process32NextW(snapshot, &entry))
+        HANDLE launcher = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(launcherPid));
+        if (!launcher || WaitForSingleObject(launcher, 0) == WAIT_OBJECT_0)
         {
-            if (entry.th32ProcessID == GetCurrentProcessId())
-            {
-                parentPid = entry.th32ParentProcessID;
-                break;
-            }
+            if (launcher) CloseHandle(launcher);
+            return false;
         }
-        CloseHandle(snapshot);
-
-        auto* parentExit = new QWinEventNotifier(OpenProcess(SYNCHRONIZE, FALSE, parentPid), &app);
-        QObject::connect(parentExit, &QWinEventNotifier::activated,
+        auto* launcherExit = new QWinEventNotifier(launcher, &app);
+        QObject::connect(launcherExit, &QWinEventNotifier::activated,
                          &app, []() { QCoreApplication::quit(); });
-#else
-        // An orphan is adopted by init or a subreaper, which changes the parent pid
-        const pid_t parentPid = ::getppid();
-        auto* parentCheck = new QTimer(&app);
-        QObject::connect(parentCheck, &QTimer::timeout, &app, [parentPid]()
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [launcherExit, launcher]()
         {
-            if (::getppid() != parentPid)
-            {
-                QCoreApplication::quit();
-            }
+            delete launcherExit;
+            CloseHandle(launcher);
         });
-        parentCheck->start(500);
+#else
+        // The watch fd turns readable once the launcher exits
+#ifdef Q_OS_MACOS
+        const int launcherWatch = ::kqueue();
+        struct kevent change{};
+        EV_SET(&change, static_cast<uintptr_t>(launcherPid), EVFILT_PROC, EV_ADD | EV_ONESHOT,
+               NOTE_EXIT, 0, nullptr);
+        if (::kevent(launcherWatch, &change, 1, nullptr, 0, nullptr) != 0)
+        {
+            ::close(launcherWatch);
+            return false;
+        }
+#else
+        const int launcherWatch = static_cast<int>(::syscall(SYS_pidfd_open,
+                                                             static_cast<pid_t>(launcherPid), 0));
+        if (launcherWatch < 0)
+        {
+            return false;
+        }
+#endif
+        auto* launcherExit = new QSocketNotifier(launcherWatch, QSocketNotifier::Read, &app);
+        QObject::connect(launcherExit, &QSocketNotifier::activated, &app, [launcherExit]()
+        {
+            launcherExit->setEnabled(false);
+            QCoreApplication::quit();
+        });
 
         static int signalPipe[2];
         ::socketpair(AF_UNIX, SOCK_STREAM, 0, signalPipe);
+        for (const int fd : signalPipe)
+        {
+            ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
+            ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
         struct sigaction action{};
         action.sa_handler = [](int)
         {
@@ -3009,9 +3031,16 @@ namespace scopeone::core::internal
             ::sigaction(signalNumber, &action, nullptr);
         }
         auto* signalNotifier = new QSocketNotifier(signalPipe[1], QSocketNotifier::Read, &app);
-        QObject::connect(signalNotifier, &QSocketNotifier::activated,
-                         &app, []() { QCoreApplication::quit(); });
+        QObject::connect(signalNotifier, &QSocketNotifier::activated, &app, []()
+        {
+            char buffer[64];
+            while (::read(signalPipe[1], buffer, sizeof(buffer)) > 0)
+            {
+            }
+            QCoreApplication::quit();
+        });
 #endif
+        return true;
     }
 } // namespace scopeone::core::internal
 
@@ -3059,6 +3088,9 @@ int main(int argc, char* argv[])
                                    QStringLiteral("json"));
     QCommandLineOption optAuto(QStringLiteral("autoPreview"),
                                QStringLiteral("Start preview immediately"));
+    QCommandLineOption optLauncherPid(QStringLiteral("launcherPid"),
+                                      QStringLiteral("Process ID of the launching app"),
+                                      QStringLiteral("pid"));
 
     parser.addOption(optProvider);
     parser.addOption(optDeviceId);
@@ -3072,7 +3104,15 @@ int main(int argc, char* argv[])
     parser.addOption(optPreInit);
     parser.addOption(optProperty);
     parser.addOption(optAuto);
+    parser.addOption(optLauncherPid);
     parser.process(app);
+
+    if (!parser.isSet(optLauncherPid)
+        || !scopeone::core::internal::quitWithLauncher(app, parser.value(optLauncherPid).toLongLong()))
+    {
+        qCritical().noquote() << "Missing or exited launcher: --launcherPid";
+        return 2;
+    }
 
     if (!parser.isSet(optProvider))
     {
@@ -3160,7 +3200,6 @@ int main(int argc, char* argv[])
         return 2;
     }
 
-    scopeone::core::internal::quitWithLauncher(app);
     return app.exec();
 }
 

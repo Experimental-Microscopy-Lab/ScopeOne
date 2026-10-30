@@ -191,6 +191,15 @@ namespace scopeone::ui
                 m_state = ParseState::Ground;
                 csi(ch);
             }
+            else if (ch == 0x1b)
+            {
+                // A new escape aborts the unfinished sequence, CAN and SUB just cancel it
+                m_state = ParseState::Escape;
+            }
+            else if (ch == 0x18 || ch == 0x1a)
+            {
+                m_state = ParseState::Ground;
+            }
             else if (ch < 0x20)
             {
                 control(ch);
@@ -202,7 +211,7 @@ namespace scopeone::ui
             break;
         case ParseState::String:
             // OSC, DCS, APC and PM strings (titles, hyperlinks) are swallowed
-            if (ch == 0x07)
+            if (ch == 0x07 || ch == 0x18 || ch == 0x1a)
             {
                 m_state = ParseState::Ground;
             }
@@ -318,7 +327,8 @@ namespace scopeone::ui
                 QVector<int> values;
                 for (const QString& value : group.split(QLatin1Char(':')))
                 {
-                    values.append(value.isEmpty() ? -1 : value.toInt());
+                    // Bounded like xterm, so huge counts cannot overflow the cursor or stall scrolling
+                    values.append(value.isEmpty() ? -1 : qMin(value.toInt(), 65535));
                 }
                 params.append(values);
             }
@@ -480,10 +490,10 @@ namespace scopeone::ui
             eraseCells(m_cursorY, m_cursorX, qMin(m_columns, m_cursorX + count));
             break;
         case U'S':
-            scrollUp(count);
+            scrollUp(qMin(count, m_scrollBottom - m_scrollTop + 1));
             break;
         case U'T':
-            scrollDown(count);
+            scrollDown(qMin(count, m_scrollBottom - m_scrollTop + 1));
             break;
         case U'm':
             selectGraphicRendition(params);
@@ -885,6 +895,7 @@ namespace scopeone::ui
             while (m_savedMainScreen.size() > rows)
             {
                 m_scrollback.append(m_savedMainScreen.takeFirst());
+                m_savedCursorY = qMax(0, m_savedCursorY - 1);
             }
             while (m_savedMainScreen.size() < rows)
             {
@@ -902,6 +913,8 @@ namespace scopeone::ui
         m_wrapPending = false;
         m_scrollOffset = qMin(m_scrollOffset, static_cast<int>(m_scrollback.size()));
         m_hasSelection = false;
+        m_savedCursorX = qMin(m_savedCursorX, columns - 1);
+        m_savedCursorY = qMin(m_savedCursorY, rows - 1);
         clampCursor();
     }
 

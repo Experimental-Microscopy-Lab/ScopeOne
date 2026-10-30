@@ -165,7 +165,9 @@ namespace scopeone::core::internal
             QStringList arguments;
             arguments << QStringLiteral("--provider") << m_providerId
                       << QStringLiteral("--plugin") << m_pluginPath
-                      << QStringLiteral("--hostKey") << m_hostKey;
+                      << QStringLiteral("--hostKey") << m_hostKey
+                      << QStringLiteral("--launcherPid")
+                      << QString::number(QCoreApplication::applicationPid());
             if (!m_options.isEmpty())
             {
                 arguments << QStringLiteral("--option")

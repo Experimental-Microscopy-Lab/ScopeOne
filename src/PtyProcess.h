@@ -41,10 +41,16 @@ namespace scopeone::ui
         QWinEventNotifier* m_exitNotifier{nullptr};
 #else
         void readAvailable();
+        void flushPending();
+        void onProcessExited();
 
         int m_masterFd{-1};
         int m_pid{-1};
+        int m_exitFd{-1};
+        QByteArray m_pending;
         QSocketNotifier* m_notifier{nullptr};
+        QSocketNotifier* m_writeNotifier{nullptr};
+        QSocketNotifier* m_exitNotifier{nullptr};
 #endif
     };
 }

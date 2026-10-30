@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QDir>
+#include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -96,13 +97,15 @@ namespace scopeone::core::internal::driverhost
         return QStringLiteral("ScopeOne.DriverHost.%1.ctrl").arg(deviceId);
     }
 
-    // On Unix the System V key is a file that ftok reads, so keep it out of the working directory
+    // On Unix the System V key is a file that ftok reads, so keep it in the
+    // per-user runtime directory where other users cannot collide with it
     inline QString sharedMemoryKeyPath(const QString& name)
     {
 #ifdef Q_OS_WIN
         return name;
 #else
-        return QDir::tempPath() + QLatin1Char('/') + name;
+        return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation)
+               + QLatin1Char('/') + name;
 #endif
     }
 

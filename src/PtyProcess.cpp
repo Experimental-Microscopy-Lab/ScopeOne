@@ -19,9 +19,11 @@
 #include <unistd.h>
 #include <vector>
 #ifdef Q_OS_MACOS
+#include <sys/event.h>
 #include <util.h>
 #else
 #include <pty.h>
+#include <sys/syscall.h>
 #endif
 extern char** environ;
 #endif
@@ -141,6 +143,7 @@ namespace scopeone::ui
         {
             ::kill(m_pid, SIGHUP);
             ::close(m_masterFd);
+            ::close(m_exitFd);
             ::waitpid(m_pid, nullptr, WNOHANG);
         }
     }
@@ -185,23 +188,61 @@ namespace scopeone::ui
         }
 
         ::fcntl(m_masterFd, F_SETFL, ::fcntl(m_masterFd, F_GETFL) | O_NONBLOCK);
+        ::fcntl(m_masterFd, F_SETFD, FD_CLOEXEC);
         m_notifier = new QSocketNotifier(m_masterFd, QSocketNotifier::Read, this);
         connect(m_notifier, &QSocketNotifier::activated, this, &PtyProcess::readAvailable);
+        m_writeNotifier = new QSocketNotifier(m_masterFd, QSocketNotifier::Write, this);
+        m_writeNotifier->setEnabled(false);
+        connect(m_writeNotifier, &QSocketNotifier::activated, this, &PtyProcess::flushPending);
+
+        // The slave side can close before the shell exits, so watch the process itself
+#ifdef Q_OS_MACOS
+        m_exitFd = ::kqueue();
+        struct kevent change{};
+        EV_SET(&change, static_cast<uintptr_t>(m_pid), EVFILT_PROC, EV_ADD | EV_ONESHOT,
+               NOTE_EXIT, 0, nullptr);
+        ::kevent(m_exitFd, &change, 1, nullptr, 0, nullptr);
+#else
+        m_exitFd = static_cast<int>(::syscall(SYS_pidfd_open, m_pid, 0));
+#endif
+        m_exitNotifier = new QSocketNotifier(m_exitFd, QSocketNotifier::Read, this);
+        connect(m_exitNotifier, &QSocketNotifier::activated, this, &PtyProcess::onProcessExited);
     }
 
+    // Input that does not fit the pty queue waits until the master is writable again
     void PtyProcess::write(const QByteArray& data)
     {
-        qsizetype offset = 0;
-        while (offset < data.size())
+        if (m_masterFd < 0)
         {
-            const ssize_t count = ::write(m_masterFd, data.constData() + offset,
-                                          static_cast<size_t>(data.size() - offset));
-            if (count <= 0 && errno != EINTR)
+            return;
+        }
+        m_pending.append(data);
+        flushPending();
+    }
+
+    void PtyProcess::flushPending()
+    {
+        while (!m_pending.isEmpty())
+        {
+            const ssize_t count = ::write(m_masterFd, m_pending.constData(),
+                                          static_cast<size_t>(m_pending.size()));
+            if (count > 0)
             {
+                m_pending.remove(0, count);
+                continue;
+            }
+            if (count < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (count < 0 && errno == EAGAIN)
+            {
+                m_writeNotifier->setEnabled(true);
                 return;
             }
-            offset += qMax<ssize_t>(count, 0);
+            m_pending.clear();
         }
+        m_writeNotifier->setEnabled(false);
     }
 
     void PtyProcess::resize(int columns, int rows)
@@ -212,7 +253,7 @@ namespace scopeone::ui
         ::ioctl(m_masterFd, TIOCSWINSZ, &size);
     }
 
-    // Drain the master side, and reap the shell once the slave side closes
+    // Drain the master side; EIO only means every slave fd is closed
     void PtyProcess::readAvailable()
     {
         char buffer[65536];
@@ -234,12 +275,27 @@ namespace scopeone::ui
             }
             break;
         }
-
         m_notifier->setEnabled(false);
+    }
+
+    // The shell has exited, so reaping it no longer blocks
+    void PtyProcess::onProcessExited()
+    {
+        m_exitNotifier->setEnabled(false);
+        if (m_notifier->isEnabled())
+        {
+            readAvailable();
+        }
+        m_notifier->setEnabled(false);
+        m_writeNotifier->setEnabled(false);
+        m_pending.clear();
+
         int status = 0;
         ::waitpid(m_pid, &status, 0);
         ::close(m_masterFd);
+        ::close(m_exitFd);
         m_masterFd = -1;
+        m_exitFd = -1;
         m_pid = -1;
         emit finished(WIFEXITED(status) ? WEXITSTATUS(status) : -1);
     }

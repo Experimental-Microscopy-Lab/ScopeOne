@@ -1906,7 +1906,8 @@ namespace scopeone::core::internal
             << "--deviceId" << normalizedId
             << "--adapter" << adapterName
             << "--device" << deviceName
-            << "--shm" << slot->shmKey;
+            << "--shm" << slot->shmKey
+            << "--launcherPid" << QString::number(QCoreApplication::applicationPid());
         if (exposureMs > 0.0)
         {
             args << "--exposure" << QString::number(exposureMs, 'f', 4);
