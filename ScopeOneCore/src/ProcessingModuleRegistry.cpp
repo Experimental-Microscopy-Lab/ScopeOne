@@ -274,7 +274,8 @@ namespace scopeone::core::internal
 
             const QList<ProcessingModuleDescriptor> pluginDescriptors = plugin->processingModules();
             QSet<QString> pluginIds;
-            bool valid = !pluginDescriptors.isEmpty();
+            // A plugin may offer no modules, as the Python plugin does without scripts
+            bool valid = true;
             for (const ProcessingModuleDescriptor& descriptor : pluginDescriptors)
             {
                 const QString id = descriptor.id.trimmed();
