@@ -1379,6 +1379,53 @@ namespace scopeone::ui
                                         sendRequestResponse(guardedSocket, std::move(response), requestId);
                                     }
                                 });
+        // Loads one frame of a recording session for onFrame, or answers with the error
+        const auto requestSessionFrame =
+            [this, &request, type, finish](std::function<void(const scopeone::core::ImageFrame&)> onFrame)
+        {
+            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
+            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
+            const int index = request.value(QStringLiteral("index")).toInt(-1);
+            const auto session = m_scopeonecore->recordingSession(sessionId);
+            const quint64 frameRequestId = m_scopeonecore->requestRecordingSessionFrame(
+                session, cameraId, index);
+            if (frameRequestId == 0)
+            {
+                QJsonObject response = makeResponse(type, false);
+                response.insert(QStringLiteral("error"),
+                                session ? QStringLiteral("Invalid frame request")
+                                        : QStringLiteral("Unknown session"));
+                finish(std::move(response));
+                return;
+            }
+            auto* context = new QObject(this);
+            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
+                    context,
+                    [context, frameRequestId, onFrame = std::move(onFrame), finish, type](
+                        quint64 completedId,
+                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
+                        const QString&,
+                        int,
+                        const scopeone::core::ImageFrame& frame)
+                    {
+                        if (completedId != frameRequestId)
+                        {
+                            return;
+                        }
+                        if (frame.isValid())
+                        {
+                            onFrame(frame);
+                        }
+                        else
+                        {
+                            QJsonObject response = makeResponse(type, false);
+                            response.insert(QStringLiteral("error"),
+                                            QStringLiteral("Frame index out of range"));
+                            finish(std::move(response));
+                        }
+                        context->deleteLater();
+                    });
+        };
 
         if (type == QStringLiteral("open_image_window"))
         {
@@ -1958,108 +2005,34 @@ namespace scopeone::ui
                 return true;
             }
 
-            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            const int index = request.value(QStringLiteral("index")).toInt(-1);
-            const auto session = m_scopeonecore->recordingSession(sessionId);
-            const quint64 frameRequestId = m_scopeonecore->requestRecordingSessionFrame(
-                session, cameraId, index);
-            if (frameRequestId == 0)
-            {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                session ? QStringLiteral("Invalid frame request")
-                                        : QStringLiteral("Unknown session"));
-                finish(std::move(response));
-                return true;
-            }
-            auto* context = new QObject(this);
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
-                    context,
-                    [context, frameRequestId, startProcessing, finish, type](
-                        quint64 completedId,
-                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
-                        const QString&,
-                        int,
-                        const scopeone::core::ImageFrame& frame)
-                    {
-                        if (completedId != frameRequestId)
-                        {
-                            return;
-                        }
-                        if (frame.isValid())
-                        {
-                            startProcessing(frame);
-                        }
-                        else
-                        {
-                            QJsonObject response = makeResponse(type, false);
-                            response.insert(QStringLiteral("error"),
-                                            QStringLiteral("Frame index out of range"));
-                            finish(std::move(response));
-                        }
-                        context->deleteLater();
-                    });
+            requestSessionFrame(startProcessing);
             return true;
         }
 
         if (type == QStringLiteral("session_frame"))
         {
-            const QString sessionId = request.value(QStringLiteral("sessionId")).toString().trimmed();
-            const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
-            const int index = request.value(QStringLiteral("index")).toInt(-1);
-            const auto session = m_scopeonecore->recordingSession(sessionId);
-            const quint64 frameRequestId = m_scopeonecore->requestRecordingSessionFrame(
-                session, cameraId, index);
-            if (frameRequestId == 0)
+            requestSessionFrame([this, finish, type](const scopeone::core::ImageFrame& frame)
             {
                 QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                session ? QStringLiteral("Invalid frame request")
-                                        : QStringLiteral("Unknown session"));
+                QString errorMessage;
+                const auto graphFrame = publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
+                scopeone::core::ImageFrame exportedFrame;
+                if (!graphFrame.isValid()
+                    || !exportFrameToSharedMemory(graphFrame, exportedFrame, errorMessage))
+                {
+                    response.insert(QStringLiteral("error"), errorMessage);
+                }
+                else
+                {
+                    response = makeResponse(type, true);
+                    response.insert(QStringLiteral("mappingName"), kFrameMappingName);
+                    response.insert(QStringLiteral("mappingSize"),
+                                    static_cast<int>(scopeone::core::kSharedFrameHeaderSize
+                                        + scopeone::core::kSharedFrameMaxBytes));
+                    addFrameMetadata(response, exportedFrame);
+                }
                 finish(std::move(response));
-                return true;
-            }
-
-            auto* context = new QObject(this);
-            connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionFrameReady,
-                    context,
-                    [this, context, finish, type, frameRequestId](
-                        quint64 completedId,
-                        const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>&,
-                        const QString&,
-                        int,
-                        const scopeone::core::ImageFrame& frame)
-                    {
-                        if (completedId != frameRequestId)
-                        {
-                            return;
-                        }
-                        QJsonObject response = makeResponse(type, false);
-                        QString errorMessage;
-                        const auto graphFrame = publishExternalApiFrame(
-                            m_scopeonecore, frame, errorMessage);
-                        scopeone::core::ImageFrame exportedFrame;
-                        if (!graphFrame.isValid()
-                            || !exportFrameToSharedMemory(graphFrame, exportedFrame, errorMessage))
-                        {
-                            response.insert(QStringLiteral("error"),
-                                            errorMessage.isEmpty()
-                                                ? QStringLiteral("Frame index out of range")
-                                                : errorMessage);
-                        }
-                        else
-                        {
-                            response = makeResponse(type, true);
-                            response.insert(QStringLiteral("mappingName"), kFrameMappingName);
-                            response.insert(QStringLiteral("mappingSize"),
-                                            static_cast<int>(scopeone::core::kSharedFrameHeaderSize
-                                                + scopeone::core::kSharedFrameMaxBytes));
-                            addFrameMetadata(response, exportedFrame);
-                        }
-                        finish(std::move(response));
-                        context->deleteLater();
-                    });
+            });
             return true;
         }
 

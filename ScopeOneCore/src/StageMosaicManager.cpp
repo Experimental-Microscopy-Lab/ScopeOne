@@ -16,18 +16,6 @@ namespace scopeone::core::internal
         constexpr int kFrameTimeoutMs = 2000;
         const QString kMosaicLayerId = QStringLiteral("stage_mosaic");
 
-        cv::Mat frameMatView(const ImageFrame& frame)
-        {
-            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
-            {
-                return {};
-            }
-            return cv::Mat(frame.height,
-                           frame.width,
-                           frame.isMono16() ? CV_16UC1 : CV_8UC1,
-                           const_cast<char*>(frame.bytes.constData()),
-                           static_cast<size_t>(frame.stride));
-        }
     }
 
     class StageMosaicManager::Storage

@@ -585,8 +585,7 @@ namespace scopeone::core::internal
 
     ProcessingResult ImageOperationModule::rollingProjection(const ImageFrame& frame)
     {
-        const cv::Mat src(frame.height, frame.width, frame.isMono16() ? CV_16UC1 : CV_8UC1,
-                          const_cast<char*>(frame.bytes.constData()), frame.stride);
+        const cv::Mat src = frameMatView(frame);
         if (src.cols != m_windowWidth || src.rows != m_windowHeight || src.type() != m_windowType)
         {
             resetState();
@@ -654,8 +653,7 @@ namespace scopeone::core::internal
             }
 
             const int limit = limitOf(working);
-            const cv::Mat src(working.height, working.width, working.isMono16() ? CV_16UC1 : CV_8UC1,
-                              const_cast<char*>(working.bytes.constData()), working.stride);
+            const cv::Mat src = frameMatView(working);
             cv::Mat result;
             bool eightBitResult = false;
 

@@ -604,12 +604,6 @@ namespace scopeone::ui
         });
     }
 
-    void ImageAnalysis::addImageCommand(QMenu* menu, const QString& text, const FrameOperation& operation)
-    {
-        connect(menu->addAction(text), &QAction::triggered, this,
-                [this, text, operation]() { apply(QString(text).remove(QLatin1Char('&')), operation); });
-    }
-
     void ImageAnalysis::buildEditMenu(QMenu* menu)
     {
         QAction* selectAllAction = menu->addAction(tr("Select &All"));

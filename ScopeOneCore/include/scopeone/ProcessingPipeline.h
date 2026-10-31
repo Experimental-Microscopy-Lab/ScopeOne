@@ -21,8 +21,6 @@ namespace scopeone::core
 
         bool addModule(std::unique_ptr<ProcessingModule> module);
         bool removeModule(int index);
-        bool setModuleParameters(int index, const QVariantMap& parameters);
-        bool resetModuleState(int index);
         int moduleCount() const;
 
         ProcessingResult process(const ProcessingValue& input, int processingBitDepth = 16) const;

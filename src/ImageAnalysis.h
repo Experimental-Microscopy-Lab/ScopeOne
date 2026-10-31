@@ -111,7 +111,6 @@ namespace scopeone::ui
         void addMath(QMenu* menu, const QString& text, int operation, bool needsValue,
                      double value);
         void addBinary(QMenu* menu, const QString& text, BinaryOperation operation);
-        void addImageCommand(QMenu* menu, const QString& text, const FrameOperation& operation);
 
         void duplicateImage();
         void cropImage();
@@ -158,6 +157,5 @@ namespace scopeone::ui
         QPointer<ResultsWindow> m_results;
         QPointer<RoiManagerWindow> m_roiManager;
         QPointer<ProfilePlotWindow> m_profile;
-        int m_resultCount{0};
     };
 }

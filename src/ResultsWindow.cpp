@@ -141,19 +141,6 @@ namespace scopeone::ui
         emit attentionRequested();
     }
 
-    void ResultsWindow::addValues(const QStringList& headers, const QList<double>& values)
-    {
-        if (!m_rows.isEmpty() || m_plainHeaders != headers)
-        {
-            m_rows.clear();
-            m_plainRows.clear();
-        }
-        m_plainHeaders = headers;
-        m_plainRows.append(values);
-        rebuild();
-        emit attentionRequested();
-    }
-
     QString ResultsWindow::cell(const Row& row, const QString& key) const
     {
         const core::imageops::Measurement& m = row.measurement;

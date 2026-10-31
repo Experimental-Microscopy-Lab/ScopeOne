@@ -9,22 +9,6 @@ namespace scopeone::core::internal
 {
     namespace
     {
-        bool frameToFloat(const ImageFrame& frame, cv::Mat& output)
-        {
-            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
-            {
-                return false;
-            }
-            const int type = frame.isMono16() ? CV_16UC1 : CV_8UC1;
-            const cv::Mat input(frame.height,
-                                frame.width,
-                                type,
-                                const_cast<char*>(frame.bytes.constData()),
-                                frame.stride);
-            input.convertTo(output, CV_32F);
-            return true;
-        }
-
         void fftShift(const cv::Mat& input, cv::Mat& output)
         {
             output.create(input.size(), input.type());
@@ -92,11 +76,11 @@ namespace scopeone::core::internal
 
         const ImageFrame& frame = std::get<ImageFrame>(input);
         ImageFrame workingFrame;
-        if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth)
-            || !frameToFloat(workingFrame, m_grayFloat))
+        if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
         {
             return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported FFT input"));
         }
+        frameMatView(workingFrame).convertTo(m_grayFloat, CV_32F);
 
         try
         {

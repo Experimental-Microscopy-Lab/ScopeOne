@@ -108,6 +108,25 @@ namespace
         return properties;
     }
 
+    // The output format and compression that the tools which save images take
+    QJsonObject withSaveOptions(QJsonObject properties)
+    {
+        properties.insert(QStringLiteral("format"),
+                          withEnum(inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
+                                                 QStringLiteral("ome-tiff")),
+                                   {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"),
+                                    QStringLiteral("tiff"), QStringLiteral("binary")}));
+        properties.insert(QStringLiteral("compression"),
+                          inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"),
+                                        false));
+        properties.insert(QStringLiteral("compressionLevel"),
+                          withMaximum(withMinimum(inputProperty(QStringLiteral("integer"),
+                                                                QStringLiteral("Compression level"), 6),
+                                                  0.0),
+                                      9.0));
+        return properties;
+    }
+
     ToolSpec makeTool(const QString& name,
                       const QString& description,
                       QJsonObject properties = {},
@@ -275,27 +294,14 @@ namespace
             makeTool(
                 QStringLiteral("save_image_window"),
                 QStringLiteral("Save an image window to disk, using the active window when omitted"),
-                inputProperties({
+                withSaveOptions(inputProperties({
                     {QStringLiteral("documentId"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Image window document ID"))},
                     {QStringLiteral("saveDir"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Destination directory"))},
                     {QStringLiteral("baseName"),
-                     inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))},
-                    {QStringLiteral("format"),
-                     withEnum(
-                         inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
-                                       QStringLiteral("ome-tiff")),
-                         {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
-                    {QStringLiteral("compression"),
-                     inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
-                    {QStringLiteral("compressionLevel"),
-                     withMaximum(
-                         withMinimum(
-                             inputProperty(QStringLiteral("integer"), QStringLiteral("Compression level"), 6),
-                             0.0),
-                         9.0)}
-                }),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))}
+                })),
                 {QStringLiteral("saveDir"), QStringLiteral("baseName")},
                 ToolAccess::Confirmed),
             makeTool(
@@ -1146,53 +1152,27 @@ namespace
             makeTool(
                 QStringLiteral("save_frame_mapping"),
                 QStringLiteral("Save the frame in shared memory to disk"),
-                inputProperties({
+                withSaveOptions(inputProperties({
                     {QStringLiteral("saveDir"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Destination directory"))},
                     {QStringLiteral("baseName"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))},
-                    {QStringLiteral("format"),
-                     withEnum(
-                         inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
-                                       QStringLiteral("ome-tiff")),
-                          {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
-                    {QStringLiteral("compression"),
-                      inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
-                    {QStringLiteral("compressionLevel"),
-                     withMaximum(
-                         withMinimum(
-                             inputProperty(QStringLiteral("integer"), QStringLiteral("Compression level"), 6),
-                             0.0),
-                         9.0)},
                     {QStringLiteral("camera"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Optional frame camera ID"))}
-                }),
+                })),
                 {QStringLiteral("saveDir"), QStringLiteral("baseName")},
                 ToolAccess::Confirmed),
             makeTool(
                 QStringLiteral("session_save"),
                 QStringLiteral("Save a retained recording session to disk"),
-                inputProperties({
+                withSaveOptions(inputProperties({
                     {QStringLiteral("sessionId"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Recording session ID"))},
                     {QStringLiteral("saveDir"),
                      inputProperty(QStringLiteral("string"), QStringLiteral("Destination directory"))},
                     {QStringLiteral("baseName"),
-                     inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))},
-                    {QStringLiteral("format"),
-                     withEnum(
-                         inputProperty(QStringLiteral("string"), QStringLiteral("Output format"),
-                                       QStringLiteral("ome-tiff")),
-                          {QStringLiteral("ome-tiff"), QStringLiteral("ome-zarr"), QStringLiteral("tiff"), QStringLiteral("binary")})},
-                    {QStringLiteral("compression"),
-                      inputProperty(QStringLiteral("boolean"), QStringLiteral("Enable output compression"), false)},
-                    {QStringLiteral("compressionLevel"),
-                     withMaximum(
-                         withMinimum(
-                             inputProperty(QStringLiteral("integer"), QStringLiteral("Compression level"), 6),
-                             0.0),
-                         9.0)}
-                }),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Output base name"))}
+                })),
                 {QStringLiteral("sessionId"), QStringLiteral("saveDir"), QStringLiteral("baseName")},
                 ToolAccess::Confirmed)
         };

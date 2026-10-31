@@ -1124,6 +1124,54 @@ namespace scopeone::ui
         return true;
     }
 
+    bool askSaveOptions(QWidget* parent,
+                        const QString& defaultName,
+                        core::ScopeOneCore::RecordingSaveOptions& options)
+    {
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        const QString lastSaveDirectory = settings.value(
+            QStringLiteral("LastSaveDirectory"), QDir::homePath()).toString();
+        const QString saveDir = QFileDialog::getExistingDirectory(
+            parent,
+            QObject::tr("Select Dataset Folder"),
+            QDir(lastSaveDirectory).exists() ? lastSaveDirectory : QDir::homePath());
+        if (saveDir.isEmpty())
+        {
+            return false;
+        }
+        settings.setValue(QStringLiteral("LastSaveDirectory"), saveDir);
+        bool accepted = false;
+        QString baseName = QInputDialog::getText(parent,
+                                                 QObject::tr("Save Image Dataset As"),
+                                                 QObject::tr("Dataset name and optional format suffix"),
+                                                 QLineEdit::Normal,
+                                                 defaultName + QStringLiteral(".ome.tiff"),
+                                                 &accepted)
+                               .trimmed();
+        if (!accepted || baseName.isEmpty())
+        {
+            return false;
+        }
+        static const std::pair<QLatin1StringView, core::RecordingFormat> suffixes[]{
+            {QLatin1StringView(".ome.tiff"), core::RecordingFormat::OmeTiff},
+            {QLatin1StringView(".ome.zarr"), core::RecordingFormat::OmeZarr},
+            {QLatin1StringView(".tiff"), core::RecordingFormat::Tiff},
+            {QLatin1StringView(".bin"), core::RecordingFormat::Binary}};
+        for (const auto& [suffix, format] : suffixes)
+        {
+            if (baseName.endsWith(suffix, Qt::CaseInsensitive))
+            {
+                baseName.chop(suffix.size());
+                options.format = format;
+                break;
+            }
+        }
+        options.saveDir = saveDir;
+        options.baseName = baseName;
+        options.enableCompression = options.format != core::RecordingFormat::Binary;
+        return true;
+    }
+
     void ImageWorkspace::saveDocumentAs(const QString& documentId)
     {
         Document* document = findDocument(documentId);
@@ -1131,56 +1179,11 @@ namespace scopeone::ui
         {
             return;
         }
-        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        const QString lastSaveDirectory = settings.value(
-            QStringLiteral("LastSaveDirectory"), QDir::homePath()).toString();
-        const QString saveDir = QFileDialog::getExistingDirectory(
-            m_viewerHost,
-            tr("Select Dataset Folder"),
-            QDir(lastSaveDirectory).exists() ? lastSaveDirectory : QDir::homePath());
-        if (saveDir.isEmpty())
-        {
-            return;
-        }
-        settings.setValue(QStringLiteral("LastSaveDirectory"), saveDir);
-        bool accepted = false;
-        QString baseName = QInputDialog::getText(
-                               m_viewerHost,
-                               tr("Save Image Dataset As"),
-                               tr("Dataset name and optional format suffix"),
-                               QLineEdit::Normal,
-                               document->title + QStringLiteral(".ome.tiff"),
-                               &accepted)
-                               .trimmed();
-        if (!accepted || baseName.isEmpty())
-        {
-            return;
-        }
         scopeone::core::ScopeOneCore::RecordingSaveOptions options;
-        if (baseName.endsWith(QStringLiteral(".ome.tiff"), Qt::CaseInsensitive))
+        if (askSaveOptions(m_viewerHost, document->title, options))
         {
-            baseName.chop(9);
-            options.format = scopeone::core::RecordingFormat::OmeTiff;
+            saveDocument(document->id, options);
         }
-        else if (baseName.endsWith(QStringLiteral(".ome.zarr"), Qt::CaseInsensitive))
-        {
-            baseName.chop(9);
-            options.format = scopeone::core::RecordingFormat::OmeZarr;
-        }
-        else if (baseName.endsWith(QStringLiteral(".tiff"), Qt::CaseInsensitive))
-        {
-            baseName.chop(5);
-            options.format = scopeone::core::RecordingFormat::Tiff;
-        }
-        else if (baseName.endsWith(QStringLiteral(".bin"), Qt::CaseInsensitive))
-        {
-            baseName.chop(4);
-            options.format = scopeone::core::RecordingFormat::Binary;
-        }
-        options.saveDir = saveDir;
-        options.baseName = baseName;
-        options.enableCompression = options.format != scopeone::core::RecordingFormat::Binary;
-        saveDocument(document->id, options);
     }
 
     ImageWorkspace::Document* ImageWorkspace::findDocument(const QString& documentId) const

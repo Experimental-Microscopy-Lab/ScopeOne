@@ -305,11 +305,6 @@ namespace scopeone::ui
         }
     }
 
-    bool ConsoleWidget::isShowTimestamps() const
-    {
-        return m_showTimestamps;
-    }
-
     // Toggle automatic scrolling to the newest message
     void ConsoleWidget::setAutoScroll(bool autoScroll)
     {
@@ -318,23 +313,6 @@ namespace scopeone::ui
             m_autoScroll = autoScroll;
             m_autoScrollCheckBox->setChecked(autoScroll);
         }
-    }
-
-    bool ConsoleWidget::isAutoScroll() const
-    {
-        return m_autoScroll;
-    }
-
-    // Replace the active message type filter
-    void ConsoleWidget::setMessageFilter(const QStringList& types)
-    {
-        m_messageFilter = types;
-        updateDisplay();
-    }
-
-    QStringList ConsoleWidget::getMessageFilter() const
-    {
-        return m_messageFilter;
     }
 
     // Rebuild the visible log from filtered history

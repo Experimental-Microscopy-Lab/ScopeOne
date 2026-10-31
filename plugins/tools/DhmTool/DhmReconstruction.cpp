@@ -412,15 +412,6 @@ namespace scopeone::dhm
         return peak;
     }
 
-    std::pair<ImageFrame, QPoint> computeSpectrum(const ImageFrame& input,
-                                                  const DhmParameters& params)
-    {
-        const SpectrumData spectrum = buildSpectrum(input, params);
-        const ImageFrame frame = normalizedFrame(
-            spectrum.logMagnitude, input, QStringLiteral("dhm.spectrum"));
-        return {frame, detectedOffset(spectrum.logMagnitude)};
-    }
-
     DhmResult reconstruct(const ImageFrame& input,
                           const DhmParameters& params,
                           const std::atomic_bool& cancel,

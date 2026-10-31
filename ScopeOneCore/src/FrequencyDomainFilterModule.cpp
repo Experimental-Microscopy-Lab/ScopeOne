@@ -13,22 +13,6 @@ namespace scopeone::core::internal
 {
     namespace
     {
-        bool frameToFloat(const ImageFrame& frame, cv::Mat& output)
-        {
-            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
-            {
-                return false;
-            }
-            const int type = frame.isMono16() ? CV_16UC1 : CV_8UC1;
-            const cv::Mat input(frame.height,
-                                frame.width,
-                                type,
-                                const_cast<char*>(frame.bytes.constData()),
-                                frame.stride);
-            input.convertTo(output, CV_32F);
-            return true;
-        }
-
         ImageFrame outputFrame(const cv::Mat& input, const ImageFrame& reference)
         {
             const int type = reference.isMono16() ? CV_16U : CV_8U;
@@ -152,11 +136,11 @@ namespace scopeone::core::internal
                                                           int processingBitDepth)
     {
         ImageFrame workingFrame;
-        if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth)
-            || !frameToFloat(workingFrame, m_grayFloat))
+        if (!convertFrameForProcessing(frame, workingFrame, processingBitDepth))
         {
             return ProcessingResult(ImageFrame{}, QStringLiteral("Unsupported frequency filter input"));
         }
+        frameMatView(workingFrame).convertTo(m_grayFloat, CV_32F);
 
         try
         {

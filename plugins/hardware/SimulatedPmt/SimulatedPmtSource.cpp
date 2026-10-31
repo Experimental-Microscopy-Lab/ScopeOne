@@ -375,7 +375,6 @@ namespace scopeone::plugins
             1,
             static_cast<quint64>(std::llround(lineDuration / kTickPeriodSeconds)));
         const quint64 frameTicks = lineTicks * static_cast<quint64>(scan.height);
-        const double actualLineDuration = lineTicks * kTickPeriodSeconds;
         const double actualFrameDuration = frameTicks * kTickPeriodSeconds;
         const auto startTime = std::chrono::steady_clock::now();
         std::mt19937_64 random(std::random_device{}());

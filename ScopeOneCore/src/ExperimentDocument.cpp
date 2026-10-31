@@ -4270,26 +4270,6 @@ namespace scopeone::core
         return transform;
     }
 
-    QJsonObject experimentPlanToJson(const ExperimentPlan& plan)
-    {
-        return experimentPlanToJsonImpl(plan);
-    }
-
-    bool experimentPlanFromJson(const QJsonObject& object,
-                                ExperimentPlan& plan,
-                                QString* errorMessage)
-    {
-        clearError(errorMessage);
-        ExperimentPlan parsed;
-        if (!parseExperimentPlanObject(object, parsed, QStringLiteral("plan"), errorMessage)
-            || !validateExperimentPlanImpl(parsed, QStringLiteral("plan"), errorMessage))
-        {
-            return false;
-        }
-        plan = parsed;
-        return true;
-    }
-
     QJsonObject experimentDocumentToJson(const ExperimentDocument& document)
     {
         return experimentDocumentToJsonImpl(document);

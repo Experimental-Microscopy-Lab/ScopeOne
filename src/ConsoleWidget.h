@@ -42,17 +42,7 @@ namespace scopeone::ui
         static void installQtMessageHandler();
 
         void setShowTimestamps(bool show);
-
-        bool isShowTimestamps() const;
-
         void setAutoScroll(bool autoScroll);
-
-        bool isAutoScroll() const;
-
-        void setMessageFilter(const QStringList& types);
-
-        QStringList getMessageFilter() const;
-
         void setApiDispatcher(ApiDispatcher dispatcher);
 
     private:

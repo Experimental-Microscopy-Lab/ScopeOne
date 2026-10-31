@@ -41,6 +41,9 @@ namespace scopeone::core::internal
 
     QByteArray copyMatBytes(const cv::Mat& mat);
 
+    // The pixels of a mono frame as a cv::Mat without a copy, empty for other frames
+    cv::Mat frameMatView(const scopeone::core::ImageFrame& frame);
+
     template <typename Pixel>
     inline QByteArray allocatePixelBytes(int width, int height)
     {

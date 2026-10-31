@@ -19,28 +19,6 @@ namespace scopeone::core::imageops
             float height;
         };
 
-        std::vector<Offset> discOffsets(double radius)
-        {
-            std::vector<Offset> offsets;
-            const int reach = static_cast<int>(std::floor(radius));
-            const double limit = radius * radius + 1.0;
-            for (int dy = -reach; dy <= reach; ++dy)
-            {
-                for (int dx = -reach; dx <= reach; ++dx)
-                {
-                    if (dx * dx + dy * dy <= limit - 1.0 + 0.5)
-                    {
-                        offsets.push_back({dx, dy, 0.0f});
-                    }
-                }
-            }
-            if (offsets.empty())
-            {
-                offsets.push_back({0, 0, 0.0f});
-            }
-            return offsets;
-        }
-
         std::vector<Offset> ballOffsets(double radius)
         {
             std::vector<Offset> offsets;
@@ -91,24 +69,6 @@ namespace scopeone::core::imageops
                 }
             }
             return result;
-        }
-
-        std::vector<float> gaussianKernel(double sigma)
-        {
-            const int reach = std::max(1, static_cast<int>(std::ceil(sigma * 3.0)));
-            std::vector<float> kernel(static_cast<size_t>(2 * reach + 1));
-            float sum = 0.0f;
-            for (int i = -reach; i <= reach; ++i)
-            {
-                const float weight = static_cast<float>(std::exp(-(i * i) / (2.0 * sigma * sigma)));
-                kernel[static_cast<size_t>(i + reach)] = weight;
-                sum += weight;
-            }
-            for (float& weight : kernel)
-            {
-                weight /= sum;
-            }
-            return kernel;
         }
 
         // Smooths along x and then along y with the same kernel, repeating the edge pixels
@@ -581,18 +541,6 @@ namespace scopeone::core::imageops
             }
         }
         return fromFloat(result, like, like.width, like.height);
-    }
-
-    QList<ImageFrame> substack(const QList<ImageFrame>& frames, int first, int last, int step)
-    {
-        QList<ImageFrame> result;
-        first = std::clamp(first, 0, static_cast<int>(frames.size()) - 1);
-        last = std::clamp(last, first, static_cast<int>(frames.size()) - 1);
-        for (int index = first; index <= last; index += std::max(1, step))
-        {
-            result.append(frames.at(index));
-        }
-        return result;
     }
 
     ImageFrame montage(const QList<ImageFrame>& frames, int columns, double scale, int border)

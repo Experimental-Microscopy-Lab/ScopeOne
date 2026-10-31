@@ -28,8 +28,6 @@ namespace scopeone::ui
         // For a stack with several axes, position names the plane, such as C1 Z3 T5, and is shown for slice.
         void addMeasurement(const QString& label, const core::imageops::Measurement& measurement, int slice,
                             const QString& unit, const QString& position = QString());
-        // Adds a row of plain values, for example the intensity at one slice of a stack
-        void addValues(const QStringList& headers, const QList<double>& values);
         void chooseMeasurements();
 
     private:

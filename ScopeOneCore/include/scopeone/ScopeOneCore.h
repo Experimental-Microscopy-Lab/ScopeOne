@@ -263,12 +263,10 @@ namespace scopeone::core
 
         QStringList cameraIds() const { return m_cameraIds; }
         QList<HardwareDeviceDescriptor> hardwareDevices() const;
-        bool registerHardwareProvider(const HardwareProviderPtr& provider);
         bool registerDriverHostProvider(const QString& providerId,
                                         const QString& modulePath,
                                         const QVariantMap& options = {},
                                         QString* errorMessage = nullptr);
-        bool unregisterHardwareProvider(const QString& providerId);
         QStringList runningPreviewCameraIds() const;
         double cameraPixelSizeUm(const QString& cameraId) const;
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
@@ -290,12 +288,9 @@ namespace scopeone::core
         bool startDaqSession(const DaqSessionConfig& config,
                              QString* errorMessage = nullptr);
         void stopDaqSession(const QString& deviceId);
-        DaqState daqState(const QString& deviceId) const;
         QString daqStateMessage(const QString& deviceId) const;
         ImageFrame graphFrame(const QString& layerKey) const;
         QList<ImageFrame> graphFrames(const QStringList& layerKeys) const;
-        double layerFrameRate(const QString& layerKey) const;
-        QMap<QString, double> layerFrameRates() const;
         bool graphPixelValue(const QString& layerKey, const QPoint& imagePos, int& value) const;
         std::shared_ptr<RecordingSessionData> createFrameSession(
             const QList<ImageFrame>& frames,
@@ -330,7 +325,6 @@ namespace scopeone::core
         void clearStaticFrames();
         void clearLiveFrames(const QString& cameraId);
         void clearProcessedFrames();
-        bool getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const;
         bool getLayerHistogram(const QString& layerKey, HistogramStats& stats) const;
         void setActiveHistogramLayer(const QString& layerKey);
         bool autoLayerLevels(const QString& layerKey);
@@ -370,15 +364,9 @@ namespace scopeone::core
         quint64 moveZRelative(const QString& zStageLabel, double dz);
         quint64 moveXYTo(const QString& xyStageLabel, double x, double y);
         quint64 moveZTo(const QString& zStageLabel, double z);
-        bool readShutterOpen(const QString& shutterLabel, bool& open) const;
         bool setShutterOpen(const QString& shutterLabel,
                             bool open,
                             QString* errorMessage = nullptr);
-        bool readDeviceState(const QString& deviceLabel, long& state) const;
-        bool setDeviceState(const QString& deviceLabel,
-                            long state,
-                            QString* errorMessage = nullptr);
-        QString deviceStateLabel(const QString& deviceLabel, long state) const;
         bool readExposure(const QString& cameraIdOrAll, double& exposureMs) const;
 
         QStringList availableConfigGroups() const;
@@ -419,9 +407,6 @@ namespace scopeone::core
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleDescriptor> availableProcessingModules() const;
-        bool registerProcessingModule(
-            const ProcessingModuleDescriptor& descriptor,
-            std::function<std::unique_ptr<ProcessingModule>()> factory);
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
         // A pipeline made of copies of the steps that the camera runs, which are those of the shared
         // pipeline when no camera is named or the camera has none of its own
@@ -492,9 +477,6 @@ namespace scopeone::core
         void configurationUnloadFinished(bool success, const QString& errorMessage);
         void hardwareConfigurationChanged();
         void hardwareDevicesChanged();
-        void hardwareProviderRegistrationFinished(const QString& providerId,
-                                                  bool success,
-                                                  const QString& errorMessage);
         void deviceStateChanged();
         void stagePositionChanged();
         void stageMoveFinished(quint64 commandId,
@@ -506,7 +488,6 @@ namespace scopeone::core
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
         void signalTimeSeriesReady(const TimeSeriesChunk& chunk);
-        void timestampedSignalEventsReady(const TimestampedEventChunk& chunk);
         void signalSourceStateChanged(const QString& sourceId,
                                       SignalSourceState state,
                                       const QString& message);
@@ -521,21 +502,15 @@ namespace scopeone::core
                       const QString& errorMessage);
         void daqInputDataReady(const DaqInputChunk& chunk);
         void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
-        void processedFrameReady(const ImageFrame& frame);
-        void processedFramesCompleted(const QString& cameraId, quint64 frameCount);
         void previewProcessedFrameReady(const ImageFrame& frame);
         void staticFramePublished(const QString& sourceId,
                                   const QString& displayName,
                                   const ImageFrame& frame);
-        void toolStreamFramePublished(const QString& sourceId,
-                                      const QString& displayName,
-                                      const ImageFrame& frame);
         void previewToolFrameReady(const ImageFrame& frame);
         void staticFrameRemoved(const QString& sourceId);
         void staticFramesCleared();
         void liveFramesCleared(const QString& cameraId);
         void processedFramesCleared();
-        void imageHistogramReady(const QString& cameraId, bool processed, const HistogramStats& stats);
         void layerHistogramReady(const QString& layerKey, const HistogramStats& stats);
         void layerAnalysisCleared(const QString& layerKey);
         void lineProfileUpdated(const QString& cameraId, bool processed, const QVector<int>& values);
@@ -608,7 +583,6 @@ namespace scopeone::core
             const QString& filePath,
             const std::shared_ptr<RecordingSessionData>& session,
             const QString& errorMessage);
-        void layerFrameRateChanged(const QString& layerKey, double fps);
         void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);
 
      private:

@@ -74,64 +74,54 @@ namespace scopeone::core::internal
 
     void MicroManagerProvider::setFrameSink(FrameSink sink)
     {
-        if (m_cameraProvider)
-        {
-            m_cameraProvider->setFrameSink(std::move(sink));
-        }
+        m_cameraProvider->setFrameSink(std::move(sink));
     }
 
     void MicroManagerProvider::setPreviewStateSink(PreviewStateSink sink)
     {
-        if (m_cameraProvider)
-        {
-            m_cameraProvider->setPreviewStateSink(std::move(sink));
-        }
+        m_cameraProvider->setPreviewStateSink(std::move(sink));
     }
 
     bool MicroManagerProvider::startPreview()
     {
-        return m_cameraProvider && m_cameraProvider->startPreview();
+        return m_cameraProvider->startPreview();
     }
 
     bool MicroManagerProvider::stopPreview()
     {
-        return m_cameraProvider && m_cameraProvider->stopPreview();
+        return m_cameraProvider->stopPreview();
     }
 
     bool MicroManagerProvider::startPreviewFor(const QString& cameraId)
     {
-        return m_cameraProvider && m_cameraProvider->startPreviewFor(cameraId);
+        return m_cameraProvider->startPreviewFor(cameraId);
     }
 
     bool MicroManagerProvider::stopPreviewFor(const QString& cameraId)
     {
-        return m_cameraProvider && m_cameraProvider->stopPreviewFor(cameraId);
+        return m_cameraProvider->stopPreviewFor(cameraId);
     }
 
     bool MicroManagerProvider::isPreviewRunning(const QString& cameraId) const
     {
-        return m_cameraProvider && m_cameraProvider->isPreviewRunning(cameraId);
+        return m_cameraProvider->isPreviewRunning(cameraId);
     }
 
     bool MicroManagerProvider::getExposure(const QString& cameraIdOrAll, double& exposureMs) const
     {
-        return m_cameraProvider && m_cameraProvider->getExposure(cameraIdOrAll, exposureMs);
+        return m_cameraProvider->getExposure(cameraIdOrAll, exposureMs);
     }
 
     bool MicroManagerProvider::setExposure(const QString& cameraIdOrAll, double exposureMs)
     {
-        return m_cameraProvider && m_cameraProvider->setExposure(cameraIdOrAll, exposureMs);
+        return m_cameraProvider->setExposure(cameraIdOrAll, exposureMs);
     }
 
     QStringList MicroManagerProvider::listProperties(const QString& cameraId)
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider ? m_cameraProvider->listProperties(cameraId) : QStringList{};
-        }
-        if (!m_core)
-        {
-            return {};
+            return m_cameraProvider->listProperties(cameraId);
         }
         try
         {
@@ -150,13 +140,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider
-                       ? m_cameraProvider->getProperty(cameraId, name, fromCache)
-                       : QString{};
-        }
-        if (!m_core)
-        {
-            return {};
+            return m_cameraProvider->getProperty(cameraId, name, fromCache);
         }
         try
         {
@@ -180,16 +164,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider
-                && m_cameraProvider->setProperty(cameraId, name, value, errorMessage);
-        }
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
+            return m_cameraProvider->setProperty(cameraId, name, value, errorMessage);
         }
         try
         {
@@ -212,13 +187,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider
-                       ? m_cameraProvider->getPropertyType(cameraId, name)
-                       : QStringLiteral("Unknown");
-        }
-        if (!m_core)
-        {
-            return QStringLiteral("Unknown");
+            return m_cameraProvider->getPropertyType(cameraId, name);
         }
         try
         {
@@ -243,11 +212,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return !m_cameraProvider || m_cameraProvider->isPropertyReadOnly(cameraId, name);
-        }
-        if (!m_core)
-        {
-            return true;
+            return m_cameraProvider->isPropertyReadOnly(cameraId, name);
         }
         try
         {
@@ -264,11 +229,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider && m_cameraProvider->isPropertyPreInit(cameraId, name);
-        }
-        if (!m_core)
-        {
-            return false;
+            return m_cameraProvider->isPropertyPreInit(cameraId, name);
         }
         try
         {
@@ -286,13 +247,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider
-                       ? m_cameraProvider->getAllowedPropertyValues(cameraId, name)
-                       : QStringList{};
-        }
-        if (!m_core)
-        {
-            return {};
+            return m_cameraProvider->getAllowedPropertyValues(cameraId, name);
         }
         try
         {
@@ -310,11 +265,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider && m_cameraProvider->hasPropertyLimits(cameraId, name);
-        }
-        if (!m_core)
-        {
-            return false;
+            return m_cameraProvider->hasPropertyLimits(cameraId, name);
         }
         try
         {
@@ -331,11 +282,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider ? m_cameraProvider->getPropertyLowerLimit(cameraId, name) : 0.0;
-        }
-        if (!m_core)
-        {
-            return 0.0;
+            return m_cameraProvider->getPropertyLowerLimit(cameraId, name);
         }
         try
         {
@@ -352,11 +299,7 @@ namespace scopeone::core::internal
     {
         if (isCamera(cameraId))
         {
-            return m_cameraProvider ? m_cameraProvider->getPropertyUpperLimit(cameraId, name) : 0.0;
-        }
-        if (!m_core)
-        {
-            return 0.0;
+            return m_cameraProvider->getPropertyUpperLimit(cameraId, name);
         }
         try
         {
@@ -375,12 +318,12 @@ namespace scopeone::core::internal
                                       int width,
                                       int height)
     {
-        return m_cameraProvider && m_cameraProvider->setROI(cameraId, x, y, width, height);
+        return m_cameraProvider->setROI(cameraId, x, y, width, height);
     }
 
     bool MicroManagerProvider::clearROI(const QString& cameraId)
     {
-        return m_cameraProvider && m_cameraProvider->clearROI(cameraId);
+        return m_cameraProvider->clearROI(cameraId);
     }
 
     bool MicroManagerProvider::getROI(const QString& cameraId,
@@ -389,19 +332,19 @@ namespace scopeone::core::internal
                                       int& width,
                                       int& height)
     {
-        return m_cameraProvider && m_cameraProvider->getROI(cameraId, x, y, width, height);
+        return m_cameraProvider->getROI(cameraId, x, y, width, height);
     }
 
     bool MicroManagerProvider::captureEventFrame(const QString& cameraId,
                                                  scopeone::core::ImageFrame& frame,
                                                  int timeoutMs)
     {
-        return m_cameraProvider && m_cameraProvider->captureEventFrame(cameraId, frame, timeoutMs);
+        return m_cameraProvider->captureEventFrame(cameraId, frame, timeoutMs);
     }
 
     bool MicroManagerProvider::supportsEventSequence(const QString& cameraId) const
     {
-        return m_cameraProvider && m_cameraProvider->supportsEventSequence(cameraId);
+        return m_cameraProvider->supportsEventSequence(cameraId);
     }
 
     bool MicroManagerProvider::captureEventSequence(const QString& cameraId,
@@ -409,53 +352,39 @@ namespace scopeone::core::internal
                                                     std::vector<scopeone::core::ImageFrame>& frames,
                                                     int timeoutMs)
     {
-        return m_cameraProvider
-            && m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs);
+        return m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs);
     }
 
     void MicroManagerProvider::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
     {
-        if (m_cameraRuntimeControl)
-        {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(cameraIds, paused);
-        }
+        m_cameraRuntimeControl->setFrameDeliveryPaused(cameraIds, paused);
     }
 
     bool MicroManagerProvider::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
                                                                  bool enabled)
     {
-        return !m_cameraRuntimeControl
-            || m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(cameraIds, enabled);
+        return m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(cameraIds, enabled);
     }
 
     bool MicroManagerProvider::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
                                                                 bool enabled)
     {
-        return !m_cameraRuntimeControl
-            || m_cameraRuntimeControl->setHighRateFrameDeliveryEnabled(cameraIds, enabled);
+        return m_cameraRuntimeControl->setHighRateFrameDeliveryEnabled(cameraIds, enabled);
     }
 
     bool MicroManagerProvider::isProcessingFrameTokenCurrent(const QString& cameraId,
                                                               quint64 token)
     {
-        return m_cameraRuntimeControl
-            && m_cameraRuntimeControl->isProcessingFrameTokenCurrent(cameraId, token);
+        return m_cameraRuntimeControl->isProcessingFrameTokenCurrent(cameraId, token);
     }
 
     void MicroManagerProvider::finishProcessingFrame(const QString& cameraId, quint64 token)
     {
-        if (m_cameraRuntimeControl)
-        {
-            m_cameraRuntimeControl->finishProcessingFrame(cameraId, token);
-        }
+        m_cameraRuntimeControl->finishProcessingFrame(cameraId, token);
     }
 
     QString MicroManagerProvider::defaultXYStage() const
     {
-        if (!m_core)
-        {
-            return {};
-        }
         try
         {
             return QString::fromStdString(m_core->getXYStageDevice());
@@ -468,10 +397,6 @@ namespace scopeone::core::internal
 
     QString MicroManagerProvider::defaultZStage() const
     {
-        if (!m_core)
-        {
-            return {};
-        }
         try
         {
             return QString::fromStdString(m_core->getFocusDevice());
@@ -489,14 +414,6 @@ namespace scopeone::core::internal
     {
         x = 0.0;
         y = 0.0;
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             m_core->getXYPosition(deviceId.trimmed().toStdString().c_str(), x, y);
@@ -514,14 +431,6 @@ namespace scopeone::core::internal
                                             QString* errorMessage) const
     {
         z = 0.0;
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             z = m_core->getPosition(deviceId.trimmed().toStdString().c_str());
@@ -539,14 +448,6 @@ namespace scopeone::core::internal
                                                      double dy,
                                                      QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -565,14 +466,6 @@ namespace scopeone::core::internal
                                                     double dz,
                                                     QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -592,14 +485,6 @@ namespace scopeone::core::internal
                                              double y,
                                              QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -618,14 +503,6 @@ namespace scopeone::core::internal
                                             double z,
                                             QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -645,14 +522,6 @@ namespace scopeone::core::internal
                                              QString* errorMessage) const
     {
         open = false;
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             open = m_core->getShutterOpen(deviceId.trimmed().toStdString().c_str());
@@ -669,14 +538,6 @@ namespace scopeone::core::internal
                                               bool open,
                                               QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -697,14 +558,6 @@ namespace scopeone::core::internal
                                         QString* errorMessage) const
     {
         state = 0;
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             state = m_core->getState(deviceId.trimmed().toStdString().c_str());
@@ -721,14 +574,6 @@ namespace scopeone::core::internal
                                         long state,
                                         QString* errorMessage)
     {
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         try
         {
             const std::string device = deviceId.trimmed().toStdString();
@@ -746,7 +591,7 @@ namespace scopeone::core::internal
 
     QString MicroManagerProvider::stateLabel(const QString& deviceId, long state) const
     {
-        if (!m_core || state < 0)
+        if (state < 0)
         {
             return {};
         }
@@ -765,10 +610,6 @@ namespace scopeone::core::internal
 
     QStringList MicroManagerProvider::availableConfigGroups() const
     {
-        if (!m_core)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(m_core->getAvailableConfigGroups());
@@ -781,10 +622,6 @@ namespace scopeone::core::internal
 
     QStringList MicroManagerProvider::availableConfigs(const QString& groupName) const
     {
-        if (!m_core)
-        {
-            return {};
-        }
         try
         {
             return toQStringList(
@@ -800,10 +637,6 @@ namespace scopeone::core::internal
         const QString& groupName, const QString& configName) const
     {
         std::vector<scopeone::core::ConfigSetting> settings;
-        if (!m_core)
-        {
-            return settings;
-        }
         try
         {
             const Configuration preset = m_core->getConfigData(groupName.trimmed().toStdString().c_str(),
@@ -825,10 +658,6 @@ namespace scopeone::core::internal
 
     QString MicroManagerProvider::currentConfig(const QString& groupName) const
     {
-        if (!m_core)
-        {
-            return {};
-        }
         try
         {
             const std::string group = groupName.trimmed().toStdString();
@@ -885,14 +714,6 @@ namespace scopeone::core::internal
         if (errorMessage)
         {
             errorMessage->clear();
-        }
-        if (!m_core)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
         }
 
         try
@@ -957,11 +778,6 @@ namespace scopeone::core::internal
         {
             errorMessage->clear();
         }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
-        }
         try
         {
             enabled = m_core->getAutoShutter();
@@ -979,11 +795,6 @@ namespace scopeone::core::internal
         if (errorMessage)
         {
             errorMessage->clear();
-        }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
         }
         try
         {
@@ -1003,11 +814,6 @@ namespace scopeone::core::internal
         {
             errorMessage->clear();
         }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
-        }
         try
         {
             m_core->setShutterOpen(open);
@@ -1024,7 +830,7 @@ namespace scopeone::core::internal
     {
         try
         {
-            return m_core && !m_core->getAutoFocusDevice().empty();
+            return !m_core->getAutoFocusDevice().empty();
         }
         catch (const CMMError&)
         {
@@ -1034,7 +840,7 @@ namespace scopeone::core::internal
 
     long MicroManagerProvider::propertySequenceCapacity(const QString& device, const QString& property) const
     {
-        if (!m_core || device.isEmpty() || property.isEmpty())
+        if (device.isEmpty() || property.isEmpty())
         {
             return 0;
         }
@@ -1058,11 +864,6 @@ namespace scopeone::core::internal
         if (errorMessage)
         {
             errorMessage->clear();
-        }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
         }
         std::size_t started = 0;
         try
@@ -1104,10 +905,6 @@ namespace scopeone::core::internal
 
     void MicroManagerProvider::stopPropertySequences(const std::vector<PropertySequence>& sequences)
     {
-        if (!m_core)
-        {
-            return;
-        }
         for (const PropertySequence& sequence : sequences)
         {
             try
@@ -1123,7 +920,7 @@ namespace scopeone::core::internal
 
     long MicroManagerProvider::focusSequenceCapacity(const QString& focusDevice) const
     {
-        if (!m_core || focusDevice.isEmpty())
+        if (focusDevice.isEmpty())
         {
             return 0;
         }
@@ -1148,11 +945,6 @@ namespace scopeone::core::internal
         {
             errorMessage->clear();
         }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
-        }
         try
         {
             const std::string label = focusDevice.toStdString();
@@ -1171,7 +963,7 @@ namespace scopeone::core::internal
     {
         try
         {
-            if (m_core && !focusDevice.isEmpty())
+            if (!focusDevice.isEmpty())
             {
                 m_core->stopStageSequence(focusDevice.toStdString().c_str());
             }
@@ -1186,11 +978,6 @@ namespace scopeone::core::internal
         if (errorMessage)
         {
             errorMessage->clear();
-        }
-        if (!m_core)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MMCore not available");
-            return false;
         }
         try
         {

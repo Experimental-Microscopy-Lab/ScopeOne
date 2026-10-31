@@ -937,11 +937,6 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (!planUsesMda(plan) && !planStreamsMda(plan) && !m_cameraProvider && !m_latestFrameFetcher)
-        {
-            errorMessage = QStringLiteral("Frame source is not available for recording");
-            return false;
-        }
         return true;
     }
 
@@ -956,7 +951,7 @@ namespace scopeone::core::internal
     // Returns whether native preview recording uses the requested frame interval
     bool RecordingManager::planStreamsMda(const ExperimentPlan& plan) const
     {
-        return m_cameraProvider && plan.cameraIds.size() == 1 && !planUsesMda(plan);
+        return plan.cameraIds.size() == 1 && !planUsesMda(plan);
     }
 
     // Resets counters and MDA state for a new capture plan
@@ -1425,13 +1420,10 @@ namespace scopeone::core::internal
             return false;
         }
 
-        if (m_configurationProvider)
+        for (ChannelSetting& channel : plan.channels)
         {
-            for (ChannelSetting& channel : plan.channels)
-            {
-                channel.presetSettings = m_configurationProvider->configSettings(plan.channelGroup,
-                                                                                 channel.preset);
-            }
+            channel.presetSettings = m_configurationProvider->configSettings(plan.channelGroup,
+                                                                             channel.preset);
         }
 
         const bool usesMda = planUsesMda(plan);
@@ -1688,7 +1680,7 @@ namespace scopeone::core::internal
         for (const QString& cameraId : m_captureState.activeCameraIds)
         {
             ImageFrame frame;
-            const bool ok = m_latestFrameFetcher && m_latestFrameFetcher(cameraId, frame);
+            const bool ok = m_latestFrameFetcher(cameraId, frame);
             if (ok)
             {
                 m_captureState.lastFrameIndex[cameraId] = frame.frameIndex;
@@ -2127,13 +2119,6 @@ namespace scopeone::core::internal
     // Starts MDA driven recording capture
     bool RecordingManager::startMdaCapture(QString* errorMessage)
     {
-        if (!m_cameraProvider)
-        {
-            const QString message = QStringLiteral("Camera provider not available for MDA");
-            if (errorMessage) *errorMessage = message;
-            qWarning().noquote() << message;
-            return false;
-        }
         if (m_captureState.activeCameraIds.isEmpty())
         {
             const QString message = QStringLiteral("MDA requires at least one camera");
@@ -2141,14 +2126,6 @@ namespace scopeone::core::internal
             qWarning().noquote() << message;
             return false;
         }
-        if (planUsesMda(m_mdaState.plan) && !m_stageProvider)
-        {
-            const QString message = QStringLiteral("Stage provider not available for MDA");
-            if (errorMessage) *errorMessage = message;
-            qWarning().noquote() << message;
-            return false;
-        }
-
         if (!m_mdaState.manager)
         {
             m_mdaState.manager = new MDAManager(this);
@@ -2271,11 +2248,6 @@ namespace scopeone::core::internal
         {
             finishRecording(ExperimentRunState::Completed);
             return true;
-        }
-        if (!m_mdaState.manager)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MDA manager is not available");
-            return false;
         }
         if (m_mdaState.manager->isRunning())
         {

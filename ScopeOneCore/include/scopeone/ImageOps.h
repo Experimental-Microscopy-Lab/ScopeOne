@@ -198,7 +198,6 @@ namespace scopeone::core::imageops
 
     enum class Projection { Max, Average, Sum, Min, StdDev, Median };
     SCOPEONE_CORE_EXPORT ImageFrame zProject(const QList<ImageFrame>& frames, int first, int last, Projection method);
-    SCOPEONE_CORE_EXPORT QList<ImageFrame> substack(const QList<ImageFrame>& frames, int first, int last, int step);
     SCOPEONE_CORE_EXPORT ImageFrame montage(const QList<ImageFrame>& frames, int columns, double scale, int border);
 
     enum class ProfileStat { Mean, Sum, Min, Max };

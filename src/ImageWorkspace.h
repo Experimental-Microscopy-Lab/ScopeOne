@@ -13,7 +13,6 @@ class QAction;
 class QComboBox;
 class QLabel;
 class QWidget;
-class QLabel;
 class QToolBar;
 class QToolButton;
 class QVBoxLayout;
@@ -40,6 +39,12 @@ namespace scopeone::ui
 
         bool isValid() const { return !id.isEmpty(); }
     };
+
+    // Asks for a folder and a dataset name, whose suffix (.ome.tiff, .ome.zarr, .tiff or .bin) picks
+    // the format. False when the user cancels.
+    bool askSaveOptions(QWidget* parent,
+                        const QString& defaultName,
+                        core::ScopeOneCore::RecordingSaveOptions& options);
 
     class ImageWorkspace : public QObject
     {

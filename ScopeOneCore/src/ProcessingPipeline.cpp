@@ -46,33 +46,6 @@ namespace scopeone::core
         return removed;
     }
 
-    bool ProcessingPipeline::setModuleParameters(int index, const QVariantMap& parameters)
-    {
-        const bool updated = m_impl->definition.withModule(index, [&parameters](ProcessingModule* module)
-        {
-            module->setParameters(parameters);
-        });
-        if (updated)
-        {
-            m_impl->rebuildRuntime();
-        }
-        return updated;
-    }
-
-    bool ProcessingPipeline::resetModuleState(int index)
-    {
-        bool reset = false;
-        m_impl->definition.withModule(index, [&reset](ProcessingModule* module)
-        {
-            reset = module->resetState();
-        });
-        if (reset)
-        {
-            m_impl->rebuildRuntime();
-        }
-        return reset;
-    }
-
     int ProcessingPipeline::moduleCount() const
     {
         return m_impl->definition.moduleCount();

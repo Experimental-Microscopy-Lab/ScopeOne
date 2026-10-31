@@ -959,7 +959,6 @@ namespace scopeone::ui
     void ImageProcessingWidget::updateRunButtons()
     {
         const bool running = m_scopeonecore->isRealTimeProcessingEnabled();
-        const bool hasModules = !m_scopeonecore->processingModules(m_targetCamera).isEmpty();
         const bool idle = m_offlineProcessingRequestId == 0;
         // The steps of a camera that runs the shared ones can only be looked at
         const bool editable = !running && idle && pipelineEditable();

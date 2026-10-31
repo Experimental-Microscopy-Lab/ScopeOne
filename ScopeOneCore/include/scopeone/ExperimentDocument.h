@@ -386,10 +386,6 @@ namespace scopeone::core
     SCOPEONE_CORE_EXPORT FrameRecord frameRecordFromImageFrame(const ImageFrame& frame);
     SCOPEONE_CORE_EXPORT ImageTransform2D imagePixelToSensorTransform(const ImageFrame& frame);
 
-    SCOPEONE_CORE_EXPORT QJsonObject experimentPlanToJson(const ExperimentPlan& plan);
-    SCOPEONE_CORE_EXPORT bool experimentPlanFromJson(const QJsonObject& object,
-                                                     ExperimentPlan& plan,
-                                                     QString* errorMessage = nullptr);
     SCOPEONE_CORE_EXPORT QJsonObject experimentDocumentToJson(const ExperimentDocument& document);
     SCOPEONE_CORE_EXPORT bool experimentDocumentFromJson(const QJsonObject& object,
                                                          ExperimentDocument& document,

@@ -57,9 +57,5 @@ namespace scopeone::dhm
         const std::atomic_bool& cancel,
         const std::function<void(int)>& progress);
 
-    std::pair<scopeone::core::ImageFrame, QPoint> computeSpectrum(
-        const scopeone::core::ImageFrame& input,
-        const DhmParameters& params);
-
     cv::Point autoDetectSideband(const cv::Mat& logMagSpectrum);
 }

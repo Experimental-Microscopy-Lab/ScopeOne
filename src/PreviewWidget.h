@@ -128,7 +128,6 @@ namespace scopeone::ui
         void setPixelSizeCallback(std::function<double(const QString&)> callback);
         void startROIDrawing(const QString& cameraId);
         void setAnalysisTool(AnalysisTool tool);
-        AnalysisTool analysisTool() const { return m_analysisTool; }
 
         bool interactionTargetAt(const QPoint& widgetPos,
                                  PreviewInteractionTarget& outTarget,

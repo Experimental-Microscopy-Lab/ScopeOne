@@ -4,6 +4,7 @@
 #include "scopeone/ScanImageAssembler.h"
 
 #include "internal/AcquisitionEngine.h"
+#include "internal/FrameBufferUtils.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
 #include "internal/DriverHostProviderProxy.h"
@@ -1205,23 +1206,6 @@ namespace scopeone::core
         return m_managers->hardwareRuntime->deviceRegistry()->devices();
     }
 
-    bool ScopeOneCore::registerHardwareProvider(const HardwareProviderPtr& provider)
-    {
-        const QString providerId = provider ? provider->descriptor().id.trimmed() : QString{};
-        if (!provider
-            || providerId.isEmpty()
-            || providerId == QStringLiteral("micro-manager")
-            || m_managers->hardwareRuntime->deviceRegistry()->provider(providerId)
-            || m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || !m_managers->activeExperimentId.isEmpty()
-            || isRecording())
-        {
-            return false;
-        }
-        return m_managers->hardwareRuntime->registerProvider(provider);
-    }
-
     bool ScopeOneCore::registerDriverHostProvider(const QString& providerId,
                                                   const QString& modulePath,
                                                   const QVariantMap& options,
@@ -1252,17 +1236,16 @@ namespace scopeone::core
                 {
                     ProviderRegistrationResult result = watcher->result();
                     m_pendingProviderRegistrations.remove(normalizedId);
-                    bool success = static_cast<bool>(result.provider);
-                    if (success
-                        && !m_managers->hardwareRuntime->registerProvider(result.provider))
+                    if (!result.provider)
                     {
-                        success = false;
-                        result.errorMessage = QStringLiteral(
-                            "Provider device catalog conflicts with registered hardware");
+                        qWarning().noquote() << QStringLiteral("Hardware provider %1: %2")
+                                                    .arg(normalizedId, result.errorMessage);
                     }
-                    emit hardwareProviderRegistrationFinished(normalizedId,
-                                                              success,
-                                                              result.errorMessage);
+                    else if (!m_managers->hardwareRuntime->registerProvider(result.provider))
+                    {
+                        qWarning().noquote() << QStringLiteral(
+                            "Hardware provider %1 conflicts with registered hardware").arg(normalizedId);
+                    }
                     watcher->deleteLater();
                 });
         const QJsonObject providerOptions = QJsonObject::fromVariantMap(options);
@@ -1275,27 +1258,6 @@ namespace scopeone::core
                     normalizedId, modulePath, providerOptions, &result.errorMessage);
                 return result;
             }));
-        return true;
-    }
-
-    bool ScopeOneCore::unregisterHardwareProvider(const QString& providerId)
-    {
-        const QString normalizedId = providerId.trimmed();
-        if (normalizedId.isEmpty()
-            || normalizedId == QStringLiteral("micro-manager")
-            || m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || !m_managers->activeExperimentId.isEmpty()
-            || isRecording()
-            || m_pendingProviderRegistrations.contains(normalizedId))
-        {
-            return false;
-        }
-        if (!m_managers->hardwareRuntime->deviceRegistry()->provider(normalizedId))
-        {
-            return false;
-        }
-        m_managers->hardwareRuntime->unregisterProvider(normalizedId);
         return true;
     }
 
@@ -2506,11 +2468,6 @@ namespace scopeone::core
         m_managers->daqDeviceManager->stop(deviceId);
     }
 
-    DaqState ScopeOneCore::daqState(const QString& deviceId) const
-    {
-        return m_managers->daqDeviceManager->state(deviceId);
-    }
-
     QString ScopeOneCore::daqStateMessage(const QString& deviceId) const
     {
         return m_managers->daqDeviceManager->stateMessage(deviceId);
@@ -2528,7 +2485,6 @@ namespace scopeone::core
         {
             publishScanFrames(chunk.sourceId, assembler->append(chunk));
         }
-        emit timestampedSignalEventsReady(chunk);
     }
 
     void ScopeOneCore::publishScanFrames(const QString& sourceId,
@@ -2827,8 +2783,6 @@ namespace scopeone::core
                 queueFlush = true;
             }
         }
-        emit processedFrameReady(frame);
-
         if (queueFlush)
         {
             QMetaObject::invokeMethod(this,
@@ -2854,7 +2808,6 @@ namespace scopeone::core
             recordLayerFrame(layerKey, it.value().completedCount);
             m_imageSceneModel->updateLayerFrame(layerKey, frame);
             m_frameGraph.publishLatest(FrameGraphStream::Processed, frame);
-            emit processedFramesCompleted(frame.cameraId, it.value().completedCount);
             m_pendingPreviewProcessedFrames.insert(frame.cameraId, frame);
             scheduleHistogramStats(layerKey, frame);
             updateLineProfile(frame.cameraId, true, false, frame);
@@ -2957,18 +2910,6 @@ namespace scopeone::core
             }
         }
         return frames;
-    }
-
-    double ScopeOneCore::layerFrameRate(const QString& layerKey) const
-    {
-        QMutexLocker locker(&m_layerFrameRateMutex);
-        return m_layerFrameRates.value(layerKey.trimmed(), 0.0);
-    }
-
-    QMap<QString, double> ScopeOneCore::layerFrameRates() const
-    {
-        QMutexLocker locker(&m_layerFrameRateMutex);
-        return m_layerFrameRates;
     }
 
     // Read one pixel from a named frame graph layer
@@ -3088,10 +3029,6 @@ namespace scopeone::core
             m_layerFrameCounts.clear();
             m_layerFrameRates = frameRates;
         }
-        for (auto it = frameRates.cbegin(); it != frameRates.cend(); ++it)
-        {
-            emit layerFrameRateChanged(it.key(), it.value());
-        }
         emit layerFrameRatesUpdated(frameRates);
     }
 
@@ -3144,12 +3081,11 @@ namespace scopeone::core
         std::vector<cv::Mat> images;
         for (const ImageFrame& frame : frames)
         {
-            if (!frame.isValid() || (!frame.isMono8() && !frame.isMono16()))
+            cv::Mat image = internal::frameMatView(frame);
+            if (!image.empty())
             {
-                continue;
+                images.push_back(std::move(image));
             }
-            images.emplace_back(frame.height, frame.width, frame.isMono16() ? CV_16UC1 : CV_8UC1,
-                                const_cast<char*>(frame.bytes.constData()), static_cast<size_t>(frame.stride));
         }
         bool written = false;
         try
@@ -3314,7 +3250,6 @@ namespace scopeone::core
         }
         m_latestHistogramStats.remove(layerKey);
         scheduleHistogramStats(layerKey, storedFrame);
-        emit toolStreamFramePublished(storedFrame.cameraId, displayName.trimmed(), storedFrame);
         m_pendingPreviewToolFrames.insert(storedFrame.cameraId, storedFrame);
         schedulePreviewFlush();
         updateLineProfile(storedFrame.cameraId, false, true, storedFrame);
@@ -3495,24 +3430,6 @@ namespace scopeone::core
     bool ScopeOneCore::computeHistogramStats(const ImageFrame& frame, HistogramStats& stats)
     {
         return computeHistogramStatsInternal(frame, stats);
-    }
-
-    // Return cached raw statistics or compute them from the latest frame
-    bool ScopeOneCore::getRawImageStatistics(const QString& cameraId, HistogramStats& stats) const
-    {
-        const auto cached = m_latestHistogramStats.constFind(histogramLayerKey(cameraId, false));
-        if (cached != m_latestHistogramStats.constEnd() && cached.value().hasData())
-        {
-            stats = cached.value();
-            return true;
-        }
-
-        const ImageFrame frame = graphFrame(rawLayerKey(cameraId));
-        if (!frame.isValid())
-        {
-            return false;
-        }
-        return computeHistogramStats(frame, stats);
     }
 
     // Return histogram statistics for any current frame graph layer
@@ -3824,11 +3741,6 @@ namespace scopeone::core
                                 m_imageSceneModel->setLayerDisplayLevels(
                                     key, stats.autoMinLevel, stats.autoMaxLevel, stats.maxValue);
                             }
-                            if (isRawLayerKey(key) || isProcessedLayerKey(key))
-                            {
-                                emit imageHistogramReady(
-                                    sourceIdFromLayerKey(key), isProcessedLayerKey(key), stats);
-                            }
                             emit layerHistogramReady(key, stats);
                         }
                         if (histogramUpdatesEnabled(key) && it->queuedFrame.isValid())
@@ -4083,15 +3995,6 @@ namespace scopeone::core
         });
     }
 
-    bool ScopeOneCore::readShutterOpen(const QString& shutterLabel, bool& open) const
-    {
-        open = false;
-        const QString device = shutterLabel.trimmed();
-        return !m_configurationOperationRunning
-            && !device.isEmpty()
-            && m_managers->hardwareRuntime->isShutterOpen(device, open, nullptr);
-    }
-
     bool ScopeOneCore::setShutterOpen(const QString& shutterLabel,
                                       bool open,
                                       QString* errorMessage)
@@ -4116,48 +4019,6 @@ namespace scopeone::core
             emit deviceStateChanged();
         }
         return ok;
-    }
-
-    bool ScopeOneCore::readDeviceState(const QString& deviceLabel, long& state) const
-    {
-        state = 0;
-        const QString device = deviceLabel.trimmed();
-        return !m_configurationOperationRunning
-            && !device.isEmpty()
-            && m_managers->hardwareRuntime->getState(device, state, nullptr);
-    }
-
-    bool ScopeOneCore::setDeviceState(const QString& deviceLabel,
-                                      long state,
-                                      QString* errorMessage)
-    {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        const QString device = deviceLabel.trimmed();
-        if (m_configurationOperationRunning || device.isEmpty())
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Invalid state device target");
-            }
-            return false;
-        }
-        const bool ok = m_managers->hardwareRuntime->setState(device, state, errorMessage);
-        if (ok)
-        {
-            emit deviceStateChanged();
-        }
-        return ok;
-    }
-
-    QString ScopeOneCore::deviceStateLabel(const QString& deviceLabel, long state) const
-    {
-        const QString device = deviceLabel.trimmed();
-        return !m_configurationOperationRunning && !device.isEmpty()
-                   ? m_managers->hardwareRuntime->stateLabel(device, state)
-                   : QString{};
     }
 
     // List configuration groups exposed by registered providers
@@ -4668,14 +4529,6 @@ namespace scopeone::core
     QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
     {
         return m_managers->processingModuleRegistry->descriptors();
-    }
-
-    bool ScopeOneCore::registerProcessingModule(
-        const ProcessingModuleDescriptor& descriptor,
-        std::function<std::unique_ptr<ProcessingModule>()> factory)
-    {
-        return m_managers->processingModuleRegistry->registerModule(descriptor,
-                                                                      std::move(factory));
     }
 
     std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(

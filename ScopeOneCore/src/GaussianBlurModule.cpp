@@ -32,9 +32,7 @@ namespace scopeone::core::internal
             }
 
             const int cvType = workingFrame.isMono16() ? CV_16UC1 : CV_8UC1;
-            const cv::Mat src(workingFrame.height, workingFrame.width, cvType,
-                              const_cast<char*>(workingFrame.bytes.constData()),
-                              workingFrame.stride);
+            const cv::Mat src = frameMatView(workingFrame);
             QByteArray bytes = workingFrame.isMono16()
                                    ? allocatePixelBytes<quint16>(workingFrame.width, workingFrame.height)
                                    : allocatePixelBytes<uchar>(workingFrame.width, workingFrame.height);
