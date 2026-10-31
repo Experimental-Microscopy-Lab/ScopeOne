@@ -1,27 +1,17 @@
-"""scopeone package."""
+"""scopeone package.
 
-from .client import FrameResult
-from .core import ScopeOne
-from .session import ExperimentSession, RecordingSession
-from .shm import (
-    SharedFrameHeader,
-    frame_to_ndarray,
-    latest_slot_index,
-    parse_frame_header,
-    write_ndarray_to_frame,
-)
+``ScopeOne`` controls a running ScopeOne and moves frames in and out of it as numpy arrays.
+``scopeone.processing`` goes the other way: ScopeOne runs Python functions as pipeline modules.
+"""
+
+from .client import ExperimentSession, FrameResult, RecordingSession, ScopeOne
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "FrameResult",
     "ExperimentSession",
+    "FrameResult",
     "RecordingSession",
     "ScopeOne",
-    "SharedFrameHeader",
-    "frame_to_ndarray",
-    "latest_slot_index",
-    "parse_frame_header",
-    "write_ndarray_to_frame",
     "__version__",
 ]

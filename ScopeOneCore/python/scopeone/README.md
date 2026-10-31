@@ -36,10 +36,9 @@ python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
 
 - Python package project root: `ScopeOneCore/python/scopeone`
 - Package source: `ScopeOneCore/python/scopeone/src/scopeone`
-- Public facade: `scopeone.core`
-- External backend client: `scopeone.client`
-- Session wrapper: `scopeone.session`
-- Shared-memory frame helpers: `scopeone.shm`
+- `scopeone.ScopeOne`, `FrameResult`, `RecordingSession` and `ExperimentSession` (in `scopeone.client`) control a running ScopeOne and move frames in and out of it as numpy arrays
+- `scopeone.processing` goes the other way: ScopeOne runs Python functions as pipeline modules, see [Writing ScopeOne plugins](../../../plugins/README.md#python-processing-modules)
+- `scopeone._shm` reads and writes the shared frame layout and is internal
 
 ## Current API
 
@@ -424,7 +423,7 @@ Processing module editing follows the desktop UI rules: stop real-time processin
 - Mapping name: `ScopeOne.Api.frame`
 - Header layout: `scopeone::core::SharedFrameHeader`
 - Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
-- Python reads this through `scopeone.shm.frame_to_ndarray()`
+- Python reads it into `FrameResult.image`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
 - Session frames can come from memory, saved OME-TIFF or OME-Zarr outputs, TIFF stacks, or saved binary streams.
 - `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
@@ -442,8 +441,8 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 - `ScopeOne()` connects to a running ScopeOne control server over the local platform endpoint.
 - `ScopeOne.connect("local")` is an alias for the default local connection.
 - Start the ScopeOne app before using the Python API.
-- Python 3.10 or newer is required.
-- Frame reads use a shared-memory export block plus `scopeone.shm` parsing helpers.
+- Python 3.14 is required.
+- Frame reads use a shared-memory export block.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
 - Runnable examples are kept in `examples/example_minimal.ipynb`.
 

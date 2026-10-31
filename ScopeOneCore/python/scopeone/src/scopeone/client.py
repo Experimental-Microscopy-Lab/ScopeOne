@@ -1,4 +1,4 @@
-"""Backend clients for the public ScopeOne facade.
+"""The ScopeOne client: control and frames of a running ScopeOne.
 
 The control channel and frame transport are platform-specific: on Windows the
 server exposes a named pipe plus a named file mapping, and on Linux/Unix a
@@ -13,17 +13,19 @@ import mmap
 import os
 import struct
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+
+import numpy as np
+
+from ._shm import (MONO16, SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header,
+                   write_ndarray_to_frame)
 
 _IS_WINDOWS = os.name == "nt"
 
 if _IS_WINDOWS:
-    try:
-        import pywintypes
-        import win32file
-    except ImportError:
-        pywintypes = None
-        win32file = None
+    import pywintypes
+    import win32file
 else:
     import socket
 
@@ -41,8 +43,6 @@ class _WindowsPipeTransport:
     """Control channel + frame mapping over Windows named pipe / file mapping."""
 
     def __init__(self, server_name: str) -> None:
-        if pywintypes is None or win32file is None:
-            raise RuntimeError("pywin32 is required for ScopeOne external client.")
         self._handle = self._connect(server_name)
 
     @staticmethod
@@ -96,10 +96,7 @@ class _WindowsPipeTransport:
 
     def close(self) -> None:
         if self._handle is not None:
-            try:
-                win32file.CloseHandle(self._handle)
-            except Exception:
-                pass
+            win32file.CloseHandle(self._handle)
             self._handle = None
 
 
@@ -163,10 +160,7 @@ class _UnixSocketTransport:
 
     def close(self) -> None:
         if self._sock is not None:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
+            self._sock.close()
             self._sock = None
 
 
@@ -176,13 +170,15 @@ def _make_transport(server_name: str):
     return _UnixSocketTransport(server_name)
 
 
-
-def _metadata_int(metadata: dict, key: str) -> int:
-    return int(metadata[key])
-
-
-def _metadata_bool(metadata: dict, key: str) -> bool:
-    return bool(metadata[key])
+# The shared frame as a memoryview, released before the mapping closes
+@contextmanager
+def _open_mapping(transport, mapping_name: str, mapping_size: int, write: bool = False):
+    with transport.open_frame(mapping_name, mapping_size, write=write) as view:
+        mapping = memoryview(view)
+        try:
+            yield mapping
+        finally:
+            mapping.release()
 
 
 @dataclass
@@ -197,11 +193,11 @@ class FrameResult:
 
     @property
     def width(self) -> int:
-        return _metadata_int(self.metadata, "width")
+        return int(self.metadata["width"])
 
     @property
     def height(self) -> int:
-        return _metadata_int(self.metadata, "height")
+        return int(self.metadata["height"])
 
     @property
     def pixel_format(self) -> str:
@@ -209,25 +205,25 @@ class FrameResult:
 
     @property
     def bits_per_sample(self) -> int:
-        return _metadata_int(self.metadata, "bitsPerSample")
+        return int(self.metadata["bitsPerSample"])
 
     @property
     def frame_index(self) -> int:
-        return _metadata_int(self.metadata, "frameIndex")
+        return int(self.metadata["frameIndex"])
 
     @property
     def timestamp_ns(self) -> int:
-        return _metadata_int(self.metadata, "timestampNs")
+        return int(self.metadata["timestampNs"])
 
     @property
     def source_roi(self) -> tuple[int, int, int, int] | None:
-        if not _metadata_bool(self.metadata, "sourceRoiValid"):
+        if not bool(self.metadata["sourceRoiValid"]):
             return None
         return (
-            _metadata_int(self.metadata, "sourceRoiX"),
-            _metadata_int(self.metadata, "sourceRoiY"),
-            _metadata_int(self.metadata, "sourceRoiWidth"),
-            _metadata_int(self.metadata, "sourceRoiHeight"),
+            int(self.metadata["sourceRoiX"]),
+            int(self.metadata["sourceRoiY"]),
+            int(self.metadata["sourceRoiWidth"]),
+            int(self.metadata["sourceRoiHeight"]),
         )
 
     @property
@@ -246,80 +242,30 @@ class FrameResult:
         return None if value is None else int(value)
 
     def write(self, image: object | None = None) -> None:
-        from .shm import MONO8, MONO16, SHARED_FRAME_HEADER_SIZE, parse_frame_header
-
-        try:
-            import numpy as np
-        except ImportError as exc:
-            raise RuntimeError("numpy is required to write ScopeOne frames") from exc
-
-        mapping_name = str(self.metadata["mappingName"])
-        mapping_size = int(self.metadata["mappingSize"])
-        contiguous = None
-        with self._transport.open_frame(mapping_name, mapping_size, write=True) as view:
-            mapping = memoryview(view)
-            header_view = None
-            payload = None
+        """Writes an edited image back into the shared frame this result came from"""
+        with _open_mapping(self._transport, str(self.metadata["mappingName"]),
+                           int(self.metadata["mappingSize"]), write=True) as mapping:
+            header = parse_frame_header(mapping)
+            # Another request reuses the one shared frame, so check it is still this one
+            if header.frame_index != self.frame_index or header.timestamp_ns != self.timestamp_ns:
+                raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
+            array = np.asarray(self.image if image is None else image)
+            if array.shape != (header.height, header.width):
+                raise ValueError("Edited frame shape does not match the shared frame")
+            dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
+            contiguous = np.ascontiguousarray(
+                np.clip(array, 0, (1 << header.bits_per_sample) - 1).astype(dtype, copy=False))
+            row_bytes = header.width * contiguous.dtype.itemsize
+            struct.pack_into("<I", mapping, 0, 1)
+            payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + header.payload_nbytes]
             try:
-                header_view = mapping[:SHARED_FRAME_HEADER_SIZE]
-                header = parse_frame_header(header_view)
-                if header.state != 2:
-                    raise RuntimeError("Shared frame mapping no longer contains a ready FrameResult")
-                if header.pixel_format not in (MONO8, MONO16):
-                    raise ValueError(f"Unsupported pixel format: {header.pixel_format}")
-                if header.channels != 1:
-                    raise ValueError("ScopeOne frames must use one channel")
-                if self.metadata["pixelFormat"] == "Mono16":
-                    expected_pixel_format = MONO16
-                elif self.metadata["pixelFormat"] == "Mono8":
-                    expected_pixel_format = MONO8
-                else:
-                    raise ValueError(f"Unsupported metadata pixel format: {self.metadata['pixelFormat']}")
-                if (
-                    header.width != _metadata_int(self.metadata, "width")
-                    or header.height != _metadata_int(self.metadata, "height")
-                    or header.stride != _metadata_int(self.metadata, "stride")
-                    or header.pixel_format != expected_pixel_format
-                    or header.bits_per_sample != _metadata_int(self.metadata, "bitsPerSample")
-                    or header.frame_index != _metadata_int(self.metadata, "frameIndex")
-                    or header.timestamp_ns != _metadata_int(self.metadata, "timestampNs")
-                    or header.payload_nbytes != _metadata_int(self.metadata, "payloadBytes")
-                    or header.source_roi_x != _metadata_int(self.metadata, "sourceRoiX")
-                    or header.source_roi_y != _metadata_int(self.metadata, "sourceRoiY")
-                    or header.source_roi_width != _metadata_int(self.metadata, "sourceRoiWidth")
-                    or header.source_roi_height != _metadata_int(self.metadata, "sourceRoiHeight")
-                    or bool(header.source_roi_valid) != _metadata_bool(self.metadata, "sourceRoiValid")
-                ):
-                    raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
-                dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
-                array = np.asarray(self.image if image is None else image)
-                if array.shape != (header.height, header.width):
-                    raise ValueError("Edited frame shape does not match the shared frame")
-
-                max_value = (1 << header.bits_per_sample) - 1
-                contiguous = np.ascontiguousarray(np.clip(array, 0, max_value).astype(dtype, copy=False))
-                row_bytes = header.width * contiguous.dtype.itemsize
-                if row_bytes > header.stride:
-                    raise ValueError("Shared frame stride is smaller than one image row")
-                if header.payload_nbytes > mapping_size - SHARED_FRAME_HEADER_SIZE:
-                    raise ValueError("Shared frame payload exceeds the mapping size")
-                row_padding = b"\x00" * (header.stride - row_bytes)
-                struct.pack_into("<I", mapping, 0, 1)
-                payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + header.payload_nbytes]
                 for row in range(header.height):
                     begin = row * header.stride
-                    payload[begin:begin + row_bytes] = contiguous[row].tobytes(order="C")
-                    if row_padding:
-                        payload[begin + row_bytes:begin + header.stride] = row_padding
-                struct.pack_into("<I", mapping, 0, 2)
+                    payload[begin:begin + row_bytes] = contiguous[row].tobytes()
             finally:
-                if payload is not None:
-                    payload.release()
-                if header_view is not None:
-                    header_view.release()
-                mapping.release()
-        if contiguous is not None:
-            self.image = np.array(contiguous, copy=True)
+                payload.release()
+            struct.pack_into("<I", mapping, 0, 2)
+        self.image = contiguous
 
 
 def _add_stage_fields(
@@ -335,11 +281,15 @@ def _add_stage_fields(
         request["endModuleIndex"] = int(end_module_index)
 
 
-class ExternalClient:
-    def __init__(self, server_name: str = LOCAL_SERVER_NAME) -> None:
-        self._transport = _make_transport(server_name)
+class ScopeOne:
+    def __init__(self, endpoint: str = "local") -> None:
+        self._transport = _make_transport(LOCAL_SERVER_NAME if endpoint == "local" else endpoint)
         self._next_request_id = 1
         self._request({"type": "ping"})
+
+    @classmethod
+    def connect(cls, endpoint: str = "local") -> "ScopeOne":
+        return cls(endpoint)
 
     def __enter__(self):
         return self
@@ -1101,6 +1051,12 @@ class ExternalClient:
         self._request(request)
         return True
 
+    def start_processing(self, camera_id: str | None = None) -> None:
+        self.set_realtime_processing(True, camera_id)
+
+    def stop_processing(self) -> None:
+        self.set_realtime_processing(False)
+
     def add_processing_module(
         self,
         kind: str,
@@ -1179,7 +1135,7 @@ class ExternalClient:
                 "document": dict(document),
             }
         )
-        return ExternalExperimentSession(self, str(response["experimentId"]))
+        return ExperimentSession(self, str(response["experimentId"]))
 
     def experiment_status(self, experiment_id: str) -> dict:
         response = self._request(
@@ -1223,7 +1179,7 @@ class ExternalClient:
         if order is not None:
             request["order"] = [str(axis) for axis in order]
         response = self._request(request)
-        return ExternalRecordingSession(self, str(response["sessionId"]))
+        return RecordingSession(self, str(response["sessionId"]))
 
     def frame_mapping_info(self) -> dict:
         response = self._request({"type": "frame_mapping_info"})
@@ -1243,16 +1199,10 @@ class ExternalClient:
         frame_index: int = 0,
         source_roi: tuple[int, int, int, int] | None = None,
     ) -> FrameResult:
-        from .shm import write_ndarray_to_frame
-
         info = self.frame_mapping_info()
-        with self._transport.open_frame(
-            info["mappingName"],
-            info["mappingSize"],
-            write=True,
-        ) as view:
+        with _open_mapping(self._transport, info["mappingName"], info["mappingSize"], write=True) as mapping:
             written, metadata = write_ndarray_to_frame(
-                view,
+                mapping,
                 image,
                 bits_per_sample=bits_per_sample,
                 frame_index=frame_index,
@@ -1383,6 +1333,45 @@ class ExternalClient:
             frame.camera,
         )
 
+    def continue_pipeline(self, frame: FrameResult, image: object | None = None) -> FrameResult:
+        if frame.next_module_index is None:
+            raise ValueError("FrameResult has no next_module_index")
+        frame.write(image)
+        return self.process_frame_mapping(
+            frame.camera or None,
+            start_module_index=frame.next_module_index,
+        )
+
+    def show_frame(
+        self,
+        frame: FrameResult,
+        image: object | None = None,
+        layer_id: str = "python_result",
+        name: str = "Python Result",
+    ):
+        frame.write(image)
+        return self.show_frame_mapping_as_layer(layer_id, name, frame.camera or None)
+
+    def save_frame(
+        self,
+        frame: FrameResult,
+        save_dir: str,
+        base_name: str,
+        image: object | None = None,
+        format: str = "ome-tiff",
+        compression: bool = False,
+        compression_level: int = 6,
+    ) -> list[str]:
+        frame.write(image)
+        return self.save_frame_mapping(
+            save_dir,
+            base_name,
+            format,
+            compression,
+            compression_level,
+            frame.camera or None,
+        )
+
     def close(self) -> None:
         self._transport.close()
 
@@ -1433,33 +1422,13 @@ class ExternalClient:
         return result
 
     def _frame_result_from_mapping_response(self, response: dict) -> FrameResult:
-        from .shm import SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header
-
-        mapping_name = str(response["mappingName"])
-        mapping_size = int(response["mappingSize"])
-        with self._transport.open_frame(mapping_name, mapping_size) as view:
-            mapping = memoryview(view)
-            header_view = None
-            payload_view = None
-            try:
-                header_view = mapping[:SHARED_FRAME_HEADER_SIZE]
-                header = parse_frame_header(header_view)
-                payload_end = SHARED_FRAME_HEADER_SIZE + header.payload_nbytes
-                if payload_end > len(mapping):
-                    raise ValueError("Shared frame payload exceeds the mapping size")
-                payload_view = mapping[SHARED_FRAME_HEADER_SIZE:payload_end]
-                image = frame_to_ndarray(header, payload_view)
-            finally:
-                if payload_view is not None:
-                    payload_view.release()
-                if header_view is not None:
-                    header_view.release()
-                mapping.release()
+        with _open_mapping(self._transport, str(response["mappingName"]), int(response["mappingSize"])) as mapping:
+            image = frame_to_ndarray(parse_frame_header(mapping), mapping)
         return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
 
 
-class ExternalExperimentSession:
-    def __init__(self, client: ExternalClient, experiment_id: str) -> None:
+class ExperimentSession:
+    def __init__(self, client: ScopeOne, experiment_id: str) -> None:
         self._client = client
         self._experiment_id = experiment_id
 
@@ -1487,8 +1456,8 @@ class ExternalExperimentSession:
             )
 
 
-class ExternalRecordingSession:
-    def __init__(self, client: ExternalClient, session_id: str) -> None:
+class RecordingSession:
+    def __init__(self, client: ScopeOne, session_id: str) -> None:
         self._client = client
         self._session_id = session_id
 
