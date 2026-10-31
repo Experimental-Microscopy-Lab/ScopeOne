@@ -91,7 +91,7 @@ ScopeOne loads external plugins from these directories beside the application:
 - `plugins/tools` adds optional workflow windows to the Tools menu
 - `plugins/hardware` adds isolated hardware providers hosted by `ScopeOne_DriverHost`
 - `plugins/hardware` also contains DAQ devices and signal source plugins
-- `plugins/processing/python` holds processing modules written in Python
+- `plugins/processing/python` beside ScopeOne holds processing modules written in Python; `plugins/processing/PythonProcessing/examples` has one to copy
 
 All plugins use the installed `scopeone::PluginSDK` CMake target and the public contracts in `ScopeOneCore/include/scopeone`. The Core package owns the stable plugin-facing headers for image frames, hardware providers, DAQ devices, signal sources, processing modules, tool plugins, shared frames and manifests. A common manifest contains `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Reference plugins are organized under `plugins/hardware`, `plugins/processing`, and `plugins/tools`. [plugins/README.md](plugins/README.md) explains how to write and build one.
 

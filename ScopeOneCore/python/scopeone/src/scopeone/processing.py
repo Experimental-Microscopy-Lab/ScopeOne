@@ -1,15 +1,17 @@
 """Processing modules written in Python for the ScopeOne pipeline.
 
 A module is a function that takes a 2D numpy array (uint8 or uint16) and its parameters and
-returns a 2D uint8 or uint16 array. Put the script in the ``python`` folder of a ScopeOne
-processing plugin directory and it shows up in the pipeline beside the C++ modules::
+returns a 2D uint8 or uint16 array. A function with a ``bits`` argument also gets the bits per
+sample of the frame, 12 for a 12-bit camera in a uint16 array. Put the script in the ``python``
+folder of a ScopeOne processing plugin directory and it shows up in the pipeline beside the C++
+modules::
 
     import numpy as np
     from scopeone.processing import module, Integer
 
     @module("example.py.offset", "Python Offset", Integer("offset", "Offset", 10, 0, 1000))
-    def offset(image, offset):
-        return np.clip(image.astype(np.int32) + offset, 0, np.iinfo(image.dtype).max).astype(image.dtype)
+    def offset(image, offset, bits):
+        return np.clip(image.astype(np.int32) + offset, 0, (1 << bits) - 1).astype(image.dtype)
 
 ScopeOne runs the script in its own Python process (``python -m scopeone.processing serve
 script.py``), so the interpreter that runs it needs numpy and this package.
@@ -18,6 +20,7 @@ script.py``), so the interpreter that runs it needs numpy and this package.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import sys
 from dataclasses import dataclass, field
@@ -73,6 +76,7 @@ class _Module:
     name: str
     parameters: tuple
     function: Callable
+    takes_bits: bool
 
 
 _modules: dict[str, _Module] = {}
@@ -82,7 +86,8 @@ def module(id: str, name: str, *parameters: Parameter):
     """Registers the decorated function as a processing module"""
 
     def register(function):
-        _modules[id] = _Module(id, name, parameters, function)
+        takes_bits = "bits" in inspect.signature(function).parameters
+        _modules[id] = _Module(id, name, parameters, function, takes_bits)
         return function
 
     return register
@@ -134,7 +139,10 @@ def _serve() -> None:
             rows = np.frombuffer(payload, dtype=dtype).reshape(request["height"], request["stride"] // dtype().itemsize)
             image = rows[:, : request["width"]]
             selected = _modules[request["module"]]
-            result = np.ascontiguousarray(selected.function(image, **request["parameters"]))
+            arguments = dict(request["parameters"])
+            if selected.takes_bits:
+                arguments["bits"] = request["bits"]
+            result = np.ascontiguousarray(selected.function(image, **arguments))
             if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
                 raise TypeError("a module must return a 2D uint8 or uint16 array")
             _send(replies, {"width": result.shape[1], "height": result.shape[0],

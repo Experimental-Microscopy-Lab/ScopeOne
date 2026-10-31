@@ -5,7 +5,7 @@ ScopeOne loads four kinds of extensions:
 | Kind | Contract | Runs in | Example |
 |---|---|---|---|
 | Processing | `ProcessingPlugin` and `ProcessingModule` in `scopeone/ProcessingPlugin.h` | ScopeOne | `processing/ExampleProcessing` |
-| Python processing | a decorated Python function, see below | its own Python process | `processing/PythonProcessing/python` |
+| Python processing | a decorated Python function, see below | its own Python process | `processing/PythonProcessing/examples` |
 | Tool | `ScopeOneToolPlugin` in `scopeone/ToolPlugin.h` | ScopeOne, as a window | `tools/ExampleTool` |
 | Hardware | `DriverHostProviderPlugin`, `DaqDevicePlugin`, `SignalSourcePlugin` | `ScopeOne_DriverHost`, one process per device | `hardware/ExampleHardware` |
 
@@ -76,14 +76,16 @@ import numpy as np
 from scopeone.processing import Integer, Real, Boolean, Choice, module
 
 @module("my.python.threshold", "My Threshold", Integer("level", "Level", 100, 0, 65535))
-def threshold(image, level):
-    return np.where(image > level, np.iinfo(image.dtype).max, 0).astype(image.dtype)
+def threshold(image, level, bits):
+    return np.where(image > level, (1 << bits) - 1, 0).astype(image.dtype)
 ```
 
 The function gets a 2D `uint8` or `uint16` array and the parameters by name, and returns a 2D
-`uint8` or `uint16` array. Put the script in `plugins/processing/python/` beside ScopeOne or
-in the same folder of the user's plugin directory. The modules appear in the pipeline after a
-restart.
+`uint8` or `uint16` array. A function with a `bits` argument also gets the bits per sample of
+the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Put
+the script in `plugins/processing/python/` beside ScopeOne or in the same folder of the user's
+plugin directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
+there; `processing/PythonProcessing/examples/offset.py` is one to copy.
 
 Each module in a pipeline runs in its own Python process (`python -m scopeone.processing
 serve script.py`). That interpreter needs numpy and the `scopeone` package

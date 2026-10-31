@@ -201,6 +201,7 @@ namespace
                 {QStringLiteral("height"), frame.height},
                 {QStringLiteral("stride"), frame.stride},
                 {QStringLiteral("format"), frame.isMono16() ? QStringLiteral("mono16") : QStringLiteral("mono8")},
+                {QStringLiteral("bits"), frame.isMono16() ? frame.bitsPerSample : 8},
                 {QStringLiteral("parameters"), QJsonObject::fromVariantMap(m_parameters)},
                 {QStringLiteral("bytes"), static_cast<qint64>(frame.bytes.size())}};
             m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
