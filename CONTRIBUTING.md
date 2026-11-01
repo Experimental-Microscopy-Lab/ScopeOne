@@ -118,17 +118,3 @@ a plugin only when its Core `MAJOR.MINOR` matches, and each plugin kind has its 
 **Data formats.** Documents and files carry a `schemaVersion`. A format change raises it, and a
 file with another version is rejected with a clear message rather than read through a
 compatibility path.
-
-## Workflow
-
-- Work on `main` unless a branch is asked for.
-- A commit message is one short line in English that says what changed.
-- **Large changes start with a design note.** A change that crosses layers or reshapes an API
-  first gets a short written plan: the end state, the boundaries, and the steps to get there.
-  Each step is a commit that builds and leaves the program usable. When an API is replaced, add
-  the new one, move the callers, then delete the old one.
-- Build with `scripts/build-unix.sh` or `scripts/build.ps1`. After changing a plugin, run
-  `cmake --install build/plugins` and then `cmake --build build` so the application picks it up.
-- The CI compile check on Windows, macOS and Linux is the bar for merging. Platform-specific
-  code is not done until it passes there. There is no test suite; check behaviour by running
-  the program.
