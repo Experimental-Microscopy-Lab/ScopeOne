@@ -151,7 +151,7 @@ qt_add_executable(ScopeOne
         ${SCOPEONE_UI_HEADERS}
 )
 qt_add_executable(ScopeOneMcpServer
-        mcp/ScopeOneMcpServer.cpp
+        src/ScopeOneMcpServer.cpp
 )
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeOne PROPERTIES

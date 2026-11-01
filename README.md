@@ -51,6 +51,8 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 
 ### For Developers
 
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
+
 **Prerequisites:**
 
 - [CMake](https://cmake.org/download/) 4.1.0

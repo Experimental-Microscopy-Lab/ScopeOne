@@ -32,10 +32,13 @@
 
 !/CMakeLists.txt
 !/README.md
+!/CONTRIBUTING.md
+!/LICENSE
 !/VERSION
 !/vcpkg.json
 
 !/.gitignore
+!/.gitmodules
 
 /build/
 /vcpkg_installed/
