@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.23)
 include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneCore/cmake/ScopeOneVersion.cmake")
 scopeone_resolve_version(SCOPEONE_VERSION "${CMAKE_CURRENT_LIST_DIR}")
 project(ScopeOne VERSION "${SCOPEONE_VERSION}" LANGUAGES CXX)

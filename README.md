@@ -55,10 +55,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
 
 **Prerequisites:**
 
-- [CMake](https://cmake.org/download/) 4.1.0
-- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset)
+- [CMake](https://cmake.org/download/) 3.23 or newer
+- A C++20 compiler: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset) on Windows, GCC or Clang on Linux and macOS (experimental)
 - [vcpkg](https://github.com/microsoft/vcpkg) for Qt 6.11.2, OpenCV 4.14.0, and ScopeWriter's libtiff, zlib, zstd and crc32c
-- mmCoreAndDevices
+- Git, for the submodules (including mmCoreAndDevices)
+- Python 3.14, only for the Python package and Python processing modules
 
 Clone ScopeOne and initialize all submodules with:
 
