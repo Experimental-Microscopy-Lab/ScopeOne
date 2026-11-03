@@ -119,6 +119,14 @@ namespace scopeone::ui
             return response;
         }
 
+        // Creates a failed response carrying the reason
+        QJsonObject errorResponse(const QString& type, const QString& message)
+        {
+            QJsonObject response = makeResponse(type, false);
+            response.insert(QStringLiteral("error"), message);
+            return response;
+        }
+
         QJsonObject imageDocumentToJson(const ImageDocumentInfo& document)
         {
             QJsonObject object;
@@ -1145,13 +1153,6 @@ namespace scopeone::ui
           , m_server(new QLocalServer(this))
     {
         m_taskPool.setMaxThreadCount(1);
-        connect(m_imageWorkspace, &ImageWorkspace::activeViewerChanged,
-                this, [this]()
-                {
-                    m_sceneModel = m_imageWorkspace->activeSceneModel();
-                    m_previewWidget = m_imageWorkspace->activePreviewWidget();
-                });
-
         QLocalServer::removeServer(kServerName);
         connect(m_server, &QLocalServer::newConnection,
                 this, &ScopeOneLocalApiServer::handleNewConnection);
@@ -1332,15 +1333,12 @@ namespace scopeone::ui
         QByteArray message = encodeMessage(response);
         if (message.isEmpty())
         {
-            QJsonObject errorResponse;
-            errorResponse.insert(QStringLiteral("type"), QStringLiteral("error"));
-            errorResponse.insert(QStringLiteral("ok"), false);
-            errorResponse.insert(QStringLiteral("error"), QStringLiteral("Control response exceeds 64 MiB"));
+            QJsonObject tooLarge = errorResponse(QStringLiteral("error"), QStringLiteral("Control response exceeds 64 MiB"));
             if (response.contains(QStringLiteral("requestId")))
             {
-                errorResponse.insert(QStringLiteral("requestId"), response.value(QStringLiteral("requestId")));
+                tooLarge.insert(QStringLiteral("requestId"), response.value(QStringLiteral("requestId")));
             }
-            message = encodeMessage(errorResponse);
+            message = encodeMessage(tooLarge);
         }
         socket->write(message);
         socket->flush();
@@ -1391,11 +1389,8 @@ namespace scopeone::ui
                 session, cameraId, index);
             if (frameRequestId == 0)
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                session ? QStringLiteral("Invalid frame request")
-                                        : QStringLiteral("Unknown session"));
-                finish(std::move(response));
+                finish(errorResponse(type, session ? QStringLiteral("Invalid frame request")
+                                                   : QStringLiteral("Unknown session")));
                 return;
             }
             auto* context = new QObject(this);
@@ -1418,10 +1413,7 @@ namespace scopeone::ui
                         }
                         else
                         {
-                            QJsonObject response = makeResponse(type, false);
-                            response.insert(QStringLiteral("error"),
-                                            QStringLiteral("Frame index out of range"));
-                            finish(std::move(response));
+                            finish(errorResponse(type, QStringLiteral("Frame index out of range")));
                         }
                         context->deleteLater();
                     });
@@ -1433,9 +1425,7 @@ namespace scopeone::ui
             const auto session = m_scopeonecore->recordingSession(sessionId);
             if (!session)
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown session"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Unknown session")));
                 return true;
             }
 
@@ -1454,10 +1444,7 @@ namespace scopeone::ui
                     if (!document.isValid())
                     {
                         *completed = true;
-                        QJsonObject response = makeResponse(type, false);
-                        response.insert(QStringLiteral("error"),
-                                        QStringLiteral("Image window closed before its first frame loaded"));
-                        finish(std::move(response));
+                        finish(errorResponse(type, QStringLiteral("Image window closed before its first frame loaded")));
                         context->deleteLater();
                         return;
                     }
@@ -1485,10 +1472,7 @@ namespace scopeone::ui
             {
                 *completed = true;
                 delete context;
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Session has no matching image data"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Session has no matching image data")));
             }
             else
             {
@@ -1505,12 +1489,8 @@ namespace scopeone::ui
             if (!source.isValid()
                 || (!completeStackValue.isUndefined() && !completeStackValue.isBool()))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                source.isValid()
-                                    ? QStringLiteral("completeStack must be a boolean")
-                                    : QStringLiteral("Unknown image window"));
-                finish(std::move(response));
+                finish(errorResponse(type, source.isValid() ? QStringLiteral("completeStack must be a boolean")
+                                                            : QStringLiteral("Unknown image window")));
                 return true;
             }
 
@@ -1550,10 +1530,7 @@ namespace scopeone::ui
             if (*operationId == 0)
             {
                 delete context;
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("No image data or processing modules are available"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("No image data or processing modules are available")));
             }
             return true;
         }
@@ -1565,11 +1542,7 @@ namespace scopeone::ui
             const QString saveError = saveRequestError(request);
             if (!document.isValid() || !saveError.isEmpty())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                document.isValid() ? saveError
-                                                   : QStringLiteral("Unknown image window"));
-                finish(std::move(response));
+                finish(errorResponse(type, document.isValid() ? saveError : QStringLiteral("Unknown image window")));
                 return true;
             }
 
@@ -1602,10 +1575,7 @@ namespace scopeone::ui
             if (!m_imageWorkspace->saveDocument(document.id, options))
             {
                 delete context;
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Failed to start image window save"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Failed to start image window save")));
             }
             return true;
         }
@@ -1731,9 +1701,7 @@ namespace scopeone::ui
             }
             if (commandId == 0)
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to queue stage move"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Failed to queue stage move")));
                 return true;
             }
 
@@ -1789,10 +1757,7 @@ namespace scopeone::ui
                 || !frame.isValid()
                 || (!frame.isMono8() && !frame.isMono16()))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Invalid particle detection request"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Invalid particle detection request")));
                 return true;
             }
             threshold = qMin(threshold, frame.maxValue());
@@ -1803,9 +1768,7 @@ namespace scopeone::ui
                 frame, layerKey, threshold, minArea, maxArea, maxParticles);
             if (analysisId == 0)
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to queue particle detection"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Failed to queue particle detection")));
                 return true;
             }
 
@@ -1827,9 +1790,7 @@ namespace scopeone::ui
                         }
                         if (!errorMessage.isEmpty())
                         {
-                            QJsonObject response = makeResponse(type, false);
-                            response.insert(QStringLiteral("error"), errorMessage);
-                            finish(std::move(response));
+                            finish(errorResponse(type, errorMessage));
                             context->deleteLater();
                             return;
                         }
@@ -1985,20 +1946,14 @@ namespace scopeone::ui
                 const QString cameraId = request.value(QStringLiteral("camera")).toString().trimmed();
                 if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
                 {
-                    QJsonObject response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"),
-                                    errorMessage.isEmpty()
-                                        ? QStringLiteral("Failed to import frame")
-                                        : errorMessage);
-                    finish(std::move(response));
+                    finish(errorResponse(type, errorMessage.isEmpty() ? QStringLiteral("Failed to import frame")
+                                                                      : errorMessage));
                     return true;
                 }
                 frame = publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
                 if (!frame.isValid())
                 {
-                    QJsonObject response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"), errorMessage);
-                    finish(std::move(response));
+                    finish(errorResponse(type, errorMessage));
                     return true;
                 }
                 startProcessing(frame);
@@ -2044,9 +1999,7 @@ namespace scopeone::ui
             if (!recordingPlanFromRequest(
                     m_scopeonecore, request, plan, timeoutMs, errorMessage))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), errorMessage);
-                finish(std::move(response));
+                finish(errorResponse(type, errorMessage));
                 return true;
             }
 
@@ -2124,9 +2077,7 @@ namespace scopeone::ui
                 if (!*completed)
                 {
                     *completed = true;
-                    QJsonObject response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"), errorMessage);
-                    finish(std::move(response));
+                    finish(errorResponse(type, errorMessage));
                     context->deleteLater();
                 }
                 return true;
@@ -2145,10 +2096,7 @@ namespace scopeone::ui
             const QString saveError = saveRequestError(request);
             if (!session || !saveError.isEmpty())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                session ? saveError : QStringLiteral("Unknown session"));
-                finish(std::move(response));
+                finish(errorResponse(type, session ? saveError : QStringLiteral("Unknown session")));
                 return true;
             }
 
@@ -2159,9 +2107,7 @@ namespace scopeone::ui
                 if (!m_scopeonecore->setRecordingSessionPresentation(
                         session, presentation, &presentationError))
                 {
-                    QJsonObject response = makeResponse(type, false);
-                    response.insert(QStringLiteral("error"), presentationError);
-                    finish(std::move(response));
+                    finish(errorResponse(type, presentationError));
                     return true;
                 }
             }
@@ -2193,10 +2139,7 @@ namespace scopeone::ui
             if (!m_scopeonecore->saveRecordingSession(session, saveOptions))
             {
                 delete context;
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                QStringLiteral("Session save is already in progress"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Session save is already in progress")));
             }
             return true;
         }
@@ -2212,18 +2155,13 @@ namespace scopeone::ui
                     frame,
                     errorMessage))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
-                                !saveError.isEmpty() ? saveError : errorMessage);
-                finish(std::move(response));
+                finish(errorResponse(type, !saveError.isEmpty() ? saveError : errorMessage));
                 return true;
             }
             frame = publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
             if (!frame.isValid())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), errorMessage);
-                finish(std::move(response));
+                finish(errorResponse(type, errorMessage));
                 return true;
             }
 
@@ -2236,9 +2174,7 @@ namespace scopeone::ui
             const auto session = m_scopeonecore->createFrameSession({frame}, capturePlan);
             if (!session)
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to create frame session"));
-                finish(std::move(response));
+                finish(errorResponse(type, QStringLiteral("Failed to create frame session")));
                 return true;
             }
 
@@ -2289,9 +2225,7 @@ namespace scopeone::ui
         const QString type = request.value(QStringLiteral("type")).toString().trimmed();
         if (type.isEmpty())
         {
-            QJsonObject response = makeResponse(QStringLiteral("error"), false);
-            response.insert(QStringLiteral("error"), QStringLiteral("Missing request type"));
-            return response;
+            return errorResponse(QStringLiteral("error"), QStringLiteral("Missing request type"));
         }
 
         if (type == QStringLiteral("ping"))
@@ -2333,12 +2267,7 @@ namespace scopeone::ui
         {
             const bool ok = m_imageWorkspace->closeDocument(
                 request.value(QStringLiteral("documentId")).toString());
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown image window"));
-            }
-            return response;
+            return ok ? makeResponse(type, true) : errorResponse(type, QStringLiteral("Unknown image window"));
         }
 
         if (type == QStringLiteral("version"))
@@ -2557,24 +2486,14 @@ namespace scopeone::ui
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
             const bool ok = m_scopeonecore->startPreview(camera);
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to start preview"));
-            }
-            return response;
+            return ok ? makeResponse(type, true) : errorResponse(type, QStringLiteral("Failed to start preview"));
         }
 
         if (type == QStringLiteral("stop_preview"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
             const bool ok = m_scopeonecore->stopPreview(camera);
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to stop preview"));
-            }
-            return response;
+            return ok ? makeResponse(type, true) : errorResponse(type, QStringLiteral("Failed to stop preview"));
         }
 
         if (type == QStringLiteral("list_layers"))
@@ -2609,17 +2528,15 @@ namespace scopeone::ui
             int x = 0;
             int y = 0;
             int value = 0;
-            QJsonObject response = makeResponse(type, false);
             if (layerKey.isEmpty()
                 || !intField(request, QStringLiteral("x"), x)
                 || !intField(request, QStringLiteral("y"), y)
                 || !m_imageWorkspace->pixelValue(layerKey, QPoint(x, y), value))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Layer has no current frame or position is outside the image"));
-                return response;
             }
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             response.insert(QStringLiteral("x"), x);
             response.insert(QStringLiteral("y"), y);
@@ -2632,22 +2549,19 @@ namespace scopeone::ui
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
             scopeone::core::DocumentLayer layer;
-            QJsonObject response = makeResponse(type, false);
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
             const bool ok = type == QStringLiteral("auto_layer_levels")
                                 ? m_imageWorkspace->autoLayerLevels(layerKey)
                                 : m_imageWorkspace->fullLayerLevels(layerKey);
             if (!ok)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Layer has no current frame"));
-                return response;
+                return errorResponse(type, QStringLiteral("Layer has no current frame"));
             }
             m_sceneModel->findLayer(layerKey, layer);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
                 response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
@@ -2658,21 +2572,18 @@ namespace scopeone::ui
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
             const QJsonValue enabledValue = request.value(QStringLiteral("enabled"));
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
             if (!enabledValue.isBool())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing enabled value"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing enabled value"));
             }
             m_imageWorkspace->setLayerAutoStretchEnabled(layerKey, enabledValue.toBool());
             m_sceneModel->findLayer(layerKey, layer);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
                 response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
@@ -2686,7 +2597,6 @@ namespace scopeone::ui
             int y1 = 0;
             int x2 = 0;
             int y2 = 0;
-            QJsonObject response = makeResponse(type, false);
             if (layerKey.isEmpty()
                 || !intField(request, QStringLiteral("x1"), x1)
                 || !intField(request, QStringLiteral("y1"), y1)
@@ -2694,8 +2604,7 @@ namespace scopeone::ui
                 || !intField(request, QStringLiteral("y2"), y2)
                 || QPoint(x1, y1) == QPoint(x2, y2))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or invalid line geometry"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or invalid line geometry"));
             }
 
             QVector<int> values;
@@ -2704,16 +2613,15 @@ namespace scopeone::ui
                                                QPoint(x2, y2),
                                                values))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Layer has no current frame or line is outside the image"));
-                return response;
             }
             QJsonArray samples;
             for (const int value : values)
             {
                 samples.append(value);
             }
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             response.insert(QStringLiteral("values"), samples);
             return response;
@@ -2737,26 +2645,22 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_layer_layout"))
         {
             PreviewWidget::LayerLayoutMode mode = PreviewWidget::LayerLayoutMode::SideBySide;
-            QJsonObject response = makeResponse(type, false);
             if (!layerLayoutModeFromName(request.value(QStringLiteral("layout")).toString(), mode))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown layer layout"));
-                return response;
+                return errorResponse(type, QStringLiteral("Unknown layer layout"));
             }
 
             m_previewWidget->setLayerLayoutMode(mode);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layout"), layerLayoutModeName(m_previewWidget->layerLayoutMode()));
             return response;
         }
 
         if (type == QStringLiteral("set_visible_layers"))
         {
-            QJsonObject response = makeResponse(type, false);
             if (!request.value(QStringLiteral("layerKeys")).isArray())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing layerKeys"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing layerKeys"));
             }
 
             const QStringList layerKeys = stringArrayFromJson(request.value(QStringLiteral("layerKeys")).toArray());
@@ -2765,13 +2669,12 @@ namespace scopeone::ui
                 scopeone::core::DocumentLayer layer;
                 if (!m_sceneModel->findLayer(layerKey, layer))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Unknown layerKey: %1").arg(layerKey));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Unknown layerKey: %1").arg(layerKey));
                 }
             }
 
             m_sceneModel->setVisibleLayers(layerKeys);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("visibleLayers"),
                             QJsonArray::fromStringList(m_sceneModel->visibleLayerIds()));
             return response;
@@ -2800,11 +2703,9 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_source_display_transform"))
         {
             const QString sourceId = request.value(QStringLiteral("sourceId")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (!m_sceneModel->hasSource(sourceId))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown sourceId"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown sourceId"));
             }
             ImageSceneModel::SourceDisplayTransform transform =
                 m_sceneModel->sourceDisplayTransform(sourceId);
@@ -2815,17 +2716,15 @@ namespace scopeone::ui
                 || (request.contains(QStringLiteral("zoomPercent"))
                     && !intField(request, QStringLiteral("zoomPercent"), transform.zoomPercent)))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Display transform values must be integers"));
-                return response;
             }
             const QStringList booleanFields{QStringLiteral("flipX"), QStringLiteral("flipY")};
             for (const QString& field : booleanFields)
             {
                 if (request.contains(field) && !request.value(field).isBool())
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("%1 must be a boolean").arg(field));
-                    return response;
+                    return errorResponse(type, QStringLiteral("%1 must be a boolean").arg(field));
                 }
             }
 
@@ -2834,7 +2733,7 @@ namespace scopeone::ui
             m_sceneModel->setSourceDisplayTransform(sourceId, transform);
             transform = m_sceneModel->sourceDisplayTransform(sourceId);
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("sourceId"), sourceId);
             response.insert(QStringLiteral("offsetX"), transform.offsetX);
             response.insert(QStringLiteral("offsetY"), transform.offsetY);
@@ -2847,15 +2746,13 @@ namespace scopeone::ui
         if (type == QStringLiteral("reset_source_display_transform"))
         {
             const QString sourceId = request.value(QStringLiteral("sourceId")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (!m_sceneModel->resetSourceDisplayTransform(sourceId))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown sourceId"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown sourceId"));
             }
             const ImageSceneModel::SourceDisplayTransform transform =
                 m_sceneModel->sourceDisplayTransform(sourceId);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("sourceId"), sourceId);
             response.insert(QStringLiteral("offsetX"), transform.offsetX);
             response.insert(QStringLiteral("offsetY"), transform.offsetY);
@@ -2868,12 +2765,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_layer_display"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             const bool hasColormap = request.contains(QStringLiteral("colormap"));
@@ -2896,24 +2791,21 @@ namespace scopeone::ui
                 || (request.contains(QStringLiteral("gamma"))
                     && (!gammaValue.isDouble() || !std::isfinite(gammaValue.toDouble()))))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid layer display value"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid layer display value"));
             }
 
             if (hasColormap)
             {
                 if (!m_previewWidget->supportedLayerColormaps().contains(colormap, Qt::CaseInsensitive))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Unsupported colormap"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Unsupported colormap"));
                 }
             }
             if (hasBlending)
             {
                 if (!m_previewWidget->supportedLayerBlendingModes().contains(blending, Qt::CaseInsensitive))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Unsupported blending mode"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Unsupported blending mode"));
                 }
             }
             if (hasLevels)
@@ -2922,8 +2814,7 @@ namespace scopeone::ui
                     || !intField(request, QStringLiteral("maxLevel"), maxLevel)
                     || !intField(request, QStringLiteral("maxPossible"), maxPossible))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Display levels require minLevel, maxLevel, and maxPossible"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Display levels require minLevel, maxLevel, and maxPossible"));
                 }
             }
 
@@ -2954,7 +2845,7 @@ namespace scopeone::ui
             }
 
             m_sceneModel->findLayer(layerKey, layer);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             insertLayerDisplayFields(
                 response, layer, m_imageWorkspace->layerAutoStretchEnabled(layerKey));
@@ -2965,16 +2856,14 @@ namespace scopeone::ui
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
             const int offset = request.value(QStringLiteral("offset")).toInt(0);
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             const bool moved = m_sceneModel->moveLayer(layerKey, offset);
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("moved"), moved);
             response.insert(QStringLiteral("layers"),
                             QJsonArray::fromStringList(m_sceneModel->layerIds()));
@@ -3020,19 +2909,16 @@ namespace scopeone::ui
         {
             const QString group = request.value(QStringLiteral("group")).toString().trimmed();
             const QString config = request.value(QStringLiteral("config")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (group.isEmpty() || config.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing group or config"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing group or config"));
             }
             QString errorMessage;
             if (!m_scopeonecore->setConfig(group, config, &errorMessage))
             {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("config"), m_scopeonecore->currentConfig(group));
             return response;
         }
@@ -3041,14 +2927,12 @@ namespace scopeone::ui
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
             const QString sourceId = scopeone::core::ScopeOneCore::sourceIdFromLayerKey(layerKey).trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (!m_imageWorkspace->isLiveViewerActive()
                 || !scopeone::core::ScopeOneCore::isStaticLayerKey(layerKey)
                 || sourceId.isEmpty()
                 || !m_previewWidget->availableLayerKeys().contains(layerKey))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown static layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown static layerKey"));
             }
 
             m_scopeonecore->removeStaticFrame(sourceId);
@@ -3059,10 +2943,8 @@ namespace scopeone::ui
         {
             if (!m_imageWorkspace->isLiveViewerActive())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Static preview layers belong to the live viewer"));
-                return response;
             }
             m_scopeonecore->clearStaticFrames();
             return makeResponse(type, true);
@@ -3071,12 +2953,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("create_line_markup"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             int x1 = 0;
@@ -3088,23 +2968,20 @@ namespace scopeone::ui
                 || !intField(request, QStringLiteral("x2"), x2)
                 || !intField(request, QStringLiteral("y2"), y2))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing markup geometry"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing markup geometry"));
             }
 
             const ImageSceneModel::MarkupRole role = markupRoleFromJson(request.value(QStringLiteral("role")));
             if (role == ImageSceneModel::MarkupRole::Roi)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup role for line"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup role for line"));
             }
 
             const QPoint start(x1, y1);
             const QPoint end(x2, y2);
             if (start == end)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup geometry"));
             }
 
             const QString id = m_sceneModel->createLine(
@@ -3115,11 +2992,10 @@ namespace scopeone::ui
                 role);
             if (id.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup geometry or layer"));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("markupId"), id);
             return response;
         }
@@ -3127,12 +3003,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("create_rect_markup"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (layerKey.isEmpty() || !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             int x = 0;
@@ -3144,20 +3018,17 @@ namespace scopeone::ui
                 || !intField(request, QStringLiteral("width"), width)
                 || !intField(request, QStringLiteral("height"), height))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing markup geometry"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing markup geometry"));
             }
             if (width <= 0 || height <= 0)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup geometry"));
             }
 
             const ImageSceneModel::MarkupRole role = markupRoleFromJson(request.value(QStringLiteral("role")));
             if (role == ImageSceneModel::MarkupRole::CrossSection)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup role for rect"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup role for rect"));
             }
 
             const QString id = m_sceneModel->createRect(
@@ -3167,11 +3038,10 @@ namespace scopeone::ui
                 role);
             if (id.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry or layer"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup geometry or layer"));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("markupId"), id);
             return response;
         }
@@ -3179,12 +3049,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("list_markups"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (!layerKey.isEmpty() && !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             QJsonArray markups;
@@ -3193,7 +3061,7 @@ namespace scopeone::ui
                 markups.append(markupToJson(markup));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("markups"), markups);
             return response;
         }
@@ -3201,25 +3069,21 @@ namespace scopeone::ui
         if (type == QStringLiteral("update_markup"))
         {
             const QString markupId = request.value(QStringLiteral("markupId")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             ImageSceneModel::Markup markup;
             if (markupId.isEmpty() || !m_sceneModel->findMarkup(markupId, markup))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
-                return response;
+                return errorResponse(type, QStringLiteral("Unknown markup"));
             }
 
             if (request.contains(QStringLiteral("label"))
                 && !m_sceneModel->setLabel(markupId, request.value(QStringLiteral("label")).toString()))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup label"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to update markup label"));
             }
             if (request.contains(QStringLiteral("visible"))
                 && !m_sceneModel->setVisible(markupId, request.value(QStringLiteral("visible")).toBool(true)))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup visibility"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to update markup visibility"));
             }
             if (request.contains(QStringLiteral("selected")))
             {
@@ -3228,14 +3092,12 @@ namespace scopeone::ui
                 {
                     if (!m_sceneModel->selectOnly(markupId))
                     {
-                        response.insert(QStringLiteral("error"), QStringLiteral("Failed to select markup"));
-                        return response;
+                        return errorResponse(type, QStringLiteral("Failed to select markup"));
                     }
                 }
                 else if (!m_sceneModel->setSelected(markupId, false))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Failed to update markup selection"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Failed to update markup selection"));
                 }
             }
 
@@ -3255,8 +3117,7 @@ namespace scopeone::ui
                      || markup.type == ImageSceneModel::MarkupType::Point)
                     && (hasRectGeometry || hasLineGeometry)))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid markup geometry for type"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid markup geometry for type"));
             }
 
             if (markup.type == ImageSceneModel::MarkupType::Line && hasLineGeometry)
@@ -3271,8 +3132,7 @@ namespace scopeone::ui
                     || (request.contains(QStringLiteral("y2")) && !intField(request, QStringLiteral("y2"), y2))
                     || !m_sceneModel->updateLine(markupId, QPoint(x1, y1), QPoint(x2, y2)))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Invalid line markup geometry"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Invalid line markup geometry"));
                 }
             }
 
@@ -3288,17 +3148,15 @@ namespace scopeone::ui
                     || (request.contains(QStringLiteral("height")) && !intField(request, QStringLiteral("height"), height))
                     || !m_sceneModel->updateRect(markupId, QRect(x, y, width, height)))
                 {
-                    response.insert(QStringLiteral("error"), QStringLiteral("Invalid rect markup geometry"));
-                    return response;
+                    return errorResponse(type, QStringLiteral("Invalid rect markup geometry"));
                 }
             }
 
             if (!m_sceneModel->findMarkup(markupId, markup))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
-                return response;
+                return errorResponse(type, QStringLiteral("Unknown markup"));
             }
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("markup"), markupToJson(markup));
             return response;
         }
@@ -3306,16 +3164,13 @@ namespace scopeone::ui
         if (type == QStringLiteral("remove_markup"))
         {
             const QString markupId = request.value(QStringLiteral("markupId")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (markupId.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing markupId"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing markupId"));
             }
             if (!m_sceneModel->remove(markupId))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Unknown markup"));
-                return response;
+                return errorResponse(type, QStringLiteral("Unknown markup"));
             }
             return makeResponse(type, true);
         }
@@ -3323,12 +3178,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("clear_markups"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             scopeone::core::DocumentLayer layer;
             if (!layerKey.isEmpty() && !m_sceneModel->findLayer(layerKey, layer))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown layerKey"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown layerKey"));
             }
 
             m_sceneModel->clear(layerKey);
@@ -3393,15 +3246,10 @@ namespace scopeone::ui
             const bool ok = !device.isEmpty()
                 && !property.isEmpty()
                 && m_scopeonecore->setPropertyValue(device, property, value, &errorMessage);
-            QJsonObject response = makeResponse(type, ok);
-            if (!ok)
-            {
-                response.insert(QStringLiteral("error"),
+            return ok ? makeResponse(type, true) : errorResponse(type,
                                 errorMessage.isEmpty()
                                     ? QStringLiteral("Failed to set property")
                                     : errorMessage);
-            }
-            return response;
         }
 
         if (type == QStringLiteral("read_exposure"))
@@ -3424,20 +3272,17 @@ namespace scopeone::ui
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
             const QJsonValue exposureValue = request.value(QStringLiteral("exposureMs"));
-            QJsonObject response = makeResponse(type, false);
             if (!exposureValue.isDouble())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing exposureMs"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing exposureMs"));
             }
             if (!m_scopeonecore->setExposure(camera, exposureValue.toDouble()))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set exposure"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to set exposure"));
             }
 
             double exposureMs = 0.0;
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             if (m_scopeonecore->readExposure(camera, exposureMs))
             {
                 response.insert(QStringLiteral("exposureMs"), exposureMs);
@@ -3448,11 +3293,9 @@ namespace scopeone::ui
         if (type == QStringLiteral("get_roi"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (camera.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing camera"));
             }
 
             int x = 0;
@@ -3461,11 +3304,10 @@ namespace scopeone::ui
             int height = 0;
             if (!m_scopeonecore->getROI(camera, x, y, width, height))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to read ROI"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to read ROI"));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("x"), x);
             response.insert(QStringLiteral("y"), y);
             response.insert(QStringLiteral("width"), width);
@@ -3476,11 +3318,9 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_roi"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (camera.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing camera"));
             }
 
             int x = 0;
@@ -3494,16 +3334,14 @@ namespace scopeone::ui
                 || width <= 0
                 || height <= 0)
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid ROI"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid ROI"));
             }
             if (!m_scopeonecore->setROI(camera, x, y, width, height))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set ROI"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to set ROI"));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             if (m_scopeonecore->getROI(camera, x, y, width, height))
             {
                 response.insert(QStringLiteral("readBack"), true);
@@ -3522,23 +3360,20 @@ namespace scopeone::ui
         if (type == QStringLiteral("set_half_roi"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (camera.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing camera"));
             }
             if (!m_scopeonecore->setHalfROI(camera))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set Half ROI"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to set Half ROI"));
             }
 
             int x = 0;
             int y = 0;
             int width = 0;
             int height = 0;
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("readBack"),
                             m_scopeonecore->getROI(camera, x, y, width, height));
             response.insert(QStringLiteral("x"), x);
@@ -3553,16 +3388,13 @@ namespace scopeone::ui
             const QString camera = request.value(QStringLiteral("camera"))
                                        .toString(QStringLiteral("All"))
                                        .trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (camera.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing camera"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing camera"));
             }
             if (!m_scopeonecore->clearROI(camera))
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to clear ROI"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to clear ROI"));
             }
             return makeResponse(type, true);
         }
@@ -3672,9 +3504,7 @@ namespace scopeone::ui
                 || (!returnToStartValue.isUndefined() && !returnToStartValue.isBool())
                 || (!gallerySaveDirValue.isUndefined() && !gallerySaveDirValue.isString()))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Invalid stage mosaic request"));
-                return response;
+                return errorResponse(type, QStringLiteral("Invalid stage mosaic request"));
             }
             plan.returnToStart = returnToStartValue.toBool(true);
             plan.gallerySaveDir = gallerySaveDirValue.toString().trimmed();
@@ -3682,9 +3512,7 @@ namespace scopeone::ui
             QString errorMessage;
             if (!m_scopeonecore->startStageMosaic(plan, &errorMessage))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("status"),
@@ -3704,9 +3532,7 @@ namespace scopeone::ui
         {
             if (!m_scopeonecore->isStageMosaicRunning())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("No stage mosaic is running"));
-                return response;
+                return errorResponse(type, QStringLiteral("No stage mosaic is running"));
             }
             m_scopeonecore->cancelStageMosaic();
             QJsonObject response = makeResponse(type, true);
@@ -3752,11 +3578,10 @@ namespace scopeone::ui
             if (!m_scopeonecore->setProcessingBitDepth(depth))
             {
                 response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 m_scopeonecore->isRealTimeProcessingEnabled()
                                     ? QStringLiteral("Stop real-time processing before editing the pipeline")
                                     : QStringLiteral("Failed to set processing bit depth"));
-                return response;
             }
             response.insert(QStringLiteral("bitDepth"), bitDepth);
             return response;
@@ -3769,19 +3594,15 @@ namespace scopeone::ui
                 && !m_scopeonecore->setRealTimeProcessingSource(
                     request.value(QStringLiteral("cameraId")).toString()))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Unknown processing source or processing is already running"));
-                return response;
             }
             if (!m_scopeonecore->setRealTimeProcessingEnabled(enabled))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 enabled
                                     ? QStringLiteral("Add a processing module before starting real-time processing")
                                     : QStringLiteral("Failed to stop real-time processing"));
-                return response;
             }
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("realTime"), m_scopeonecore->isRealTimeProcessingEnabled());
@@ -3793,19 +3614,16 @@ namespace scopeone::ui
         if (type == QStringLiteral("add_processing_module"))
         {
             const QString moduleId = processingModuleIdFromJson(request.value(QStringLiteral("kind")));
-            QJsonObject response = makeResponse(type, false);
             if (moduleId.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing or unknown processing module kind"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing or unknown processing module kind"));
             }
             if (!m_scopeonecore->addProcessingModule(moduleId))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 m_scopeonecore->isRealTimeProcessingEnabled()
                                     ? QStringLiteral("Stop real-time processing before editing the pipeline")
                                     : QStringLiteral("Failed to add processing module"));
-                return response;
             }
 
             const QList<scopeone::core::ScopeOneCore::ProcessingModuleInfo> modules =
@@ -3817,11 +3635,10 @@ namespace scopeone::ui
                     request.value(QStringLiteral("parameters")).toObject().toVariantMap()))
             {
                 m_scopeonecore->removeProcessingModule(index);
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to set processing module parameters"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to set processing module parameters"));
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("index"), index);
             response.insert(QStringLiteral("modules"), processingModulesToJson(m_scopeonecore->processingModules()));
             return response;
@@ -3830,17 +3647,15 @@ namespace scopeone::ui
         if (type == QStringLiteral("remove_processing_module"))
         {
             const int index = request.value(QStringLiteral("index")).toInt(-1);
-            QJsonObject response = makeResponse(type, false);
             if (!m_scopeonecore->removeProcessingModule(index))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 m_scopeonecore->isRealTimeProcessingEnabled()
                                     ? QStringLiteral("Stop real-time processing before editing the pipeline")
                                     : QStringLiteral("Failed to remove processing module"));
-                return response;
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("modules"), processingModulesToJson(m_scopeonecore->processingModules()));
             return response;
         }
@@ -3851,8 +3666,7 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, false);
             if (!request.value(QStringLiteral("parameters")).isObject())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing parameters"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing parameters"));
             }
             if (!m_scopeonecore->setProcessingModuleParameters(
                 index,
@@ -3940,10 +3754,8 @@ namespace scopeone::ui
         {
             if (!m_scopeonecore->activeExperimentId().isEmpty())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 QStringLiteral("Cannot replace the experiment document while an experiment is running"));
-                return response;
             }
             scopeone::core::ExperimentDocument document;
             QString errorMessage;
@@ -3966,17 +3778,14 @@ namespace scopeone::ui
         {
             scopeone::core::ExperimentDocument document;
             QString errorMessage;
-            QJsonObject response = makeResponse(type, false);
             if (!experimentDocumentFromRequest(request, document, errorMessage))
             {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
             const QString experimentId = document.plan.experimentId;
             if (!m_scopeonecore->startExperiment(document, &errorMessage))
             {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
             return experimentStatusResponse(type, experimentId);
         }
@@ -3994,16 +3803,12 @@ namespace scopeone::ui
                 request.value(QStringLiteral("experimentId")).toString().trimmed();
             if (experimentId.isEmpty())
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing experimentId"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing experimentId"));
             }
             QString errorMessage;
             if (!m_scopeonecore->cancelExperiment(experimentId, &errorMessage))
             {
-                QJsonObject response = makeResponse(type, false);
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
             return experimentStatusResponse(type, experimentId);
         }
@@ -4053,13 +3858,11 @@ namespace scopeone::ui
             const QString layerKey = rawFrameRequest
                                          ? scopeone::core::ScopeOneCore::rawLayerKey(cameraId)
                                          : request.value(QStringLiteral("layerKey")).toString().trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (layerKey.isEmpty())
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 rawFrameRequest ? QStringLiteral("Missing camera")
                                                 : QStringLiteral("Missing layerKey"));
-                return response;
             }
 
             const scopeone::core::ImageFrame frame = rawFrameRequest
@@ -4067,26 +3870,24 @@ namespace scopeone::ui
                                                          : m_imageWorkspace->frameForLayer(layerKey);
             if (!frame.isValid())
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 rawFrameRequest ? QStringLiteral("No latest raw frame for camera")
                                                 : QStringLiteral("Layer has no current frame"));
-                return response;
             }
 
             QString errorMessage;
             scopeone::core::ImageFrame exportedFrame;
             if (!exportFrameToSharedMemory(frame, exportedFrame, errorMessage))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 errorMessage.isEmpty()
                                     ? (rawFrameRequest
                                            ? QStringLiteral("Failed to export latest raw frame")
                                            : QStringLiteral("Failed to export layer frame"))
                                     : errorMessage);
-                return response;
             }
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("mappingName"), kFrameMappingName);
             response.insert(QStringLiteral("mappingSize"),
                             static_cast<int>(scopeone::core::kSharedFrameHeaderSize
@@ -4105,50 +3906,43 @@ namespace scopeone::ui
             const QString displayName = request.value(QStringLiteral("name"))
                                             .toString(QStringLiteral("Python Result"))
                                             .trimmed();
-            QJsonObject response = makeResponse(type, false);
             if (layerId.isEmpty())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Missing layerId"));
-                return response;
+                return errorResponse(type, QStringLiteral("Missing layerId"));
             }
 
             scopeone::core::ImageFrame frame;
             QString errorMessage;
             if (!importFrameFromSharedMemory(cameraId, frame, errorMessage))
             {
-                response.insert(QStringLiteral("error"),
+                return errorResponse(type,
                                 errorMessage.isEmpty()
                                     ? QStringLiteral("Failed to import frame")
                                     : errorMessage);
-                return response;
             }
 
             const scopeone::core::ImageFrame graphFrame =
                 publishExternalApiFrame(m_scopeonecore, frame, errorMessage);
             if (!graphFrame.isValid())
             {
-                response.insert(QStringLiteral("error"), errorMessage);
-                return response;
+                return errorResponse(type, errorMessage);
             }
 
             const scopeone::core::ImageFrame previewFrame =
                 m_scopeonecore->publishStaticFrame(layerId, graphFrame, displayName);
             if (!previewFrame.isValid())
             {
-                response.insert(QStringLiteral("error"), QStringLiteral("Failed to show frame as preview layer"));
-                return response;
+                return errorResponse(type, QStringLiteral("Failed to show frame as preview layer"));
             }
             const QString layerKey = scopeone::core::ScopeOneCore::staticLayerKey(layerId);
 
-            response = makeResponse(type, true);
+            QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("layerKey"), layerKey);
             addFrameMetadata(response, graphFrame);
             return response;
         }
 
-        QJsonObject response = makeResponse(type, false);
-        response.insert(QStringLiteral("error"), QStringLiteral("Unknown request type"));
-        return response;
+        return errorResponse(type, QStringLiteral("Unknown request type"));
     }
 
     // Returns the shared document or initializes a new draft
@@ -4180,21 +3974,18 @@ namespace scopeone::ui
         const QString& type,
         const QString& experimentId) const
     {
-        QJsonObject response = makeResponse(type, false);
         if (experimentId.isEmpty())
         {
-            response.insert(QStringLiteral("error"), QStringLiteral("Missing experimentId"));
-            return response;
+            return errorResponse(type, QStringLiteral("Missing experimentId"));
         }
 
         scopeone::core::ExperimentDocument experiment;
         if (!m_scopeonecore->experimentDocument(experimentId, experiment))
         {
-            response.insert(QStringLiteral("error"), QStringLiteral("Unknown experiment"));
-            return response;
+            return errorResponse(type, QStringLiteral("Unknown experiment"));
         }
 
-        response = makeResponse(type, true);
+        QJsonObject response = makeResponse(type, true);
         response.insert(QStringLiteral("experimentId"), experimentId);
         response.insert(QStringLiteral("state"),
                         scopeone::core::experimentRunStateName(experiment.runState));

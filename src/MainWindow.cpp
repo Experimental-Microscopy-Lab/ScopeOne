@@ -84,6 +84,21 @@ namespace scopeone::ui
         constexpr qsizetype kMaxRecentConfigurations = 8;
         // Bump when dock widgets change so stale saved layouts are ignored
         constexpr int kWindowLayoutVersion = 1;
+        constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
+
+        // The paths of a recent list whose files are still there
+        QStringList existingFiles(const QStringList& paths)
+        {
+            QStringList found;
+            for (const QString& path : paths)
+            {
+                if (QFileInfo(path).isFile())
+                {
+                    found.append(path);
+                }
+            }
+            return found;
+        }
 
         // Build raw layer keys for all camera ids
         QStringList rawLayerKeys(const QStringList& cameraIds)
@@ -123,6 +138,19 @@ namespace scopeone::ui
             }
         }
 
+        // Single key shortcuts stay out of the way while text is typed
+        bool isTextInput(const QWidget* widget)
+        {
+            return qobject_cast<const QLineEdit*>(widget) || qobject_cast<const QTextEdit*>(widget)
+                || qobject_cast<const QPlainTextEdit*>(widget);
+        }
+
+        void showDock(QDockWidget* dock)
+        {
+            dock->show();
+            dock->raise();
+        }
+
         // Detect the standard 64 bit Micro-Manager installation
         QString detectedMicroManagerDirectory()
         {
@@ -148,11 +176,6 @@ namespace scopeone::ui
             const scopeone::core::ImageSceneModel& sceneModel,
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
         {
-            if (!session)
-            {
-                return;
-            }
-
             QString errorMessage;
             if (!core.setRecordingSessionPresentation(session, sceneModel.document(), &errorMessage))
             {
@@ -168,11 +191,6 @@ namespace scopeone::ui
           , m_imageSceneModel(core ? core->imageSceneModel() : nullptr)
           , m_scopeonecore(core)
     {
-        if (!core)
-        {
-            qFatal("MainWindow requires ScopeOneCore");
-        }
-
         applyStoredApplicationSettings();
         m_imageWorkspace = new ImageWorkspace(core, this, this);
         setupUI();
@@ -186,50 +204,21 @@ namespace scopeone::ui
             {
                 QJsonObject routedRequest = request;
                 const QString type = routedRequest.value(QStringLiteral("type")).toString();
+                QJsonObject response{{QStringLiteral("type"), type}, {QStringLiteral("ok"), true}};
 
                 if (type == QStringLiteral("set_fit_to_window"))
                 {
-                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-                    if (!preview)
-                    {
-                        QJsonObject response;
-                        response.insert(QStringLiteral("type"), type);
-                        response.insert(QStringLiteral("ok"), false);
-                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
-                        callback(response);
-                        return;
-                    }
-                    preview->setFitToWindow(
-                        routedRequest.value(QStringLiteral("enabled")).toBool());
-                    QJsonObject response;
-                    response.insert(QStringLiteral("type"), type);
-                    response.insert(QStringLiteral("ok"), true);
-                    response.insert(QStringLiteral("enabled"),
-                                   preview->isFitToWindow());
+                    m_previewWidget->setFitToWindow(routedRequest.value(QStringLiteral("enabled")).toBool());
+                    response.insert(QStringLiteral("enabled"), m_previewWidget->isFitToWindow());
                     callback(response);
                     return;
                 }
 
                 if (type == QStringLiteral("set_zoom"))
                 {
-                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-                    if (!preview)
-                    {
-                        QJsonObject response;
-                        response.insert(QStringLiteral("type"), type);
-                        response.insert(QStringLiteral("ok"), false);
-                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
-                        callback(response);
-                        return;
-                    }
-                    preview->setFitToWindow(false);
-                    preview->setZoomPercent(
-                        routedRequest.value(QStringLiteral("zoomPercent")).toInt());
-                    QJsonObject response;
-                    response.insert(QStringLiteral("type"), type);
-                    response.insert(QStringLiteral("ok"), true);
-                    response.insert(QStringLiteral("zoomPercent"),
-                                   preview->zoomPercent());
+                    m_previewWidget->setFitToWindow(false);
+                    m_previewWidget->setZoomPercent(routedRequest.value(QStringLiteral("zoomPercent")).toInt());
+                    response.insert(QStringLiteral("zoomPercent"), m_previewWidget->zoomPercent());
                     callback(response);
                     return;
                 }
@@ -254,21 +243,7 @@ namespace scopeone::ui
 
                 if (type == QStringLiteral("draw_roi"))
                 {
-                    PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-                    if (!preview)
-                    {
-                        QJsonObject response;
-                        response.insert(QStringLiteral("type"), type);
-                        response.insert(QStringLiteral("ok"), false);
-                        response.insert(QStringLiteral("error"), QStringLiteral("No active preview"));
-                        callback(response);
-                        return;
-                    }
-                    preview->startROIDrawing(
-                        routedRequest.value(QStringLiteral("camera")).toString());
-                    QJsonObject response;
-                    response.insert(QStringLiteral("type"), type);
-                    response.insert(QStringLiteral("ok"), true);
+                    m_previewWidget->startROIDrawing(routedRequest.value(QStringLiteral("camera")).toString());
                     callback(response);
                     return;
                 }
@@ -280,12 +255,7 @@ namespace scopeone::ui
                                          m_imageWorkspace->activeLayerKey());
                 }
 
-                m_localApiServer->dispatchRequest(
-                    routedRequest,
-                    [callback = std::move(callback)](QJsonObject response)
-                    {
-                        callback(response);
-                    });
+                m_localApiServer->dispatchRequest(routedRequest, std::move(callback));
             });
         logStartupSummary();
 
@@ -420,20 +390,7 @@ namespace scopeone::ui
                     refreshDevicePanels(false);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationLoadFinished,
-                this,
-                [this](bool success,
-                       const scopeone::core::ScopeOneCore::LoadConfigResult& result,
-                       const QString& errorMessage)
-                {
-                    handleConfigurationLoadFinished(success,
-                                                    m_scopeonecore->loadedConfigurationPath(),
-                                                    result.cameraIds,
-                                                    result.foundCamera,
-                                                    result.successCount,
-                                                    result.failCount,
-                                                    result.skippedCameraCount,
-                                                    errorMessage);
-                });
+                this, &MainWindow::handleConfigurationLoadFinished);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::configurationUnloadFinished,
                 this, &MainWindow::handleConfigurationUnloadFinished);
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::deviceStateChanged,
@@ -450,7 +407,6 @@ namespace scopeone::ui
                 this, [this](bool running)
                 {
                     m_previewRunning = running;
-                    if (m_liveAction)
                     {
                         const QSignalBlocker blocker(m_liveAction);
                         m_liveAction->setChecked(running);
@@ -496,8 +452,7 @@ namespace scopeone::ui
 
                     m_imageWorkspace->openSession(session, QFileInfo(filePath).fileName());
                     // The layers of the opened image are what comes next, so the View tab comes forward
-                    m_viewDockWidget->show();
-                    m_viewDockWidget->raise();
+                    showDock(m_viewDockWidget);
                     m_saveImageAsAction->setEnabled(true);
                     showStatusMessage(
                         tr("Opened %1").arg(QFileInfo(filePath).fileName()),
@@ -633,19 +588,14 @@ namespace scopeone::ui
         connect(m_deviceControlWidget, &DeviceControlWidget::requestClearROI,
                 this, [this](const QString& cameraId)
                 {
-                    const QString target = cameraId.trimmed();
-                    if (target.isEmpty())
+                    if (m_scopeonecore->clearROI(cameraId))
                     {
-                        return;
-                    }
-                    if (m_scopeonecore->clearROI(target))
-                    {
-                        qInfo().noquote() << QString("ROI restored for %1").arg(target);
+                        qInfo().noquote() << QString("ROI restored for %1").arg(cameraId);
                     }
                     else
                     {
                         showStatusMessage(tr("Failed to restore ROI"), 5000);
-                        qWarning().noquote() << QString("Failed to restore ROI for %1").arg(target);
+                        qWarning().noquote() << QString("Failed to restore ROI for %1").arg(cameraId);
                     }
                 });
 
@@ -715,10 +665,7 @@ namespace scopeone::ui
         connect(m_imageWorkspace, &ImageWorkspace::activeViewerChanged,
                 this, [this]()
                 {
-                    const bool liveViewer = m_imageWorkspace->isLiveViewerActive();
-                    m_deviceControlWidget->setPreviewWidget(
-                        m_imageWorkspace->activePreviewWidget());
-                    m_deviceControlWidget->setViewerContext(liveViewer);
+                    m_deviceControlWidget->setViewerContext(m_imageWorkspace->isLiveViewerActive());
                     updateDimensionViewActions();
                 });
         connect(m_imageWorkspace, &ImageWorkspace::viewDimensionModeChanged,
@@ -745,8 +692,7 @@ namespace scopeone::ui
                 {
                     updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
                     m_imageGalleryWidget->addSession(session);
-                    m_imageGalleryDockWidget->show();
-                    m_imageGalleryDockWidget->raise();
+                    showDock(m_imageGalleryDockWidget);
                 });
         connect(m_deviceControlWidget, &DeviceControlWidget::snapRequested,
                 this, [this](const QString& target)
@@ -765,17 +711,9 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     m_imageGalleryWidget->addSession(session);
-                    m_imageGalleryDockWidget->show();
-                    m_imageGalleryDockWidget->raise();
-                    QTimer::singleShot(0, m_deviceControlWidget,
-                                       [this]() { m_deviceControlWidget->refreshCameraParameters(); });
-                    const QString result = session
-                                               ? session->saveMessage()
-                                               : QStringLiteral("Error: no session data");
-                    if (!result.isEmpty())
-                    {
-                        showStatusMessage(result, session && session->isSaved() ? 5000 : 8000);
-                    }
+                    showDock(m_imageGalleryDockWidget);
+                    QTimer::singleShot(0, m_deviceControlWidget, &DeviceControlWidget::refreshCameraParameters);
+                    showSaveResult(*session);
                 });
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStateChanged,
                 this, [this](bool recording)
@@ -783,7 +721,6 @@ namespace scopeone::ui
                     setStatusLabelText(m_statusRecordingLabel,
                                        recording ? tr("Recording: Active") : tr("Recording: Idle"),
                                        recording ? tr("Recording is active") : tr("Recording is idle"));
-                    if (m_recordAction)
                     {
                         const QSignalBlocker blocker(m_recordAction);
                         m_recordAction->setChecked(recording);
@@ -795,17 +732,11 @@ namespace scopeone::ui
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
                     handleCloseSaveFinished(session);
-                    if (session && session->isSaved())
+                    if (session->isSaved())
                     {
                         m_imageGalleryWidget->markSessionSaved(session);
                     }
-                    const QString result = session
-                                               ? session->saveMessage()
-                                               : QStringLiteral("Error: no session data");
-                    if (!result.isEmpty())
-                    {
-                        showStatusMessage(result, session && session->isSaved() ? 5000 : 8000);
-                    }
+                    showSaveResult(*session);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionOpenRequested,
                 this,
@@ -818,8 +749,7 @@ namespace scopeone::ui
                     }
                     m_imageWorkspace->openSession(session);
                     // The layers of the opened image are what comes next, so the View tab comes forward
-                    m_viewDockWidget->show();
-                    m_viewDockWidget->raise();
+                    showDock(m_viewDockWidget);
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::sessionRemoved,
                 this,
@@ -834,11 +764,8 @@ namespace scopeone::ui
                 {
                     for (const auto& session : sessions)
                     {
-                        if (session)
-                        {
-                            updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
-                            m_scopeonecore->saveRecordingSession(session);
-                        }
+                        updateSessionPresentation(*m_scopeonecore, *m_imageSceneModel, session);
+                        m_scopeonecore->saveRecordingSession(session);
                     }
                 });
         connect(m_imageGalleryWidget, &ImageGalleryWidget::saveSessionAsRequested,
@@ -996,8 +923,7 @@ namespace scopeone::ui
             // A height that shows a few rows of a table; it can be dragged to another
             resizeDocks({dock}, {qMax(200, height() / 4)}, Qt::Vertical);
         }
-        dock->show();
-        dock->raise();
+        showDock(dock);
     }
 
     // Lists the built-in and the saved arrangements of the panels
@@ -1041,8 +967,7 @@ namespace scopeone::ui
                     m_viewDockWidget->show();
                     m_analyzeDockWidget->raise();
                     resizeDocks({m_analyzeDockWidget, m_viewDockWidget}, {1, 1}, Qt::Vertical);
-                    m_imageGalleryDockWidget->show();
-                    m_imageGalleryDockWidget->raise();
+                    showDock(m_imageGalleryDockWidget);
                 });
         m_workspacesMenu->addSeparator();
 
@@ -1206,14 +1131,13 @@ namespace scopeone::ui
             && event->type() == QEvent::MouseButtonRelease)
         {
             // The full text of the error is in the console
-            m_consoleDockWidget->show();
-            m_consoleDockWidget->raise();
+            showDock(m_consoleDockWidget);
             showStatusMessage(QString(), 0);
             return true;
         }
         // The welcome card follows the window and the viewer
-        if (m_welcome && m_welcome->isVisible()
-            && ((m_imageWorkspace && watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
+        if (m_welcome->isVisible()
+            && ((watched == m_imageWorkspace->viewerHost() && event->type() == QEvent::Resize)
                 || (watched == this && (event->type() == QEvent::Move || event->type() == QEvent::Resize))))
         {
             placeWelcome();
@@ -1383,28 +1307,21 @@ namespace scopeone::ui
 
         auto* actualSizeAction = viewMenu->addAction(tr("&Actual Size (100%)"));
         actualSizeAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
-        connect(actualSizeAction, &QAction::triggered, this, [this]()
+        const auto zoomTo = [this](int percent)
         {
             m_previewWidget->setFitToWindow(false);
-            m_previewWidget->setZoomPercent(100);
-        });
+            m_previewWidget->setZoomPercent(percent);
+        };
+        connect(actualSizeAction, &QAction::triggered, this, [zoomTo]() { zoomTo(100); });
 
         auto* zoomInAction = viewMenu->addAction(tr("Zoom &In"));
         zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence(QStringLiteral("Ctrl++")),
                                      QKeySequence(Qt::Key_Plus), QKeySequence(Qt::Key_Equal)});
-        connect(zoomInAction, &QAction::triggered, this, [this]()
-        {
-            m_previewWidget->setFitToWindow(false);
-            m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() + 20);
-        });
+        connect(zoomInAction, &QAction::triggered, this, [this, zoomTo]() { zoomTo(m_previewWidget->zoomPercent() + 20); });
 
         auto* zoomOutAction = viewMenu->addAction(tr("Zoom &Out"));
         zoomOutAction->setShortcuts({QKeySequence::ZoomOut, QKeySequence(Qt::Key_Minus)});
-        connect(zoomOutAction, &QAction::triggered, this, [this]()
-        {
-            m_previewWidget->setFitToWindow(false);
-            m_previewWidget->setZoomPercent(m_previewWidget->zoomPercent() - 20);
-        });
+        connect(zoomOutAction, &QAction::triggered, this, [this, zoomTo]() { zoomTo(m_previewWidget->zoomPercent() - 20); });
 
         viewMenu->addSeparator();
 
@@ -1426,21 +1343,14 @@ namespace scopeone::ui
         toggleLayoutAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(toggleLayoutAction, &QAction::triggered, this, [this]()
         {
-            QWidget* focus = focusWidget();
-            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            if (isTextInput(focusWidget()))
             {
                 return;
             }
-            if (m_previewWidget->layerLayoutMode() == PreviewWidget::LayerLayoutMode::SideBySide)
-            {
-                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::Overlay);
-                showStatusMessage(tr("Layout: Overlay Blended"), 2000);
-            }
-            else
-            {
-                m_previewWidget->setLayerLayoutMode(PreviewWidget::LayerLayoutMode::SideBySide);
-                showStatusMessage(tr("Layout: Grid Split View"), 2000);
-            }
+            const bool sideBySide = m_previewWidget->layerLayoutMode() != PreviewWidget::LayerLayoutMode::SideBySide;
+            m_previewWidget->setLayerLayoutMode(sideBySide ? PreviewWidget::LayerLayoutMode::SideBySide
+                                                           : PreviewWidget::LayerLayoutMode::Overlay);
+            showStatusMessage(sideBySide ? tr("Layout: Grid Split View") : tr("Layout: Overlay Blended"), 2000);
         });
         addAction(toggleLayoutAction);
 
@@ -1451,36 +1361,20 @@ namespace scopeone::ui
         m_toggleDimensionAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(m_toggleDimensionAction, &QAction::toggled, this, [this](bool enabled)
         {
-            if (auto* preview = m_imageWorkspace->activePreviewWidget())
-            {
-                preview->setViewDimensionMode(
-                    enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
-                            : PreviewWidget::ViewDimensionMode::TwoDimensional);
-            }
+            m_previewWidget->setViewDimensionMode(enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                                                          : PreviewWidget::ViewDimensionMode::TwoDimensional);
         });
         addAction(m_toggleDimensionAction);
 
         m_reset3dAction = viewMenu->addAction(tr("Reset 3D Camera"));
-        connect(m_reset3dAction, &QAction::triggered, this,
-                [this]() {
-                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
-                    {
-                        preview->reset3dCamera();
-                    }
-                });
+        connect(m_reset3dAction, &QAction::triggered, m_previewWidget, &PreviewWidget::reset3dCamera);
         m_reset3dAction->setEnabled(false);
 
         m_toggle3dColorbarAction = viewMenu->addAction(tr("3D Colorbar"));
         m_toggle3dColorbarAction->setCheckable(true);
         m_toggle3dColorbarAction->setChecked(m_previewWidget->isThreeDimensionalColorbarVisible());
         connect(m_toggle3dColorbarAction, &QAction::toggled,
-                this, [this](bool visible)
-                {
-                    if (auto* preview = m_imageWorkspace->activePreviewWidget())
-                    {
-                        preview->setThreeDimensionalColorbarVisible(visible);
-                    }
-                });
+                m_previewWidget, &PreviewWidget::setThreeDimensionalColorbarVisible);
         connect(m_previewWidget, &PreviewWidget::threeDimensionalColorbarVisibilityChanged,
                 m_toggle3dColorbarAction, &QAction::setChecked);
 
@@ -1499,8 +1393,7 @@ namespace scopeone::ui
         togglePreviewAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(togglePreviewAction, &QAction::triggered, this, [this]()
         {
-            QWidget* focus = focusWidget();
-            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            if (isTextInput(focusWidget()))
             {
                 return;
             }
@@ -1529,8 +1422,7 @@ namespace scopeone::ui
         autoContrastAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(autoContrastAction, &QAction::triggered, this, [this]()
         {
-            QWidget* focus = focusWidget();
-            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus)))
+            if (isTextInput(focusWidget()))
             {
                 return;
             }
@@ -1582,14 +1474,9 @@ namespace scopeone::ui
         auto* saveViewAction = new QAction(tr("Save View as Image..."), this);
         connect(saveViewAction, &QAction::triggered, this, [this]()
         {
-            PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-            if (!preview)
-            {
-                return;
-            }
             const QString path = QFileDialog::getSaveFileName(this, tr("Save View"), QStringLiteral("view.png"),
                                                               tr("PNG image (*.png);;TIFF image (*.tif)"));
-            if (!path.isEmpty() && preview->grabFramebuffer().save(path))
+            if (!path.isEmpty() && m_previewWidget->grabFramebuffer().save(path))
             {
                 showStatusMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 4000);
             }
@@ -1597,11 +1484,8 @@ namespace scopeone::ui
         auto* copyViewAction = new QAction(tr("Copy View to Clipboard"), this);
         connect(copyViewAction, &QAction::triggered, this, [this]()
         {
-            if (PreviewWidget* preview = m_imageWorkspace->activePreviewWidget())
-            {
-                QGuiApplication::clipboard()->setImage(preview->grabFramebuffer());
-                showStatusMessage(tr("Copied the view"), 3000);
-            }
+            QGuiApplication::clipboard()->setImage(m_previewWidget->grabFramebuffer());
+            showStatusMessage(tr("Copied the view"), 3000);
         });
         m_viewExportActions = {saveViewAction, copyViewAction};
 
@@ -1630,8 +1514,7 @@ namespace scopeone::ui
                 [this](const QString& moduleId, const QVariantMap& parameters)
         {
             m_imageProcessingWidget->addModule(moduleId, parameters);
-            m_processDockWidget->show();
-            m_processDockWidget->raise();
+            showDock(m_processDockWidget);
         });
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
@@ -1681,9 +1564,7 @@ namespace scopeone::ui
         searchAction->setShortcutContext(Qt::ApplicationShortcut);
         connect(searchAction, &QAction::triggered, this, [this, commandSearch]()
         {
-            QWidget* focus = focusWidget();
-            if (focus && (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus)
-                          || qobject_cast<QPlainTextEdit*>(focus)))
+            if (isTextInput(focusWidget()))
             {
                 return;
             }
@@ -1718,43 +1599,32 @@ namespace scopeone::ui
         m_imageProcessingWidget = new ImageProcessingWidget(m_scopeonecore, m_imageWorkspace, this);
         connect(m_imageProcessingWidget, &ImageProcessingWidget::problem, this, &MainWindow::notifyError);
 
-        m_controlDockWidget = new QDockWidget(tr("Control"), this);
-
-        m_controlDockWidget->setObjectName(QStringLiteral("ControlDock"));
-        m_controlDockWidget->setWidget(m_deviceControlWidget->hardwareControlsWidget());
-        m_controlDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
-        addDockWidget(Qt::RightDockWidgetArea, m_controlDockWidget);
-
-        m_viewDockWidget = new QDockWidget(tr("View"), this);
-
-        m_viewDockWidget->setObjectName(QStringLiteral("ViewDock"));
-        m_viewDockWidget->setWidget(m_deviceControlWidget->imageControlsWidget());
-        m_viewDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
-        tabifyDockWidget(m_controlDockWidget, m_viewDockWidget);
-
-        m_analyzeDockWidget = new QDockWidget(tr("Analyze"), this);
-
-        m_analyzeDockWidget->setObjectName(QStringLiteral("AnalyzeDock"));
-        m_analyzeDockWidget->setWidget(m_inspectWidget);
-        m_analyzeDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
-        tabifyDockWidget(m_controlDockWidget, m_analyzeDockWidget);
-
-        m_processDockWidget = new QDockWidget(tr("Process"), this);
-
-        m_processDockWidget->setObjectName(QStringLiteral("ProcessDock"));
-        m_processDockWidget->setWidget(m_imageProcessingWidget);
-        m_processDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
-        tabifyDockWidget(m_controlDockWidget, m_processDockWidget);
-
-        m_consoleDockWidget = new QDockWidget(tr("Console"), this);
-
-        m_consoleDockWidget->setObjectName(QStringLiteral("ConsoleDock"));
-        m_consoleWidget = new ConsoleWidget(m_consoleDockWidget);
-        m_consoleDockWidget->setWidget(m_consoleWidget);
-        m_consoleDockWidget->setAllowedAreas(Qt::RightDockWidgetArea);
-        tabifyDockWidget(m_controlDockWidget, m_consoleDockWidget);
+        // The right side docks share one tab group, which starts on Control
+        const auto addRightDock = [this](const QString& title, const QString& objectName, QWidget* widget)
+        {
+            auto* dock = new QDockWidget(title, this);
+            dock->setObjectName(objectName);
+            dock->setWidget(widget);
+            dock->setAllowedAreas(Qt::RightDockWidgetArea);
+            if (m_controlDockWidget)
+            {
+                tabifyDockWidget(m_controlDockWidget, dock);
+            }
+            else
+            {
+                addDockWidget(Qt::RightDockWidgetArea, dock);
+            }
+            return dock;
+        };
+        m_controlDockWidget = addRightDock(tr("Control"), QStringLiteral("ControlDock"),
+                                           m_deviceControlWidget->hardwareControlsWidget());
+        m_viewDockWidget = addRightDock(tr("View"), QStringLiteral("ViewDock"),
+                                        m_deviceControlWidget->imageControlsWidget());
+        m_analyzeDockWidget = addRightDock(tr("Analyze"), QStringLiteral("AnalyzeDock"), m_inspectWidget);
+        m_processDockWidget = addRightDock(tr("Process"), QStringLiteral("ProcessDock"), m_imageProcessingWidget);
+        m_consoleWidget = new ConsoleWidget(this);
+        m_consoleDockWidget = addRightDock(tr("Console"), QStringLiteral("ConsoleDock"), m_consoleWidget);
         m_controlDockWidget->raise();
-
     }
 
     // Install the Qt message sink for the embedded console
@@ -1844,19 +1714,13 @@ namespace scopeone::ui
 
         m_scopeonecore->clearStaticFrames();
 
-        if (m_currentControlTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
-        {
-            m_imageWorkspace->setVisibleLayers(rawLayerKeys(cameraIds), cameraIds.size() > 1);
-            return;
-        }
-
+        // All, and a target that is no camera, show every camera
         if (cameraIds.contains(m_currentControlTarget))
         {
             m_imageWorkspace->setVisibleLayers(
                 {scopeone::core::ScopeOneCore::rawLayerKey(m_currentControlTarget)});
             return;
         }
-
         m_imageWorkspace->setVisibleLayers(rawLayerKeys(cameraIds), cameraIds.size() > 1);
     }
 
@@ -1864,32 +1728,22 @@ namespace scopeone::ui
     void MainWindow::updateControlTarget(const QString& target)
     {
         // Keep preview on the chosen target
-        const QString normalizedTarget = target.trimmed();
-        if (normalizedTarget.isEmpty())
-        {
-            return;
-        }
-        m_currentControlTarget = normalizedTarget;
-
+        m_currentControlTarget = target;
         showLivePreview();
-
-        const QStringList cameraIds = m_scopeonecore->cameraIds();
-        if (normalizedTarget.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
+        if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0)
         {
             return;
         }
 
         // Keep only one live preview
-        for (const QString& id : cameraIds)
+        for (const QString& id : m_scopeonecore->cameraIds())
         {
-            if (id == normalizedTarget)
+            if (id != target)
             {
-                continue;
+                m_scopeonecore->stopPreview(id);
+                m_scopeonecore->clearLiveFrames(id);
             }
-            m_scopeonecore->stopPreview(id);
-            m_scopeonecore->clearLiveFrames(id);
         }
-
     }
 
     // Rebuild the view menu from current dock widgets
@@ -1946,15 +1800,7 @@ namespace scopeone::ui
         m_inspectWidget->setAvailableCameras(cameraIds);
         m_inspectWidget->onCameraInitialized(true);
 
-        if (cameraIds.size() > 1)
-        {
-            m_imageWorkspace->setVisibleLayers(rawLayerKeys(cameraIds), true);
-        }
-        else if (!cameraIds.isEmpty())
-        {
-            m_imageWorkspace->setVisibleLayers(
-                {scopeone::core::ScopeOneCore::rawLayerKey(cameraIds.first())});
-        }
+        m_imageWorkspace->setVisibleLayers(rawLayerKeys(cameraIds), cameraIds.size() > 1);
 
         m_recordingWidget->setAvailableCameras(cameraIds);
         m_toolRegistry->updateActions();
@@ -2002,7 +1848,6 @@ namespace scopeone::ui
     // Restore persistent settings that affect core behavior
     void MainWindow::applyStoredApplicationSettings()
     {
-        constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
 
         const qint64 recordedMaxBytes = settings
@@ -2046,14 +1891,12 @@ namespace scopeone::ui
 
     void MainWindow::updateDimensionViewActions()
     {
-        PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
         const bool threeDimensional =
-            preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional;
+            m_previewWidget->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional;
         {
             const QSignalBlocker blocker(m_toggleDimensionAction);
             m_toggleDimensionAction->setChecked(threeDimensional);
         }
-        m_toggleDimensionAction->setEnabled(true);
         m_reset3dAction->setEnabled(threeDimensional);
         m_toggle3dColorbarAction->setEnabled(threeDimensional);
     }
@@ -2104,13 +1947,7 @@ namespace scopeone::ui
             return;
         }
 
-        PreviewWidget* preview = m_imageWorkspace->activePreviewWidget();
-        if (!preview)
-        {
-            clearCursorStatus();
-            return;
-        }
-
+        PreviewWidget* preview = m_previewWidget;
         const QVector<PreviewWidget::PreviewInteractionTarget> targets =
             preview->interactionTargetsAt(m_lastPreviewMousePos);
         if (targets.isEmpty())
@@ -2169,7 +2006,6 @@ namespace scopeone::ui
     // Edit persistent application settings
     void MainWindow::openSettingsDialog()
     {
-        constexpr qint64 kDefaultRecordedMaxBytes = 16ll * 1024 * 1024 * 1024;
         const qint64 currentValue = m_scopeonecore->recordingMaxPendingWriteBytes();
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QString widgetStyle = settings.value(
@@ -2294,28 +2130,12 @@ namespace scopeone::ui
     // The welcome card lies over the viewer while nothing is open
     void MainWindow::updateWelcome()
     {
-        if (!m_welcome)
-        {
-            return;
-        }
         const bool empty = m_previewWidget->availableLayerKeys().isEmpty() && m_imageWorkspace->documents().isEmpty();
         if (empty)
         {
             QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-            const auto existing = [](const QStringList& paths)
-            {
-                QStringList found;
-                for (const QString& path : paths)
-                {
-                    if (QFileInfo(path).isFile())
-                    {
-                        found.append(path);
-                    }
-                }
-                return found;
-            };
-            m_welcome->setRecent(existing(settings.value(QStringLiteral("RecentImages")).toStringList()),
-                                 existing(settings.value(QStringLiteral("RecentConfigurations")).toStringList()));
+            m_welcome->setRecent(existingFiles(settings.value(QStringLiteral("RecentImages")).toStringList()),
+                                 existingFiles(settings.value(QStringLiteral("RecentConfigurations")).toStringList()));
         }
         else
         {
@@ -2377,14 +2197,9 @@ namespace scopeone::ui
         m_recentImagesMenu->clear();
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QStringList stored = settings.value(QStringLiteral("RecentImages")).toStringList();
-        QStringList valid;
-        for (const QString& path : stored)
+        const QStringList valid = existingFiles(stored);
+        for (const QString& path : valid)
         {
-            if (!QFileInfo(path).isFile())
-            {
-                continue;
-            }
-            valid.append(path);
             connect(m_recentImagesMenu->addAction(QDir::toNativeSeparators(path)), &QAction::triggered, this,
                     [this, path]() { openImages({path}); });
         }
@@ -2440,12 +2255,7 @@ namespace scopeone::ui
 
     // Apply UI state after a configuration load attempt
     void MainWindow::handleConfigurationLoadFinished(bool success,
-                                                     const QString& configPath,
-                                                     const QStringList& cameraIds,
-                                                     bool foundCamera,
-                                                     int successCount,
-                                                     int failCount,
-                                                     int skippedCameraCount,
+                                                     const scopeone::core::ScopeOneCore::LoadConfigResult& result,
                                                      const QString& errorMessage)
     {
         closeLoadConfigProgress();
@@ -2462,6 +2272,9 @@ namespace scopeone::ui
             return;
         }
 
+        const QString configPath = m_scopeonecore->loadedConfigurationPath();
+        const QStringList& cameraIds = result.cameraIds;
+        const int failCount = result.failCount;
         const QString canonicalPath = QFileInfo(configPath).canonicalFilePath();
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         QStringList recentPaths = settings.value(
@@ -2472,14 +2285,13 @@ namespace scopeone::ui
         settings.setValue(QStringLiteral("RecentConfigurations"), recentPaths);
         refreshRecentConfigurationsMenu();
 
-        if (successCount > 0)
+        if (result.successCount > 0)
         {
-            qInfo().noquote() << QString("%1 device(s) initialized successfully").arg(successCount);
+            qInfo().noquote() << QString("%1 device(s) initialized successfully").arg(result.successCount);
         }
         if (failCount > 0)
         {
-            const QString failedDevices = m_scopeonecore->configurationFailedDevices().join(
-                QStringLiteral(", "));
+            const QString failedDevices = result.failedDevices.join(QStringLiteral(", "));
             const QString warning = failedDevices.isEmpty()
                                          ? tr("%1 device(s) failed to initialize").arg(failCount)
                                          : tr("%1 device(s) failed to initialize: %2")
@@ -2488,10 +2300,10 @@ namespace scopeone::ui
             showStatusMessage(warning, 5000);
             qWarning().noquote() << warning;
         }
-        if (skippedCameraCount > 0)
+        if (result.skippedCameraCount > 0)
         {
             qInfo().noquote() << QString("%1 camera device(s) skipped for UI initialization")
-                .arg(skippedCameraCount);
+                .arg(result.skippedCameraCount);
         }
 
         if (!cameraIds.isEmpty())
@@ -2508,7 +2320,7 @@ namespace scopeone::ui
             }
             qInfo().noquote() << QString("%1 camera(s) ready").arg(cameraIds.size());
         }
-        else if (foundCamera)
+        else if (result.foundCamera)
         {
             showStatusMessage(tr("No cameras were successfully initialized"), 5000);
             qInfo().noquote() << "No cameras were successfully initialized";
@@ -2548,46 +2360,46 @@ namespace scopeone::ui
             return;
         }
 
-        const int completed = m_closeSaveTotal - m_closePendingSessions.size();
+        // The progress dialog is gone once the user chose to keep the window open
         if (m_closeSaveProgress)
         {
-            m_closeSaveProgress->setValue(completed);
+            m_closeSaveProgress->setValue(m_closeSaveTotal - m_closePendingSessions.size());
         }
-        if (!session || !session->isSaved())
-        {
-            m_closeSaveInProgress = false;
-            m_closeAfterSave = false;
-            m_closePendingSessions.clear();
-            if (m_closeSaveProgress)
-            {
-                m_closeSaveProgress->close();
-                m_closeSaveProgress->deleteLater();
-                m_closeSaveProgress = nullptr;
-            }
-            notifyError(tr("Save Failed"),
-                        session && !session->saveMessage().isEmpty()
-                            ? session->saveMessage()
-                            : tr("Failed to save gallery images"));
-            return;
-        }
-        if (!m_closePendingSessions.isEmpty())
+        const bool failed = !session->isSaved();
+        if (!failed && !m_closePendingSessions.isEmpty())
         {
             return;
         }
 
+        const bool closeAfterSave = m_closeAfterSave && !failed;
         m_closeSaveInProgress = false;
-        const bool closeAfterSave = m_closeAfterSave;
         m_closeAfterSave = false;
+        m_closePendingSessions.clear();
         if (m_closeSaveProgress)
         {
-            m_closeSaveProgress->setValue(m_closeSaveTotal);
             m_closeSaveProgress->close();
             m_closeSaveProgress->deleteLater();
             m_closeSaveProgress = nullptr;
         }
-        if (closeAfterSave)
+        if (failed)
+        {
+            notifyError(tr("Save Failed"),
+                        session->saveMessage().isEmpty() ? tr("Failed to save gallery images")
+                                                         : session->saveMessage());
+        }
+        else if (closeAfterSave)
         {
             QTimer::singleShot(0, this, &QWidget::close);
+        }
+    }
+
+    // Reports the outcome of a recording or a gallery save
+    void MainWindow::showSaveResult(const scopeone::core::ScopeOneCore::RecordingSessionData& session)
+    {
+        const QString result = session.saveMessage();
+        if (!result.isEmpty())
+        {
+            showStatusMessage(result, session.isSaved() ? 5000 : 8000);
         }
     }
 
@@ -2640,14 +2452,7 @@ namespace scopeone::ui
         m_recentConfigurationsMenu->setEnabled(false);
         if (!m_scopeonecore->loadConfiguration(configPath))
         {
-            handleConfigurationLoadFinished(false,
-                                            configPath,
-                                            {},
-                                            false,
-                                            0,
-                                            0,
-                                            0,
-                                            m_scopeonecore->configurationError());
+            handleConfigurationLoadFinished(false, {}, m_scopeonecore->configurationError());
         }
     }
 
@@ -2659,20 +2464,11 @@ namespace scopeone::ui
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         const QStringList storedPaths = settings.value(
             QStringLiteral("RecentConfigurations")).toStringList();
-        QStringList validPaths;
-        for (const QString& path : storedPaths)
+        const QStringList validPaths = existingFiles(storedPaths);
+        for (const QString& path : validPaths)
         {
-            if (!QFileInfo(path).isFile())
-            {
-                continue;
-            }
-
-            validPaths.append(path);
-            auto* action = m_recentConfigurationsMenu->addAction(
-                QDir::toNativeSeparators(path));
-            connect(action, &QAction::triggered, this, [this, path]() {
-                loadConfigurationPath(path);
-            });
+            connect(m_recentConfigurationsMenu->addAction(QDir::toNativeSeparators(path)), &QAction::triggered,
+                    this, [this, path]() { loadConfigurationPath(path); });
         }
 
         if (validPaths != storedPaths)

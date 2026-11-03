@@ -109,86 +109,7 @@ namespace scopeone::ui
                             document->layerSourceId, displayFrame, document->title);
                         if (!document->presentationApplied)
                         {
-                            const auto& presentation = document->session->experimentDocument();
-                            const auto sourceLayer = std::find_if(
-                                presentation.layers.cbegin(), presentation.layers.cend(),
-                                [&document](const scopeone::core::DocumentLayer& layer)
-                                {
-                                    return layer.sourceId == document->cameraId
-                                           && layer.kind == scopeone::core::DocumentLayerKind::Raw;
-                                });
-                            if (sourceLayer != presentation.layers.cend())
-                            {
-                                auto* scene = m_core->imageSceneModel();
-                                scene->setLayerOpacityPercent(
-                                    document->activeLayerKey,
-                                    sourceLayer->display.opacityPercent);
-                                scene->setLayerGamma(
-                                    document->activeLayerKey,
-                                    sourceLayer->display.gamma);
-                                scene->setLayerColormap(
-                                    document->activeLayerKey,
-                                    sourceLayer->display.colormap);
-                                scene->setLayerBlending(
-                                    document->activeLayerKey,
-                                    sourceLayer->display.blending);
-                                scene->setLayerDisplayLevels(
-                                    document->activeLayerKey,
-                                    sourceLayer->display.levelMin,
-                                    sourceLayer->display.levelMax,
-                                    sourceLayer->display.levelDomainMax);
-                                for (const auto& savedMarkup : presentation.markups)
-                                {
-                                    if (savedMarkup.layerId != sourceLayer->id)
-                                    {
-                                        continue;
-                                    }
-                                    QString markupId;
-                                    switch (savedMarkup.type)
-                                    {
-                                    case scopeone::core::DocumentMarkupType::Line:
-                                        markupId = scene->createLine(document->activeLayerKey,
-                                                                     savedMarkup.start.toPoint(),
-                                                                     savedMarkup.end.toPoint(),
-                                                                     savedMarkup.label,
-                                                                     savedMarkup.role);
-                                        break;
-                                    case scopeone::core::DocumentMarkupType::Rect:
-                                        markupId = scene->createRect(document->activeLayerKey,
-                                                                     savedMarkup.rect.toRect(),
-                                                                     savedMarkup.label,
-                                                                     savedMarkup.role);
-                                        break;
-                                    case scopeone::core::DocumentMarkupType::Ellipse:
-                                        markupId = scene->createEllipse(document->activeLayerKey,
-                                                                        savedMarkup.rect.toRect(),
-                                                                        savedMarkup.label,
-                                                                        savedMarkup.role);
-                                        break;
-                                    case scopeone::core::DocumentMarkupType::Polygon:
-                                    {
-                                        QList<QPoint> corners;
-                                        for (const QPointF& corner : savedMarkup.points)
-                                        {
-                                            corners.append(corner.toPoint());
-                                        }
-                                        markupId = scene->createPolygon(document->activeLayerKey,
-                                                                        corners,
-                                                                        savedMarkup.label,
-                                                                        savedMarkup.role);
-                                        break;
-                                    }
-                                    case scopeone::core::DocumentMarkupType::Point:
-                                        markupId = scene->createPoint(document->activeLayerKey,
-                                                                      savedMarkup.start.toPoint(),
-                                                                      savedMarkup.label,
-                                                                      savedMarkup.role);
-                                        break;
-                                    }
-                                    scene->setVisible(markupId, savedMarkup.visible);
-                                    scene->setSelected(markupId, savedMarkup.selected);
-                                }
-                            }
+                            applySavedPresentation(*document);
                             document->presentationApplied = true;
                         }
                         publishChannels(*document);
@@ -216,7 +137,7 @@ namespace scopeone::ui
                             }
                             m_core->imageSceneModel()->setVisibleLayers(visibleLayerKeys);
                             emit activeFrameChanged();
-                            updateLineProfile(*document);
+                            updateLineProfile();
                         }
                         emit documentsChanged();
                     }
@@ -331,10 +252,7 @@ namespace scopeone::ui
         connect(m_fitToWindowAction, &QAction::toggled, this,
                 [this](bool enabled)
                 {
-                    if (PreviewWidget* preview = activePreviewWidget())
-                    {
-                        preview->setFitToWindow(enabled);
-                    }
+                    m_livePreviewWidget->setFitToWindow(enabled);
                     updateViewerToolbar();
                 });
 
@@ -343,11 +261,9 @@ namespace scopeone::ui
         connect(m_oneToOneAction, &QAction::triggered, this,
                 [this]()
                 {
-                    if (PreviewWidget* preview = activePreviewWidget())
-                    {
-                        preview->setFitToWindow(false);
-                        preview->setZoomPercent(100);
-                    }
+                    PreviewWidget* preview = m_livePreviewWidget;
+                    preview->setFitToWindow(false);
+                    preview->setZoomPercent(100);
                 });
 
         m_zoomCombo = new QComboBox(m_viewerToolbar);
@@ -368,11 +284,7 @@ namespace scopeone::ui
         m_viewerToolbar->addWidget(m_zoomCombo);
         auto applyZoomText = [this]()
         {
-            PreviewWidget* preview = activePreviewWidget();
-            if (!preview)
-            {
-                return;
-            }
+            PreviewWidget* preview = m_livePreviewWidget;
             const QString text = m_zoomCombo->currentText().trimmed();
             if (text.compare(QStringLiteral("Fit"), Qt::CaseInsensitive) == 0)
             {
@@ -408,12 +320,9 @@ namespace scopeone::ui
         connect(m_layoutCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
                 [this](int index)
                 {
-                    if (PreviewWidget* preview = activePreviewWidget())
-                    {
-                        preview->setLayerLayoutMode(
-                            index == 1 ? PreviewWidget::LayerLayoutMode::Overlay
-                                       : PreviewWidget::LayerLayoutMode::SideBySide);
-                    }
+                    m_livePreviewWidget->setLayerLayoutMode(
+                        index == 1 ? PreviewWidget::LayerLayoutMode::Overlay
+                                   : PreviewWidget::LayerLayoutMode::SideBySide);
                 });
 
         m_viewerToolbar->addSeparator();
@@ -423,12 +332,9 @@ namespace scopeone::ui
         connect(m_dimensionAction, &QAction::toggled, this,
                 [this](bool enabled)
                 {
-                    if (PreviewWidget* preview = activePreviewWidget())
-                    {
-                        preview->setViewDimensionMode(
-                            enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
-                                    : PreviewWidget::ViewDimensionMode::TwoDimensional);
-                    }
+                    m_livePreviewWidget->setViewDimensionMode(
+                        enabled ? PreviewWidget::ViewDimensionMode::ThreeDimensional
+                                : PreviewWidget::ViewDimensionMode::TwoDimensional);
                     updateViewerToolbar();
                 });
 
@@ -437,10 +343,7 @@ namespace scopeone::ui
         connect(m_reset3dAction, &QAction::triggered, this,
                 [this]()
                 {
-                    if (PreviewWidget* preview = activePreviewWidget())
-                    {
-                        preview->reset3dCamera();
-                    }
+                    m_livePreviewWidget->reset3dCamera();
                 });
 
     }
@@ -448,38 +351,30 @@ namespace scopeone::ui
     // Refreshes viewer controls when the active document or display state changes
     void ImageWorkspace::updateViewerToolbar()
     {
-        PreviewWidget* preview = activePreviewWidget();
-        m_fitToWindowAction->setEnabled(preview != nullptr);
-        m_oneToOneAction->setEnabled(preview != nullptr);
-        m_zoomCombo->setEnabled(preview != nullptr);
-        m_dimensionAction->setEnabled(preview != nullptr);
-        m_reset3dAction->setEnabled(
-            preview && preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional);
-        if (preview)
+        const PreviewWidget* preview = m_livePreviewWidget;
+        const bool threeDimensional =
+            preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional;
+        m_reset3dAction->setEnabled(threeDimensional);
         {
-            {
-                const QSignalBlocker blocker(m_fitToWindowAction);
-                m_fitToWindowAction->setChecked(preview->isFitToWindow());
-            }
-            {
-                const QSignalBlocker blocker(m_zoomCombo);
-                m_zoomCombo->setEditText(
-                    preview->isFitToWindow()
-                        ? tr("Fit")
-                        : QStringLiteral("%1%").arg(preview->zoomPercent()));
-            }
-            {
-                const QSignalBlocker blocker(m_layoutCombo);
-                m_layoutCombo->setCurrentIndex(
-                    preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::Overlay ? 1 : 0);
-            }
-            {
-                const QSignalBlocker blocker(m_dimensionAction);
-                m_dimensionAction->setChecked(
-                    preview->viewDimensionMode() == PreviewWidget::ViewDimensionMode::ThreeDimensional);
-            }
+            const QSignalBlocker blocker(m_fitToWindowAction);
+            m_fitToWindowAction->setChecked(preview->isFitToWindow());
         }
-
+        {
+            const QSignalBlocker blocker(m_zoomCombo);
+            m_zoomCombo->setEditText(
+                preview->isFitToWindow()
+                    ? tr("Fit")
+                    : QStringLiteral("%1%").arg(preview->zoomPercent()));
+        }
+        {
+            const QSignalBlocker blocker(m_layoutCombo);
+            m_layoutCombo->setCurrentIndex(
+                preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::Overlay ? 1 : 0);
+        }
+        {
+            const QSignalBlocker blocker(m_dimensionAction);
+            m_dimensionAction->setChecked(threeDimensional);
+        }
     }
 
     // Moves the selection tools and the controls of the view into a toolbar of the window, so that the
@@ -530,10 +425,7 @@ namespace scopeone::ui
             m_toolStripButtons.append({button, static_cast<int>(spec.tool)});
             connect(button, &QToolButton::clicked, this, [this, tool = spec.tool]()
             {
-                if (PreviewWidget* preview = activePreviewWidget())
-                {
-                    preview->setAnalysisTool(tool);
-                }
+                m_livePreviewWidget->setAnalysisTool(tool);
             });
         }
         m_toolStripButtons.first().first->setChecked(true);
@@ -557,10 +449,6 @@ namespace scopeone::ui
 
     void ImageWorkspace::activateLiveViewer()
     {
-        if (!m_livePreviewWidget)
-        {
-            return;
-        }
         if (m_activeDocumentId.isEmpty())
         {
             return;
@@ -593,15 +481,9 @@ namespace scopeone::ui
             activateLiveViewer();
         }
 
-        auto* scene = m_core->imageSceneModel();
-        auto* preview = m_livePreviewWidget;
-        if (!scene || !preview)
-        {
-            return;
-        }
-        scene->setVisibleLayers(layerKeys);
+        m_core->imageSceneModel()->setVisibleLayers(layerKeys);
         syncActiveLayer();
-        preview->setLayerLayoutMode(sideBySide
+        m_livePreviewWidget->setLayerLayoutMode(sideBySide
                                         ? PreviewWidget::LayerLayoutMode::SideBySide
                                         : PreviewWidget::LayerLayoutMode::Overlay);
     }
@@ -678,6 +560,93 @@ namespace scopeone::ui
         }
     }
 
+    // Puts back the display settings and the shapes that the session saved for the raw layer of its
+    // camera
+    void ImageWorkspace::applySavedPresentation(Document& document)
+    {
+        const auto& presentation = document.session->experimentDocument();
+        const auto sourceLayer = std::find_if(
+            presentation.layers.cbegin(), presentation.layers.cend(),
+            [&document](const scopeone::core::DocumentLayer& layer)
+            {
+                return layer.sourceId == document.cameraId
+                       && layer.kind == scopeone::core::DocumentLayerKind::Raw;
+            });
+        if (sourceLayer == presentation.layers.cend())
+        {
+            return;
+        }
+        auto* scene = m_core->imageSceneModel();
+        scene->setLayerOpacityPercent(
+            document.activeLayerKey,
+            sourceLayer->display.opacityPercent);
+        scene->setLayerGamma(
+            document.activeLayerKey,
+            sourceLayer->display.gamma);
+        scene->setLayerColormap(
+            document.activeLayerKey,
+            sourceLayer->display.colormap);
+        scene->setLayerBlending(
+            document.activeLayerKey,
+            sourceLayer->display.blending);
+        scene->setLayerDisplayLevels(
+            document.activeLayerKey,
+            sourceLayer->display.levelMin,
+            sourceLayer->display.levelMax,
+            sourceLayer->display.levelDomainMax);
+        for (const auto& savedMarkup : presentation.markups)
+        {
+            if (savedMarkup.layerId != sourceLayer->id)
+            {
+                continue;
+            }
+            QString markupId;
+            switch (savedMarkup.type)
+            {
+            case scopeone::core::DocumentMarkupType::Line:
+                markupId = scene->createLine(document.activeLayerKey,
+                                             savedMarkup.start.toPoint(),
+                                             savedMarkup.end.toPoint(),
+                                             savedMarkup.label,
+                                             savedMarkup.role);
+                break;
+            case scopeone::core::DocumentMarkupType::Rect:
+                markupId = scene->createRect(document.activeLayerKey,
+                                             savedMarkup.rect.toRect(),
+                                             savedMarkup.label,
+                                             savedMarkup.role);
+                break;
+            case scopeone::core::DocumentMarkupType::Ellipse:
+                markupId = scene->createEllipse(document.activeLayerKey,
+                                                savedMarkup.rect.toRect(),
+                                                savedMarkup.label,
+                                                savedMarkup.role);
+                break;
+            case scopeone::core::DocumentMarkupType::Polygon:
+            {
+                QList<QPoint> corners;
+                for (const QPointF& corner : savedMarkup.points)
+                {
+                    corners.append(corner.toPoint());
+                }
+                markupId = scene->createPolygon(document.activeLayerKey,
+                                                corners,
+                                                savedMarkup.label,
+                                                savedMarkup.role);
+                break;
+            }
+            case scopeone::core::DocumentMarkupType::Point:
+                markupId = scene->createPoint(document.activeLayerKey,
+                                              savedMarkup.start.toPoint(),
+                                              savedMarkup.label,
+                                              savedMarkup.role);
+                break;
+            }
+            scene->setVisible(markupId, savedMarkup.visible);
+            scene->setSelected(markupId, savedMarkup.selected);
+        }
+    }
+
     bool ImageWorkspace::isComposite(const QString& layerKey) const
     {
         const Document* document = findDocumentByLayerKey(layerKey);
@@ -730,7 +699,7 @@ namespace scopeone::ui
     scopeone::core::StackShape ImageWorkspace::layerStackShape(const QString& layerKey) const
     {
         const Document* document = findDocumentByLayerKey(layerKey);
-        if (!document || !document->session)
+        if (!document)
         {
             return {};
         }
@@ -862,7 +831,8 @@ namespace scopeone::ui
                            document->frameIndex,
                            document->frameCount,
                            document->currentFrame.isValid(),
-                           document->id == m_activeDocumentId});
+                           document->id == m_activeDocumentId,
+                           document->activeLayerKey});
         }
         return result;
     }
@@ -885,7 +855,8 @@ namespace scopeone::ui
                                        document->frameIndex,
                                        document->frameCount,
                                        document->currentFrame.isValid(),
-                                       document->id == m_activeDocumentId}
+                                       document->id == m_activeDocumentId,
+                                       document->activeLayerKey}
                    : ImageDocumentInfo{};
     }
 
@@ -901,23 +872,11 @@ namespace scopeone::ui
 
     scopeone::core::ImageSceneModel* ImageWorkspace::activeSceneModel() const
     {
-        return sceneModel(m_activeDocumentId);
+        return m_core->imageSceneModel();
     }
 
     PreviewWidget* ImageWorkspace::activePreviewWidget() const
     {
-        return previewWidget(m_activeDocumentId);
-    }
-
-    scopeone::core::ImageSceneModel* ImageWorkspace::sceneModel(const QString& documentId) const
-    {
-        Q_UNUSED(documentId);
-        return m_core->imageSceneModel();
-    }
-
-    PreviewWidget* ImageWorkspace::previewWidget(const QString& documentId) const
-    {
-        Q_UNUSED(documentId);
         return m_livePreviewWidget;
     }
 
@@ -955,8 +914,7 @@ namespace scopeone::ui
 
     bool ImageWorkspace::layerAutoStretchEnabled(const QString& layerKey) const
     {
-        scopeone::core::ImageSceneModel* scene = activeSceneModel();
-        return scene && scene->layerAutoStretchEnabled(layerKey);
+        return m_core->imageSceneModel()->layerAutoStretchEnabled(layerKey);
     }
 
     bool ImageWorkspace::lineProfile(const QString& layerKey,
@@ -985,12 +943,10 @@ namespace scopeone::ui
 
     QString ImageWorkspace::activeLayerKey() const
     {
+        // A hidden layer stays the active one, so that showing or hiding it does not move the
+        // selection. Another layer takes over only when this one is gone.
         const auto* scene = m_core->imageSceneModel();
-        if (!scene)
-        {
-            return {};
-        }
-        if (scene->visibleLayerIds().contains(m_liveLayerKey))
+        if (scene->layerIds().contains(m_liveLayerKey))
         {
             return m_liveLayerKey;
         }
@@ -1012,10 +968,7 @@ namespace scopeone::ui
             activateLiveViewer();
             m_liveLayerKey = normalizedLayerKey;
         }
-        if (PreviewWidget* preview = activePreviewWidget())
-        {
-            preview->setActiveLayerKey(normalizedLayerKey);
-        }
+        m_livePreviewWidget->setActiveLayerKey(normalizedLayerKey);
         if (previousLayerKey != normalizedLayerKey)
         {
             emit activeLayerChanged(normalizedLayerKey);
@@ -1023,15 +976,14 @@ namespace scopeone::ui
         updateViewerToolbar();
     }
 
-    // Keeps the active layer aligned with the visible layers in one viewer
+    // Moves the active layer to a visible one when it was removed
     void ImageWorkspace::syncActiveLayer()
     {
         scopeone::core::ImageSceneModel* scene = m_core->imageSceneModel();
         const QString previousLayerKey = activeLayerKey();
-        const QStringList visibleLayerKeys = scene->visibleLayerIds();
-        if (!visibleLayerKeys.contains(m_liveLayerKey))
+        if (!scene->layerIds().contains(m_liveLayerKey))
         {
-            m_liveLayerKey = visibleLayerKeys.value(0);
+            m_liveLayerKey = scene->visibleLayerIds().value(0);
         }
 
         updateViewerToolbar();
@@ -1294,9 +1246,8 @@ namespace scopeone::ui
         connect(preview, &PreviewWidget::layerLayoutModeChanged,
                 this, [this](PreviewWidget::LayerLayoutMode) { updateViewerToolbar(); });
         connect(preview, &PreviewWidget::viewDimensionModeChanged,
-                this, [this](PreviewWidget::ViewDimensionMode mode)
+                this, [this](PreviewWidget::ViewDimensionMode)
                 {
-                    Q_UNUSED(mode);
                     emit viewDimensionModeChanged();
                     updateViewerToolbar();
                 });
@@ -1305,15 +1256,14 @@ namespace scopeone::ui
         connect(scene, &scopeone::core::ImageSceneModel::markupsChanged,
                 this, [this]()
                 {
-                    Document* document = findDocument(m_activeDocumentId);
-                    if (document)
+                    if (findDocument(m_activeDocumentId))
                     {
-                        updateLineProfile(*document);
+                        updateLineProfile();
                     }
                 });
     }
 
-    void ImageWorkspace::updateLineProfile(Document& document)
+    void ImageWorkspace::updateLineProfile()
     {
         for (const auto& markup : m_core->imageSceneModel()->markups())
         {

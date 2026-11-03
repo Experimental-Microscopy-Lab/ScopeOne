@@ -84,25 +84,17 @@ namespace scopeone::ui
         void showOnlyLayer(const QString& layerKey);
         void refreshLayerSwatch(const QString& layerKey);
         void onExposureChanged();
-        void onPreviewToggleClicked();
-
         void onControlTargetSelectionChanged(const QString& target);
-
-        void onDrawROIClicked();
-
-        void onHalfROIClicked();
-
-        void onClearROIClicked();
 
         QWidget* createPreviewControlsGroup();
         void rebuildPreviewLayerTable(const QStringList& layerKeys);
         void applyPreviewVisibility(const QStringList& layerKeys, bool notifyPreview);
         void refreshPreviewLayerSettings();
         QString selectedLayerSourceId() const;
-        void onPreviewAvailableCameraIdsChanged(const QStringList& cameraIds);
         void onPreviewAvailableLayerKeysChanged(const QStringList& layerKeys);
-        void onPreviewLayerInfoTextChanged(const QString& text);
         void refreshPreviewLayerInfoText();
+        QString layerKeyAt(int row) const;
+        int layerRow(const QString& layerKey) const;
         void onPreviewLayerVisibleToggled(bool checked);
         void onPreviewLayerOpacityChanged(int value);
         void onPreviewLayerGammaChanged(double value);
@@ -120,7 +112,6 @@ namespace scopeone::ui
                                    const scopeone::core::ScopeOneCore::HistogramStats& stats);
         void refreshLayerHistogram();
         void syncControlTargetToSelectedRawLayer();
-        void resetSelectedLayerTransform();
         void syncLayerSelection();
         QString currentLayerKey() const;
 
@@ -130,7 +121,6 @@ namespace scopeone::ui
 
         void updateControlsState();
 
-        void updateCameraParametersFromHardware();
         bool isAllTarget(const QString& target) const;
         QString roiCameraTarget() const;
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
@@ -167,7 +157,6 @@ namespace scopeone::ui
         PreviewWidget* m_previewWidget{nullptr};
 
         QLineEdit* m_exposureLineEdit{nullptr};
-        QLabel* m_exposureLabel{nullptr};
 
         QPushButton* m_previewToggleButton{nullptr};
         QPushButton* m_snapButton{nullptr};
@@ -208,11 +197,11 @@ namespace scopeone::ui
         QPushButton* m_zBigDownButton{nullptr};
         QSet<quint64> m_pendingStageMoveIds;
 
-        bool m_cameraInitialized;
-        bool m_previewRunning;
+        bool m_cameraInitialized{false};
+        bool m_previewRunning{false};
         bool m_liveViewerContext{true};
         bool m_controlTargetEnabled{true};
-        QString m_currentTarget;
+        QString m_currentTarget{QStringLiteral("All")};
         double m_minExposureMs{0.1};
         double m_maxExposureMs{10000.0};
     };

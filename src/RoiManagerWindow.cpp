@@ -203,13 +203,13 @@ namespace scopeone::ui
     {
         const auto shapes = chosenShapes(true);
         QStringList titles;
-        QStringList ids;
+        QStringList layerKeys;
         for (const ImageDocumentInfo& document : m_workspace->documents())
         {
             if (!document.active)
             {
                 titles.append(document.title);
-                ids.append(document.id);
+                layerKeys.append(document.layerKey);
             }
         }
         if (shapes.isEmpty() || titles.isEmpty())
@@ -222,12 +222,9 @@ namespace scopeone::ui
         {
             return;
         }
-        ImageSceneModel* target = m_workspace->sceneModel(ids.at(titles.indexOf(title)));
-        if (!target || target->layerIds().isEmpty())
-        {
-            return;
-        }
-        const QString layerKey = target->layerIds().first();
+        // Every image is a layer of the one scene
+        ImageSceneModel* target = m_workspace->activeSceneModel();
+        const QString layerKey = layerKeys.at(titles.indexOf(title));
         for (const ImageSceneModel::Markup& shape : shapes)
         {
             switch (shape.type)

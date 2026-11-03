@@ -73,12 +73,17 @@ namespace scopeone::ui
         void loadChannelPresets();
         void moveChannelRow(int delta);
         std::vector<scopeone::core::ChannelSetting> usedChannels() const;
+        bool isChannelUsed(int row) const;
+        scopeone::core::ChannelSetting channelAt(int row) const;
+        QString positionCell(int row, int column) const;
+        void applyFormatSettings(scopeone::core::ExperimentPlan& plan) const;
         QString getLastSaveDirectory() const;
         void setLastSaveDirectory(const QString& path);
         QString buildTimestampBaseName() const;
         QString normalizedBaseName() const;
 
         QStringList selectedCameraIds() const;
+        qint64 plannedPositionCount() const;
         bool startRecording();
 
     private:

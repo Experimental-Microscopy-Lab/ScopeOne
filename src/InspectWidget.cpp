@@ -681,10 +681,7 @@ namespace scopeone::ui
         {
             connect(entry.button, &QToolButton::clicked, this, [this, tool = entry.tool]()
             {
-                if (PreviewWidget* preview = m_workspace->activePreviewWidget())
-                {
-                    preview->setAnalysisTool(static_cast<PreviewWidget::AnalysisTool>(tool));
-                }
+                m_workspace->activePreviewWidget()->setAnalysisTool(static_cast<PreviewWidget::AnalysisTool>(tool));
             });
         }
         connect(m_deleteSelectionButton, &QPushButton::clicked, this, [this]()

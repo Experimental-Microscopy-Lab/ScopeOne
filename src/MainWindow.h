@@ -123,17 +123,13 @@ namespace scopeone::ui
                             int sourceRoiX,
                             int sourceRoiY);
         void handleConfigurationLoadFinished(bool success,
-                                             const QString& configPath,
-                                             const QStringList& cameraIds,
-                                             bool foundCamera,
-                                             int successCount,
-                                             int failCount,
-                                             int skippedCameraCount,
+                                             const scopeone::core::ScopeOneCore::LoadConfigResult& result,
                                              const QString& errorMessage);
         void handleConfigurationUnloadFinished(bool success,
                                                const QString& errorMessage);
         void handleCloseSaveFinished(
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
+        void showSaveResult(const scopeone::core::ScopeOneCore::RecordingSessionData& session);
         void loadConfigurationFromDialog();
         void loadConfigurationPath(const QString& configPath);
         void refreshRecentConfigurationsMenu();

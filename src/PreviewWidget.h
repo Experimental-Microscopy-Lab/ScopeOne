@@ -95,7 +95,6 @@ namespace scopeone::ui
         QStringList supportedLayerBlendingModes() const;
         QString layerName(const QString& layerKey) const;
         QString layerInfoText(const QString& layerKey) const;
-        QString layerInfoSummaryText() const;
         void clearSourceFrames(const QString& sourceId);
         void clearProcessedFrames();
         void setZoomPercent(int percent);
@@ -145,7 +144,6 @@ signals:
         void scaleBarVisibilityChanged(bool visible);
         void clippingWarningChanged(bool enabled);
         void viewDimensionModeChanged(ViewDimensionMode mode);
-        void layerDimensionModeChanged(const QString& layerKey, ViewDimensionMode mode);
         void threeDimensionalZScaleChanged(float scale);
         void threeDimensionalWireframeChanged(bool enabled);
         void threeDimensionalColorbarVisibilityChanged(bool visible);
@@ -287,7 +285,6 @@ signals:
         QSet<QString> m_toolSourceIds;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
         QMap<QString, double> m_layerFps;
-        QString m_layerInfoText{QStringLiteral("No image loaded")};
         QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};
@@ -379,8 +376,8 @@ signals:
         void updateImageDisplay();
         bool storeSourceFrame(const QString& sourceId,
                               FrameRole role,
-                              const scopeone::core::ImageFrame& frame,
-                              bool* replacedFrame = nullptr);
+                              const scopeone::core::ImageFrame& frame);
+        void releaseLayerTexture(const QString& layerKey);
         void initializeLayerInfo(const QString& layerKey);
         void updateLayerInfoDisplay();
         bool registerAvailableCamera(const QString& cameraId);
@@ -389,7 +386,6 @@ signals:
         Blending blendingFromName(const QString& name) const;
         void removeStaticLayerData(const QString& sourceId);
         QSet<QString> validLayerKeys() const;
-        bool hasRawFrame(const FrameSourceState& frameState) const;
         QMap<QString, FrameSourceState> snapshotFrameSources() const;
         std::vector<FrameSourceRenderInfo> buildFrameSourceRenderInfos(const QMap<QString, FrameSourceState>& frameSources) const;
         void buildRenderSnapshot(QMap<QString, FrameSourceState>& frameSources,
@@ -472,6 +468,18 @@ signals:
         void setUvTransform(bool flipX, bool flipY);
         void applyViewportForRect(const QRect& logicalRect);
         void applyScissorForRect(const QRect& logicalRect);
+        QRect deviceRect(const QRect& logicalRect) const;
+        void activateLayer(const QString& layerKey);
+        static int wheelSteps(int deltaY);
+        static QPointF relativePosition(const QPoint& widgetPos, const QRect& rect);
+        void keepImagePointAt(const PreviewInteractionTarget& target,
+                              const QPoint& widgetPos,
+                              const QPointF& relativePos);
+        void drawSurfaceTiles(const std::vector<RenderItem>& items);
+        void drawSurfaceTileLabels(QPainter& painter,
+                                   const std::vector<RenderItem>& items,
+                                   const QString& titleFormat) const;
+        const RenderItem& activeItemOr(const std::vector<RenderItem>& items, const RenderItem& fallback) const;
         ViewportState& viewportStateForLayer(const QString& layerKey);
         ViewportState viewportStateForLayer(const QString& layerKey) const;
         QString viewportControlLayerKey() const;

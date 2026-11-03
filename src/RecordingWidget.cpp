@@ -103,7 +103,7 @@ namespace
         }
 
         QStringList axes;
-        axes.append(QString("T %1/%2").arg(mdaTimeIndex).arg((std::max)(1, mdaTimeCount)));
+        axes.append(QString("T %1/%2").arg(mdaTimeIndex).arg(mdaTimeCount));
         if (mdaZCount > 1 && mdaZIndex > 0)
         {
             axes.append(QString("Z %1/%2").arg(mdaZIndex).arg(mdaZCount));
@@ -131,8 +131,7 @@ namespace
 
     QString formatFramesText(qint64 frameCurrent, qint64 frameTarget)
     {
-        const qint64 target = (std::max)(0ll, frameTarget);
-        return QString("%1 / %2 frames").arg(frameCurrent).arg(target);
+        return QString("%1 / %2 frames").arg(frameCurrent).arg(frameTarget);
     }
 
     // Formats a duration as the largest two units, such as 1 h 05 min
@@ -154,6 +153,14 @@ namespace
         return QStringLiteral("%1 h %2 min").arg(seconds / 3600).arg(seconds % 3600 / 60, 2, 10, QLatin1Char('0'));
     }
 
+    // Named like the tiles of a Micro-Manager position list
+    QString gridPositionLabel(int xIndex, int yIndex)
+    {
+        return QStringLiteral("Pos-1-%1_%2")
+            .arg(xIndex, 3, 10, QLatin1Char('0'))
+            .arg(yIndex, 3, 10, QLatin1Char('0'));
+    }
+
     QString formatBurstsText(int burstCurrent, int burstTarget)
     {
         if (burstTarget <= 0)
@@ -165,9 +172,8 @@ namespace
 
     QString formatByteCount(qint64 bytes)
     {
-        const qint64 clamped = (std::max)(0ll, bytes);
         static const char* suffixes[] = {"B", "KB", "MB", "GB", "TB"};
-        double value = static_cast<double>(clamped);
+        double value = static_cast<double>(bytes);
         int suffixIndex = 0;
         while (value >= 1024.0 && suffixIndex < 4)
         {
@@ -243,11 +249,6 @@ namespace scopeone::ui
         : QWidget(parent)
           , m_scopeonecore(core)
     {
-        if (!core)
-        {
-            qFatal("RecordingWidget requires ScopeOneCore");
-        }
-
         setupUI();
         connect(m_browseButton, &QPushButton::clicked, this, &RecordingWidget::onBrowseClicked);
         connect(m_autoNameButton, &QPushButton::clicked, this, &RecordingWidget::onAutoNameClicked);
@@ -423,11 +424,10 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingStopped, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QString result = session ? session->saveMessage() : QString();
-                    const bool saved = session && session->isSaved();
+                    const QString result = session->saveMessage();
+                    const bool saved = session->isSaved();
                     // Say why a run failed where the user is looking
-                    if (session
-                        && session->experimentDocument().runState == scopeone::core::ExperimentRunState::Failed)
+                    if (session->experimentDocument().runState == scopeone::core::ExperimentRunState::Failed)
                     {
                         const QString reason = session->experimentDocument().errorMessage;
                         m_failureLabel->setText(QStringLiteral("The acquisition failed: %1")
@@ -450,27 +450,12 @@ namespace scopeone::ui
         connect(m_scopeonecore, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished, this,
                 [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
                 {
-                    const QString result = session ? session->saveMessage() : QString();
-                    const bool saved = session && session->isSaved();
-                    if (saved)
-                    {
-                        m_writerStatusLabel->setText(
-                            formatWriterStatusText(m_scopeonecore->recordingWriterStatus()));
-                    }
-                    else if (!result.isEmpty())
-                    {
-                        m_writerStatusLabel->setText(QStringLiteral("Disk: Failed - %1").arg(result));
-                    }
-                    else
-                    {
-                        m_writerStatusLabel->setText(QStringLiteral("Disk: Failed - Error: no session data"));
-                    }
+                    const QString result = session->saveMessage();
+                    const bool saved = session->isSaved();
+                    m_writerStatusLabel->setText(
+                        saved ? formatWriterStatusText(m_scopeonecore->recordingWriterStatus())
+                              : QStringLiteral("Disk: Failed - %1").arg(result));
                     m_writerStatusLabel->show();
-                    if (result.isEmpty())
-                    {
-                        qWarning().noquote() << "Error: no session data";
-                        return;
-                    }
                     if (saved)
                     {
                         qInfo().noquote() << result;
@@ -1002,15 +987,13 @@ namespace scopeone::ui
         for (int row = 0; row < m_channelTable->rowCount(); ++row)
         {
             // Offer the new cameras, keeping the choice where the camera still exists
-            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
-            {
-                const QString selected = combo->currentText();
-                combo->clear();
-                combo->addItem(QStringLiteral("All"));
-                combo->addItems(cameraIds);
-                const int index = combo->findText(selected);
-                combo->setCurrentIndex(index < 0 ? 0 : index);
-            }
+            auto* combo = static_cast<QComboBox*>(m_channelTable->cellWidget(row, 6));
+            const QString selected = combo->currentText();
+            combo->clear();
+            combo->addItem(QStringLiteral("All"));
+            combo->addItems(cameraIds);
+            const int index = combo->findText(selected);
+            combo->setCurrentIndex(index < 0 ? 0 : index);
         }
 
         QString current = m_detectorCombo->currentText();
@@ -1088,9 +1071,7 @@ namespace scopeone::ui
         }
         else
         {
-            const int count = m_positionTable->rowCount() > 0
-                ? m_positionTable->rowCount()
-                : m_mdaXCountSpin->value() * m_mdaYCountSpin->value();
+            const qint64 count = plannedPositionCount();
             m_positionSection->setSummary(
                 QStringLiteral("%1 position(s)%2")
                     .arg(count)
@@ -1136,11 +1117,7 @@ namespace scopeone::ui
         const qint64 bursts = m_burstModeCheck->isChecked() ? m_burstCountSpin->value() : 1;
         const qint64 timePoints = frames * bursts;
         const qint64 zCount = m_mdaEnableZCheck->isChecked() ? m_mdaZCountSpin->value() : 1;
-        const qint64 positions = !m_mdaEnableXYCheck->isChecked()
-            ? 1
-            : m_positionTable->rowCount() > 0
-                ? static_cast<qint64>(m_positionTable->rowCount())
-                : static_cast<qint64>(m_mdaXCountSpin->value()) * m_mdaYCountSpin->value();
+        const qint64 positions = plannedPositionCount();
         const qint64 cameras = qMax<qsizetype>(1, selectedCameraIds().size());
 
         // The camera is asked at most once a second, because the settings change often
@@ -1353,24 +1330,15 @@ namespace scopeone::ui
         }
         const QList<scopeone::core::ImageFrame> frames = m_scopeonecore->graphFrames(layerKeys);
         qint64 bytesPerPlane = 0;
-        int validFrameCount = 0;
         for (const auto& frame : frames)
         {
-            if (frame.isValid())
-            {
-                bytesPerPlane += frame.payloadByteCount();
-                ++validFrameCount;
-            }
+            bytesPerPlane += frame.payloadByteCount();
         }
-        if (!cameraIds.isEmpty() && validFrameCount == cameraIds.size() && bytesPerPlane > 0)
+        if (!cameraIds.isEmpty() && frames.size() == cameraIds.size())
         {
             const qint64 burstCount = m_burstModeCheck->isChecked() ? m_burstCountSpin->value() : 1;
             const qint64 zCount = m_mdaEnableZCheck->isChecked() ? m_mdaZCountSpin->value() : 1;
-            const qint64 positionCount = !m_mdaEnableXYCheck->isChecked()
-                ? 1
-                : m_positionTable->rowCount() > 0
-                    ? static_cast<qint64>(m_positionTable->rowCount())
-                    : static_cast<qint64>(m_mdaXCountSpin->value()) * m_mdaYCountSpin->value();
+            const qint64 positionCount = plannedPositionCount();
             const qint64 channelCount = m_mdaEnableChannelCheck->isChecked()
                 ? static_cast<qint64>((std::max<size_t>)(1, usedChannels().size()))
                 : 1;
@@ -1437,15 +1405,20 @@ namespace scopeone::ui
         {
             return m_availableCameraIds;
         }
-        if (selected.isEmpty())
+        return m_availableCameraIds.contains(selected) ? QStringList{selected} : QStringList{};
+    }
+
+    // Number of stage positions the settings visit: the position list when it has entries,
+    // otherwise the grid
+    qint64 RecordingWidget::plannedPositionCount() const
+    {
+        if (!m_mdaEnableXYCheck->isChecked())
         {
-            return {};
+            return 1;
         }
-        if (m_availableCameraIds.contains(selected))
-        {
-            return {selected};
-        }
-        return {};
+        return m_positionTable->rowCount() > 0
+                   ? static_cast<qint64>(m_positionTable->rowCount())
+                   : static_cast<qint64>(m_mdaXCountSpin->value()) * m_mdaYCountSpin->value();
     }
 
     // Collects form values and starts recording
@@ -1465,12 +1438,7 @@ namespace scopeone::ui
         }
 
         scopeone::core::ExperimentPlan plan;
-        plan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
-        plan.enableCompression =
-            plan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
-        plan.compressionLevel = m_compressionLevelSpin->value();
-        plan.enablePyramid = plan.format == scopeone::core::RecordingFormat::OmeZarr
-            && m_pyramidCheck->isChecked();
+        applyFormatSettings(plan);
         plan.framesPerBurst = m_framesSpin->value();
         plan.burstMode = m_burstModeCheck->isChecked();
         plan.targetBursts = plan.burstMode ? m_burstCountSpin->value() : 1;
@@ -1496,7 +1464,7 @@ namespace scopeone::ui
                 qWarning().noquote() << "Cannot read the focus position for a relative Z stack";
                 return false;
             }
-            const int count = qMax(1, m_mdaZCountSpin->value());
+            const int count = m_mdaZCountSpin->value();
             plan.zPositions.reserve(count);
             for (int i = 0; i < count; ++i)
             {
@@ -1514,11 +1482,7 @@ namespace scopeone::ui
         {
             for (int row = 0; row < m_positionTable->rowCount(); ++row)
             {
-                const auto text = [this, row](int column)
-                {
-                    const QTableWidgetItem* item = m_positionTable->item(row, column);
-                    return item ? item->text().trimmed() : QString();
-                };
+                const auto text = [this, row](int column) { return positionCell(row, column); };
                 bool xOk = false;
                 bool yOk = false;
                 const double x = text(1).toDouble(&xOk);
@@ -1542,8 +1506,8 @@ namespace scopeone::ui
         }
         else if (m_mdaEnableXYCheck->isChecked())
         {
-            const int xCount = qMax(1, m_mdaXCountSpin->value());
-            const int yCount = qMax(1, m_mdaYCountSpin->value());
+            const int xCount = m_mdaXCountSpin->value();
+            const int yCount = m_mdaYCountSpin->value();
             plan.positions.reserve(static_cast<size_t>(xCount) * static_cast<size_t>(yCount));
             for (int yIndex = 0; yIndex < yCount; ++yIndex)
             {
@@ -1554,10 +1518,7 @@ namespace scopeone::ui
                     const double x = m_mdaXStartSpin->value()
                         + static_cast<double>(xIndex) * m_mdaXStepSpin->value();
                     plan.positions.push_back(QPointF(x, y));
-                    // Named like the tiles of a Micro-Manager position list
-                    plan.positionLabels.push_back(QStringLiteral("Pos-1-%1_%2")
-                                                      .arg(xIndex, 3, 10, QLatin1Char('0'))
-                                                      .arg(yIndex, 3, 10, QLatin1Char('0')));
+                    plan.positionLabels.push_back(gridPositionLabel(xIndex, yIndex));
                 }
             }
         }
@@ -1599,12 +1560,7 @@ namespace scopeone::ui
 
         scopeone::core::ExperimentPlan capturedPlan;
         capturedPlan.streamToDisk = false;
-        capturedPlan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
-        capturedPlan.enableCompression =
-            capturedPlan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
-        capturedPlan.compressionLevel = m_compressionLevelSpin->value();
-        capturedPlan.enablePyramid = capturedPlan.format == scopeone::core::RecordingFormat::OmeZarr
-            && m_pyramidCheck->isChecked();
+        applyFormatSettings(capturedPlan);
         capturedPlan.saveDir = m_saveDirLineEdit->text().trimmed();
         const QString captureBase = normalizedBaseName().isEmpty() ? buildTimestampBaseName() : normalizedBaseName();
         capturedPlan.baseName = captureBase + QStringLiteral("_capture_")
@@ -1631,6 +1587,22 @@ namespace scopeone::ui
         return true;
     }
 
+    // The file format chosen in the panel
+    void RecordingWidget::applyFormatSettings(scopeone::core::ExperimentPlan& plan) const
+    {
+        plan.format = static_cast<scopeone::core::RecordingFormat>(m_formatCombo->currentData().toInt());
+        plan.enableCompression =
+            plan.format != scopeone::core::RecordingFormat::Binary && m_compressionCheck->isChecked();
+        plan.compressionLevel = m_compressionLevelSpin->value();
+        plan.enablePyramid = plan.format == scopeone::core::RecordingFormat::OmeZarr
+            && m_pyramidCheck->isChecked();
+    }
+
+    QString RecordingWidget::positionCell(int row, int column) const
+    {
+        return m_positionTable->item(row, column)->text().trimmed();
+    }
+
     // Adds one row to the position list
     void RecordingWidget::addListedPosition(const QString& label, double x, double y, const QString& z)
     {
@@ -1646,13 +1618,11 @@ namespace scopeone::ui
     void RecordingWidget::fillPositionListFromGrid()
     {
         m_positionTable->setRowCount(0);
-        for (int yIndex = 0; yIndex < qMax(1, m_mdaYCountSpin->value()); ++yIndex)
+        for (int yIndex = 0; yIndex < m_mdaYCountSpin->value(); ++yIndex)
         {
-            for (int xIndex = 0; xIndex < qMax(1, m_mdaXCountSpin->value()); ++xIndex)
+            for (int xIndex = 0; xIndex < m_mdaXCountSpin->value(); ++xIndex)
             {
-                addListedPosition(QStringLiteral("Pos-1-%1_%2")
-                                      .arg(xIndex, 3, 10, QLatin1Char('0'))
-                                      .arg(yIndex, 3, 10, QLatin1Char('0')),
+                addListedPosition(gridPositionLabel(xIndex, yIndex),
                                   m_mdaXStartSpin->value() + xIndex * m_mdaXStepSpin->value(),
                                   m_mdaYStartSpin->value() + yIndex * m_mdaYStepSpin->value(),
                                   QString());
@@ -1705,11 +1675,7 @@ namespace scopeone::ui
         QList<ListedPosition> positions;
         for (int row = 0; row < m_positionTable->rowCount(); ++row)
         {
-            const auto text = [this, row](int column)
-            {
-                const QTableWidgetItem* item = m_positionTable->item(row, column);
-                return item ? item->text().trimmed() : QString();
-            };
+            const auto text = [this, row](int column) { return positionCell(row, column); };
             ListedPosition position;
             position.label = text(0);
             position.x = text(1).toDouble();
@@ -1823,22 +1789,8 @@ namespace scopeone::ui
         for (int row = 0; row < m_channelTable->rowCount(); ++row)
         {
             Row entry;
-            entry.used = m_channelTable->item(row, 0)->checkState() == Qt::Checked;
-            entry.setting.preset = m_channelTable->item(row, 1)->text();
-            entry.setting.exposureMs = m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble();
-            entry.setting.zOffsetUm = m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble();
-            entry.setting.zStack = m_channelTable->item(row, 4)->checkState() == Qt::Checked;
-            entry.setting.skipFrames = m_channelTable->item(row, 5)->data(Qt::EditRole).toInt();
-            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
-            {
-                entry.setting.cameraId = combo->currentText() == QStringLiteral("All")
-                    ? QString()
-                    : combo->currentText();
-            }
-            if (const auto* colorButton = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7)))
-            {
-                entry.setting.color = colorButton->property("channelColor").toString();
-            }
+            entry.used = isChannelUsed(row);
+            entry.setting = channelAt(row);
             previous.insert(entry.setting.preset, entry);
             previousOrder.append(entry.setting.preset);
         }
@@ -1946,22 +1898,16 @@ namespace scopeone::ui
                 m_channelTable->setItem(row, column, second);
                 m_channelTable->setItem(target, column, first);
             }
-            auto* firstColor = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7));
-            auto* secondColor = qobject_cast<QPushButton*>(m_channelTable->cellWidget(target, 7));
-            if (firstColor && secondColor)
-            {
-                const QString color = firstColor->property("channelColor").toString();
-                showChannelColor(firstColor, secondColor->property("channelColor").toString());
-                showChannelColor(secondColor, color);
-            }
-            auto* firstCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6));
-            auto* secondCamera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(target, 6));
-            if (firstCamera && secondCamera)
-            {
-                const QString text = firstCamera->currentText();
-                firstCamera->setCurrentText(secondCamera->currentText());
-                secondCamera->setCurrentText(text);
-            }
+            auto* firstColor = static_cast<QPushButton*>(m_channelTable->cellWidget(row, 7));
+            auto* secondColor = static_cast<QPushButton*>(m_channelTable->cellWidget(target, 7));
+            const QString color = firstColor->property("channelColor").toString();
+            showChannelColor(firstColor, secondColor->property("channelColor").toString());
+            showChannelColor(secondColor, color);
+            auto* firstCamera = static_cast<QComboBox*>(m_channelTable->cellWidget(row, 6));
+            auto* secondCamera = static_cast<QComboBox*>(m_channelTable->cellWidget(target, 6));
+            const QString text = firstCamera->currentText();
+            firstCamera->setCurrentText(secondCamera->currentText());
+            secondCamera->setCurrentText(text);
         }
         m_channelTable->setCurrentCell(target, 1);
         updateUiState();
@@ -1973,30 +1919,39 @@ namespace scopeone::ui
         std::vector<scopeone::core::ChannelSetting> channels;
         for (int row = 0; row < m_channelTable->rowCount(); ++row)
         {
-            if (m_channelTable->item(row, 0)->checkState() != Qt::Checked)
+            if (!isChannelUsed(row))
             {
                 continue;
             }
-            scopeone::core::ChannelSetting channel;
-            channel.preset = m_channelTable->item(row, 1)->text();
-            channel.exposureMs = (std::max)(0.0, m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble());
-            channel.zOffsetUm = m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble();
-            channel.zStack = m_channelTable->item(row, 4)->checkState() == Qt::Checked;
-            channel.skipFrames = (std::max)(0, m_channelTable->item(row, 5)->data(Qt::EditRole).toInt());
-            if (auto* combo = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
-            {
-                if (combo->currentText() != QStringLiteral("All"))
-                {
-                    channel.cameraId = combo->currentText();
-                }
-            }
-            if (const auto* colorButton = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7)))
-            {
-                channel.color = colorButton->property("channelColor").toString();
-            }
+            scopeone::core::ChannelSetting channel = channelAt(row);
+            channel.exposureMs = (std::max)(0.0, channel.exposureMs);
+            channel.skipFrames = (std::max)(0, channel.skipFrames);
             channels.push_back(channel);
         }
         return channels;
+    }
+
+    bool RecordingWidget::isChannelUsed(int row) const
+    {
+        return m_channelTable->item(row, 0)->checkState() == Qt::Checked;
+    }
+
+    // The settings of one row of the channel table, as typed in
+    scopeone::core::ChannelSetting RecordingWidget::channelAt(int row) const
+    {
+        scopeone::core::ChannelSetting channel;
+        channel.preset = m_channelTable->item(row, 1)->text();
+        channel.exposureMs = m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble();
+        channel.zOffsetUm = m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble();
+        channel.zStack = m_channelTable->item(row, 4)->checkState() == Qt::Checked;
+        channel.skipFrames = m_channelTable->item(row, 5)->data(Qt::EditRole).toInt();
+        const QString camera = static_cast<const QComboBox*>(m_channelTable->cellWidget(row, 6))->currentText();
+        if (camera != QStringLiteral("All"))
+        {
+            channel.cameraId = camera;
+        }
+        channel.color = m_channelTable->cellWidget(row, 7)->property("channelColor").toString();
+        return channel;
     }
 
     // Moves one MDA order item in the visible list
@@ -2160,8 +2115,7 @@ namespace scopeone::ui
             QJsonArray cells;
             for (int column = 0; column < 4; ++column)
             {
-                const QTableWidgetItem* item = m_positionTable->item(row, column);
-                cells.append(item ? item->text() : QString());
+                cells.append(positionCell(row, column));
             }
             positions.append(cells);
         }
@@ -2186,21 +2140,17 @@ namespace scopeone::ui
         QJsonArray channels;
         for (int row = 0; row < m_channelTable->rowCount(); ++row)
         {
+            const scopeone::core::ChannelSetting setting = channelAt(row);
             QJsonObject channel;
-            channel.insert(QStringLiteral("used"), m_channelTable->item(row, 0)->checkState() == Qt::Checked);
-            channel.insert(QStringLiteral("preset"), m_channelTable->item(row, 1)->text());
-            channel.insert(QStringLiteral("exposureMs"), m_channelTable->item(row, 2)->data(Qt::EditRole).toDouble());
-            channel.insert(QStringLiteral("zOffsetUm"), m_channelTable->item(row, 3)->data(Qt::EditRole).toDouble());
-            channel.insert(QStringLiteral("zStack"), m_channelTable->item(row, 4)->checkState() == Qt::Checked);
-            channel.insert(QStringLiteral("skipFrames"), m_channelTable->item(row, 5)->data(Qt::EditRole).toInt());
-            if (const auto* camera = qobject_cast<QComboBox*>(m_channelTable->cellWidget(row, 6)))
-            {
-                channel.insert(QStringLiteral("camera"), camera->currentText());
-            }
-            if (const auto* color = qobject_cast<QPushButton*>(m_channelTable->cellWidget(row, 7)))
-            {
-                channel.insert(QStringLiteral("color"), color->property("channelColor").toString());
-            }
+            channel.insert(QStringLiteral("used"), isChannelUsed(row));
+            channel.insert(QStringLiteral("preset"), setting.preset);
+            channel.insert(QStringLiteral("exposureMs"), setting.exposureMs);
+            channel.insert(QStringLiteral("zOffsetUm"), setting.zOffsetUm);
+            channel.insert(QStringLiteral("zStack"), setting.zStack);
+            channel.insert(QStringLiteral("skipFrames"), setting.skipFrames);
+            channel.insert(QStringLiteral("camera"),
+                           setting.cameraId.isEmpty() ? QStringLiteral("All") : setting.cameraId);
+            channel.insert(QStringLiteral("color"), setting.color);
             channels.append(channel);
         }
         object.insert(QStringLiteral("channels"), channels);

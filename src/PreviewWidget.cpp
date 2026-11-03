@@ -371,34 +371,13 @@ namespace scopeone::ui
         cleanupTextureCache();
     }
 
-    // Stores one frame in the preview sink cache
+    // Stores one frame in the preview sink cache and reports whether it replaced one
     bool PreviewWidget::storeSourceFrame(const QString& sourceId,
                                          FrameRole role,
-                                         const ImageFrame& frame,
-                                         bool* replacedFrame)
+                                         const ImageFrame& frame)
     {
-        const QString normalizedId = normalizedSourceId(sourceId);
-        if (normalizedId.isEmpty())
-        {
-            if (replacedFrame)
-            {
-                *replacedFrame = false;
-            }
-            return false;
-        }
-
-        const QString frameSourceId = normalizedSourceId(frame.cameraId);
-        if (!frame.isValid() || frameSourceId != normalizedId)
-        {
-            if (replacedFrame)
-            {
-                *replacedFrame = false;
-            }
-            return false;
-        }
-
         QMutexLocker lock(&m_mutex);
-        FrameSourceState& frameState = m_frameSources[normalizedId];
+        FrameSourceState& frameState = m_frameSources[sourceId];
         ++m_nextFrameRevision;
         bool hadFrame = false;
         if (role == FrameRole::Processed)
@@ -413,11 +392,7 @@ namespace scopeone::ui
             frameState.rawFrame = frame;
             frameState.rawRevision = m_nextFrameRevision;
         }
-        if (replacedFrame)
-        {
-            *replacedFrame = hadFrame;
-        }
-        return true;
+        return hadFrame;
     }
 
     // Initializes display statistics for one layer
@@ -438,14 +413,11 @@ namespace scopeone::ui
         {
             return;
         }
-        bool hadProcessedFrame = false;
-        const bool stored = storeSourceFrame(
-            sourceId, FrameRole::Processed, frame, &hadProcessedFrame);
-        const QString layerKey = previewLayerKey(sourceId, true);
-        initializeLayerInfo(layerKey);
+        const bool hadProcessedFrame = storeSourceFrame(sourceId, FrameRole::Processed, frame);
+        initializeLayerInfo(previewLayerKey(sourceId, true));
 
-        const bool registeredCamera = stored && registerAvailableCamera(sourceId);
-        if (stored && !hadProcessedFrame)
+        const bool registeredCamera = registerAvailableCamera(sourceId);
+        if (!hadProcessedFrame)
         {
             emit availableLayerKeysChanged(availableLayerKeys());
         }
@@ -465,10 +437,9 @@ namespace scopeone::ui
         {
             return;
         }
-        const bool stored = storeSourceFrame(sourceId, FrameRole::Raw, frame);
-        const QString layerKey = previewLayerKey(sourceId, false);
-        initializeLayerInfo(layerKey);
-        if (stored && registerAvailableCamera(sourceId))
+        storeSourceFrame(sourceId, FrameRole::Raw, frame);
+        initializeLayerInfo(previewLayerKey(sourceId, false));
+        if (registerAvailableCamera(sourceId))
         {
             return;
         }
@@ -541,10 +512,7 @@ namespace scopeone::ui
         const bool hadStaticLayer = m_staticSourceIds.contains(sourceId);
         m_staticSourceIds.insert(sourceId);
 
-        if (!storeSourceFrame(sourceId, FrameRole::Raw, frame))
-        {
-            return {};
-        }
+        storeSourceFrame(sourceId, FrameRole::Raw, frame);
         initializeLayerInfo(layerKey);
 
         updateLayerInfoDisplay();
@@ -681,10 +649,7 @@ namespace scopeone::ui
         }
         const bool newLayer = !m_toolSourceIds.contains(sourceId);
         m_toolSourceIds.insert(sourceId);
-        if (!storeSourceFrame(sourceId, FrameRole::Raw, frame))
-        {
-            return {};
-        }
+        storeSourceFrame(sourceId, FrameRole::Raw, frame);
         initializeLayerInfo(layerKey);
         updateLayerInfoDisplay();
         updateImageDisplay();
@@ -875,11 +840,6 @@ namespace scopeone::ui
             .arg(m_layerFps.value(layerKey), 0, 'f', 1);
     }
 
-    QString PreviewWidget::layerInfoSummaryText() const
-    {
-        return m_layerInfoText;
-    }
-
     // Clears preview state for one source
     void PreviewWidget::clearSourceFrames(const QString& sourceId)
     {
@@ -897,18 +857,8 @@ namespace scopeone::ui
         lock.unlock();
 
         makeCurrent();
-        const QString rawKey = previewLayerKey(normalizedId, false);
-        const QString procKey = previewLayerKey(normalizedId, true);
-        if (m_textureCache.contains(rawKey))
-        {
-            glDeleteTextures(1, &m_textureCache[rawKey].texId);
-            m_textureCache.remove(rawKey);
-        }
-        if (m_textureCache.contains(procKey))
-        {
-            glDeleteTextures(1, &m_textureCache[procKey].texId);
-            m_textureCache.remove(procKey);
-        }
+        releaseLayerTexture(previewLayerKey(normalizedId, false));
+        releaseLayerTexture(previewLayerKey(normalizedId, true));
         doneCurrent();
         emit availableLayerKeysChanged(availableLayerKeys());
     }
@@ -934,12 +884,7 @@ namespace scopeone::ui
         makeCurrent();
         for (const QString& cameraId : m_availableCameraIds)
         {
-            const QString procKey = previewLayerKey(cameraId, true);
-            if (m_textureCache.contains(procKey))
-            {
-                glDeleteTextures(1, &m_textureCache[procKey].texId);
-                m_textureCache.remove(procKey);
-            }
+            releaseLayerTexture(previewLayerKey(cameraId, true));
         }
         doneCurrent();
 
@@ -1021,14 +966,19 @@ namespace scopeone::ui
             m_frameSources.remove(sourceId);
         }
 
-        auto textureIt = m_textureCache.find(layerKey);
-        if (textureIt != m_textureCache.end())
+        makeCurrent();
+        releaseLayerTexture(layerKey);
+        doneCurrent();
+    }
+
+    // Deletes the texture of one layer. The GL context must be current.
+    void PreviewWidget::releaseLayerTexture(const QString& layerKey)
+    {
+        const auto it = m_textureCache.find(layerKey);
+        if (it != m_textureCache.end())
         {
-            GLuint texId = textureIt.value().texId;
-            makeCurrent();
-            glDeleteTextures(1, &texId);
-            doneCurrent();
-            m_textureCache.erase(textureIt);
+            glDeleteTextures(1, &it.value().texId);
+            m_textureCache.erase(it);
         }
     }
 
@@ -1187,7 +1137,6 @@ namespace scopeone::ui
         {
             setLayerLayoutMode(LayerLayoutMode::SideBySide);
         }
-        emit layerDimensionModeChanged(layerKey, mode);
         if (layerKey == m_activeLayerKey)
         {
             emit viewDimensionModeChanged(mode);
@@ -1332,7 +1281,7 @@ namespace scopeone::ui
             for (auto it = m_frameSources.constBegin(); it != m_frameSources.constEnd(); ++it)
             {
                 const FrameSourceState& frameState = it.value();
-                if (hasRawFrame(frameState) || frameState.processedFrame.isValid())
+                if (frameState.rawFrame.isValid() || frameState.processedFrame.isValid())
                 {
                     hasDisplayableFrame = true;
                     break;
@@ -1347,12 +1296,6 @@ namespace scopeone::ui
         }
         updateSliceBarGeometry();
         update();
-    }
-
-    // Checks whether a frame source has raw data
-    bool PreviewWidget::hasRawFrame(const FrameSourceState& frameState) const
-    {
-        return frameState.rawFrame.isValid();
     }
 
     // Copies frame source state under the preview mutex
@@ -1386,7 +1329,7 @@ namespace scopeone::ui
             const QString& sourceId = it.key();
             const FrameSourceState& frameState = it.value();
             const bool hasProcessedFrame = frameState.processedFrame.isValid();
-            const bool hasRawFrameNow = hasRawFrame(frameState);
+            const bool hasRawFrameNow = frameState.rawFrame.isValid();
             if (hasProcessedFrame || hasRawFrameNow)
             {
                 frameSourceRenderInfos.push_back({sourceId, &frameState, hasProcessedFrame, hasRawFrameNow});
@@ -1413,29 +1356,14 @@ namespace scopeone::ui
                                                QRect& displayRect,
                                                QSize& imageSize) const
     {
-        if (processed)
+        const ImageFrame& frame = processed ? frameState.processedFrame : frameState.rawFrame;
+        if (!frame.isValid())
         {
-            if (!frameState.processedFrame.isValid())
-            {
-                return false;
-            }
-            imageSize = frameState.processedFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
+            return false;
         }
-        else
-        {
-            if (!hasRawFrame(frameState))
-            {
-                return false;
-            }
-            imageSize = frameState.rawFrame.size();
-            displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
-        }
-
-        return imageSize.width() > 0
-            && imageSize.height() > 0
-            && displayRect.width() > 0
-            && displayRect.height() > 0;
+        imageSize = frame.size();
+        displayRect = targetRectForImageSize(imageSize, frameState, layerKey, area);
+        return displayRect.width() > 0 && displayRect.height() > 0;
     }
 
     // Resolves the displayed geometry for one active layer
@@ -1453,7 +1381,7 @@ namespace scopeone::ui
 
         for (const RenderItem& item : renderItems)
         {
-            if (item.layerKey != layerKey || !item.info || !item.info->frameState)
+            if (item.layerKey != layerKey)
             {
                 continue;
             }
@@ -1618,11 +1546,7 @@ namespace scopeone::ui
                                    const ImageSceneModel::Markup& markup,
                                    const RenderItem& item) const
     {
-        if (item.layerKey != markup.layerKey || !item.info || !item.info->frameState)
-        {
-            return false;
-        }
-        if (!markup.visible)
+        if (item.layerKey != markup.layerKey || !markup.visible)
         {
             return false;
         }
@@ -1638,6 +1562,15 @@ namespace scopeone::ui
             return false;
         }
         const QRect imageBounds(QPoint(0, 0), imageSize);
+        const auto toWidget = [this, &item](const QPoint& imagePos, QPoint& widgetPos)
+        {
+            return mapImagePositionToWidget(*item.info->frameState,
+                                            item.processed,
+                                            item.layerKey,
+                                            item.area,
+                                            imagePos,
+                                            widgetPos);
+        };
 
         QPen linePen(QColor(255, 210, 0));
         linePen.setWidth(markup.selected ? 3 : 2);
@@ -1655,18 +1588,8 @@ namespace scopeone::ui
             }
             QPoint startWidget;
             QPoint endWidget;
-            if (!mapImagePositionToWidget(*item.info->frameState,
-                                          item.processed,
-                                          item.layerKey,
-                                          item.area,
-                                          startImage,
-                                          startWidget)
-                || !mapImagePositionToWidget(*item.info->frameState,
-                                             item.processed,
-                                             item.layerKey,
-                                             item.area,
-                                             endImage,
-                                             endWidget))
+            if (!toWidget(startImage, startWidget)
+                || !toWidget(endImage, endWidget))
             {
                 return false;
             }
@@ -1689,12 +1612,7 @@ namespace scopeone::ui
         {
             QPoint center;
             if (!imageBounds.contains(markup.start)
-                || !mapImagePositionToWidget(*item.info->frameState,
-                                             item.processed,
-                                             item.layerKey,
-                                             item.area,
-                                             markup.start,
-                                             center))
+                || !toWidget(markup.start, center))
             {
                 return false;
             }
@@ -1717,12 +1635,7 @@ namespace scopeone::ui
             for (const QPoint& corner : markup.points)
             {
                 QPoint widgetCorner;
-                if (!mapImagePositionToWidget(*item.info->frameState,
-                                              item.processed,
-                                              item.layerKey,
-                                              item.area,
-                                              corner,
-                                              widgetCorner))
+                if (!toWidget(corner, widgetCorner))
                 {
                     return false;
                 }
@@ -1759,18 +1672,8 @@ namespace scopeone::ui
             {
                 return false;
             }
-            if (!mapImagePositionToWidget(*item.info->frameState,
-                                          item.processed,
-                                          item.layerKey,
-                                          item.area,
-                                          imageRect.topLeft(),
-                                          topLeft)
-                || !mapImagePositionToWidget(*item.info->frameState,
-                                             item.processed,
-                                             item.layerKey,
-                                             item.area,
-                                             imageRect.bottomRight(),
-                                             bottomRight))
+            if (!toWidget(imageRect.topLeft(), topLeft)
+                || !toWidget(imageRect.bottomRight(), bottomRight))
             {
                 return false;
             }
@@ -1884,7 +1787,7 @@ namespace scopeone::ui
         QSet<QRect> drawnAreas;
         for (const RenderItem& item : renderItems)
         {
-            if (!item.info || !item.info->frameState || drawnAreas.contains(item.area))
+            if (drawnAreas.contains(item.area))
             {
                 continue;
             }
@@ -1897,11 +1800,6 @@ namespace scopeone::ui
                                         item.area,
                                         displayRect,
                                         imageSize))
-            {
-                continue;
-            }
-
-            if (imageSize.width() <= 0 || displayRect.width() <= 0)
             {
                 continue;
             }
@@ -2010,17 +1908,15 @@ namespace scopeone::ui
         const bool overlay = m_layerLayoutMode == LayerLayoutMode::Overlay
                              && renderItems.size() > 1;
         bool overlayBadgeDrawn = false;
+        // The overlay is labeled by one layer. When the active layer is hidden it is not among the
+        // items, and the first shown layer takes the label, or the overlay would have none.
+        const QString overlayLabelKey = activeItemOr(renderItems, renderItems.front()).layerKey;
 
         for (const auto& item : renderItems)
         {
-            if (!item.info || !item.info->frameState)
-            {
-                continue;
-            }
-
             if (overlay)
             {
-                if (!m_activeLayerKey.isEmpty() && item.layerKey != m_activeLayerKey)
+                if (item.layerKey != overlayLabelKey)
                 {
                     continue;
                 }
@@ -2091,7 +1987,7 @@ namespace scopeone::ui
 
             for (const RenderItem& item : renderItems)
             {
-                if (item.layerKey != markup.layerKey || !item.info || !item.info->frameState)
+                if (item.layerKey != markup.layerKey)
                 {
                     continue;
                 }
@@ -2109,6 +2005,15 @@ namespace scopeone::ui
                     continue;
                 }
 
+                const auto toWidget = [this, &item](const QPoint& markupPos, QPoint& widgetPoint)
+                {
+                    return mapImagePositionToWidget(*item.info->frameState,
+                                                    item.processed,
+                                                    item.layerKey,
+                                                    item.area,
+                                                    markupPos,
+                                                    widgetPoint);
+                };
                 QPoint imagePos;
                 if (!mapWidgetPositionToImage(*item.info->frameState,
                                                item.processed,
@@ -2124,18 +2029,8 @@ namespace scopeone::ui
                 {
                     QPoint startWidget;
                     QPoint endWidget;
-                    if (!mapImagePositionToWidget(*item.info->frameState,
-                                                  item.processed,
-                                                  item.layerKey,
-                                                  item.area,
-                                                  markup.start,
-                                                  startWidget)
-                        || !mapImagePositionToWidget(*item.info->frameState,
-                                                     item.processed,
-                                                     item.layerKey,
-                                                     item.area,
-                                                     markup.end,
-                                                     endWidget))
+                    if (!toWidget(markup.start, startWidget)
+                        || !toWidget(markup.end, endWidget))
                     {
                         continue;
                     }
@@ -2159,12 +2054,7 @@ namespace scopeone::ui
                 else if (markup.type == ImageSceneModel::MarkupType::Point)
                 {
                     QPoint center;
-                    if (!mapImagePositionToWidget(*item.info->frameState,
-                                                  item.processed,
-                                                  item.layerKey,
-                                                  item.area,
-                                                  markup.start,
-                                                  center)
+                    if (!toWidget(markup.start, center)
                         || QLineF(QPointF(widgetPos), QPointF(center)).length() > 8.0)
                     {
                         continue;
@@ -2179,12 +2069,7 @@ namespace scopeone::ui
                     {
                         QPoint widgetCorner;
                         mappedAll = mappedAll
-                            && mapImagePositionToWidget(*item.info->frameState,
-                                                        item.processed,
-                                                        item.layerKey,
-                                                        item.area,
-                                                        corner,
-                                                        widgetCorner);
+                            && toWidget(corner, widgetCorner);
                         widgetPolygon << widgetCorner;
                     }
                     if (!mappedAll || widgetPolygon.size() < 3)
@@ -2230,18 +2115,8 @@ namespace scopeone::ui
                 {
                     QPoint topLeft;
                     QPoint bottomRight;
-                    if (!mapImagePositionToWidget(*item.info->frameState,
-                                                  item.processed,
-                                                  item.layerKey,
-                                                  item.area,
-                                                  markup.rect.normalized().topLeft(),
-                                                  topLeft)
-                        || !mapImagePositionToWidget(*item.info->frameState,
-                                                     item.processed,
-                                                     item.layerKey,
-                                                     item.area,
-                                                     markup.rect.normalized().bottomRight(),
-                                                     bottomRight))
+                    if (!toWidget(markup.rect.normalized().topLeft(), topLeft)
+                        || !toWidget(markup.rect.normalized().bottomRight(), bottomRight))
                     {
                         continue;
                     }
@@ -2326,11 +2201,6 @@ namespace scopeone::ui
     // Draws one render item into its assigned area
     void PreviewWidget::drawRenderItem(const RenderItem& item)
     {
-        if (!item.info || !item.info->frameState)
-        {
-            return;
-        }
-
         const FrameSourceState& frameState = *item.info->frameState;
         QRect displayRect;
         QSize imageSize;
@@ -2344,33 +2214,15 @@ namespace scopeone::ui
             return;
         }
 
-        if (item.processed)
-        {
-            drawFrameInRect(item.layerKey,
-                            frameState.processedFrame,
-                            frameState.processedRevision,
-                            displayRect,
-                            item.area,
-                            frameState.flipX,
-                            frameState.flipY,
-                            item.display,
-                            item.firstVisibleInArea);
-            return;
-        }
-
-        if (frameState.rawFrame.isValid())
-        {
-            drawFrameInRect(item.layerKey,
-                            frameState.rawFrame,
-                            frameState.rawRevision,
-                            displayRect,
-                            item.area,
-                            frameState.flipX,
-                            frameState.flipY,
-                            item.display,
-                            item.firstVisibleInArea);
-            return;
-        }
+        drawFrameInRect(item.layerKey,
+                        item.processed ? frameState.processedFrame : frameState.rawFrame,
+                        item.processed ? frameState.processedRevision : frameState.rawRevision,
+                        displayRect,
+                        item.area,
+                        frameState.flipX,
+                        frameState.flipY,
+                        item.display,
+                        item.firstVisibleInArea);
     }
 
     // Draws one image layer as a GPU-displaced surface
@@ -2511,13 +2363,67 @@ namespace scopeone::ui
         painter.restore();
     }
 
+    // Draws each surface layer into its own tile
+    void PreviewWidget::drawSurfaceTiles(const std::vector<RenderItem>& items)
+    {
+        glEnable(GL_SCISSOR_TEST);
+        for (const RenderItem& item : items)
+        {
+            applyScissorForRect(item.area);
+            applyViewportForRect(item.area);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            draw3dSurface(item, cameraForLayer(item.layerKey), item.area);
+        }
+        glDisable(GL_SCISSOR_TEST);
+        applyViewportForRect(rect());
+    }
+
+    // Names each surface tile in a panel at its top and outlines the active one
+    void PreviewWidget::drawSurfaceTileLabels(QPainter& painter,
+                                              const std::vector<RenderItem>& items,
+                                              const QString& titleFormat) const
+    {
+        for (const RenderItem& item : items)
+        {
+            const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
+                .intersected(QRect(item.area.x() + 8, item.area.y() + 8,
+                                   qMax(0, item.area.width() - 16), 42));
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 170));
+            painter.drawRoundedRect(panelRect, 5, 5);
+            painter.setPen(Qt::white);
+            QFont font = painter.font();
+            font.setBold(true);
+            painter.setFont(font);
+            painter.drawText(panelRect.adjusted(8, 4, -8, -4), Qt::AlignLeft | Qt::AlignVCenter,
+                             titleFormat.arg(layerName(item.layerKey)));
+            const bool active = item.layerKey == m_activeLayerKey;
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(active ? QColor(255, 220, 80) : QColor(220, 225, 230, 190), active ? 2 : 1));
+            painter.drawRect(item.area.adjusted(1, 1, -2, -2));
+        }
+    }
+
+    // The item of the active layer, or the given one when the active layer is not among them
+    const PreviewWidget::RenderItem& PreviewWidget::activeItemOr(const std::vector<RenderItem>& items,
+                                                                 const RenderItem& fallback) const
+    {
+        for (const RenderItem& item : items)
+        {
+            if (item.layerKey == m_activeLayerKey)
+            {
+                return item;
+            }
+        }
+        return fallback;
+    }
+
     // Updates the layer info summary text
     void PreviewWidget::updateLayerInfoDisplay()
     {
         if (m_layerFps.isEmpty())
         {
-            m_layerInfoText = QStringLiteral("No image loaded");
-            emit layerInfoTextChanged(m_layerInfoText);
+            emit layerInfoTextChanged(QStringLiteral("No image loaded"));
             return;
         }
 
@@ -2566,8 +2472,7 @@ namespace scopeone::ui
             appendInfoLine(it.key());
         }
 
-        m_layerInfoText = lines.join(QStringLiteral("\n"));
-        emit layerInfoTextChanged(m_layerInfoText);
+        emit layerInfoTextChanged(lines.join(QStringLiteral("\n")));
     }
 
     // Resolves one widget point to the topmost matching preview item
@@ -2591,10 +2496,6 @@ namespace scopeone::ui
         for (auto it = renderItems.crbegin(); it != renderItems.crend(); ++it)
         {
             const RenderItem& item = *it;
-            if (!item.info || !item.info->frameState)
-            {
-                continue;
-            }
             if (!layerFilter.isEmpty() && item.layerKey != layerFilter)
             {
                 continue;
@@ -2674,7 +2575,7 @@ namespace scopeone::ui
 
         for (const RenderItem& item : renderItems)
         {
-            if (!item.info || !item.info->frameState || !item.area.contains(widgetPos))
+            if (!item.area.contains(widgetPos))
             {
                 continue;
             }
@@ -2941,23 +2842,7 @@ namespace scopeone::ui
 
         auto addItem = [&](const FrameSourceRenderInfo* info, bool processed, const QString& layerKey, const QRect& area)
         {
-            if (!info || !info->frameState)
-            {
-                return;
-            }
-            if (processed && !info->hasProcessedFrame)
-            {
-                return;
-            }
-            if (!processed && !info->hasRawFrame)
-            {
-                return;
-            }
-            LayerDisplaySettings display = layerDisplaySettings(layerKey);
-            if (!display.visible)
-            {
-                return;
-            }
+            const LayerDisplaySettings display = layerDisplaySettings(layerKey);
             const bool firstVisibleInArea = std::none_of(items.cbegin(), items.cend(),
                                                          [&area](const RenderItem& item)
                                                          {
@@ -3074,16 +2959,7 @@ namespace scopeone::ui
                 }
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
                 glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-                glEnable(GL_SCISSOR_TEST);
-                for (const RenderItem& item : surfaceItems)
-                {
-                    applyScissorForRect(item.area);
-                    applyViewportForRect(item.area);
-                    glClear(GL_DEPTH_BUFFER_BIT);
-                    draw3dSurface(item, cameraForLayer(item.layerKey), item.area);
-                }
-                glDisable(GL_SCISSOR_TEST);
-                applyViewportForRect(rect());
+                drawSurfaceTiles(surfaceItems);
 
                 QPainter p(this);
                 p.setRenderHint(QPainter::Antialiasing, true);
@@ -3097,37 +2973,11 @@ namespace scopeone::ui
                     drawScaleBar(p, flatItems);
                 }
                 drawTileLabelsAndBadges(p, flatItems);
-                for (const RenderItem& item : surfaceItems)
-                {
-                    const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
-                        .intersected(QRect(item.area.x() + 8, item.area.y() + 8,
-                                           qMax(0, item.area.width() - 16), 42));
-                    p.setPen(Qt::NoPen);
-                    p.setBrush(QColor(0, 0, 0, 170));
-                    p.drawRoundedRect(panelRect, 5, 5);
-                    p.setPen(Qt::white);
-                    QFont font = p.font();
-                    font.setBold(true);
-                    p.setFont(font);
-                    p.drawText(panelRect.adjusted(8, 4, -8, -4), Qt::AlignLeft | Qt::AlignVCenter,
-                               tr("3D: %1").arg(layerName(item.layerKey)));
-                    p.setBrush(Qt::NoBrush);
-                    p.setPen(QPen(item.layerKey == m_activeLayerKey ? QColor(255, 220, 80) : QColor(220, 225, 230, 190),
-                                  item.layerKey == m_activeLayerKey ? 2 : 1));
-                    p.drawRect(item.area.adjusted(1, 1, -2, -2));
-                }
+                drawSurfaceTileLabels(p, surfaceItems, tr("3D: %1"));
                 if (m_threeDimensionalColorbarVisible)
                 {
-                    const RenderItem* activeSurface = &surfaceItems.front();
-                    for (const RenderItem& item : surfaceItems)
-                    {
-                        if (item.layerKey == m_activeLayerKey)
-                        {
-                            activeSurface = &item;
-                            break;
-                        }
-                    }
-                    draw3dColorbar(p, *activeSurface, activeSurface->area);
+                    const RenderItem& activeSurface = activeItemOr(surfaceItems, surfaceItems.front());
+                    draw3dColorbar(p, activeSurface, activeSurface.area);
                 }
                 return;
             }
@@ -3135,57 +2985,15 @@ namespace scopeone::ui
             {
                 if (m_layerLayoutMode == LayerLayoutMode::SideBySide)
                 {
-                    glEnable(GL_SCISSOR_TEST);
-                    for (const RenderItem& item : renderItems)
-                    {
-                        applyScissorForRect(item.area);
-                        applyViewportForRect(item.area);
-                        glClear(GL_DEPTH_BUFFER_BIT);
-                        draw3dSurface(item,
-                                      cameraForLayer(item.layerKey),
-                                      item.area);
-                    }
-                    glDisable(GL_SCISSOR_TEST);
-                    applyViewportForRect(rect());
+                    drawSurfaceTiles(renderItems);
 
                     QPainter p(this);
                     p.setRenderHint(QPainter::Antialiasing, true);
-                    for (const RenderItem& item : renderItems)
-                    {
-                        const QRect panelRect = item.area.adjusted(8, 8, -8, -8)
-                            .intersected(QRect(item.area.x() + 8,
-                                               item.area.y() + 8,
-                                               qMax(0, item.area.width() - 16),
-                                               42));
-                        p.setPen(Qt::NoPen);
-                        p.setBrush(QColor(0, 0, 0, 170));
-                        p.drawRoundedRect(panelRect, 5, 5);
-                        p.setPen(Qt::white);
-                        QFont font = p.font();
-                        font.setBold(true);
-                        p.setFont(font);
-                        p.drawText(panelRect.adjusted(8, 4, -8, -4),
-                                   Qt::AlignLeft | Qt::AlignVCenter,
-                                   layerName(item.layerKey));
-                        p.setPen(item.layerKey == m_activeLayerKey
-                                     ? QColor(255, 220, 80)
-                                     : QColor(220, 225, 230, 190));
-                        p.setBrush(Qt::NoBrush);
-                        p.setPen(QPen(p.pen().color(), item.layerKey == m_activeLayerKey ? 2 : 1));
-                        p.drawRect(item.area.adjusted(1, 1, -2, -2));
-                    }
+                    drawSurfaceTileLabels(p, renderItems, QStringLiteral("%1"));
                     if (m_threeDimensionalColorbarVisible)
                     {
-                        const RenderItem* activeItem = &renderItems.front();
-                        for (const RenderItem& item : renderItems)
-                        {
-                            if (item.layerKey == m_activeLayerKey)
-                            {
-                                activeItem = &item;
-                                break;
-                            }
-                        }
-                        draw3dColorbar(p, *activeItem, activeItem->area);
+                        const RenderItem& activeItem = activeItemOr(renderItems, renderItems.front());
+                        draw3dColorbar(p, activeItem, activeItem.area);
                     }
                     p.setPen(QColor(220, 225, 230, 190));
                     p.drawText(QRect(12, height() - 28, width() - 24, 18),
@@ -3194,15 +3002,7 @@ namespace scopeone::ui
                     return;
                 }
 
-                const RenderItem* surfaceItem = &renderItems.back();
-                for (const RenderItem& item : renderItems)
-                {
-                    if (item.layerKey == m_activeLayerKey)
-                    {
-                        surfaceItem = &item;
-                        break;
-                    }
-                }
+                const RenderItem* surfaceItem = &activeItemOr(renderItems, renderItems.back());
 
                 glDisable(GL_SCISSOR_TEST);
                 applyViewportForRect(rect());
@@ -3584,13 +3384,10 @@ namespace scopeone::ui
 
         glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlign);
         const int bytesPerPixel = (uploadType == GL_UNSIGNED_SHORT) ? 2 : 1;
-        if (frame.stride > 0)
+        const int rowPixels = frame.stride / bytesPerPixel;
+        if (rowPixels != frame.width)
         {
-            const int rowPixels = frame.stride / bytesPerPixel;
-            if (rowPixels != frame.width)
-            {
-                glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
-            }
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, rowPixels);
         }
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                         frame.width, frame.height,
@@ -3615,11 +3412,6 @@ namespace scopeone::ui
         if (!frame.isValid() || displayRect.width() <= 0 || displayRect.height() <= 0) return;
 
         ensureGlPipeline();
-
-        if (!frame.isMono8() && !frame.isMono16())
-        {
-            return;
-        }
 
         const GLint internalFormat = frame.isMono16() ? GL_R16 : GL_R8;
         const GLuint texId = ensureFrameTexture(textureKey, frame, frameRevision);
@@ -3738,14 +3530,8 @@ namespace scopeone::ui
             return;
         }
 
-        const qreal dpr = devicePixelRatioF();
-        const int totalHeightPx = qMax(1, qRound(height() * dpr));
-        const int xPx = qRound(logicalRect.x() * dpr);
-        const int yPx = qRound(logicalRect.y() * dpr);
-        const int wPx = qMax(1, qRound(logicalRect.width() * dpr));
-        const int hPx = qMax(1, qRound(logicalRect.height() * dpr));
-        const int glY = totalHeightPx - hPx - yPx;
-        glViewport(xPx, glY, wPx, hPx);
+        const QRect device = deviceRect(logicalRect);
+        glViewport(device.x(), device.y(), device.width(), device.height());
     }
 
     // Applies an OpenGL scissor rectangle in logical widget coordinates
@@ -3758,14 +3544,20 @@ namespace scopeone::ui
             return;
         }
 
+        const QRect device = deviceRect(clippedRect);
+        glScissor(device.x(), device.y(), device.width(), device.height());
+    }
+
+    // A rectangle of the widget in device pixels, measured from the bottom as OpenGL does
+    QRect PreviewWidget::deviceRect(const QRect& logicalRect) const
+    {
         const qreal dpr = devicePixelRatioF();
         const int totalHeightPx = qMax(1, qRound(height() * dpr));
-        const int xPx = qRound(clippedRect.x() * dpr);
-        const int yPx = qRound(clippedRect.y() * dpr);
-        const int wPx = qMax(1, qRound(clippedRect.width() * dpr));
-        const int hPx = qMax(1, qRound(clippedRect.height() * dpr));
-        const int glY = totalHeightPx - hPx - yPx;
-        glScissor(xPx, glY, wPx, hPx);
+        const int xPx = qRound(logicalRect.x() * dpr);
+        const int yPx = qRound(logicalRect.y() * dpr);
+        const int wPx = qMax(1, qRound(logicalRect.width() * dpr));
+        const int hPx = qMax(1, qRound(logicalRect.height() * dpr));
+        return QRect(xPx, totalHeightPx - hPx - yPx, wPx, hPx);
     }
 
     // Returns an existing texture or creates one with matching shape
@@ -4087,11 +3879,7 @@ namespace scopeone::ui
                 event->accept();
                 return;
             }
-            if (m_activeLayerKey != layerKey)
-            {
-                setActiveLayerKey(layerKey);
-                emit layerClicked(layerKey);
-            }
+            activateLayer(layerKey);
             m_surfaceLayerKey = layerKey;
             Camera3dState& camera = cameraForLayer(layerKey);
             if (event->button() == Qt::LeftButton)
@@ -4126,29 +3914,11 @@ namespace scopeone::ui
 
             setActiveLayerKey(target.layerKey);
             emit layerClicked(target.layerKey);
-            const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
             ViewportState& viewport = viewportStateForLayer(target.layerKey);
             if (viewport.fitToWindow)
             {
-                const QPointF relativePos(
-                    static_cast<double>(event->pos().x() - target.displayRect.x())
-                        / static_cast<double>(target.displayRect.width()),
-                    static_cast<double>(event->pos().y() - target.displayRect.y())
-                        / static_cast<double>(target.displayRect.height()));
                 viewport.fitToWindow = false;
-                QRect newRect;
-                QSize imageSize;
-                if (resolveDisplayGeometry(frameState,
-                                            target.processed,
-                                            target.layerKey,
-                                            target.itemArea,
-                                            newRect,
-                                            imageSize))
-                {
-                    const int desiredX = qRound(event->pos().x() - relativePos.x() * newRect.width());
-                    const int desiredY = qRound(event->pos().y() - relativePos.y() * newRect.height());
-                    viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
-                }
+                keepImagePointAt(target, event->pos(), relativePosition(event->pos(), target.displayRect));
                 emit fitToWindowChanged(false);
             }
             m_viewPanning = true;
@@ -4330,11 +4100,7 @@ namespace scopeone::ui
             const QString layerKey = layerKeyAt3dPosition(event->pos());
             if (!layerKey.isEmpty())
             {
-                if (m_activeLayerKey != layerKey)
-                {
-                    setActiveLayerKey(layerKey);
-                    emit layerClicked(layerKey);
-                }
+                activateLayer(layerKey);
                 reset3dCamera();
             }
             event->accept();
@@ -4630,18 +4396,12 @@ namespace scopeone::ui
                 event->accept();
                 return;
             }
-            if (m_activeLayerKey != layerKey)
-            {
-                setActiveLayerKey(layerKey);
-                emit layerClicked(layerKey);
-            }
+            activateLayer(layerKey);
             Camera3dState& camera = cameraForLayer(layerKey);
             const int deltaY = event->angleDelta().y();
             if (deltaY != 0)
             {
-                const int steps = (deltaY / 120 != 0)
-                    ? (deltaY / 120)
-                    : ((deltaY > 0) ? 1 : -1);
+                const int steps = wheelSteps(deltaY);
                 camera.distance = qBound(0.8f,
                                           camera.distance * std::pow(0.88f,
                                                                       static_cast<float>(steps)),
@@ -4672,18 +4432,10 @@ namespace scopeone::ui
             return;
         }
 
-        if (m_activeLayerKey != target.layerKey)
-        {
-            setActiveLayerKey(target.layerKey);
-            emit layerClicked(target.layerKey);
-        }
+        activateLayer(target.layerKey);
 
-        const int steps = (deltaY / 120 != 0) ? (deltaY / 120) : ((deltaY > 0) ? 1 : -1);
-        const QPointF relativePos(
-            static_cast<double>(widgetPos.x() - target.displayRect.x())
-                / static_cast<double>(target.displayRect.width()),
-            static_cast<double>(widgetPos.y() - target.displayRect.y())
-                / static_cast<double>(target.displayRect.height()));
+        const int steps = wheelSteps(deltaY);
+        const QPointF relativePos = relativePosition(widgetPos, target.displayRect);
         ViewportState& viewport = viewportStateForLayer(target.layerKey);
         const bool wasFitToWindow = viewport.fitToWindow;
         viewport.fitToWindow = false;
@@ -4694,7 +4446,40 @@ namespace scopeone::ui
             emit fitToWindowChanged(false);
         }
         emit zoomLevelChanged(viewport.zoomPercent);
+        keepImagePointAt(target, widgetPos, relativePos);
+        update();
+        event->accept();
+    }
 
+    // Makes a layer the active one, as a click on it does
+    void PreviewWidget::activateLayer(const QString& layerKey)
+    {
+        if (m_activeLayerKey != layerKey)
+        {
+            setActiveLayerKey(layerKey);
+            emit layerClicked(layerKey);
+        }
+    }
+
+    // Wheel notches in a wheel delta, at least one for any movement
+    int PreviewWidget::wheelSteps(int deltaY)
+    {
+        return deltaY / 120 != 0 ? deltaY / 120 : (deltaY > 0 ? 1 : -1);
+    }
+
+    // Where a point lies in a rectangle, from 0 to 1 along each side
+    QPointF PreviewWidget::relativePosition(const QPoint& widgetPos, const QRect& rect)
+    {
+        return QPointF(static_cast<double>(widgetPos.x() - rect.x()) / static_cast<double>(rect.width()),
+                       static_cast<double>(widgetPos.y() - rect.y()) / static_cast<double>(rect.height()));
+    }
+
+    // Moves the view of a layer after its zoom changed, so the image point that was at the
+    // relative position of its old display rectangle is under the widget position again
+    void PreviewWidget::keepImagePointAt(const PreviewInteractionTarget& target,
+                                         const QPoint& widgetPos,
+                                         const QPointF& relativePos)
+    {
         const FrameSourceState frameState = snapshotFrameSources().value(target.sourceId);
         QRect newRect;
         QSize imageSize;
@@ -4707,10 +4492,8 @@ namespace scopeone::ui
         {
             const int desiredX = qRound(widgetPos.x() - relativePos.x() * newRect.width());
             const int desiredY = qRound(widgetPos.y() - relativePos.y() * newRect.height());
-            viewport.offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
+            viewportStateForLayer(target.layerKey).offset += QPoint(desiredX - newRect.x(), desiredY - newRect.y());
         }
-        update();
-        event->accept();
     }
 
     // Cancels active drawing modes from keyboard input
@@ -4757,8 +4540,6 @@ namespace scopeone::ui
             event->accept();
             return;
         }
-
-
 
         if (event->key() == Qt::Key_Escape)
         {

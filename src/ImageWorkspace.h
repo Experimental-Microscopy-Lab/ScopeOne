@@ -36,6 +36,7 @@ namespace scopeone::ui
         int frameCount{0};
         bool ready{false};
         bool active{false};
+        QString layerKey;
 
         bool isValid() const { return !id.isEmpty(); }
     };
@@ -102,8 +103,6 @@ namespace scopeone::ui
         double pixelSizeUm(const QString& layerKey) const;
         QString activeLayerKey() const;
         void setActiveLayerKey(const QString& layerKey);
-        scopeone::core::ImageSceneModel* sceneModel(const QString& documentId) const;
-        PreviewWidget* previewWidget(const QString& documentId) const;
         scopeone::core::ImageFrame currentFrame(const QString& documentId = QString()) const;
         bool activateDocument(const QString& documentId);
         bool closeDocument(const QString& documentId);
@@ -146,8 +145,9 @@ namespace scopeone::ui
         void updateViewerToolbar();
         void setActiveDocument(const QString& documentId);
         void publishChannels(Document& document);
+        void applySavedPresentation(Document& document);
         void syncActiveLayer();
-        void updateLineProfile(Document& document);
+        void updateLineProfile();
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
         QWidget* m_viewerHost{nullptr};
