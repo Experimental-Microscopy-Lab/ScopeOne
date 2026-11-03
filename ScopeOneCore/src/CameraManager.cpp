@@ -349,7 +349,7 @@ namespace scopeone::core::internal
         return ok;
     }
 
-    QString CameraManager::getPropertyType(const QString& cameraId, const QString& name)
+    CameraPropertyReadback CameraManager::propertyDetails(const QString& cameraId, const QString& name)
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const QString cacheKey = propertyCacheKey(normalizedId, name);
@@ -357,73 +357,42 @@ namespace scopeone::core::internal
         {
             getProperty(normalizedId, name);
         }
-        return m_propertyDetailsCache.value(cacheKey).type;
+        return m_propertyDetailsCache.value(cacheKey);
+    }
+
+    QString CameraManager::getPropertyType(const QString& cameraId, const QString& name)
+    {
+        return propertyDetails(cameraId, name).type;
     }
 
     bool CameraManager::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).readOnly;
+        return propertyDetails(cameraId, name).readOnly;
     }
 
     bool CameraManager::isPropertyPreInit(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).preInit;
+        return propertyDetails(cameraId, name).preInit;
     }
 
     QStringList CameraManager::getAllowedPropertyValues(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).allowedValues;
+        return propertyDetails(cameraId, name).allowedValues;
     }
 
     bool CameraManager::hasPropertyLimits(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).hasLimits;
+        return propertyDetails(cameraId, name).hasLimits;
     }
 
     double CameraManager::getPropertyLowerLimit(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).lowerLimit;
+        return propertyDetails(cameraId, name).lowerLimit;
     }
 
     double CameraManager::getPropertyUpperLimit(const QString& cameraId, const QString& name)
     {
-        const QString normalizedId = normalizedCameraId(cameraId);
-        const QString cacheKey = propertyCacheKey(normalizedId, name);
-        if (!m_propertyDetailsCache.contains(cacheKey))
-        {
-            getProperty(normalizedId, name);
-        }
-        return m_propertyDetailsCache.value(cacheKey).upperLimit;
+        return propertyDetails(cameraId, name).upperLimit;
     }
 
     bool CameraManager::setROI(const QString& cameraId, int x, int y, int width, int height)

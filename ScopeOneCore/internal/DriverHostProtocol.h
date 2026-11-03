@@ -1,5 +1,7 @@
 #pragma once
 
+#include "scopeone/HardwareTypes.h"
+
 #include <QByteArray>
 #include <QDir>
 #include <QStandardPaths>
@@ -11,9 +13,54 @@
 #include <QtGlobal>
 #include <QtEndian>
 
+#include <utility>
+
 namespace scopeone::core::internal::driverhost
 {
     inline constexpr quint32 kProtocolVersion = 5;
+
+    // The names of the device kinds as the protocol sends them
+    inline constexpr std::pair<HardwareDeviceKind, const char*> kDeviceKindNames[]{
+        {HardwareDeviceKind::Camera, "Camera"},
+        {HardwareDeviceKind::XYStage, "XYStage"},
+        {HardwareDeviceKind::ZStage, "ZStage"},
+        {HardwareDeviceKind::Shutter, "Shutter"},
+        {HardwareDeviceKind::State, "State"},
+        {HardwareDeviceKind::Hub, "Hub"},
+        {HardwareDeviceKind::Serial, "Serial"},
+        {HardwareDeviceKind::Generic, "Generic"},
+        {HardwareDeviceKind::AutoFocus, "AutoFocus"},
+        {HardwareDeviceKind::ImageProcessor, "ImageProcessor"},
+        {HardwareDeviceKind::SignalIO, "SignalIO"},
+        {HardwareDeviceKind::Magnifier, "Magnifier"},
+        {HardwareDeviceKind::SLM, "SLM"},
+        {HardwareDeviceKind::Galvo, "Galvo"},
+        {HardwareDeviceKind::PressurePump, "PressurePump"},
+        {HardwareDeviceKind::VolumetricPump, "VolumetricPump"}};
+
+    inline QString deviceKindName(HardwareDeviceKind kind)
+    {
+        for (const auto& [value, name] : kDeviceKindNames)
+        {
+            if (value == kind)
+            {
+                return QLatin1String(name);
+            }
+        }
+        return QStringLiteral("Unknown");
+    }
+
+    inline HardwareDeviceKind deviceKindFromName(const QString& text)
+    {
+        for (const auto& [value, name] : kDeviceKindNames)
+        {
+            if (text == QLatin1String(name))
+            {
+                return value;
+            }
+        }
+        return HardwareDeviceKind::Unknown;
+    }
     inline constexpr quint32 kMaxControlMessageBytes = 256 * 1024;
 
     inline const QString kEnvelopeKindField = QStringLiteral("kind");

@@ -93,6 +93,8 @@ namespace scopeone::core::internal
 
     private:
         bool activateBackend(CameraBackend::Kind kind);
+        // Reads one property into the cache when it is not there yet
+        CameraPropertyReadback propertyDetails(const QString& cameraId, const QString& name);
 
         ProcessingFrameGate m_processingFrameGate;
         std::unique_ptr<CameraBackend> m_backend;

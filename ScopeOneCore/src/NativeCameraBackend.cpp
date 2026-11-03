@@ -69,7 +69,6 @@ namespace scopeone::core::internal
                     && (stride % bytesPerPixel) == 0
                     && bitsPerSample == ImageFrame::normalizedBitsPerSample(pixelFormat, bitsPerSample)
                     && payloadBytes > 0
-                    && payloadBytes <= (std::numeric_limits<qsizetype>::max)()
                     && generation > 0;
             }
         };
@@ -130,13 +129,6 @@ namespace scopeone::core::internal
             bool startNativeStream();
             bool stopNativeStream();
             void setWorkerPaused(bool paused);
-            void submitWorkerFrames(const QList<ImageFrame>& frames,
-                                    quint64 acquiredFrameCount,
-                                    quint64 recordingToken);
-            void submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token);
-            quint64 tryAcquireWorkerProcessingFrame();
-            quint64 workerRecordingFrameDeliveryToken() const;
-            bool requiresHighRateFrames() const;
             void handleStreamFailure(quint64 generation,
                                      const QString& cameraId,
                                      const QString& error);
@@ -251,9 +243,9 @@ namespace scopeone::core::internal
                     }
 
                     // Copy all recording frames but admit only one live processing frame at a time
-                    const quint64 recordingToken = owner->workerRecordingFrameDeliveryToken();
+                    const quint64 recordingToken = owner->recordingFrameDeliveryToken();
                     const bool requiresAllFrames = recordingToken != 0;
-                    const bool requiresHighRateFrames = owner->requiresHighRateFrames();
+                    const bool requiresHighRateFrames = owner->highRateFrameDeliveryEnabled();
                     const bool deliverLatest = requiresAllFrames
                         || !m_deliveryTimer.isValid()
                         || m_deliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs;
@@ -270,7 +262,7 @@ namespace scopeone::core::internal
                         ++frameCount;
                         const bool latestFrame = remaining == 0;
                         const quint64 processingToken = requiresHighRateFrames && latestFrame
-                            ? owner->tryAcquireWorkerProcessingFrame()
+                            ? owner->tryAcquireProcessingFrame(m_configuration.cameraId)
                             : 0;
                         const bool processingFrameSelected = processingToken != 0;
                         const bool previewFrameSelected = latestFrame && deliverLatest;
@@ -298,7 +290,7 @@ namespace scopeone::core::internal
                         memcpy(frame.bytes.data(), pixels, static_cast<size_t>(payloadByteCount));
                         if (processingFrameSelected)
                         {
-                            owner->submitWorkerProcessingFrame(frame, processingToken);
+                            owner->submitProcessingFrame(frame, processingToken);
                         }
                         if (requiresAllFrames || previewFrameSelected)
                         {
@@ -311,9 +303,9 @@ namespace scopeone::core::internal
                         m_pendingAcquiredFrameCount = 0;
                         if (!frames.isEmpty())
                         {
-                            owner->submitWorkerFrames(frames,
-                                                      static_cast<quint64>(frameCount),
-                                                      recordingToken);
+                            owner->submitFrames(frames,
+                                                static_cast<quint64>(frameCount),
+                                                recordingToken);
                         }
                     }
                     else
@@ -324,9 +316,9 @@ namespace scopeone::core::internal
                             const quint64 acquiredFrameCount = m_pendingAcquiredFrameCount;
                             m_pendingAcquiredFrameCount = 0;
                             m_deliveryTimer.restart();
-                            owner->submitWorkerFrames(frames,
-                                                      acquiredFrameCount,
-                                                      recordingToken);
+                            owner->submitFrames(frames,
+                                                acquiredFrameCount,
+                                                recordingToken);
                         }
                     }
                     updatePollingInterval(frameCount);
@@ -534,7 +526,7 @@ namespace scopeone::core::internal
                 || payloadByteCount <= 0)
             {
                 return false;
-        }
+            }
 
             ImageFrame captured;
             captured.cameraId = m_cameraId;
@@ -547,10 +539,10 @@ namespace scopeone::core::internal
             try
             {
                 bitsPerSample = static_cast<int>(m_core->getImageBitDepth());
-        }
+            }
             catch (const CMMError&)
             {
-        }
+            }
             captured.bitsPerSample =
                 ImageFrame::normalizedBitsPerSample(captured.pixelFormat, bitsPerSample);
             captured.sourceRoiWidth = captured.width;
@@ -562,14 +554,14 @@ namespace scopeone::core::internal
                                captured.sourceRoiY,
                                captured.sourceRoiWidth,
                                captured.sourceRoiHeight);
-        }
+            }
             catch (const CMMError&)
             {
                 captured.sourceRoiX = 0;
                 captured.sourceRoiY = 0;
                 captured.sourceRoiWidth = captured.width;
                 captured.sourceRoiHeight = captured.height;
-        }
+            }
             captured.frameIndex = m_lastFrameIndex.fetch_add(1, std::memory_order_relaxed) + 1;
             captured.timestampNs =
                 static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
@@ -578,7 +570,7 @@ namespace scopeone::core::internal
             if (!captured.isValid())
             {
                 return false;
-        }
+            }
             frame = std::move(captured);
             return true;
         }
@@ -976,11 +968,6 @@ namespace scopeone::core::internal
         // Starts continuous MMCore acquisition and the native frame worker
         bool NativeCameraBackend::startNativeStream()
         {
-            if (!m_core || !m_worker || !m_streamThread.isRunning())
-            {
-                return false;
-            }
-
             try
             {
                 m_core->setCameraDevice(m_cameraId.toStdString().c_str());
@@ -998,8 +985,7 @@ namespace scopeone::core::internal
                     || width > static_cast<unsigned>((std::numeric_limits<int>::max)())
                     || height > static_cast<unsigned>((std::numeric_limits<int>::max)())
                     || stride > (std::numeric_limits<int>::max)()
-                    || payloadByteCount <= 0
-                    || payloadByteCount > (std::numeric_limits<qsizetype>::max)())
+                    || payloadByteCount <= 0)
                 {
                     return false;
                 }
@@ -1122,15 +1108,11 @@ namespace scopeone::core::internal
             m_activeGeneration = 0;
             m_sequenceSuspended.store(false);
 
-            bool workerStopped = !m_worker || !m_streamThread.isRunning();
-            if (m_worker && m_streamThread.isRunning())
-            {
-                NativeFrameWorker* const worker = m_worker;
-                workerStopped = QMetaObject::invokeMethod(
-                    worker,
-                    [worker]() { worker->stop(); },
-                    Qt::BlockingQueuedConnection);
-            }
+            NativeFrameWorker* const worker = m_worker;
+            const bool workerStopped = QMetaObject::invokeMethod(
+                worker,
+                [worker]() { worker->stop(); },
+                Qt::BlockingQueuedConnection);
             discardPendingPreviewFrames();
 
             bool sequenceStopped = true;
@@ -1152,47 +1134,11 @@ namespace scopeone::core::internal
         // Applies capture suspension on the native frame worker thread
         void NativeCameraBackend::setWorkerPaused(bool paused)
         {
-            if (!m_worker || !m_streamThread.isRunning())
-            {
-                return;
-            }
             NativeFrameWorker* const worker = m_worker;
             QMetaObject::invokeMethod(
                 worker,
                 [worker, paused]() { worker->setPaused(paused); },
                 Qt::BlockingQueuedConnection);
-        }
-
-        // Routes one native worker batch through shared frame delivery
-        void NativeCameraBackend::submitWorkerFrames(const QList<ImageFrame>& frames,
-                                                      quint64 acquiredFrameCount,
-                                                      quint64 recordingToken)
-        {
-            submitFrames(frames, acquiredFrameCount, recordingToken);
-        }
-
-        // Publishes one admitted native frame for processing
-        void NativeCameraBackend::submitWorkerProcessingFrame(const ImageFrame& frame, quint64 token)
-        {
-            submitProcessingFrame(frame, token);
-        }
-
-        // Requests one processing permit for the native camera
-        quint64 NativeCameraBackend::tryAcquireWorkerProcessingFrame()
-        {
-            return tryAcquireProcessingFrame(m_cameraId);
-        }
-
-        // Captures the recording generation used by the worker batch
-        quint64 NativeCameraBackend::workerRecordingFrameDeliveryToken() const
-        {
-            return recordingFrameDeliveryToken();
-        }
-
-        // Reports whether the worker should publish at processing rate
-        bool NativeCameraBackend::requiresHighRateFrames() const
-        {
-            return highRateFrameDeliveryEnabled();
         }
 
         // Handles failures only for the currently active stream generation

@@ -42,27 +42,6 @@ namespace scopeone::core::internal
         constexpr int kControlReadyTimeoutMs = 15000;
         constexpr int kControlRequestTimeoutMs = 10000;
 
-        HardwareDeviceKind deviceKindFromName(const QString& name)
-        {
-            if (name == QStringLiteral("Camera")) return HardwareDeviceKind::Camera;
-            if (name == QStringLiteral("XYStage")) return HardwareDeviceKind::XYStage;
-            if (name == QStringLiteral("ZStage")) return HardwareDeviceKind::ZStage;
-            if (name == QStringLiteral("Shutter")) return HardwareDeviceKind::Shutter;
-            if (name == QStringLiteral("State")) return HardwareDeviceKind::State;
-            if (name == QStringLiteral("Hub")) return HardwareDeviceKind::Hub;
-            if (name == QStringLiteral("Serial")) return HardwareDeviceKind::Serial;
-            if (name == QStringLiteral("Generic")) return HardwareDeviceKind::Generic;
-            if (name == QStringLiteral("AutoFocus")) return HardwareDeviceKind::AutoFocus;
-            if (name == QStringLiteral("ImageProcessor")) return HardwareDeviceKind::ImageProcessor;
-            if (name == QStringLiteral("SignalIO")) return HardwareDeviceKind::SignalIO;
-            if (name == QStringLiteral("Magnifier")) return HardwareDeviceKind::Magnifier;
-            if (name == QStringLiteral("SLM")) return HardwareDeviceKind::SLM;
-            if (name == QStringLiteral("Galvo")) return HardwareDeviceKind::Galvo;
-            if (name == QStringLiteral("PressurePump")) return HardwareDeviceKind::PressurePump;
-            if (name == QStringLiteral("VolumetricPump")) return HardwareDeviceKind::VolumetricPump;
-            return HardwareDeviceKind::Unknown;
-        }
-
         bool responseSucceeded(const QJsonObject& response, QString* errorMessage)
         {
             if (response.value(QStringLiteral("ok")).toBool(false))
@@ -241,7 +220,7 @@ namespace scopeone::core::internal
                     object.value(driverhost::kProviderDeviceIdField).toString();
                 device.hardwareId = object.value(driverhost::kHardwareIdField).toString();
                 device.name = object.value(driverhost::kDeviceNameField).toString();
-                device.kind = deviceKindFromName(
+                device.kind = driverhost::deviceKindFromName(
                     object.value(driverhost::kDeviceKindField).toString());
                 device.state = static_cast<HardwareDeviceState>(
                     object.value(driverhost::kDeviceStateField)
@@ -574,147 +553,31 @@ namespace scopeone::core::internal
 
         bool ensureSharedMemory(Reader& reader)
         {
-            const int expectedSize =
-                kSharedMemoryControlSize + kSharedFrameNumSlots * kSharedFrameSlotStride;
-            if (reader.shm->isAttached())
-            {
-                return reader.shm->size() >= expectedSize;
-            }
-            if (!reader.shm->attach(QSharedMemory::ReadWrite))
-            {
-                return false;
-            }
-            if (reader.shm->size() >= expectedSize)
-            {
-                return true;
-            }
-            reader.shm->detach();
-            return false;
-        }
-
-        bool copyFrame(Reader& reader,
-                       const SharedFrameHeader& header,
-                       const uchar* pixels,
-                       QList<ImageFrame>& frames)
-        {
-            QByteArray payload;
-            payload.resize(static_cast<qsizetype>(sharedframe::payloadSize(header)));
-            memcpy(payload.data(), pixels, static_cast<size_t>(payload.size()));
-            ImageFrame frame = ImageFrame::fromSharedFrame(reader.cameraId, header, payload);
-            if (!frame.isValid()) return false;
-            reader.latestFrame = frame;
-            frames.append(std::move(frame));
-            return true;
+            return sharedframe::attachRing(*reader.shm);
         }
 
         bool readLatest(Reader& reader, QList<ImageFrame>& frames)
         {
-            if (!ensureSharedMemory(reader)) return false;
-            auto* base = static_cast<uchar*>(reader.shm->data());
-            if (!base) return false;
-
-            auto* control = reinterpret_cast<SharedMemoryControl*>(base);
-            SharedFrameHeader capturedHeader{};
-            uchar* capturedSlot = nullptr;
-            auto claim = [&](quint32 index)
+            if (!ensureSharedMemory(reader)
+                || !sharedframe::readLatestFrame(static_cast<uchar*>(reader.shm->data()),
+                                                 reader.cameraId, reader.lastFrameIndex, frames))
             {
-                if (index >= kSharedFrameNumSlots) return false;
-                uchar* slot = base + kSharedMemoryControlSize
-                              + static_cast<int>(index) * kSharedFrameSlotStride;
-                SharedFrameHeader header{};
-                if (!sharedframe::claimSlot(slot, header)) return false;
-                if (header.frameIndex <= reader.lastFrameIndex)
-                {
-                    sharedframe::releaseSlot(slot);
-                    return false;
-                }
-                capturedHeader = header;
-                capturedSlot = slot;
-                return true;
-            };
-
-            const quint32 latest = std::atomic_ref<quint32>(control->latestSlotIndex)
-                                       .load(std::memory_order_acquire);
-            claim(latest);
-            if (!capturedSlot)
-            {
-                quint64 bestIndex = reader.lastFrameIndex;
-                for (int index = 0; index < kSharedFrameNumSlots; ++index)
-                {
-                    uchar* slot = base + kSharedMemoryControlSize
-                                  + index * kSharedFrameSlotStride;
-                    SharedFrameHeader header{};
-                    if (!sharedframe::claimSlot(slot, header)) continue;
-                    if (header.frameIndex > bestIndex)
-                    {
-                        if (capturedSlot) sharedframe::releaseSlot(capturedSlot);
-                        bestIndex = header.frameIndex;
-                        capturedHeader = header;
-                        capturedSlot = slot;
-                    }
-                    else
-                    {
-                        sharedframe::releaseSlot(slot);
-                    }
-                }
+                return false;
             }
-
-            const bool copied = capturedSlot
-                && copyFrame(reader,
-                             capturedHeader,
-                             capturedSlot + kSharedFrameHeaderSize,
-                             frames);
-            if (capturedSlot) sharedframe::releaseSlot(capturedSlot);
-            if (copied) reader.lastFrameIndex = capturedHeader.frameIndex;
-            return copied;
+            reader.latestFrame = frames.constLast();
+            return true;
         }
 
         bool readAll(Reader& reader, QList<ImageFrame>& frames)
         {
-            if (!ensureSharedMemory(reader)) return false;
-            auto* base = static_cast<uchar*>(reader.shm->data());
-            if (!base) return false;
-
-            struct Claimed
+            if (!ensureSharedMemory(reader)
+                || !sharedframe::readNewFrames(static_cast<uchar*>(reader.shm->data()),
+                                               reader.cameraId, reader.lastFrameIndex, frames))
             {
-                uchar* slot{nullptr};
-                SharedFrameHeader header{};
-            };
-            std::vector<Claimed> claimed;
-            claimed.reserve(kSharedFrameNumSlots);
-            for (int index = 0; index < kSharedFrameNumSlots; ++index)
-            {
-                uchar* slot = base + kSharedMemoryControlSize
-                              + index * kSharedFrameSlotStride;
-                SharedFrameHeader header{};
-                if (!sharedframe::claimSlot(slot, header)) continue;
-                if (header.frameIndex > reader.lastFrameIndex)
-                {
-                    claimed.push_back({slot, header});
-                }
-                else
-                {
-                    sharedframe::releaseSlot(slot);
-                }
+                return false;
             }
-            std::sort(claimed.begin(), claimed.end(), [](const Claimed& lhs, const Claimed& rhs)
-            {
-                return lhs.header.frameIndex < rhs.header.frameIndex;
-            });
-            quint64 lastIndex = reader.lastFrameIndex;
-            for (const Claimed& item : claimed)
-            {
-                if (copyFrame(reader,
-                              item.header,
-                              item.slot + kSharedFrameHeaderSize,
-                              frames))
-                {
-                    lastIndex = item.header.frameIndex;
-                }
-                sharedframe::releaseSlot(item.slot);
-            }
-            reader.lastFrameIndex = lastIndex;
-            return !frames.isEmpty();
+            reader.latestFrame = frames.constLast();
+            return true;
         }
 
         void deliverAvailableFrames(const QString& cameraId, bool allFrames)
@@ -1115,31 +978,19 @@ namespace scopeone::core::internal
                                int timeoutMs) override
         {
             QMutexLocker requestLocker(&m_requestMutex);
-            if (!m_worker || !m_workerThread.isRunning()) return false;
             bool ok = false;
             DriverHostProviderTransport* const worker = m_worker;
-            const auto capture = [worker, &ok, &frame, cameraId, timeoutMs]()
-                {
-                    ok = worker->captureEventFrame(cameraId,
-                                                   frame,
-                                                   (std::max)(1, timeoutMs),
-                                                   nullptr);
-                };
-            if (QThread::currentThread() == worker->thread()) capture();
-            else QMetaObject::invokeMethod(worker, capture, Qt::BlockingQueuedConnection);
+            runOnWorker([worker, &ok, &frame, cameraId, timeoutMs]()
+            {
+                ok = worker->captureEventFrame(cameraId, frame, (std::max)(1, timeoutMs), nullptr);
+            });
             return ok;
         }
 
         void setFrameDeliveryPaused(const QStringList&, bool paused) override
         {
-            if (!m_worker || !m_workerThread.isRunning()) return;
             DriverHostProviderTransport* const worker = m_worker;
-            const auto update = [worker, paused]()
-            {
-                worker->setFrameDeliveryPaused(paused);
-            };
-            if (QThread::currentThread() == worker->thread()) update();
-            else QMetaObject::invokeMethod(worker, update, Qt::BlockingQueuedConnection);
+            runOnWorker([worker, paused]() { worker->setFrameDeliveryPaused(paused); });
         }
 
         bool setRecordingFrameDeliveryEnabled(const QStringList&, bool enabled) override
@@ -1445,11 +1296,6 @@ namespace scopeone::core::internal
                      QString* errorMessage) const
         {
             QMutexLocker requestLocker(&m_requestMutex);
-            if (!m_worker || !m_workerThread.isRunning())
-            {
-                if (errorMessage) *errorMessage = QStringLiteral("DriverHost is not running");
-                return false;
-            }
             QJsonObject request = fields;
             request.insert(driverhost::kMessageTypeField, type);
             if (!deviceId.isEmpty())
@@ -1459,15 +1305,13 @@ namespace scopeone::core::internal
             bool transported = false;
             QString transportError;
             DriverHostProviderTransport* const worker = m_worker;
-            const auto send = [worker, request, &response, &transported, &transportError]()
-                {
-                    transported = worker->sendRequest(request,
-                                                      response,
-                                                      kControlRequestTimeoutMs,
-                                                      &transportError);
-                };
-            if (QThread::currentThread() == worker->thread()) send();
-            else QMetaObject::invokeMethod(worker, send, Qt::BlockingQueuedConnection);
+            runOnWorker([worker, request, &response, &transported, &transportError]()
+            {
+                transported = worker->sendRequest(request,
+                                                  response,
+                                                  kControlRequestTimeoutMs,
+                                                  &transportError);
+            });
             if (!transported)
             {
                 if (errorMessage) *errorMessage = transportError;
@@ -1507,16 +1351,23 @@ namespace scopeone::core::internal
         bool setDeliveryMode(const QString& mode)
         {
             QMutexLocker requestLocker(&m_requestMutex);
-            if (!m_worker || !m_workerThread.isRunning()) return false;
             bool ok = false;
             DriverHostProviderTransport* const worker = m_worker;
-            const auto update = [worker, mode, &ok]()
-            {
-                ok = worker->setFrameDeliveryMode(mode, nullptr);
-            };
-            if (QThread::currentThread() == worker->thread()) update();
-            else QMetaObject::invokeMethod(worker, update, Qt::BlockingQueuedConnection);
+            runOnWorker([worker, mode, &ok]() { ok = worker->setFrameDeliveryMode(mode, nullptr); });
             return ok;
+        }
+
+        // Runs a call on the transport thread and waits for it. Frame and preview callbacks
+        // already run there, so a call from them runs directly instead of waiting on itself.
+        template <typename Function>
+        void runOnWorker(Function&& function) const
+        {
+            if (QThread::currentThread() == m_worker->thread())
+            {
+                function();
+                return;
+            }
+            QMetaObject::invokeMethod(m_worker, std::forward<Function>(function), Qt::BlockingQueuedConnection);
         }
 
         static QStringList jsonStringList(const QJsonArray& array)

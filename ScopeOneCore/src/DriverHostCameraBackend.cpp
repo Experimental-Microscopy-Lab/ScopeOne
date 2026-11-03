@@ -44,6 +44,9 @@ namespace scopeone::core::internal
     namespace
     {
         constexpr int kDriverHostControlReadyTimeoutMs = 15000;
+        // Starting a sequence after the image size changed reallocates the 2 GB circular buffer
+        // of the DriverHost MMCore, which takes over a second
+        constexpr int kStartPreviewTimeoutMs = 10000;
         constexpr int kPreviewFrameDeliveryIntervalMs = 16;
 
         enum class DriverHostFrameDeliveryMode
@@ -124,7 +127,8 @@ namespace scopeone::core::internal
                         }
                         setReady(false);
                         failAll(QStringLiteral("Control socket error for '%1'").arg(m_cameraId));
-                        if (m_socket.state() == QLocalSocket::UnconnectedState)
+                        // A failed connect reports its error while the socket is still connecting
+                        if (m_socket.state() != QLocalSocket::ConnectedState)
                         {
                             m_reconnectTimer.start(100);
                         }
@@ -204,16 +208,10 @@ namespace scopeone::core::internal
             m_eventHandlers.push_back(std::move(handler));
         }
 
-        bool sendRequest(const QJsonObject& request,
+        void sendRequest(const QJsonObject& request,
                          int timeoutMs,
                          std::function<void(bool, const QJsonObject&, const QString&)> completion)
         {
-            const QString type = request.value(driverhost::kMessageTypeField).toString();
-            if (type.isEmpty())
-            {
-                return false;
-            }
-
             const quint64 requestId = m_nextRequestId++;
             QJsonObject envelope = request;
             envelope.insert(driverhost::kEnvelopeKindField, driverhost::kMessageKindRequest);
@@ -235,7 +233,6 @@ namespace scopeone::core::internal
             m_sendQueue.push_back(requestId);
             ensureConnected();
             flushPendingWrites();
-            return true;
         }
 
     private:
@@ -448,10 +445,6 @@ namespace scopeone::core::internal
         };
 
         bool ensureSharedMemory(ReaderSlot& slot);
-        bool copyFrame(ReaderSlot& slot,
-                       const SharedFrameHeader& header,
-                       const uchar* pixelData,
-                       QList<ImageFrame>& frames);
         bool readLatestFrame(ReaderSlot& slot,
                              QList<ImageFrame>& frames,
                              quint64& acquiredFrameCount);
@@ -492,7 +485,7 @@ namespace scopeone::core::internal
         bool isPreviewRunning(const QString& cameraId) const override
         {
             const auto it = m_cameras.constFind(cameraId);
-            return it != m_cameras.constEnd() && it.value() && it.value()->isRunning;
+            return it != m_cameras.constEnd() && it.value()->isRunning;
         }
         void setFrameDeliveryPaused(bool paused) override;
         bool setRecordingFrameDeliveryEnabled(bool enabled) override;
@@ -515,7 +508,7 @@ namespace scopeone::core::internal
             for (auto it = m_cameras.begin(); it != m_cameras.end(); ++it)
             {
                 const QString cameraId = it.key();
-                if (it.value() && it.value()->isRunning)
+                if (it.value()->isRunning)
                 {
                     continue;
                 }
@@ -568,7 +561,7 @@ namespace scopeone::core::internal
             QJsonObject req;
             req.insert(driverhost::kMessageTypeField, driverhost::kCommandStartPreview);
             QJsonObject resp;
-            if (!sendControlCommand(cameraId, req, &resp, 1200))
+            if (!sendControlCommand(cameraId, req, &resp, kStartPreviewTimeoutMs))
             {
                 qWarning().noquote() << QString("Failed to connect to camera '%1'").arg(cameraId);
                 return false;
@@ -605,7 +598,7 @@ namespace scopeone::core::internal
         bool stopPreviewFor(const QString& cameraId) override
         {
             const auto it = m_cameras.find(cameraId);
-            if (it == m_cameras.end() || !it.value())
+            if (it == m_cameras.end())
             {
                 return false;
             }
@@ -626,12 +619,8 @@ namespace scopeone::core::internal
                 return false;
             }
 
-            const bool wasRunning = it.value()->isRunning;
             it.value()->isRunning = false;
-            if (wasRunning)
-            {
-                notifyPreviewStopped();
-            }
+            notifyPreviewStopped();
             return true;
         }
 
@@ -640,7 +629,7 @@ namespace scopeone::core::internal
         {
             for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it)
             {
-                if (it.value() && it.value()->isRunning)
+                if (it.value()->isRunning)
                 {
                     return true;
                 }
@@ -923,30 +912,21 @@ namespace scopeone::core::internal
         {
             slot->isRunning = false;
         }
-        if (m_frameWorker && m_frameThread.isRunning())
-        {
-            DriverHostFrameWorker* const worker = m_frameWorker;
-            QMetaObject::invokeMethod(worker,
-                                      [worker]() { worker->clear(); },
-                                      Qt::BlockingQueuedConnection);
-        }
+        DriverHostFrameWorker* const worker = m_frameWorker;
+        QMetaObject::invokeMethod(worker,
+                                  [worker]() { worker->clear(); },
+                                  Qt::BlockingQueuedConnection);
         for (auto& slot : m_cameras)
         {
-            if (slot->control)
+            QJsonObject request;
+            request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
+            sendControlCommand(slot->cameraId, request, nullptr, 800);
+            slot->control->stop();
+            slot->process->terminate();
+            if (!slot->process->waitForFinished(1500))
             {
-                QJsonObject request;
-                request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
-                sendControlCommand(slot->cameraId, request, nullptr, 800);
-                slot->control->stop();
-            }
-            if (slot->process)
-            {
-                slot->process->terminate();
-                if (!slot->process->waitForFinished(1500))
-                {
-                    slot->process->kill();
-                    slot->process->waitForFinished(1000);
-                }
+                slot->process->kill();
+                slot->process->waitForFinished(1000);
             }
         }
         m_cameras.clear();
@@ -992,37 +972,28 @@ namespace scopeone::core::internal
         {
             slot->isRunning = false;
         }
-        if (m_frameWorker && m_frameThread.isRunning())
-        {
-            DriverHostFrameWorker* const worker = m_frameWorker;
-            const QPointer<DriverHostCameraBackend> guardedThis(this);
-            const bool queued = QMetaObject::invokeMethod(
-                worker,
-                [guardedThis, worker]()
-                {
-                    worker->clear();
-                    if (guardedThis)
-                    {
-                        QMetaObject::invokeMethod(
-                            guardedThis.data(),
-                            [guardedThis]()
-                            {
-                                if (guardedThis)
-                                {
-                                    guardedThis->stopDriverHostProcessesAsync();
-                                }
-                            },
-                            Qt::QueuedConnection);
-                    }
-                },
-                Qt::QueuedConnection);
-            if (queued)
+        DriverHostFrameWorker* const worker = m_frameWorker;
+        const QPointer<DriverHostCameraBackend> guardedThis(this);
+        QMetaObject::invokeMethod(
+            worker,
+            [guardedThis, worker]()
             {
-                return;
-            }
-        }
-
-        stopDriverHostProcessesAsync();
+                worker->clear();
+                if (guardedThis)
+                {
+                    QMetaObject::invokeMethod(
+                        guardedThis.data(),
+                        [guardedThis]()
+                        {
+                            if (guardedThis)
+                            {
+                                guardedThis->stopDriverHostProcessesAsync();
+                            }
+                        },
+                        Qt::QueuedConnection);
+                }
+            },
+            Qt::QueuedConnection);
     }
 
     // Request DriverHost exit and fall back to bounded process termination
@@ -1035,12 +1006,9 @@ namespace scopeone::core::internal
 
         for (auto& slot : m_cameras)
         {
-            if (!slot->process || slot->process->state() == QProcess::NotRunning)
+            if (slot->process->state() == QProcess::NotRunning)
             {
-                if (slot->control)
-                {
-                    slot->control->stop();
-                }
+                slot->control->stop();
                 continue;
             }
 
@@ -1065,29 +1033,21 @@ namespace scopeone::core::internal
                         }
                     });
 
-            bool shutdownQueued = false;
-            if (slot->control)
-            {
-                QJsonObject request;
-                request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
-                const QPointer<QProcess> guardedProcess(process);
-                shutdownQueued = slot->control->sendRequest(
-                    request,
-                    800,
-                    [guardedProcess](bool success, const QJsonObject&, const QString&)
+            QJsonObject request;
+            request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
+            const QPointer<QProcess> guardedProcess(process);
+            slot->control->sendRequest(
+                request,
+                800,
+                [guardedProcess](bool success, const QJsonObject&, const QString&)
+                {
+                    if (!success
+                        && guardedProcess
+                        && guardedProcess->state() != QProcess::NotRunning)
                     {
-                        if (!success
-                            && guardedProcess
-                            && guardedProcess->state() != QProcess::NotRunning)
-                        {
-                            guardedProcess->terminate();
-                        }
-                    });
-            }
-            if (!shutdownQueued)
-            {
-                process->terminate();
-            }
+                        guardedProcess->terminate();
+                    }
+                });
         }
 
         if (m_shutdownProcessesRemaining == 0)
@@ -1104,7 +1064,7 @@ namespace scopeone::core::internal
             }
             for (const auto& slot : m_cameras)
             {
-                if (slot->process && slot->process->state() != QProcess::NotRunning)
+                if (slot->process->state() != QProcess::NotRunning)
                 {
                     slot->process->kill();
                 }
@@ -1123,7 +1083,7 @@ namespace scopeone::core::internal
         }
         for (const auto& slot : m_cameras)
         {
-            if (slot->process && slot->process->state() != QProcess::NotRunning)
+            if (slot->process->state() != QProcess::NotRunning)
             {
                 if (!m_shutdownCompletion)
                 {
@@ -1202,53 +1162,33 @@ namespace scopeone::core::internal
         return it != m_readers.end() && ensureSharedMemory(*it.value());
     }
 
-    // Validates and attaches one shared memory reader slot
+    // Attaches one shared memory reader slot
     bool DriverHostFrameWorker::ensureSharedMemory(ReaderSlot& slot)
     {
-        const int expectedSize =
-            kSharedMemoryControlSize + kSharedFrameNumSlots * kSharedFrameSlotStride;
-        if (slot.shm->isAttached())
-        {
-            if (slot.shm->size() >= expectedSize)
-            {
-                return true;
-            }
-            qWarning().noquote()
-                << QString("SHM size mismatch for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
-            slot.shm->detach();
-            return false;
-        }
-        if (!slot.shm->attach(QSharedMemory::ReadWrite))
+        const bool wasAttached = slot.shm->isAttached();
+        if (!sharedframe::attachRing(*slot.shm))
         {
             qWarning().noquote()
-                << QString("SHM attach failed for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
+                << QString("SHM unavailable for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
             return false;
         }
-        if (slot.shm->size() < expectedSize)
+        if (!wasAttached)
         {
-            qWarning().noquote()
-                << QString("SHM layout mismatch for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
-            slot.shm->detach();
-            return false;
+            qInfo().noquote()
+                << QString("SHM attached for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
         }
-        qInfo().noquote()
-            << QString("SHM attached for %1 (key=%2)").arg(slot.cameraId, slot.shmKey);
         return true;
     }
 
     // Wait for one DriverHost control channel to become ready
     bool DriverHostCameraBackend::waitForControlReady(DriverHostCameraSlot& slot, int timeoutMs)
     {
-        return slot.control && slot.control->waitForReady(timeoutMs);
+        return slot.control->waitForReady(timeoutMs);
     }
 
     // Creates one shared memory reader on the dedicated frame thread
     bool DriverHostCameraBackend::addFrameReader(const QString& cameraId, const QString& shmKey)
     {
-        if (!m_frameWorker || !m_frameThread.isRunning())
-        {
-            return false;
-        }
         DriverHostFrameWorker* const worker = m_frameWorker;
         return QMetaObject::invokeMethod(
             worker,
@@ -1259,23 +1199,16 @@ namespace scopeone::core::internal
     // Removes one shared memory reader on the dedicated frame thread
     void DriverHostCameraBackend::removeFrameReader(const QString& cameraId)
     {
-        if (m_frameWorker && m_frameThread.isRunning())
-        {
-            DriverHostFrameWorker* const worker = m_frameWorker;
-            QMetaObject::invokeMethod(
-                worker,
-                [worker, cameraId]() { worker->removeCamera(cameraId); },
-                Qt::BlockingQueuedConnection);
-        }
+        DriverHostFrameWorker* const worker = m_frameWorker;
+        QMetaObject::invokeMethod(
+            worker,
+            [worker, cameraId]() { worker->removeCamera(cameraId); },
+            Qt::BlockingQueuedConnection);
     }
 
     // Attaches one reader before preview begins
     bool DriverHostCameraBackend::prepareFrameReader(const QString& cameraId)
     {
-        if (!m_frameWorker || !m_frameThread.isRunning())
-        {
-            return false;
-        }
         bool attached = false;
         DriverHostFrameWorker* const worker = m_frameWorker;
         const bool invoked = QMetaObject::invokeMethod(
@@ -1293,7 +1226,7 @@ namespace scopeone::core::internal
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const auto it = m_cameras.constFind(normalizedId);
-        if (it == m_cameras.constEnd() || !it.value() || !it.value()->control)
+        if (it == m_cameras.constEnd())
         {
             return false;
         }
@@ -1315,7 +1248,7 @@ namespace scopeone::core::internal
             loop.quit();
         });
 
-        if (!it.value()->control->sendRequest(
+        it.value()->control->sendRequest(
             request,
             (std::max)(1, timeoutMs),
             [&](bool requestOk, const QJsonObject& requestResponse, const QString&)
@@ -1328,10 +1261,7 @@ namespace scopeone::core::internal
                 ok = requestOk;
                 capturedResponse = requestResponse;
                 loop.quit();
-            }))
-        {
-            return false;
-        }
+            });
 
         watchdog.start();
         if (!completed)
@@ -1370,34 +1300,30 @@ namespace scopeone::core::internal
         for (const QString& cameraId : cameraIds)
         {
             const auto it = m_cameras.constFind(cameraId);
-            if (it == m_cameras.constEnd() || !it.value() || !it.value()->control)
+            if (it == m_cameras.constEnd())
             {
                 state->allSucceeded = false;
                 continue;
             }
 
             ++state->pendingRequests;
-            if (!it.value()->control->sendRequest(
-                    request,
-                    1200,
-                    [state](bool requestOk,
-                            const QJsonObject& response,
-                            const QString&)
+            it.value()->control->sendRequest(
+                request,
+                1200,
+                [state](bool requestOk,
+                        const QJsonObject& response,
+                        const QString&)
+                {
+                    if (!requestOk || !response.value(QStringLiteral("ok")).toBool(false))
                     {
-                        if (!requestOk || !response.value(QStringLiteral("ok")).toBool(false))
-                        {
-                            state->allSucceeded = false;
-                        }
-                        --state->pendingRequests;
-                        if (state->pendingRequests == 0 && state->loop)
-                        {
-                            state->loop->quit();
-                        }
-                    }))
-            {
-                --state->pendingRequests;
-                state->allSucceeded = false;
-            }
+                        state->allSucceeded = false;
+                    }
+                    --state->pendingRequests;
+                    if (state->pendingRequests == 0 && state->loop)
+                    {
+                        state->loop->quit();
+                    }
+                });
         }
 
         if (state->pendingRequests > 0)
@@ -1408,108 +1334,20 @@ namespace scopeone::core::internal
         return state->allSucceeded;
     }
 
-    // Copies one claimed shared memory slot into an owned frame
-    bool DriverHostFrameWorker::copyFrame(ReaderSlot& slot,
-                                     const SharedFrameHeader& header,
-                                     const uchar* pixelData,
-                                     QList<ImageFrame>& frames)
-    {
-        const quint64 rawSize = sharedframe::payloadSize(header);
-        QByteArray payload;
-        payload.resize(static_cast<qsizetype>(rawSize));
-        memcpy(payload.data(), pixelData, static_cast<size_t>(rawSize));
-
-        ImageFrame frame = ImageFrame::fromSharedFrame(slot.cameraId, header, payload);
-        if (!frame.isValid())
-        {
-            return false;
-        }
-        slot.latestFrame = frame;
-        frames.append(std::move(frame));
-        return true;
-    }
-
     // Reads only the newest ready frame for responsive preview delivery
     bool DriverHostFrameWorker::readLatestFrame(ReaderSlot& slot,
                                            QList<ImageFrame>& frames,
                                            quint64& acquiredFrameCount)
     {
-        auto* base = static_cast<uchar*>(slot.shm->data());
-        if (!base)
+        const quint64 previousFrameIndex = slot.lastFrameIndex;
+        if (!sharedframe::readLatestFrame(static_cast<uchar*>(slot.shm->data()),
+                                          slot.cameraId, slot.lastFrameIndex, frames))
         {
             return false;
         }
-
-        const int slotStride = kSharedFrameSlotStride;
-        const int baseOffset = kSharedMemoryControlSize;
-        auto* control = reinterpret_cast<SharedMemoryControl*>(base);
-
-        const quint64 previousFrameIndex = slot.lastFrameIndex;
-        SharedFrameHeader capturedHeader{};
-        uchar* capturedSlot = nullptr;
-
-        auto claimCandidate = [&](quint32 idx) -> bool
-        {
-            if (idx >= kSharedFrameNumSlots) return false;
-            uchar* ptr = base + baseOffset + idx * slotStride;
-            SharedFrameHeader header{};
-            if (!sharedframe::claimSlot(ptr, header)) return false;
-            if (header.frameIndex <= slot.lastFrameIndex)
-            {
-                sharedframe::releaseSlot(ptr);
-                return false;
-            }
-            capturedHeader = header;
-            capturedSlot = ptr;
-            return true;
-        };
-
-        const quint32 latestIdx = std::atomic_ref<quint32>(control->latestSlotIndex)
-                                      .load(std::memory_order_acquire);
-        claimCandidate(latestIdx);
-
-        if (!capturedSlot)
-        {
-            quint64 bestIndex = slot.lastFrameIndex;
-            for (int i = 0; i < kSharedFrameNumSlots; ++i)
-            {
-                uchar* ptr = base + baseOffset + i * slotStride;
-                SharedFrameHeader header{};
-                if (!sharedframe::claimSlot(ptr, header)) continue;
-                if (header.frameIndex > bestIndex)
-                {
-                    if (capturedSlot)
-                    {
-                        sharedframe::releaseSlot(capturedSlot);
-                    }
-                    bestIndex = header.frameIndex;
-                    capturedHeader = header;
-                    capturedSlot = ptr;
-                }
-                else
-                {
-                    sharedframe::releaseSlot(ptr);
-                }
-            }
-        }
-
-        const bool ok = capturedSlot
-            && copyFrame(slot,
-                         capturedHeader,
-                         capturedSlot + kSharedFrameHeaderSize,
-                         frames);
-        if (capturedSlot)
-        {
-            sharedframe::releaseSlot(capturedSlot);
-        }
-        if (ok)
-        {
-            slot.lastFrameIndex = capturedHeader.frameIndex;
-            acquiredFrameCount = capturedHeader.frameIndex > previousFrameIndex
-                                     ? capturedHeader.frameIndex - previousFrameIndex
-                                     : 1;
-        }
-        return ok;
+        slot.latestFrame = frames.constLast();
+        acquiredFrameCount = slot.lastFrameIndex - previousFrameIndex;
+        return true;
     }
 
     // Reads every retained shared memory frame in order for recording delivery
@@ -1517,72 +1355,14 @@ namespace scopeone::core::internal
                                          QList<ImageFrame>& frames,
                                          quint64& acquiredFrameCount)
     {
-        auto* base = static_cast<uchar*>(slot.shm->data());
-        if (!base)
+        const quint64 previousFrameIndex = slot.lastFrameIndex;
+        if (!sharedframe::readNewFrames(static_cast<uchar*>(slot.shm->data()),
+                                        slot.cameraId, slot.lastFrameIndex, frames))
         {
             return false;
         }
-
-        const int slotStride = kSharedFrameSlotStride;
-        const int baseOffset = kSharedMemoryControlSize;
-        const quint64 lastIndex = slot.lastFrameIndex;
-
-        struct ClaimedSlot
-        {
-            uchar* ptr{nullptr};
-            SharedFrameHeader header{};
-        };
-        std::vector<ClaimedSlot> claimedSlots;
-        claimedSlots.reserve(kSharedFrameNumSlots);
-
-        for (int i = 0; i < kSharedFrameNumSlots; ++i)
-        {
-            uchar* ptr = base + baseOffset + i * slotStride;
-            SharedFrameHeader header{};
-            if (!sharedframe::claimSlot(ptr, header)) continue;
-            if (header.frameIndex > lastIndex)
-            {
-                claimedSlots.push_back({ptr, header});
-            }
-            else
-            {
-                sharedframe::releaseSlot(ptr);
-            }
-        }
-
-        if (claimedSlots.empty())
-        {
-            return false;
-        }
-
-        std::sort(claimedSlots.begin(), claimedSlots.end(), [](const ClaimedSlot& a, const ClaimedSlot& b)
-        {
-            return a.header.frameIndex < b.header.frameIndex;
-        });
-
-        frames.reserve(static_cast<qsizetype>(claimedSlots.size()));
-        quint64 maxIndex = lastIndex;
-        for (const ClaimedSlot& claimed : claimedSlots)
-        {
-            if (copyFrame(slot,
-                          claimed.header,
-                          claimed.ptr + kSharedFrameHeaderSize,
-                          frames))
-            {
-                maxIndex = claimed.header.frameIndex;
-            }
-            sharedframe::releaseSlot(claimed.ptr);
-        }
-        if (frames.isEmpty())
-        {
-            return false;
-        }
-
         slot.latestFrame = frames.constLast();
-        slot.lastFrameIndex = maxIndex;
-        acquiredFrameCount = maxIndex > lastIndex
-                                 ? maxIndex - lastIndex
-                                 : static_cast<quint64>(frames.size());
+        acquiredFrameCount = slot.lastFrameIndex - previousFrameIndex;
         return true;
     }
 
@@ -1671,11 +1451,6 @@ namespace scopeone::core::internal
     // Reads the newest frame synchronously for event capture
     ImageFrame DriverHostCameraBackend::consumeFrameNow(const QString& cameraId)
     {
-        if (!m_frameWorker || !m_frameThread.isRunning())
-        {
-            return {};
-        }
-
         ImageFrame frame;
         DriverHostFrameWorker* const worker = m_frameWorker;
         const bool invoked = QMetaObject::invokeMethod(
@@ -1689,7 +1464,7 @@ namespace scopeone::core::internal
     void DriverHostCameraBackend::scheduleFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
-        if (it == m_cameras.end() || !it.value() || !m_frameWorker || m_shuttingDown)
+        if (it == m_cameras.end() || m_shuttingDown)
         {
             return;
         }
@@ -1719,7 +1494,7 @@ namespace scopeone::core::internal
     void DriverHostCameraBackend::completeFrameRead(const QString& cameraId)
     {
         const auto it = m_cameras.find(cameraId);
-        if (it == m_cameras.end() || !it.value())
+        if (it == m_cameras.end())
         {
             return;
         }
@@ -1741,8 +1516,7 @@ namespace scopeone::core::internal
     {
         const QString normalizedId = normalizedCameraId(cameraId);
         const auto cameraIt = m_cameras.constFind(normalizedId);
-        if (cameraIt == m_cameras.constEnd() || !cameraIt.value()
-            || !prepareFrameReader(normalizedId))
+        if (cameraIt == m_cameras.constEnd() || !prepareFrameReader(normalizedId))
         {
             return false;
         }
@@ -1798,7 +1572,7 @@ namespace scopeone::core::internal
         {
             for (auto it = m_cameras.begin(); it != m_cameras.end(); ++it)
             {
-                if (it.value() && it.value()->isRunning)
+                if (it.value()->isRunning)
                 {
                     scheduleFrameRead(it.key());
                 }
@@ -1948,7 +1722,7 @@ namespace scopeone::core::internal
                 [this, normalizedId](int, QProcess::ExitStatus)
                 {
                     const auto it = m_cameras.find(normalizedId);
-                    if (it == m_cameras.end() || !it.value())
+                    if (it == m_cameras.end())
                     {
                         return;
                     }
@@ -1971,54 +1745,51 @@ namespace scopeone::core::internal
                     }
                 });
 
-        if (slot->control)
+        slot->control->addReadyHandler([this, normalizedId](bool ready)
         {
-            slot->control->addReadyHandler([this, normalizedId](bool ready)
+            if (ready)
             {
-                if (ready)
-                {
-                    emit driverHostControlServerListening(normalizedId, driverhost::controlServerName(normalizedId));
-                }
-            });
-            slot->control->addEventHandler([this, normalizedId](const QJsonObject& event)
+                emit driverHostControlServerListening(normalizedId, driverhost::controlServerName(normalizedId));
+            }
+        });
+        slot->control->addEventHandler([this, normalizedId](const QJsonObject& event)
+        {
+            const auto it = m_cameras.find(normalizedId);
+            if (it == m_cameras.end())
             {
-                const auto it = m_cameras.find(normalizedId);
-                if (it == m_cameras.end() || !it.value())
+                return;
+            }
+            DriverHostCameraSlot& cameraSlot = *it.value();
+            const QString type = event.value(driverhost::kMessageTypeField).toString();
+            if (type == driverhost::kEventFrameAvailable)
+            {
+                scheduleFrameRead(normalizedId);
+                return;
+            }
+            if (type == driverhost::kEventPreviewState)
+            {
+                const bool wasRunning = cameraSlot.isRunning;
+                cameraSlot.isRunning = event.value(QStringLiteral("running")).toBool(cameraSlot.isRunning);
+                if (wasRunning && !cameraSlot.isRunning)
                 {
-                    return;
+                    notifyPreviewStopped();
                 }
-                DriverHostCameraSlot& slot = *it.value();
-                const QString type = event.value(driverhost::kMessageTypeField).toString();
-                if (type == driverhost::kEventFrameAvailable)
+                return;
+            }
+            if (type == driverhost::kEventDriverHostError)
+            {
+                const QString error = QStringLiteral("DriverHost '%1' error: %2")
+                                          .arg(cameraSlot.cameraId,
+                                               event.value(QStringLiteral("error")).toString());
+                qWarning().noquote() << error;
+                if (recordingFrameDeliveryEnabled())
                 {
-                    scheduleFrameRead(normalizedId);
-                    return;
+                    CameraBackend::setRecordingFrameDeliveryEnabled(false);
+                    emit frameDeliveryFailed(error, 0);
                 }
-                if (type == driverhost::kEventPreviewState)
-                {
-                    const bool wasRunning = slot.isRunning;
-                    slot.isRunning = event.value(QStringLiteral("running")).toBool(slot.isRunning);
-                    if (wasRunning && !slot.isRunning)
-                    {
-                        notifyPreviewStopped();
-                    }
-                    return;
-                }
-                if (type == driverhost::kEventDriverHostError)
-                {
-                    const QString error = QStringLiteral("DriverHost '%1' error: %2")
-                                              .arg(slot.cameraId,
-                                                   event.value(QStringLiteral("error")).toString());
-                    qWarning().noquote() << error;
-                    if (recordingFrameDeliveryEnabled())
-                    {
-                        CameraBackend::setRecordingFrameDeliveryEnabled(false);
-                        emit frameDeliveryFailed(error, 0);
-                    }
-                    return;
-                }
-            });
-        }
+                return;
+            }
+        });
 
         slot->process->start();
         if (!slot->process->waitForStarted(3000))
@@ -2027,10 +1798,7 @@ namespace scopeone::core::internal
             return false;
         }
         m_cameras.insert(normalizedId, slot);
-        if (slot->control)
-        {
-            slot->control->start();
-        }
+        slot->control->start();
         if (!waitForControlReady(*slot, kDriverHostControlReadyTimeoutMs))
         {
             qWarning().noquote()
@@ -2069,25 +1837,16 @@ namespace scopeone::core::internal
         const bool wasRunning = slot->isRunning;
         slot->isRunning = false;
         removeFrameReader(normalizedId);
-        if (slot->control)
-        {
-            QJsonObject request;
-            request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
-            sendControlCommand(normalizedId, request, nullptr, 800);
-        }
+        QJsonObject request;
+        request.insert(driverhost::kMessageTypeField, driverhost::kCommandShutdown);
+        sendControlCommand(normalizedId, request, nullptr, 800);
         m_cameras.remove(normalizedId);
-        if (slot->control)
+        slot->control->stop();
+        slot->process->terminate();
+        if (!slot->process->waitForFinished(1500))
         {
-            slot->control->stop();
-        }
-        if (slot->process)
-        {
-            slot->process->terminate();
-            if (!slot->process->waitForFinished(1500))
-            {
-                slot->process->kill();
-                slot->process->waitForFinished(1000);
-            }
+            slot->process->kill();
+            slot->process->waitForFinished(1000);
         }
         if (wasRunning)
         {

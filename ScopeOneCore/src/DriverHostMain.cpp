@@ -49,6 +49,7 @@
 
 #include "MMCore.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/SharedFrameRing.h"
 #include "scopeone/CameraProvider.h"
 #include "scopeone/DriverHostProviderPlugin.h"
 #include "scopeone/PluginManifest.h"
@@ -57,9 +58,6 @@
 
 namespace scopeone::core::internal
 {
-    static_assert(std::atomic_ref<quint32>::is_always_lock_free,
-                  "Shared frame state requires lock-free 32-bit atomics");
-
     using scopeone::core::SharedFrameHeader;
     using scopeone::core::SharedMemoryControl;
     using scopeone::core::SharedPixelFormat;
@@ -236,6 +234,22 @@ namespace scopeone::core::internal
         void responseReady(quint64 connectionId, const QJsonObject& response);
         void eventReady(const QJsonObject& event);
         void shutdownRequested();
+
+    protected:
+        static QJsonObject makeResponse(const QString& type, quint64 requestId, bool ok)
+        {
+            QJsonObject response =
+                driverhost::makeEnvelope(driverhost::kMessageKindResponse, type, requestId);
+            response.insert(QStringLiteral("ok"), ok);
+            return response;
+        }
+
+        static QJsonObject makeErrorResponse(const QString& type, quint64 requestId, const QString& error)
+        {
+            QJsonObject response = makeResponse(type, requestId, false);
+            response.insert(QStringLiteral("error"), error);
+            return response;
+        }
     };
 
     class MicroManagerDriverRuntime final : public DriverHostRuntime
@@ -278,13 +292,10 @@ namespace scopeone::core::internal
             m_lastError.clear();
             setState(State::Starting);
 
-            if (!m_timer)
-            {
-                m_timer = new QTimer(this);
-                m_timer->setTimerType(Qt::PreciseTimer);
-                connect(m_timer, &QTimer::timeout,
-                        this, &MicroManagerDriverRuntime::pollAndWrite);
-            }
+            m_timer = new QTimer(this);
+            m_timer->setTimerType(Qt::PreciseTimer);
+            connect(m_timer, &QTimer::timeout,
+                    this, &MicroManagerDriverRuntime::pollAndWrite);
 
             try
             {
@@ -344,39 +355,12 @@ namespace scopeone::core::internal
 
             m_shm = std::make_unique<QSharedMemory>();
             m_shm->setNativeKey(m_shmKey);
-            const int totalBytes =
-                kSharedMemoryControlSize + kSharedFrameNumSlots * kSharedFrameSlotStride;
-            if (!m_shm->create(totalBytes))
+            QString shmError;
+            if (!sharedframe::createRing(*m_shm, &shmError))
             {
-                if (m_shm->attach())
-                {
-                    m_shm->detach();
-                }
-                if (!m_shm->create(totalBytes))
-                {
-                    m_lastError = QStringLiteral("Cannot create shared memory '%1'")
-                        .arg(m_shmKey);
-                    setState(State::Error, m_lastError);
-                    return false;
-                }
-            }
-
-            if (m_shm->lock())
-            {
-                auto* base = static_cast<uchar*>(m_shm->data());
-                if (base)
-                {
-                    const SharedMemoryControl control{};
-                    memcpy(base, &control, sizeof(control));
-                    for (int i = 0; i < kSharedFrameNumSlots; ++i)
-                    {
-                        const SharedFrameHeader header{};
-                        uchar* slot = base + kSharedMemoryControlSize
-                                      + i * kSharedFrameSlotStride;
-                        memcpy(slot, &header, sizeof(header));
-                    }
-                }
-                m_shm->unlock();
+                m_lastError = shmError;
+                setState(State::Error, m_lastError);
+                return false;
             }
 
             if (m_autoPreview)
@@ -435,12 +419,26 @@ namespace scopeone::core::internal
             quint16 channels{1};
         };
 
+        // Answers one request with what fill adds to a success response, or with the error
+        // MMCore throws while it runs
+        template <typename Fill>
+        void answer(quint64 connectionId, const QString& type, quint64 requestId, Fill&& fill)
+        {
+            try
+            {
+                QJsonObject response = makeResponse(type, requestId, true);
+                fill(response);
+                emit responseReady(connectionId, response);
+            }
+            catch (const CMMError& error)
+            {
+                emit responseReady(connectionId,
+                                   makeErrorResponse(type, requestId, QString::fromStdString(error.getMsg())));
+            }
+        }
+
         bool previewRunning() const;
         void setState(State state, const QString& error = QString());
-        QJsonObject makeResponse(const QString& type, quint64 requestId, bool ok) const;
-        QJsonObject makeErrorResponse(const QString& type,
-                                      quint64 requestId,
-                                      const QString& error) const;
         QJsonObject makeEvent(const QString& type) const;
         bool applyProperties(const QStringList& encodedProperties,
                              const std::string& label,
@@ -654,92 +652,47 @@ namespace scopeone::core::internal
             return;
         }
 
+        const std::string camera = m_cameraId.toStdString();
+
         if (type == driverhost::kCommandGetExposure)
         {
-            try
+            answer(connectionId, type, requestId, [this](QJsonObject& response)
             {
                 m_exposureMs = m_mmcore->getExposure();
-                QJsonObject response = makeResponse(type, requestId, true);
                 response.insert(QStringLiteral("exposureMs"), m_exposureMs);
-                emit responseReady(connectionId, response);
-            }
-            catch (const CMMError& mmError)
-            {
-                emit responseReady(
-                    connectionId,
-                    makeErrorResponse(type,
-                                      requestId,
-                                      QString::fromStdString(mmError.getMsg())));
-            }
+            });
             return;
         }
 
         if (type == driverhost::kCommandSetExposure)
         {
             const double exposureMs = message.value(QStringLiteral("value")).toDouble(-1.0);
-            bool ok = exposureMs > 0.0;
-            QString error;
-            if (!ok)
+            if (exposureMs <= 0.0)
             {
-                error = QStringLiteral("Invalid exposure value");
+                emit responseReady(connectionId,
+                                   makeErrorResponse(type, requestId, QStringLiteral("Invalid exposure value")));
+                return;
             }
-            else
+            answer(connectionId, type, requestId, [this, exposureMs](QJsonObject& response)
             {
-                try
-                {
-                    m_mmcore->setExposure(exposureMs);
-                    m_exposureMs = m_mmcore->getExposure();
-                }
-                catch (const CMMError& mmError)
-                {
-                    ok = false;
-                    error = QString::fromStdString(mmError.getMsg());
-                }
-            }
-
-            if (ok)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
+                m_mmcore->setExposure(exposureMs);
+                m_exposureMs = m_mmcore->getExposure();
                 response.insert(QStringLiteral("exposureMs"), m_exposureMs);
-                emit responseReady(connectionId, response);
-            }
-            else
-            {
-                emit responseReady(connectionId, makeErrorResponse(type, requestId, error));
-            }
+            });
             return;
         }
 
         if (type == driverhost::kCommandListProperties)
         {
-            QJsonArray properties;
-            QString error;
-            bool ok = true;
-            try
+            answer(connectionId, type, requestId, [this, &camera](QJsonObject& response)
             {
-                const auto names =
-                    m_mmcore->getDevicePropertyNames(m_cameraId.toStdString().c_str());
-                for (const auto& name : names)
+                QJsonArray properties;
+                for (const auto& name : m_mmcore->getDevicePropertyNames(camera.c_str()))
                 {
                     properties.append(QString::fromStdString(name));
                 }
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            if (ok)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
                 response.insert(QStringLiteral("properties"), properties);
-                emit responseReady(connectionId, response);
-            }
-            else
-            {
-                emit responseReady(connectionId, makeErrorResponse(type, requestId, error));
-            }
+            });
             return;
         }
 
@@ -747,7 +700,6 @@ namespace scopeone::core::internal
         {
             const QString name = message.value(QStringLiteral("name")).toString();
             const bool fromCache = message.value(QStringLiteral("fromCache")).toBool(false);
-            const std::string camera = m_cameraId.toStdString();
             const std::string property = name.toStdString();
             QString value;
             QString propertyType = QStringLiteral("Unknown");
@@ -860,27 +812,13 @@ namespace scopeone::core::internal
 
         if (type == driverhost::kCommandSetProperty)
         {
-            const QString name = message.value(QStringLiteral("name")).toString();
-            const QString value = message.value(QStringLiteral("value")).toString();
-            QString error;
-            bool ok = true;
-            try
+            const std::string name = message.value(QStringLiteral("name")).toString().toStdString();
+            const std::string value = message.value(QStringLiteral("value")).toString().toStdString();
+            answer(connectionId, type, requestId, [this, &camera, &name, &value](QJsonObject&)
             {
-                m_mmcore->setProperty(m_cameraId.toStdString().c_str(),
-                                      name.toStdString().c_str(),
-                                      value.toStdString().c_str());
-                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            emit responseReady(connectionId,
-                               ok
-                                   ? makeResponse(type, requestId, true)
-                                   : makeErrorResponse(type, requestId, error));
+                m_mmcore->setProperty(camera.c_str(), name.c_str(), value.c_str());
+                m_mmcore->waitForDevice(camera.c_str());
+            });
             return;
         }
 
@@ -890,82 +828,41 @@ namespace scopeone::core::internal
             const int y = message.value(QStringLiteral("y")).toInt(0);
             const int width = message.value(QStringLiteral("width")).toInt(0);
             const int height = message.value(QStringLiteral("height")).toInt(0);
-            QString error;
-            bool ok = true;
-            try
+            answer(connectionId, type, requestId, [this, &camera, x, y, width, height](QJsonObject&)
             {
-                m_mmcore->setROI(m_cameraId.toStdString().c_str(), x, y, width, height);
-                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
+                m_mmcore->setROI(camera.c_str(), x, y, width, height);
+                m_mmcore->waitForDevice(camera.c_str());
                 refreshSourceRoi();
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            emit responseReady(connectionId,
-                               ok
-                                   ? makeResponse(type, requestId, true)
-                                   : makeErrorResponse(type, requestId, error));
+            });
             return;
         }
 
         if (type == driverhost::kCommandClearRoi)
         {
-            QString error;
-            bool ok = true;
-            try
+            answer(connectionId, type, requestId, [this, &camera](QJsonObject&)
             {
-                m_mmcore->setCameraDevice(m_cameraId.toStdString().c_str());
+                m_mmcore->setCameraDevice(camera.c_str());
                 m_mmcore->clearROI();
-                m_mmcore->waitForDevice(m_cameraId.toStdString().c_str());
+                m_mmcore->waitForDevice(camera.c_str());
                 refreshSourceRoi();
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            emit responseReady(connectionId,
-                               ok
-                                   ? makeResponse(type, requestId, true)
-                                   : makeErrorResponse(type, requestId, error));
+            });
             return;
         }
 
         if (type == driverhost::kCommandGetRoi)
         {
-            int x = 0;
-            int y = 0;
-            int width = 0;
-            int height = 0;
-            QString error;
-            bool ok = true;
-            try
+            answer(connectionId, type, requestId, [this, &camera](QJsonObject& response)
             {
-                m_mmcore->getROI(m_cameraId.toStdString().c_str(), x, y, width, height);
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            if (ok)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
+                int x = 0;
+                int y = 0;
+                int width = 0;
+                int height = 0;
+                m_mmcore->getROI(camera.c_str(), x, y, width, height);
                 response.insert(QStringLiteral("x"), x);
                 response.insert(QStringLiteral("y"), y);
                 response.insert(QStringLiteral("width"), width);
                 response.insert(QStringLiteral("height"), height);
-                emit responseReady(connectionId, response);
-            }
-            else
-            {
-                emit responseReady(connectionId, makeErrorResponse(type, requestId, error));
-            }
+            });
             return;
         }
 
@@ -1037,25 +934,6 @@ namespace scopeone::core::internal
         }
     }
 
-    // Build a protocol response envelope
-    QJsonObject MicroManagerDriverRuntime::makeResponse(const QString& type, quint64 requestId, bool ok) const
-    {
-        QJsonObject response =
-            driverhost::makeEnvelope(driverhost::kMessageKindResponse, type, requestId);
-        response.insert(QStringLiteral("ok"), ok);
-        return response;
-    }
-
-    // Build a protocol error response envelope
-    QJsonObject MicroManagerDriverRuntime::makeErrorResponse(const QString& type,
-                                                quint64 requestId,
-                                                const QString& error) const
-    {
-        QJsonObject response = makeResponse(type, requestId, false);
-        response.insert(QStringLiteral("error"), error);
-        return response;
-    }
-
     // Build a protocol event envelope
     QJsonObject MicroManagerDriverRuntime::makeEvent(const QString& type) const
     {
@@ -1089,14 +967,6 @@ namespace scopeone::core::internal
     // Start continuous acquisition and polling
     bool MicroManagerDriverRuntime::startPreviewInternal(QString* errorMessage)
     {
-        if (!m_mmcore)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
         if (m_state == State::ShuttingDown || m_state == State::Error)
         {
             if (errorMessage)
@@ -1133,10 +1003,7 @@ namespace scopeone::core::internal
             m_frameIntervalTimer.restart();
             m_deliveryTimer.invalidate();
             m_timer->setInterval(pollingIntervalFor(m_exposureMs));
-            if (m_timer && !m_timer->isActive())
-            {
-                m_timer->start();
-            }
+            m_timer->start();
             setState(State::Previewing);
             return true;
         }
@@ -1168,7 +1035,7 @@ namespace scopeone::core::internal
             {
                 m_mmcore->stopSequenceAcquisition();
             }
-            if (m_timer && m_timer->isActive())
+            if (m_timer)
             {
                 m_timer->stop();
             }
@@ -1277,67 +1144,20 @@ namespace scopeone::core::internal
                                                 quint64 frameAdvance,
                                                 quint64* frameIndexOut)
     {
-        if (!m_shm || !m_shm->isAttached())
+        // A frame that finds no free slot still counts, so readers see it as dropped
+        m_frameIndex += (std::max)(quint64{1}, frameAdvance);
+        if (frameIndexOut)
         {
-            return false;
+            *frameIndexOut = m_frameIndex;
         }
-        uchar* base = static_cast<uchar*>(m_shm->data());
-        if (!base)
-        {
-            return false;
-        }
-
-        const quint64 nextFrameIndex = m_frameIndex + (std::max)(quint64{1}, frameAdvance);
-        const int preferredSlotIndex = m_nextWriteSlot;
-        int slotIndex = -1;
-        uchar* ptr = nullptr;
-        for (int offset = 0; offset < kSharedFrameNumSlots; ++offset)
-        {
-            const int candidate = (preferredSlotIndex + offset) % kSharedFrameNumSlots;
-            uchar* candidatePtr = base + kSharedMemoryControlSize
-                                  + candidate * kSharedFrameSlotStride;
-            auto& stateValue = *reinterpret_cast<quint32*>(candidatePtr);
-            std::atomic_ref<quint32> state(stateValue);
-            quint32 expected = state.load(std::memory_order_acquire);
-            while (expected == 0 || expected == 2)
-            {
-                if (state.compare_exchange_weak(expected,
-                                                1,
-                                                std::memory_order_acq_rel,
-                                                std::memory_order_acquire))
-                {
-                    slotIndex = candidate;
-                    ptr = candidatePtr;
-                    break;
-                }
-            }
-            if (slotIndex >= 0)
-            {
-                break;
-            }
-        }
-
-        if (slotIndex < 0 || !ptr)
-        {
-            m_frameIndex = nextFrameIndex;
-            if (frameIndexOut)
-            {
-                *frameIndexOut = m_frameIndex;
-            }
-            return false;
-        }
-
-        auto* control = reinterpret_cast<SharedMemoryControl*>(base);
-        m_nextWriteSlot = (slotIndex + 1) % kSharedFrameNumSlots;
         SharedFrameHeader header{};
-        header.state = 1;
         header.width = m_frameLayout.width;
         header.height = m_frameLayout.height;
         header.stride = m_frameLayout.stride;
         header.pixelFormat = static_cast<quint32>(m_frameLayout.format);
         header.bitsPerSample = m_frameLayout.bitDepth;
         header.channels = m_frameLayout.channels;
-        header.frameIndex = nextFrameIndex;
+        header.frameIndex = m_frameIndex;
         header.timestampNs =
             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
         setSharedFrameSourceRoi(header,
@@ -1345,34 +1165,16 @@ namespace scopeone::core::internal
                                 m_sourceRoiY,
                                 m_sourceRoiWidth,
                                 m_sourceRoiHeight);
-        memcpy(ptr + sizeof(header.state),
-               reinterpret_cast<const uchar*>(&header) + sizeof(header.state),
-               sizeof(header) - sizeof(header.state));
-
-        uchar* dst = ptr + kSharedFrameHeaderSize;
-        memcpy(dst, pixels, static_cast<size_t>(m_frameLayout.byteCount));
-
-        auto& stateValue = *reinterpret_cast<quint32*>(ptr);
-        std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
-        std::atomic_ref<quint32>(control->latestSlotIndex)
-            .store(static_cast<quint32>(slotIndex), std::memory_order_release);
-        m_frameIndex = nextFrameIndex;
-        if (frameIndexOut)
-        {
-            *frameIndexOut = m_frameIndex;
-        }
-
-        return true;
+        return sharedframe::writeFrame(static_cast<uchar*>(m_shm->data()),
+                                       m_nextWriteSlot,
+                                       header,
+                                       pixels,
+                                       static_cast<std::size_t>(m_frameLayout.byteCount));
     }
 
     // Drain camera frames into shared memory and publish the newest index
     void MicroManagerDriverRuntime::pollAndWrite()
     {
-        if (!m_mmcore)
-        {
-            return;
-        }
-
         try
         {
             long remaining = m_mmcore->getRemainingImageCount();
@@ -1567,18 +1369,13 @@ namespace scopeone::core::internal
             return false;
         }
 
-        quint16 bitDepth =
-            (updated.format == SharedPixelFormat::Mono16) ? 16 : 8;
+        int bitDepth = updated.format == SharedPixelFormat::Mono16 ? 16 : 8;
         try
         {
-            bitDepth = normalizedSharedBitDepth(
-                updated.format,
-                static_cast<int>(m_mmcore->getImageBitDepth()));
+            bitDepth = static_cast<int>(m_mmcore->getImageBitDepth());
         }
         catch (const CMMError&)
         {
-            bitDepth =
-                (updated.format == SharedPixelFormat::Mono16) ? 16 : 8;
         }
         updated.bitDepth = normalizedSharedBitDepth(updated.format, bitDepth);
 
@@ -1674,15 +1471,10 @@ namespace scopeone::core::internal
             bool previewRunning{false};
         };
 
-        QJsonObject makeResponse(const QString& type, quint64 requestId, bool ok) const;
-        QJsonObject makeErrorResponse(const QString& type,
-                                      quint64 requestId,
-                                      const QString& error) const;
         QJsonObject makeEvent(const QString& type) const;
         QJsonArray capabilities(const HardwareDeviceDescriptor& device) const;
         bool supportsCapability(const HardwareDeviceDescriptor& device,
                                 const QString& capability) const;
-        QString deviceKindName(HardwareDeviceKind kind) const;
         QJsonObject deviceDescription(const HardwareDeviceDescriptor& device) const;
         const HardwareDeviceDescriptor* requestedDevice(const QJsonObject& message) const;
         std::shared_ptr<CameraTransport> cameraTransport(const QString& deviceId) const;
@@ -1696,6 +1488,7 @@ namespace scopeone::core::internal
                         const ImageFrame& frame,
                         quint64* frameIndexOut = nullptr);
         void emitPreviewStateEvent(const QString& deviceId, bool running);
+        void emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex);
 
         QString m_pluginPath;
         QString m_providerId;
@@ -1835,26 +1628,6 @@ namespace scopeone::core::internal
         return true;
     }
 
-    QJsonObject ProviderDriverRuntime::makeResponse(const QString& type,
-                                                    quint64 requestId,
-                                                    bool ok) const
-    {
-        QJsonObject response = driverhost::makeEnvelope(driverhost::kMessageKindResponse,
-                                                        type,
-                                                        requestId);
-        response.insert(QStringLiteral("ok"), ok);
-        return response;
-    }
-
-    QJsonObject ProviderDriverRuntime::makeErrorResponse(const QString& type,
-                                                         quint64 requestId,
-                                                         const QString& error) const
-    {
-        QJsonObject response = makeResponse(type, requestId, false);
-        response.insert(QStringLiteral("error"), error);
-        return response;
-    }
-
     QJsonObject ProviderDriverRuntime::makeEvent(const QString& type) const
     {
         QJsonObject event = driverhost::makeEnvelope(driverhost::kMessageKindEvent, type);
@@ -1896,31 +1669,6 @@ namespace scopeone::core::internal
         return capabilities(device).contains(QJsonValue(capability));
     }
 
-    QString ProviderDriverRuntime::deviceKindName(HardwareDeviceKind kind) const
-    {
-        switch (kind)
-        {
-        case HardwareDeviceKind::Camera: return QStringLiteral("Camera");
-        case HardwareDeviceKind::XYStage: return QStringLiteral("XYStage");
-        case HardwareDeviceKind::ZStage: return QStringLiteral("ZStage");
-        case HardwareDeviceKind::Shutter: return QStringLiteral("Shutter");
-        case HardwareDeviceKind::State: return QStringLiteral("State");
-        case HardwareDeviceKind::Hub: return QStringLiteral("Hub");
-        case HardwareDeviceKind::Serial: return QStringLiteral("Serial");
-        case HardwareDeviceKind::Generic: return QStringLiteral("Generic");
-        case HardwareDeviceKind::AutoFocus: return QStringLiteral("AutoFocus");
-        case HardwareDeviceKind::ImageProcessor: return QStringLiteral("ImageProcessor");
-        case HardwareDeviceKind::SignalIO: return QStringLiteral("SignalIO");
-        case HardwareDeviceKind::Magnifier: return QStringLiteral("Magnifier");
-        case HardwareDeviceKind::SLM: return QStringLiteral("SLM");
-        case HardwareDeviceKind::Galvo: return QStringLiteral("Galvo");
-        case HardwareDeviceKind::PressurePump: return QStringLiteral("PressurePump");
-        case HardwareDeviceKind::VolumetricPump: return QStringLiteral("VolumetricPump");
-        case HardwareDeviceKind::Unknown: break;
-        }
-        return QStringLiteral("Unknown");
-    }
-
     QJsonObject ProviderDriverRuntime::deviceDescription(
         const HardwareDeviceDescriptor& device) const
     {
@@ -1929,7 +1677,7 @@ namespace scopeone::core::internal
         object.insert(driverhost::kProviderDeviceIdField, device.providerDeviceId);
         object.insert(driverhost::kHardwareIdField, device.hardwareId);
         object.insert(driverhost::kDeviceNameField, device.name);
-        object.insert(driverhost::kDeviceKindField, deviceKindName(device.kind));
+        object.insert(driverhost::kDeviceKindField, driverhost::deviceKindName(device.kind));
         object.insert(driverhost::kDeviceStateField, static_cast<int>(device.state));
         object.insert(driverhost::kDevicePropertiesField,
                       QJsonObject::fromVariantMap(device.properties));
@@ -1959,48 +1707,14 @@ namespace scopeone::core::internal
 
     void ProviderDriverRuntime::publishHello()
     {
-        QJsonObject event = makeEvent(driverhost::kEventHello);
-        event.insert(driverhost::kProviderIdField, m_providerId);
-        emit eventReady(event);
+        emit eventReady(makeEvent(driverhost::kEventHello));
     }
 
     bool ProviderDriverRuntime::createSharedMemory(CameraTransport& transport)
     {
         transport.shm = std::make_unique<QSharedMemory>();
         transport.shm->setNativeKey(transport.shmKey);
-        const int totalBytes =
-            kSharedMemoryControlSize + kSharedFrameNumSlots * kSharedFrameSlotStride;
-        if (!transport.shm->create(totalBytes))
-        {
-            if (transport.shm->attach())
-            {
-                transport.shm->detach();
-            }
-            if (!transport.shm->create(totalBytes))
-            {
-                m_lastError = QStringLiteral("Cannot create shared memory '%1'")
-                                  .arg(transport.shmKey);
-                return false;
-            }
-        }
-        if (!transport.shm->lock())
-        {
-            m_lastError = QStringLiteral("Cannot initialize shared memory '%1'")
-                              .arg(transport.shmKey);
-            return false;
-        }
-        auto* const base = static_cast<uchar*>(transport.shm->data());
-        const SharedMemoryControl control{};
-        memcpy(base, &control, sizeof(control));
-        for (int index = 0; index < kSharedFrameNumSlots; ++index)
-        {
-            const SharedFrameHeader header{};
-            memcpy(base + kSharedMemoryControlSize + index * kSharedFrameSlotStride,
-                   &header,
-                   sizeof(header));
-        }
-        transport.shm->unlock();
-        return true;
+        return sharedframe::createRing(*transport.shm, &m_lastError);
     }
 
     void ProviderDriverRuntime::enqueueFrame(const ImageFrame& frame)
@@ -2057,11 +1771,7 @@ namespace scopeone::core::internal
         quint64 frameIndex = 0;
         if (!writeFrame(*transport, frame, &frameIndex)) return;
 
-        QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
-        event.insert(driverhost::kProviderIdField, m_providerId);
-        event.insert(driverhost::kDeviceIdField, deviceId);
-        event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-        emit eventReady(event);
+        emitFrameAvailableEvent(deviceId, frameIndex);
     }
 
     void ProviderDriverRuntime::publishFrame(const QString& deviceId,
@@ -2095,11 +1805,7 @@ namespace scopeone::core::internal
             {
                 transport->deliveryTimer.restart();
             }
-            QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
-            event.insert(driverhost::kProviderIdField, m_providerId);
-            event.insert(driverhost::kDeviceIdField, deviceId);
-            event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-            emit eventReady(event);
+            emitFrameAvailableEvent(deviceId, frameIndex);
         }
     }
 
@@ -2113,11 +1819,7 @@ namespace scopeone::core::internal
         if (writeFrame(*transport, frame, &frameIndex))
         {
             transport->deliveryTimer.restart();
-            QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
-            event.insert(driverhost::kProviderIdField, m_providerId);
-            event.insert(driverhost::kDeviceIdField, deviceId);
-            event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-            emit eventReady(event);
+            emitFrameAvailableEvent(deviceId, frameIndex);
         }
     }
 
@@ -2132,79 +1834,40 @@ namespace scopeone::core::internal
             return false;
         }
         QMutexLocker writeLocker(&transport.writeMutex);
-        auto* const base = static_cast<uchar*>(transport.shm->data());
-        if (!base)
-        {
-            return false;
-        }
-
         transport.frameIndex = (std::max)(transport.frameIndex + 1, frame.frameIndex);
-        const quint64 frameIndex = transport.frameIndex;
-
-        int slotIndex = -1;
-        uchar* slot = nullptr;
-        for (int offset = 0; offset < kSharedFrameNumSlots; ++offset)
-        {
-            const int candidate = (transport.nextWriteSlot + offset) % kSharedFrameNumSlots;
-            uchar* const candidateSlot = base + kSharedMemoryControlSize
-                                         + candidate * kSharedFrameSlotStride;
-            auto& stateValue = *reinterpret_cast<quint32*>(candidateSlot);
-            std::atomic_ref<quint32> state(stateValue);
-            quint32 expected = state.load(std::memory_order_acquire);
-            while (expected == 0 || expected == 2)
-            {
-                if (state.compare_exchange_weak(expected,
-                                                1,
-                                                std::memory_order_acq_rel,
-                                                std::memory_order_acquire))
-                {
-                    slotIndex = candidate;
-                    slot = candidateSlot;
-                    break;
-                }
-            }
-            if (slot)
-            {
-                break;
-            }
-        }
-        if (!slot)
-        {
-            return false;
-        }
-
-        transport.nextWriteSlot = (slotIndex + 1) % kSharedFrameNumSlots;
         SharedFrameHeader header = frame.toSharedFrameHeader();
-        header.state = 1;
-        header.frameIndex = frameIndex;
+        header.frameIndex = transport.frameIndex;
         if (header.timestampNs == 0)
         {
             header.timestampNs =
                 static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
         }
-        memcpy(slot + sizeof(header.state),
-               reinterpret_cast<const uchar*>(&header) + sizeof(header.state),
-               sizeof(header) - sizeof(header.state));
-        memcpy(slot + kSharedFrameHeaderSize,
-               frame.bytes.constData(),
-               static_cast<size_t>(frame.bytes.size()));
-
-        auto& stateValue = *reinterpret_cast<quint32*>(slot);
-        std::atomic_ref<quint32>(stateValue).store(2, std::memory_order_release);
-        auto* const control = reinterpret_cast<SharedMemoryControl*>(base);
-        std::atomic_ref<quint32>(control->latestSlotIndex)
-            .store(static_cast<quint32>(slotIndex), std::memory_order_release);
+        if (!sharedframe::writeFrame(static_cast<uchar*>(transport.shm->data()),
+                                     transport.nextWriteSlot,
+                                     header,
+                                     frame.bytes.constData(),
+                                     static_cast<std::size_t>(frame.bytes.size())))
+        {
+            return false;
+        }
         if (frameIndexOut)
         {
-            *frameIndexOut = frameIndex;
+            *frameIndexOut = transport.frameIndex;
         }
         return true;
+    }
+
+    void ProviderDriverRuntime::emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex)
+    {
+        QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
+        event.insert(driverhost::kDeviceIdField, deviceId);
+        event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
+        emit eventReady(event);
     }
 
     void ProviderDriverRuntime::emitPreviewStateEvent(const QString& deviceId, bool running)
     {
         QJsonObject event = makeEvent(driverhost::kEventPreviewState);
-        event.insert(driverhost::kProviderIdField, m_providerId);
         event.insert(driverhost::kDeviceIdField, deviceId);
         event.insert(QStringLiteral("running"), running);
         emit eventReady(event);
@@ -2466,11 +2129,7 @@ namespace scopeone::core::internal
                                         QStringLiteral("Provider failed to capture a frame")));
                 return;
             }
-            QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
-            event.insert(driverhost::kProviderIdField, m_providerId);
-            event.insert(driverhost::kDeviceIdField, deviceId);
-            event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-            emit eventReady(event);
+            emitFrameAvailableEvent(deviceId, frameIndex);
             QJsonObject response = makeResponse(type, requestId, true);
             response.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
             reply(response);
