@@ -13,11 +13,13 @@ ASSUME_YES=false
 # Colors are used only on a terminal, and NO_COLOR turns them off
 if [[ -t 1 && -t 2 && -z "${NO_COLOR:-}" ]]; then
   BOLD_BLUE=$'\033[1;34m'
+  GREEN=$'\033[32m'
   YELLOW=$'\033[33m'
   RED=$'\033[31m'
   RESET=$'\033[0m'
 else
   BOLD_BLUE=""
+  GREEN=""
   YELLOW=""
   RED=""
   RESET=""
@@ -66,15 +68,32 @@ run() {
 }
 
 ensure_build_tools() {
-  # Micro-Manager is built with autotools, which Homebrew installs as glibtoolize
   local missing_commands=()
-  local command_name
-  for command_name in git cmake make autoreconf automake pkg-config; do
-    command -v "$command_name" >/dev/null 2>&1 || missing_commands+=("$command_name")
-  done
-  command -v libtoolize >/dev/null 2>&1 || command -v glibtoolize >/dev/null 2>&1 || missing_commands+=("libtool")
-  command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1 \
-    || missing_commands+=("a C++ compiler (g++ or clang++)")
+
+  # Prints one line per tool and records the missing ones. Any of the listed commands satisfies the tool
+  check_tool() {
+    local label="$1" purpose="$2" command_name
+    shift 2
+    for command_name in "$@"; do
+      if command -v "$command_name" >/dev/null 2>&1; then
+        printf '  %s✓%s %-12s %s\n' "$GREEN" "$RESET" "$label" "$purpose"
+        return
+      fi
+    done
+    printf '  %s✗%s %-12s %s\n' "$RED" "$RESET" "$label" "$purpose"
+    missing_commands+=("$label")
+  }
+
+  step "Checking build tools"
+  check_tool git "fetches the submodules and Micro-Manager" git
+  check_tool cmake "configures ScopeOne and ScopeOneCore" cmake
+  check_tool make "builds Micro-Manager" make
+  check_tool autoreconf "generates Micro-Manager's configure script" autoreconf
+  check_tool automake "generates Micro-Manager's makefiles" automake
+  # Micro-Manager is built with autotools, which Homebrew installs as glibtoolize
+  check_tool libtool "builds Micro-Manager's shared libraries" libtoolize glibtoolize
+  check_tool pkg-config "locates libraries while configuring" pkg-config
+  check_tool "C++ compiler" "compiles everything (g++ or clang++)" c++ g++ clang++
   if (( ${#missing_commands[@]} == 0 )); then
     return
   fi
