@@ -119,10 +119,11 @@ namespace scopeone::core::internal::sharedframe
                                 quint64& lastFrameIndex,
                                 QList<ImageFrame>& frames)
     {
-        const auto* control = reinterpret_cast<const SharedMemoryControl*>(base);
+        // Xcode 16's libc++ fails to compile std::atomic_ref<const T>::load, so the load goes through a non-const reference
+        auto* control = reinterpret_cast<SharedMemoryControl*>(base);
         SharedFrameHeader capturedHeader{};
         uchar* capturedSlot = nullptr;
-        const quint32 latest = std::atomic_ref<const quint32>(control->latestSlotIndex)
+        const quint32 latest = std::atomic_ref<quint32>(control->latestSlotIndex)
                                    .load(std::memory_order_acquire);
         if (latest < kSharedFrameNumSlots)
         {
