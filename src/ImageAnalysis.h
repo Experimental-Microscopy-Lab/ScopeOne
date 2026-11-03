@@ -86,7 +86,11 @@ namespace scopeone::ui
         // The axes a command can work along, for a dialog, and the planes along one axis
         static QStringList axisChoices(const Source& source, QList<QChar>& letters);
         static QList<scopeone::core::ImageFrame> framesAlong(const Source& source, QChar axis, int* position = nullptr);
+        bool chooseAxis(const Source& source, const QString& title, const QString& prompt,
+                        QList<QChar>& letters, QStringList& names, int& axisIndex) const;
         using FrameOperation = std::function<scopeone::core::ImageFrame(const scopeone::core::ImageFrame&)>;
+        static QList<scopeone::core::ImageFrame> operateOn(const Source& source, Scope scope,
+                                                           const FrameOperation& operation);
         void apply(const QString& title, const FrameOperation& operation);
 
         void bindShortcuts();
@@ -103,6 +107,9 @@ namespace scopeone::ui
             const std::function<scopeone::core::ImageFrame(const scopeone::core::ImageFrame&, const QList<ParameterField>&)>& operation) const;
         bool askWithPreview(
             const QString& title, QList<ParameterField>& fields,
+            const std::function<scopeone::core::ImageFrame(const scopeone::core::ImageFrame&, const QList<ParameterField>&)>& operation);
+        void runWithPreview(
+            const QString& title, QList<ParameterField> fields,
             const std::function<scopeone::core::ImageFrame(const scopeone::core::ImageFrame&, const QList<ParameterField>&)>& operation);
         void runModule(const QString& menuText, const QString& moduleId, const QVariantMap& preset, const QStringList& askKeys);
         void addModuleCommand(QMenu* menu, const QString& text, const QString& moduleId, const QVariantMap& preset,

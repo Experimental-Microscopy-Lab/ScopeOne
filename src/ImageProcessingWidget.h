@@ -78,6 +78,7 @@ namespace scopeone::ui
         void updateRunButtons();
         void syncProcessingState();
         void refreshSources();
+        bool finishDirectProcessing(quint64 requestId, const QString& error, bool hasResult);
         void finishOfflineProcessing();
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};

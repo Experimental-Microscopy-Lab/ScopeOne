@@ -1474,11 +1474,17 @@ namespace
         qint64 m_nextRequestId{1};
     };
 
-    QJsonObject jsonRpcResponse(const QJsonValue& id, const QJsonObject& result)
+    QJsonObject jsonRpcEnvelope(const QJsonValue& id)
     {
         QJsonObject response;
         response.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
         response.insert(QStringLiteral("id"), id.isUndefined() ? QJsonValue(QJsonValue::Null) : id);
+        return response;
+    }
+
+    QJsonObject jsonRpcResponse(const QJsonValue& id, const QJsonObject& result)
+    {
+        QJsonObject response = jsonRpcEnvelope(id);
         response.insert(QStringLiteral("result"), result);
         return response;
     }
@@ -1489,9 +1495,7 @@ namespace
         error.insert(QStringLiteral("code"), code);
         error.insert(QStringLiteral("message"), message);
 
-        QJsonObject response;
-        response.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
-        response.insert(QStringLiteral("id"), id.isUndefined() ? QJsonValue(QJsonValue::Null) : id);
+        QJsonObject response = jsonRpcEnvelope(id);
         response.insert(QStringLiteral("error"), error);
         return response;
     }

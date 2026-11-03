@@ -74,6 +74,17 @@ namespace scopeone::ui
             }
         }
 
+        // The saved pipelines by name, which live in the application settings
+        QJsonObject loadPresets(const QSettings& settings)
+        {
+            return QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        }
+
+        void storePresets(QSettings& settings, const QJsonObject& presets)
+        {
+            settings.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(presets).toJson(QJsonDocument::Compact));
+        }
+
         class MaskPreviewWidget final : public QWidget
         {
         public:
@@ -108,8 +119,7 @@ namespace scopeone::ui
                 painter.drawLine(area.center().x(), area.top(), area.center().x(), area.bottom());
                 painter.drawLine(area.left(), area.center().y(), area.right(), area.center().y());
 
-                const QPointF center = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble(),
-                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
+                const QPointF center = centerPoint();
                 const double sizeX = m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() * area.width();
                 const double sizeY = m_parameters.value(QStringLiteral("size_y"), 0.1).toDouble() * area.height();
                 const double rotation = m_parameters.value(QStringLiteral("rotation")).toDouble();
@@ -140,24 +150,16 @@ namespace scopeone::ui
                 painter.setBrush(QColor(255, 120, 90));
                 painter.drawEllipse(center, 4, 4);
                 painter.setBrush(QColor(90, 210, 255));
-                painter.drawEllipse(toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble()
-                                                 + m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() / 2.0,
-                                             m_parameters.value(QStringLiteral("center_y")).toDouble()),
-                                    5, 5);
+                painter.drawEllipse(handlePoint(), 5, 5);
             }
 
             void mousePressEvent(QMouseEvent* event) override
             {
-                const QPointF center = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble(),
-                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
-                const QPointF handle = toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble()
-                                                    + m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() / 2.0,
-                                                m_parameters.value(QStringLiteral("center_y")).toDouble());
-                if (QLineF(event->position(), center).length() < 14.0)
+                if (QLineF(event->position(), centerPoint()).length() < 14.0)
                 {
                     m_dragMode = DragMode::Move;
                 }
-                else if (QLineF(event->position(), handle).length() < 14.0)
+                else if (QLineF(event->position(), handlePoint()).length() < 14.0)
                 {
                     m_dragMode = DragMode::Resize;
                 }
@@ -189,8 +191,7 @@ namespace scopeone::ui
                 }
                 else
                 {
-                    const QPointF center = toWidget(parameters.value(QStringLiteral("center_x")).toDouble(),
-                                                    parameters.value(QStringLiteral("center_y")).toDouble());
+                    const QPointF center = centerPoint();
                     parameters[QStringLiteral("size_x")] = qBound(0.001,
                                                                   2.0 * std::abs(event->position().x() - center.x())
                                                                       / plotArea().width(),
@@ -219,6 +220,20 @@ namespace scopeone::ui
                 Move,
                 Resize
             };
+
+            // The center of the shape and the handle on its right edge that sets its size
+            QPointF centerPoint() const
+            {
+                return toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble(),
+                                m_parameters.value(QStringLiteral("center_y")).toDouble());
+            }
+
+            QPointF handlePoint() const
+            {
+                return toWidget(m_parameters.value(QStringLiteral("center_x")).toDouble()
+                                    + m_parameters.value(QStringLiteral("size_x"), 0.1).toDouble() / 2.0,
+                                m_parameters.value(QStringLiteral("center_y")).toDouble());
+            }
 
             QPointF toWidget(double x, double y) const
             {
@@ -541,15 +556,8 @@ namespace scopeone::ui
                              const scopeone::core::ImageFrame& frame,
                              const QString& error)
                 {
-                    if (requestId != m_offlineProcessingRequestId
-                        || !m_directProcessingRequest)
+                    if (!finishDirectProcessing(requestId, error, frame.isValid()))
                     {
-                        return;
-                    }
-                    finishOfflineProcessing();
-                    if (!error.isEmpty() || !frame.isValid())
-                    {
-                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     const QString outputSourceId = QStringLiteral("processed:%1")
@@ -577,15 +585,8 @@ namespace scopeone::ui
                              const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
                              const QString& error)
                 {
-                    if (requestId != m_offlineProcessingRequestId
-                        || !m_directProcessingRequest)
+                    if (!finishDirectProcessing(requestId, error, session != nullptr))
                     {
-                        return;
-                    }
-                    finishOfflineProcessing();
-                    if (!error.isEmpty() || !session)
-                    {
-                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     emit processedStackReady(session);
@@ -596,15 +597,8 @@ namespace scopeone::ui
                              const QString& outputLayerKey,
                              const QString& error)
                 {
-                    if (requestId != m_offlineProcessingRequestId
-                        || !m_directProcessingRequest)
+                    if (!finishDirectProcessing(requestId, error, !outputLayerKey.isEmpty()))
                     {
-                        return;
-                    }
-                    finishOfflineProcessing();
-                    if (!error.isEmpty() || outputLayerKey.isEmpty())
-                    {
-                        emit problem(tr("Processing Failed"), error);
                         return;
                     }
                     emit processedLayerReady(outputLayerKey);
@@ -1178,8 +1172,7 @@ namespace scopeone::ui
             else if (m_directProcessingRequest)
             {
                 m_offlineProcessingRequestId = m_scopeonecore->requestRecordingSessionStackProcessing(
-                    m_sourceCombo->currentData(Qt::UserRole + 1).toString(),
-                    m_sourceCombo->currentData(Qt::UserRole + 2).toString());
+                    sourceId, m_sourceCombo->currentData(Qt::UserRole + 2).toString());
             }
             else
             {
@@ -1209,6 +1202,22 @@ namespace scopeone::ui
     void ImageProcessingWidget::onCancelProcessing()
     {
         m_scopeonecore->cancelProcessingRequest(m_offlineProcessingRequestId);
+    }
+
+    // Ends the run that a result belongs to and reports a failure. True when the result can be used.
+    bool ImageProcessingWidget::finishDirectProcessing(quint64 requestId, const QString& error, bool hasResult)
+    {
+        if (requestId != m_offlineProcessingRequestId || !m_directProcessingRequest)
+        {
+            return false;
+        }
+        finishOfflineProcessing();
+        if (!error.isEmpty() || !hasResult)
+        {
+            emit problem(tr("Processing Failed"), error);
+            return false;
+        }
+        return true;
     }
 
     void ImageProcessingWidget::finishOfflineProcessing()
@@ -1404,16 +1413,16 @@ namespace scopeone::ui
             return;
         }
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        QJsonObject presets = loadPresets(settings);
         presets.insert(name, currentPipeline());
-        settings.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(presets).toJson(QJsonDocument::Compact));
+        storePresets(settings, presets);
     }
 
     void ImageProcessingWidget::fillPresetMenu()
     {
         m_presetMenu->clear();
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        const QJsonObject presets = QJsonDocument::fromJson(settings.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+        const QJsonObject presets = loadPresets(settings);
         connect(m_presetMenu->addAction(tr("Save Pipeline as Preset...")), &QAction::triggered, this,
                 &ImageProcessingWidget::savePreset);
         m_presetMenu->addSeparator();
@@ -1426,9 +1435,9 @@ namespace scopeone::ui
             connect(removeMenu->addAction(name), &QAction::triggered, this, [name]()
             {
                 QSettings stored(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-                QJsonObject all = QJsonDocument::fromJson(stored.value(QStringLiteral("ProcessingPresets")).toByteArray()).object();
+                QJsonObject all = loadPresets(stored);
                 all.remove(name);
-                stored.setValue(QStringLiteral("ProcessingPresets"), QJsonDocument(all).toJson(QJsonDocument::Compact));
+                storePresets(stored, all);
             });
         }
         if (presets.isEmpty())
@@ -1476,7 +1485,6 @@ namespace scopeone::ui
         if (row < 0 || !m_scopeonecore->removeProcessingModule(row, m_targetCamera))
         {
             emit problem(tr("Warning"), tr("Failed to remove processing module"));
-            return;
         }
     }
 
@@ -1530,12 +1538,12 @@ namespace scopeone::ui
 
     void ImageProcessingWidget::onLiveProcessingToggled(bool enabled)
     {
-        if (!m_scopeonecore->setRealTimeProcessingEnabled(enabled))
+        const bool changed = m_scopeonecore->setRealTimeProcessingEnabled(enabled);
+        updateRunButtons();
+        if (!changed)
         {
-            updateRunButtons();
             return;
         }
-        updateRunButtons();
         qInfo().noquote() << (m_scopeonecore->isRealTimeProcessingEnabled()
                                   ? "Processing started"
                                   : "Processing stopped");
