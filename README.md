@@ -144,6 +144,8 @@ Run the built application:
 
 Linux and macOS use vcpkg for Qt, OpenCV, and ScopeWriter's dependencies. Micro-Manager is built from its own checkout because its native core and device adapters are not vcpkg dependencies.
 
+Steps 1 and 2 are optional when you run the build script in a terminal. If build tools or vcpkg are missing, the script offers to install them (`apt-get` on Linux, Homebrew on macOS, and vcpkg into `$HOME/vcpkg`), and `--yes` accepts every offer without asking.
+
 1. Install the system build tools.
 
 Linux:
