@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   compile:
-    name: Compile
+    name: Compile (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -62,6 +62,43 @@ jobs:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: vcpkg-scopeone-ubuntu-24.04-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-ubuntu-24.04-
+
+      - name: Compile mmCoreAndDevices and ScopeOne
+        shell: bash
+        run: ./scripts/build-unix.sh
+
+  compile-macos:
+    name: Compile (macOS)
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          brew install \
+            git subversion cmake autoconf automake libtool autoconf-archive \
+            pkg-config ninja boost
+
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
+          git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+          "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-scopeone-macos-15-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-macos-15-
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
