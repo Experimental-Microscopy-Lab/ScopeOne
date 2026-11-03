@@ -73,6 +73,8 @@ ensure_build_tools() {
     command -v "$command_name" >/dev/null 2>&1 || missing_commands+=("$command_name")
   done
   command -v libtoolize >/dev/null 2>&1 || command -v glibtoolize >/dev/null 2>&1 || missing_commands+=("libtool")
+  command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1 \
+    || missing_commands+=("a C++ compiler (g++ or clang++)")
   if (( ${#missing_commands[@]} == 0 )); then
     return
   fi
@@ -185,6 +187,9 @@ step "Building required Micro-Manager components"
 )
 
 step "Building and installing ScopeOneCore"
+if [[ ! -d "$ROOT_DIR/vcpkg_installed/$VCPKG_TRIPLET" ]]; then
+  echo "The first build compiles Qt and OpenCV with vcpkg and can take a long time. Later builds reuse the result."
+fi
 run cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "${VCPKG_ARGS[@]}"
 run cmake --build "$CORE_DIR/build" --parallel "$JOBS"
 run cmake --install "$CORE_DIR/build"
