@@ -65,52 +65,6 @@ run() {
   "$@"
 }
 
-# Asks a yes or no question. --yes answers yes, and without a terminal the answer is no.
-confirm() {
-  if [[ "$ASSUME_YES" == true ]]; then
-    return 0
-  fi
-  if [[ ! -t 0 ]]; then
-    return 1
-  fi
-  local answer
-  read -r -p "$YELLOW$1 [Y/n]$RESET " answer
-  [[ -z "$answer" || "$answer" =~ ^[Yy] ]]
-}
-
-install_build_tools() {
-  if [[ "$PLATFORM_NAME" == "macOS" ]]; then
-    if ! xcode-select -p >/dev/null 2>&1; then
-      run xcode-select --install
-      error "Finish installing the command line tools in the window that opened, then run this script again."
-      exit 1
-    fi
-    if ! command -v brew >/dev/null 2>&1; then
-      error "Homebrew installs the build tools. Get it from https://brew.sh, then run this script again."
-      exit 1
-    fi
-    run brew install git subversion cmake autoconf automake libtool autoconf-archive pkg-config ninja boost
-  elif command -v apt-get >/dev/null 2>&1; then
-    local sudo=()
-    if [[ $EUID -ne 0 ]]; then
-      sudo=(sudo)
-    fi
-    run "${sudo[@]}" apt-get update
-    run "${sudo[@]}" apt-get install -y \
-      git subversion build-essential cmake autoconf automake libtool autoconf-archive \
-      pkg-config ninja-build curl zip unzip libboost-all-dev
-    run "${sudo[@]}" apt-get install -y --no-upgrade \
-      libgl-dev libegl-dev libopengl-dev libx11-dev libx11-xcb-dev libxrender-dev \
-      libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-image0-dev \
-      libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev \
-      libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xkb-dev libxcb-xinput-dev \
-      libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
-  else
-    error "Install the build tools listed in the README with your package manager, then run this script again."
-    exit 1
-  fi
-}
-
 ensure_build_tools() {
   # Micro-Manager is built with autotools, which Homebrew installs as glibtoolize
   local missing_commands=()
@@ -122,25 +76,42 @@ ensure_build_tools() {
   if (( ${#missing_commands[@]} == 0 )); then
     return
   fi
-  echo "Missing build tools: ${missing_commands[*]}"
-  if ! confirm "Install the build tools with the system package manager?"; then
-    error "Install the build tools listed in the README, or run this script in a terminal and answer yes."
-    exit 1
-  fi
-  install_build_tools
+  error "Missing build tools: ${missing_commands[*]}"
+  error "Install them with your package manager and run this script again. For example:"
+  cat >&2 <<'EOF_TOOLS'
+
+  Debian, Ubuntu:  sudo apt install git cmake build-essential autoconf automake libtool pkg-config
+  Fedora:          sudo dnf install git cmake gcc-c++ make autoconf automake libtool pkgconf-pkg-config
+  macOS:           brew install git cmake autoconf automake libtool pkg-config
+
+Package names differ between distributions. Step 1 of the Linux and macOS build steps in the README lists everything the build needs.
+EOF_TOOLS
+  exit 1
 }
 
 ensure_vcpkg() {
   if [[ -z "${VCPKG_ROOT:-}" || ! -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]]; then
-    local default_root="$HOME/vcpkg"
-    if [[ ! -f "$default_root/scripts/buildsystems/vcpkg.cmake" ]]; then
-      if ! confirm "vcpkg was not found. Download it into $default_root?"; then
-        error "Set VCPKG_ROOT to a bootstrapped vcpkg checkout, or run this script in a terminal and answer yes."
-        exit 1
+    local vcpkg_root="$HOME/vcpkg"
+    if [[ ! -f "$vcpkg_root/scripts/buildsystems/vcpkg.cmake" ]]; then
+      if [[ "$ASSUME_YES" != true ]]; then
+        if [[ ! -t 0 ]]; then
+          error "Set VCPKG_ROOT to a bootstrapped vcpkg checkout, or run this script in a terminal."
+          exit 1
+        fi
+        local answer
+        echo "vcpkg is a C++ package manager. ScopeOne uses it to download and build Qt, OpenCV and its other libraries, and nothing is installed system wide."
+        read -r -p "${YELLOW}vcpkg was not found. Download it into $vcpkg_root? Press Enter to accept, type another folder, or n to cancel:$RESET " answer
+        case "$answer" in
+          "") ;;
+          n|N|no|No) error "Set VCPKG_ROOT to a bootstrapped vcpkg checkout and run this script again."; exit 1 ;;
+          *) vcpkg_root="${answer/#\~/$HOME}" ;;
+        esac
       fi
-      run git clone https://github.com/microsoft/vcpkg.git "$default_root"
+      if [[ ! -f "$vcpkg_root/scripts/buildsystems/vcpkg.cmake" ]]; then
+        run git clone https://github.com/microsoft/vcpkg.git "$vcpkg_root"
+      fi
     fi
-    export VCPKG_ROOT="$default_root"
+    export VCPKG_ROOT="$vcpkg_root"
     echo "Using vcpkg in $VCPKG_ROOT. Add export VCPKG_ROOT=\"$VCPKG_ROOT\" to your shell profile to skip this next time."
   fi
   if [[ ! -x "$VCPKG_ROOT/vcpkg" ]]; then
