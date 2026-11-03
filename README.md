@@ -128,7 +128,7 @@ Linux:
 ```bash
 sudo apt install \
   git build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja-build curl zip unzip
+  pkg-config ninja-build curl zip unzip libboost-all-dev
 sudo apt install --no-upgrade \
   libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
   libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
@@ -144,7 +144,7 @@ macOS:
 xcode-select --install
 brew install \
   git cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja
+  pkg-config ninja boost
 ```
 
 2. Build from the ScopeOne repository root:

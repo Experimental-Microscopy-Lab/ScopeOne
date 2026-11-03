@@ -37,6 +37,7 @@ jobs:
             libtool \
             autoconf-archive \
             pkg-config \
+            libboost-all-dev \
             ninja-build curl zip unzip \
             libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
             libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
@@ -78,7 +79,7 @@ jobs:
         run: |
           brew install \
             git cmake autoconf automake libtool autoconf-archive \
-            pkg-config ninja
+            pkg-config ninja boost
 
       - name: Set up vcpkg
         shell: bash
