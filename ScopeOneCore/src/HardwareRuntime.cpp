@@ -10,6 +10,83 @@
 
 namespace scopeone::core::internal
 {
+    namespace
+    {
+        // Calls through to a provider, or reports that nothing serves the request
+        template <class Provider, class Call>
+        bool forward(Provider* provider, const char* missing, QString* errorMessage, Call&& call)
+        {
+            if (!provider)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QString::fromLatin1(missing);
+                }
+                return false;
+            }
+            return call(*provider);
+        }
+
+        // The stage that exactly one provider names as its default, or none when they disagree
+        QString uniqueDefaultStage(const DeviceRegistry& registry,
+                                   QString (StageProvider::*defaultStage)() const,
+                                   HardwareDeviceKind kind)
+        {
+            QString match;
+            for (const HardwareProviderDescriptor& descriptor : registry.providers())
+            {
+                const HardwareProviderPtr provider = registry.provider(descriptor.id);
+                auto* stageProvider = dynamic_cast<StageProvider*>(provider.get());
+                if (!stageProvider)
+                {
+                    continue;
+                }
+                const QString deviceId = (stageProvider->*defaultStage)().trimmed();
+                const HardwareDeviceDescriptor device = registry.device(deviceId);
+                if (device.providerId == descriptor.id && device.kind == kind)
+                {
+                    if (!match.isEmpty() && match != deviceId)
+                    {
+                        return {};
+                    }
+                    match = deviceId;
+                }
+            }
+            return match;
+        }
+
+        // Applies one delivery switch to every provider, and undoes it when one provider refuses
+        bool setDeliveryEnabled(const QList<QPair<CameraRuntimeControl*, QStringList>>& controls,
+                                bool (CameraRuntimeControl::*setter)(const QStringList&, bool),
+                                bool enabled)
+        {
+            QList<QPair<CameraRuntimeControl*, QStringList>> changed;
+            for (const auto& entry : controls)
+            {
+                if (!(entry.first->*setter)(entry.second, enabled))
+                {
+                    for (const auto& previous : changed)
+                    {
+                        (previous.first->*setter)(previous.second, !enabled);
+                    }
+                    return false;
+                }
+                changed.append(entry);
+            }
+            return true;
+        }
+
+        void detachCameraProvider(const HardwareProviderPtr& provider)
+        {
+            if (auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get()))
+            {
+                cameraProvider->stopPreview();
+                cameraProvider->setFrameSink({});
+                cameraProvider->setPreviewStateSink({});
+            }
+        }
+    }
+
     DeviceRegistry::DeviceRegistry(QObject* parent)
         : QObject(parent)
     {
@@ -499,39 +576,17 @@ namespace scopeone::core::internal
     bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
                                                             bool enabled)
     {
-        QList<QPair<CameraRuntimeControl*, QStringList>> changed;
-        for (const auto& entry : runtimeControlsFor(cameraIds))
-        {
-            if (!entry.first->setRecordingFrameDeliveryEnabled(entry.second, enabled))
-            {
-                for (const auto& previous : changed)
-                {
-                    previous.first->setRecordingFrameDeliveryEnabled(previous.second, !enabled);
-                }
-                return false;
-            }
-            changed.append(entry);
-        }
-        return true;
+        return setDeliveryEnabled(runtimeControlsFor(cameraIds),
+                                  &CameraRuntimeControl::setRecordingFrameDeliveryEnabled,
+                                  enabled);
     }
 
     bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
                                                            bool enabled)
     {
-        QList<QPair<CameraRuntimeControl*, QStringList>> changed;
-        for (const auto& entry : runtimeControlsFor(cameraIds))
-        {
-            if (!entry.first->setHighRateFrameDeliveryEnabled(entry.second, enabled))
-            {
-                for (const auto& previous : changed)
-                {
-                    previous.first->setHighRateFrameDeliveryEnabled(previous.second, !enabled);
-                }
-                return false;
-            }
-            changed.append(entry);
-        }
-        return true;
+        return setDeliveryEnabled(runtimeControlsFor(cameraIds),
+                                  &CameraRuntimeControl::setHighRateFrameDeliveryEnabled,
+                                  enabled);
     }
 
     bool HardwareRuntime::isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token)
@@ -552,50 +607,14 @@ namespace scopeone::core::internal
 
     QString HardwareRuntime::defaultXYStage() const
     {
-        QString match;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
-        {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* stageProvider = dynamic_cast<StageProvider*>(provider.get()))
-            {
-                const QString deviceId = stageProvider->defaultXYStage().trimmed();
-                const HardwareDeviceDescriptor device = m_registry.device(deviceId);
-                if (device.providerId == descriptor.id
-                    && device.kind == HardwareDeviceKind::XYStage)
-                {
-                    if (!match.isEmpty() && match != deviceId)
-                    {
-                        return {};
-                    }
-                    match = deviceId;
-                }
-            }
-        }
-        return match;
+        return uniqueDefaultStage(m_registry, &StageProvider::defaultXYStage,
+                                  HardwareDeviceKind::XYStage);
     }
 
     QString HardwareRuntime::defaultZStage() const
     {
-        QString match;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
-        {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* stageProvider = dynamic_cast<StageProvider*>(provider.get()))
-            {
-                const QString deviceId = stageProvider->defaultZStage().trimmed();
-                const HardwareDeviceDescriptor device = m_registry.device(deviceId);
-                if (device.providerId == descriptor.id
-                    && device.kind == HardwareDeviceKind::ZStage)
-                {
-                    if (!match.isEmpty() && match != deviceId)
-                    {
-                        return {};
-                    }
-                    match = deviceId;
-                }
-            }
-        }
-        return match;
+        return uniqueDefaultStage(m_registry, &StageProvider::defaultZStage,
+                                  HardwareDeviceKind::ZStage);
     }
 
     bool HardwareRuntime::getXYPosition(const QString& deviceId,
@@ -603,32 +622,22 @@ namespace scopeone::core::internal
                                         double& y,
                                         QString* errorMessage) const
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->getXYPosition(deviceId, x, y, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.getXYPosition(deviceId, x, y, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::getZPosition(const QString& deviceId,
                                        double& z,
                                        QString* errorMessage) const
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->getZPosition(deviceId, z, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.getZPosition(deviceId, z, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setRelativeXYPosition(const QString& deviceId,
@@ -636,32 +645,22 @@ namespace scopeone::core::internal
                                                 double dy,
                                                 QString* errorMessage)
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->setRelativeXYPosition(deviceId, dx, dy, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.setRelativeXYPosition(deviceId, dx, dy, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setRelativeZPosition(const QString& deviceId,
                                                double dz,
                                                QString* errorMessage)
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->setRelativeZPosition(deviceId, dz, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.setRelativeZPosition(deviceId, dz, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setXYPosition(const QString& deviceId,
@@ -669,96 +668,66 @@ namespace scopeone::core::internal
                                         double y,
                                         QString* errorMessage)
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->setXYPosition(deviceId, x, y, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.setXYPosition(deviceId, x, y, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setZPosition(const QString& deviceId,
                                        double z,
                                        QString* errorMessage)
     {
-        StageProvider* provider = stageProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Stage provider not available");
-            }
-            return false;
-        }
-        return provider->setZPosition(deviceId, z, errorMessage);
+        return forward(stageProviderForDevice(deviceId), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
+                       {
+                           return provider.setZPosition(deviceId, z, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::isShutterOpen(const QString& deviceId,
                                         bool& open,
                                         QString* errorMessage) const
     {
-        ShutterProvider* provider = shutterProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Shutter provider not available");
-            }
-            return false;
-        }
-        return provider->isShutterOpen(deviceId, open, errorMessage);
+        return forward(shutterProviderForDevice(deviceId), "Shutter provider not available", errorMessage,
+                       [&](ShutterProvider& provider)
+                       {
+                           return provider.isShutterOpen(deviceId, open, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setShutterOpen(const QString& deviceId,
                                          bool open,
                                          QString* errorMessage)
     {
-        ShutterProvider* provider = shutterProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Shutter provider not available");
-            }
-            return false;
-        }
-        return provider->setShutterOpen(deviceId, open, errorMessage);
+        return forward(shutterProviderForDevice(deviceId), "Shutter provider not available", errorMessage,
+                       [&](ShutterProvider& provider)
+                       {
+                           return provider.setShutterOpen(deviceId, open, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::getState(const QString& deviceId,
                                    long& state,
                                    QString* errorMessage) const
     {
-        StateProvider* provider = stateProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("State provider not available");
-            }
-            return false;
-        }
-        return provider->getState(deviceId, state, errorMessage);
+        return forward(stateProviderForDevice(deviceId), "State provider not available", errorMessage,
+                       [&](StateProvider& provider)
+                       {
+                           return provider.getState(deviceId, state, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setState(const QString& deviceId,
                                    long state,
                                    QString* errorMessage)
     {
-        StateProvider* provider = stateProviderForDevice(deviceId);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("State provider not available");
-            }
-            return false;
-        }
-        return provider->setState(deviceId, state, errorMessage);
+        return forward(stateProviderForDevice(deviceId), "State provider not available", errorMessage,
+                       [&](StateProvider& provider)
+                       {
+                           return provider.setState(deviceId, state, errorMessage);
+                       });
     }
 
     QString HardwareRuntime::stateLabel(const QString& deviceId, long state) const
@@ -826,16 +795,12 @@ namespace scopeone::core::internal
                                     const QString& configName,
                                     QString* errorMessage)
     {
-        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
-        if (!provider)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Configuration provider not available");
-            }
-            return false;
-        }
-        return provider->setConfig(groupName, configName, errorMessage);
+        return forward(configurationProviderForGroup(groupName), "Configuration provider not available",
+                       errorMessage,
+                       [&](ConfigurationProvider& provider)
+                       {
+                           return provider.setConfig(groupName, configName, errorMessage);
+                       });
     }
 
     // The provider that has the hardware functions of the Micro-Manager core, if there is one
@@ -854,35 +819,29 @@ namespace scopeone::core::internal
 
     bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
-            return false;
-        }
-        return hardware->autoShutter(enabled, errorMessage);
+        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.autoShutter(enabled, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setAutoShutter(bool enabled, QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
-            return false;
-        }
-        return hardware->setAutoShutter(enabled, errorMessage);
+        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.setAutoShutter(enabled, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::setCoreShutterOpen(bool open, QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Shutter control is not available");
-            return false;
-        }
-        return hardware->setCoreShutterOpen(open, errorMessage);
+        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.setCoreShutterOpen(open, errorMessage);
+                       });
     }
 
     bool HardwareRuntime::hasAutofocus() const
@@ -900,16 +859,11 @@ namespace scopeone::core::internal
     bool HardwareRuntime::startPropertySequences(const std::vector<PropertySequence>& sequences,
                                                  QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Acquisition hardware not available");
-            }
-            return false;
-        }
-        return hardware->startPropertySequences(sequences, errorMessage);
+        return forward(acquisitionHardware(), "Acquisition hardware not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.startPropertySequences(sequences, errorMessage);
+                       });
     }
 
     void HardwareRuntime::stopPropertySequences(const std::vector<PropertySequence>& sequences)
@@ -930,16 +884,11 @@ namespace scopeone::core::internal
                                              const std::vector<double>& positions,
                                              QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Acquisition hardware not available");
-            }
-            return false;
-        }
-        return hardware->startFocusSequence(focusDevice, positions, errorMessage);
+        return forward(acquisitionHardware(), "Acquisition hardware not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.startFocusSequence(focusDevice, positions, errorMessage);
+                       });
     }
 
     void HardwareRuntime::stopFocusSequence(const QString& focusDevice)
@@ -952,26 +901,18 @@ namespace scopeone::core::internal
 
     bool HardwareRuntime::runAutofocus(QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        if (!hardware)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Autofocus is not available");
-            return false;
-        }
-        return hardware->runAutofocus(errorMessage);
+        return forward(acquisitionHardware(), "Autofocus is not available", errorMessage,
+                       [&](AcquisitionHardware& hardware)
+                       {
+                           return hardware.runAutofocus(errorMessage);
+                       });
     }
 
     void HardwareRuntime::clear()
     {
         for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
         {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get()))
-            {
-                cameraProvider->stopPreview();
-                cameraProvider->setFrameSink({});
-                cameraProvider->setPreviewStateSink({});
-            }
+            detachCameraProvider(m_registry.provider(descriptor.id));
         }
         m_registry.clear();
     }
@@ -983,10 +924,6 @@ namespace scopeone::core::internal
             return false;
         }
         const HardwareProviderDescriptor descriptor = provider->descriptor();
-        if (descriptor.id.trimmed().isEmpty())
-        {
-            return false;
-        }
         const HardwareProviderPtr previous = m_registry.provider(descriptor.id);
         if (previous && previous != provider)
         {
@@ -1054,13 +991,7 @@ namespace scopeone::core::internal
 
     void HardwareRuntime::unregisterProvider(const QString& providerId)
     {
-        const HardwareProviderPtr provider = m_registry.provider(providerId);
-        if (auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get()))
-        {
-            cameraProvider->stopPreview();
-            cameraProvider->setFrameSink({});
-            cameraProvider->setPreviewStateSink({});
-        }
+        detachCameraProvider(m_registry.provider(providerId));
         m_registry.unregisterProvider(providerId);
     }
 

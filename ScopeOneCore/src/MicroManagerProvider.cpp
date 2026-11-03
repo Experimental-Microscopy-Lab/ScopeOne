@@ -24,11 +24,46 @@ namespace scopeone::core::internal
             return result;
         }
 
-        void setError(QString* errorMessage, const CMMError& error)
+        // MMCore takes device and property names as trimmed narrow strings
+        std::string name8(const QString& name)
+        {
+            return name.trimmed().toStdString();
+        }
+
+        // Runs an MMCore query and returns the fallback when the core reports an error
+        template <class T, class Call>
+        T orElse(T fallback, Call&& call)
+        {
+            try
+            {
+                return call();
+            }
+            catch (const CMMError&)
+            {
+                return fallback;
+            }
+        }
+
+        // Runs an MMCore command and reports a core error through errorMessage
+        template <class Call>
+        bool succeeds(QString* errorMessage, Call&& call)
         {
             if (errorMessage)
             {
-                *errorMessage = QString::fromStdString(error.getMsg());
+                errorMessage->clear();
+            }
+            try
+            {
+                call();
+                return true;
+            }
+            catch (const CMMError& error)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QString::fromStdString(error.getMsg());
+                }
+                return false;
             }
         }
     }
@@ -123,15 +158,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->listProperties(cameraId);
         }
-        try
+        return orElse(QStringList{}, [&]
         {
-            return toQStringList(
-                m_core->getDevicePropertyNames(cameraId.trimmed().toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+            return toQStringList(m_core->getDevicePropertyNames(name8(cameraId).c_str()));
+        });
     }
 
     QString MicroManagerProvider::getProperty(const QString& cameraId,
@@ -142,19 +172,15 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->getProperty(cameraId, name, fromCache);
         }
-        try
+        return orElse(QString{}, [&]
         {
-            const std::string device = cameraId.trimmed().toStdString();
-            const std::string property = name.trimmed().toStdString();
+            const std::string device = name8(cameraId);
+            const std::string property = name8(name);
             return QString::fromStdString(
                 fromCache
                     ? m_core->getPropertyFromCache(device.c_str(), property.c_str())
                     : m_core->getProperty(device.c_str(), property.c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        });
     }
 
     bool MicroManagerProvider::setProperty(const QString& cameraId,
@@ -166,21 +192,13 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->setProperty(cameraId, name, value, errorMessage);
         }
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = cameraId.trimmed().toStdString();
-            m_core->setProperty(device.c_str(),
-                                name.trimmed().toStdString().c_str(),
-                                value.toStdString().c_str());
+            const std::string device = name8(cameraId);
+            m_core->setProperty(device.c_str(), name8(name).c_str(), value.toStdString().c_str());
             m_core->waitForDevice(device.c_str());
             m_core->updateSystemStateCache();
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     QString MicroManagerProvider::getPropertyType(const QString& cameraId, const QString& name)
@@ -189,23 +207,16 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->getPropertyType(cameraId, name);
         }
-        try
+        return orElse(QStringLiteral("Unknown"), [&]
         {
-            const MM::PropertyType type = m_core->getPropertyType(
-                cameraId.trimmed().toStdString().c_str(),
-                name.trimmed().toStdString().c_str());
-            switch (type)
+            switch (m_core->getPropertyType(name8(cameraId).c_str(), name8(name).c_str()))
             {
             case MM::String: return QStringLiteral("String");
             case MM::Float: return QStringLiteral("Float");
             case MM::Integer: return QStringLiteral("Integer");
             default: return QStringLiteral("Unknown");
             }
-        }
-        catch (const CMMError&)
-        {
-            return QStringLiteral("Unknown");
-        }
+        });
     }
 
     bool MicroManagerProvider::isPropertyReadOnly(const QString& cameraId, const QString& name)
@@ -214,15 +225,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->isPropertyReadOnly(cameraId, name);
         }
-        try
+        return orElse(true, [&]
         {
-            return m_core->isPropertyReadOnly(cameraId.trimmed().toStdString().c_str(),
-                                              name.trimmed().toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return true;
-        }
+            return m_core->isPropertyReadOnly(name8(cameraId).c_str(), name8(name).c_str());
+        });
     }
 
     bool MicroManagerProvider::isPropertyPreInit(const QString& cameraId, const QString& name)
@@ -231,15 +237,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->isPropertyPreInit(cameraId, name);
         }
-        try
+        return orElse(false, [&]
         {
-            return m_core->isPropertyPreInit(cameraId.trimmed().toStdString().c_str(),
-                                             name.trimmed().toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+            return m_core->isPropertyPreInit(name8(cameraId).c_str(), name8(name).c_str());
+        });
     }
 
     QStringList MicroManagerProvider::getAllowedPropertyValues(const QString& cameraId,
@@ -249,16 +250,11 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->getAllowedPropertyValues(cameraId, name);
         }
-        try
+        return orElse(QStringList{}, [&]
         {
-            return toQStringList(m_core->getAllowedPropertyValues(
-                cameraId.trimmed().toStdString().c_str(),
-                name.trimmed().toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+            return toQStringList(
+                m_core->getAllowedPropertyValues(name8(cameraId).c_str(), name8(name).c_str()));
+        });
     }
 
     bool MicroManagerProvider::hasPropertyLimits(const QString& cameraId, const QString& name)
@@ -267,15 +263,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->hasPropertyLimits(cameraId, name);
         }
-        try
+        return orElse(false, [&]
         {
-            return m_core->hasPropertyLimits(cameraId.trimmed().toStdString().c_str(),
-                                             name.trimmed().toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+            return m_core->hasPropertyLimits(name8(cameraId).c_str(), name8(name).c_str());
+        });
     }
 
     double MicroManagerProvider::getPropertyLowerLimit(const QString& cameraId, const QString& name)
@@ -284,15 +275,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->getPropertyLowerLimit(cameraId, name);
         }
-        try
+        return orElse(0.0, [&]
         {
-            return m_core->getPropertyLowerLimit(cameraId.trimmed().toStdString().c_str(),
-                                                 name.trimmed().toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return 0.0;
-        }
+            return m_core->getPropertyLowerLimit(name8(cameraId).c_str(), name8(name).c_str());
+        });
     }
 
     double MicroManagerProvider::getPropertyUpperLimit(const QString& cameraId, const QString& name)
@@ -301,15 +287,10 @@ namespace scopeone::core::internal
         {
             return m_cameraProvider->getPropertyUpperLimit(cameraId, name);
         }
-        try
+        return orElse(0.0, [&]
         {
-            return m_core->getPropertyUpperLimit(cameraId.trimmed().toStdString().c_str(),
-                                                 name.trimmed().toStdString().c_str());
-        }
-        catch (const CMMError&)
-        {
-            return 0.0;
-        }
+            return m_core->getPropertyUpperLimit(name8(cameraId).c_str(), name8(name).c_str());
+        });
     }
 
     bool MicroManagerProvider::setROI(const QString& cameraId,
@@ -385,26 +366,12 @@ namespace scopeone::core::internal
 
     QString MicroManagerProvider::defaultXYStage() const
     {
-        try
-        {
-            return QString::fromStdString(m_core->getXYStageDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getXYStageDevice()); });
     }
 
     QString MicroManagerProvider::defaultZStage() const
     {
-        try
-        {
-            return QString::fromStdString(m_core->getFocusDevice());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getFocusDevice()); });
     }
 
     bool MicroManagerProvider::getXYPosition(const QString& deviceId,
@@ -414,16 +381,7 @@ namespace scopeone::core::internal
     {
         x = 0.0;
         y = 0.0;
-        try
-        {
-            m_core->getXYPosition(deviceId.trimmed().toStdString().c_str(), x, y);
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { m_core->getXYPosition(name8(deviceId).c_str(), x, y); });
     }
 
     bool MicroManagerProvider::getZPosition(const QString& deviceId,
@@ -431,16 +389,7 @@ namespace scopeone::core::internal
                                             QString* errorMessage) const
     {
         z = 0.0;
-        try
-        {
-            z = m_core->getPosition(deviceId.trimmed().toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { z = m_core->getPosition(name8(deviceId).c_str()); });
     }
 
     bool MicroManagerProvider::setRelativeXYPosition(const QString& deviceId,
@@ -448,36 +397,24 @@ namespace scopeone::core::internal
                                                      double dy,
                                                      QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setRelativeXYPosition(device.c_str(), dx, dy);
             m_core->waitForDevice(device.c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     bool MicroManagerProvider::setRelativeZPosition(const QString& deviceId,
                                                     double dz,
                                                     QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setRelativePosition(device.c_str(), dz);
             m_core->waitForDevice(device.c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     bool MicroManagerProvider::setXYPosition(const QString& deviceId,
@@ -485,36 +422,24 @@ namespace scopeone::core::internal
                                              double y,
                                              QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setXYPosition(device.c_str(), x, y);
             m_core->waitForDevice(device.c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     bool MicroManagerProvider::setZPosition(const QString& deviceId,
                                             double z,
                                             QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setPosition(device.c_str(), z);
             m_core->waitForDevice(device.c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     bool MicroManagerProvider::isShutterOpen(const QString& deviceId,
@@ -522,35 +447,20 @@ namespace scopeone::core::internal
                                              QString* errorMessage) const
     {
         open = false;
-        try
-        {
-            open = m_core->getShutterOpen(deviceId.trimmed().toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { open = m_core->getShutterOpen(name8(deviceId).c_str()); });
     }
 
     bool MicroManagerProvider::setShutterOpen(const QString& deviceId,
                                               bool open,
                                               QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setShutterOpen(device.c_str(), open);
             m_core->waitForDevice(device.c_str());
             m_core->updateSystemStateCache();
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     bool MicroManagerProvider::getState(const QString& deviceId,
@@ -558,35 +468,20 @@ namespace scopeone::core::internal
                                         QString* errorMessage) const
     {
         state = 0;
-        try
-        {
-            state = m_core->getState(deviceId.trimmed().toStdString().c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { state = m_core->getState(name8(deviceId).c_str()); });
     }
 
     bool MicroManagerProvider::setState(const QString& deviceId,
                                         long state,
                                         QString* errorMessage)
     {
-        try
+        return succeeds(errorMessage, [&]
         {
-            const std::string device = deviceId.trimmed().toStdString();
+            const std::string device = name8(deviceId);
             m_core->setState(device.c_str(), state);
             m_core->waitForDevice(device.c_str());
             m_core->updateSystemStateCache();
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        });
     }
 
     QString MicroManagerProvider::stateLabel(const QString& deviceId, long state) const
@@ -595,52 +490,35 @@ namespace scopeone::core::internal
         {
             return {};
         }
-        try
+        return orElse(QString{}, [&]
         {
-            const std::vector<std::string> labels =
-                m_core->getStateLabels(deviceId.trimmed().toStdString().c_str());
+            const std::vector<std::string> labels = m_core->getStateLabels(name8(deviceId).c_str());
             const size_t index = static_cast<size_t>(state);
             return index < labels.size() ? QString::fromStdString(labels[index]) : QString{};
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        });
     }
 
     QStringList MicroManagerProvider::availableConfigGroups() const
     {
-        try
-        {
-            return toQStringList(m_core->getAvailableConfigGroups());
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+        return orElse(QStringList{}, [&] { return toQStringList(m_core->getAvailableConfigGroups()); });
     }
 
     QStringList MicroManagerProvider::availableConfigs(const QString& groupName) const
     {
-        try
+        return orElse(QStringList{}, [&]
         {
-            return toQStringList(
-                m_core->getAvailableConfigs(groupName.trimmed().toStdString().c_str()));
-        }
-        catch (const CMMError&)
-        {
-            return {};
-        }
+            return toQStringList(m_core->getAvailableConfigs(name8(groupName).c_str()));
+        });
     }
 
     std::vector<scopeone::core::ConfigSetting> MicroManagerProvider::configSettings(
         const QString& groupName, const QString& configName) const
     {
-        std::vector<scopeone::core::ConfigSetting> settings;
-        try
+        return orElse(std::vector<scopeone::core::ConfigSetting>{}, [&]
         {
-            const Configuration preset = m_core->getConfigData(groupName.trimmed().toStdString().c_str(),
-                                                               configName.trimmed().toStdString().c_str());
+            std::vector<scopeone::core::ConfigSetting> settings;
+            const Configuration preset = m_core->getConfigData(name8(groupName).c_str(),
+                                                               name8(configName).c_str());
             for (size_t index = 0; index < preset.size(); ++index)
             {
                 const PropertySetting setting = preset.getSetting(index);
@@ -648,19 +526,15 @@ namespace scopeone::core::internal
                                     QString::fromStdString(setting.getPropertyName()),
                                     QString::fromStdString(setting.getPropertyValue())});
             }
-        }
-        catch (const CMMError&)
-        {
-            settings.clear();
-        }
-        return settings;
+            return settings;
+        });
     }
 
     QString MicroManagerProvider::currentConfig(const QString& groupName) const
     {
-        try
+        return orElse(QString{}, [&]() -> QString
         {
-            const std::string group = groupName.trimmed().toStdString();
+            const std::string group = name8(groupName);
             const std::vector<std::string> configs = m_core->getAvailableConfigs(group.c_str());
             QHash<QString, QString> currentValues;
             QSet<QString> failedProperties;
@@ -700,27 +574,19 @@ namespace scopeone::core::internal
                     return QString::fromStdString(config);
                 }
             }
-        }
-        catch (const CMMError&)
-        {
-        }
-        return {};
+            return {};
+        });
     }
 
     bool MicroManagerProvider::setConfig(const QString& groupName,
                                          const QString& configName,
                                          QString* errorMessage)
     {
-        if (errorMessage)
+        QString failure;
+        const bool ok = succeeds(errorMessage, [&]
         {
-            errorMessage->clear();
-        }
-
-        try
-        {
-            const std::string group = groupName.trimmed().toStdString();
-            const std::string config = configName.trimmed().toStdString();
-            const Configuration preset = m_core->getConfigData(group.c_str(), config.c_str());
+            const Configuration preset = m_core->getConfigData(name8(groupName).c_str(),
+                                                               name8(configName).c_str());
             std::vector<PropertySetting> pending;
             pending.reserve(preset.size());
             for (size_t index = 0; index < preset.size(); ++index)
@@ -728,6 +594,7 @@ namespace scopeone::core::internal
                 pending.push_back(preset.getSetting(index));
             }
 
+            // A setting can depend on another one in the same preset, so retry until a pass makes no progress
             while (!pending.empty())
             {
                 std::vector<PropertySetting> failed;
@@ -745,97 +612,47 @@ namespace scopeone::core::internal
                                                  .arg(device, property, value, error);
                     }
                 }
-                if (failed.empty())
-                {
-                    break;
-                }
                 if (failed.size() == pending.size())
                 {
-                    if (errorMessage)
-                    {
-                        *errorMessage = QStringLiteral("Failed to apply config preset %1 = %2 at %3")
-                                            .arg(groupName, configName, failureDescription);
-                    }
-                    return false;
+                    failure = QStringLiteral("Failed to apply config preset %1 = %2 at %3")
+                                  .arg(groupName, configName, failureDescription);
+                    return;
                 }
                 pending = std::move(failed);
             }
 
             m_core->waitForSystem();
             m_core->updateSystemStateCache();
-            return true;
-        }
-        catch (const CMMError& error)
+        });
+        if (ok && !failure.isEmpty())
         {
-            setError(errorMessage, error);
+            if (errorMessage)
+            {
+                *errorMessage = failure;
+            }
             return false;
         }
+        return ok;
     }
 
     bool MicroManagerProvider::autoShutter(bool& enabled, QString* errorMessage) const
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        try
-        {
-            enabled = m_core->getAutoShutter();
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { enabled = m_core->getAutoShutter(); });
     }
 
     bool MicroManagerProvider::setAutoShutter(bool enabled, QString* errorMessage)
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        try
-        {
-            m_core->setAutoShutter(enabled);
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { m_core->setAutoShutter(enabled); });
     }
 
     bool MicroManagerProvider::setCoreShutterOpen(bool open, QString* errorMessage)
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        try
-        {
-            m_core->setShutterOpen(open);
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { m_core->setShutterOpen(open); });
     }
 
     bool MicroManagerProvider::hasAutofocus() const
     {
-        try
-        {
-            return !m_core->getAutoFocusDevice().empty();
-        }
-        catch (const CMMError&)
-        {
-            return false;
-        }
+        return orElse(false, [&] { return !m_core->getAutoFocusDevice().empty(); });
     }
 
     long MicroManagerProvider::propertySequenceCapacity(const QString& device, const QString& property) const
@@ -844,29 +661,21 @@ namespace scopeone::core::internal
         {
             return 0;
         }
-        try
+        return orElse(0L, [&]
         {
             const std::string label = device.toStdString();
             const std::string name = property.toStdString();
             return m_core->isPropertySequenceable(label.c_str(), name.c_str())
                 ? m_core->getPropertySequenceMaxLength(label.c_str(), name.c_str())
                 : 0;
-        }
-        catch (const CMMError&)
-        {
-            return 0;
-        }
+        });
     }
 
     bool MicroManagerProvider::startPropertySequences(const std::vector<PropertySequence>& sequences,
                                                       QString* errorMessage)
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
         std::size_t started = 0;
-        try
+        const bool ok = succeeds(errorMessage, [&]
         {
             for (const PropertySequence& sequence : sequences)
             {
@@ -882,39 +691,24 @@ namespace scopeone::core::internal
                 m_core->startPropertySequence(label.c_str(), name.c_str());
                 ++started;
             }
-            return true;
-        }
-        catch (const CMMError& error)
+        });
+        if (!ok)
         {
-            if (errorMessage) *errorMessage = QString::fromStdString(error.getMsg());
             // Do not leave the properties that were armed running
-            for (std::size_t index = 0; index < started; ++index)
-            {
-                try
-                {
-                    m_core->stopPropertySequence(sequences[index].device.toStdString().c_str(),
-                                                 sequences[index].property.toStdString().c_str());
-                }
-                catch (const CMMError&)
-                {
-                }
-            }
-            return false;
+            stopPropertySequences({sequences.begin(), sequences.begin() + started});
         }
+        return ok;
     }
 
     void MicroManagerProvider::stopPropertySequences(const std::vector<PropertySequence>& sequences)
     {
         for (const PropertySequence& sequence : sequences)
         {
-            try
+            succeeds(nullptr, [&]
             {
                 m_core->stopPropertySequence(sequence.device.toStdString().c_str(),
                                              sequence.property.toStdString().c_str());
-            }
-            catch (const CMMError&)
-            {
-            }
+            });
         }
     }
 
@@ -924,70 +718,37 @@ namespace scopeone::core::internal
         {
             return 0;
         }
-        try
+        return orElse(0L, [&]
         {
             const std::string label = focusDevice.toStdString();
             return m_core->isStageSequenceable(label.c_str())
                 ? m_core->getStageSequenceMaxLength(label.c_str())
                 : 0;
-        }
-        catch (const CMMError&)
-        {
-            return 0;
-        }
+        });
     }
 
     bool MicroManagerProvider::startFocusSequence(const QString& focusDevice,
                                                   const std::vector<double>& positions,
                                                   QString* errorMessage)
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        try
+        return succeeds(errorMessage, [&]
         {
             const std::string label = focusDevice.toStdString();
             m_core->loadStageSequence(label.c_str(), positions);
             m_core->startStageSequence(label.c_str());
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            if (errorMessage) *errorMessage = QString::fromStdString(error.getMsg());
-            return false;
-        }
+        });
     }
 
     void MicroManagerProvider::stopFocusSequence(const QString& focusDevice)
     {
-        try
+        if (!focusDevice.isEmpty())
         {
-            if (!focusDevice.isEmpty())
-            {
-                m_core->stopStageSequence(focusDevice.toStdString().c_str());
-            }
-        }
-        catch (const CMMError&)
-        {
+            succeeds(nullptr, [&] { m_core->stopStageSequence(focusDevice.toStdString().c_str()); });
         }
     }
 
     bool MicroManagerProvider::runAutofocus(QString* errorMessage)
     {
-        if (errorMessage)
-        {
-            errorMessage->clear();
-        }
-        try
-        {
-            m_core->fullFocus();
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            setError(errorMessage, error);
-            return false;
-        }
+        return succeeds(errorMessage, [&] { m_core->fullFocus(); });
     }
 }

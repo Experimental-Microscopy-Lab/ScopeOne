@@ -12,6 +12,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace scopeone::core
 {
     class SCOPEONE_CORE_EXPORT ImageSceneModel : public QObject
@@ -141,8 +143,13 @@ namespace scopeone::core
         friend class ScopeOneCore;
 
         void applyValidatedDocument(const ExperimentDocument& document);
-        bool setLayerDisplay(const QString& layerId,
-                             const LayerDisplayState& display);
+        bool editLayerDisplay(const QString& layerId,
+                              const std::function<void(LayerDisplayState&)>& edit);
+        QString createBox(MarkupType type,
+                          const QString& layerKey,
+                          const QRect& rect,
+                          const QString& label,
+                          MarkupRole role);
         QString addMarkup(Markup markup);
         int layerIndex(const QString& layerId) const;
         int markupIndex(const QString& markupId) const;
