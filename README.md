@@ -61,15 +61,10 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
 - Git, for the submodules (including mmCoreAndDevices)
 - Python 3.14, only for the Python package and Python processing modules
 
-Clone ScopeOne and initialize all submodules with:
+Clone ScopeOne with its submodules, or initialize them in an existing checkout:
 
 ```powershell
 git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
-```
-
-For an existing checkout, initialize the submodules with:
-
-```powershell
 git submodule update --init --recursive
 ```
 
@@ -84,23 +79,9 @@ ScopeOne/
       ScopeWriter/
 ```
 
-ScopeWriter contains its filesystem Zarr V3 writer. It uses libtiff, zlib, zstd and crc32c from vcpkg; ScopeOne lists them in its root `vcpkg.json`, and ScopeWriter declares the same dependencies in its own `vcpkg.json` for standalone builds.
-
 ### Plugin layout
 
-ScopeOne loads external plugins from these directories beside the application:
-
-- `plugins/processing` adds processing modules to the shared pipeline
-- `plugins/tools` adds optional workflow windows to the Tools menu
-- `plugins/hardware` adds isolated hardware providers hosted by `ScopeOne_DriverHost`
-- `plugins/hardware` also contains DAQ devices and signal source plugins
-- `plugins/processing/python` beside ScopeOne holds processing modules written in Python; `plugins/processing/PythonProcessing/examples` has one to copy
-
-All plugins use the installed `scopeone::PluginSDK` CMake target and the public contracts in `ScopeOneCore/include/scopeone`. The Core package owns the stable plugin-facing headers for image frames, hardware providers, DAQ devices, signal sources, processing modules, tool plugins, shared frames and manifests. A common manifest contains `id`, `name`, `version`, `scopeOneApi`, and `kind`. **Tools > Plugin Manager** installs plugins into the current user's application data directory. Hardware plugins can also be enabled and configured there; changes take effect after restart. Reference plugins are organized under `plugins/hardware`, `plugins/processing`, and `plugins/tools`. [plugins/README.md](plugins/README.md) explains how to write and build one.
-
-Micro-Manager remains the built-in camera provider and continues to load its Device Adapters from `.cfg` files. Native camera devices that do not belong in Micro-Manager use the `HardwareProvider` plugin contract. DAQ and signal acquisition are separate plugin contracts and are not linked into `ScopeOne.exe`.
-
-The Image Processing panel can process all live cameras or one selected camera. Recorded images and stacks open in independent windows, and the active image viewer becomes the target for Layers, Inspect, Image Processing, and Save As. Processing the current image or complete stack runs in the background and opens the result in a new window; stack results also remain available in Gallery. Temporal module state is preserved across each stack without changing live pipeline state.
+ScopeOne loads plugins from `plugins/processing`, `plugins/tools` and `plugins/hardware` beside the application, and Python processing modules from `plugins/processing/python`. All plugins build against the installed `scopeone::PluginSDK` target and the contracts in `ScopeOneCore/include/scopeone`. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files, while other native cameras use the `HardwareProvider` contract. [plugins/README.md](plugins/README.md) explains how to write, build and install a plugin.
 
 **Windows Build Steps:**
 
@@ -112,17 +93,13 @@ C:/dev/vcpkg/bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "C:/dev/vcpkg"
 ```
 
-For an existing vcpkg checkout, run `git -C $env:VCPKG_ROOT pull --ff-only` and rerun its `bootstrap-vcpkg.bat` before migrating.
-
 Build Core, plugins, and GUI with the repository script:
 
 ```powershell
 .\scripts\build.ps1 --configure
 ```
 
-When migrating an existing build, use `--clean --configure` once to replace the old CMake caches. Later builds only need `.\scripts\build.ps1`.
-
-The root `vcpkg.json` pins Qt and OpenCV and provides ScopeWriter's libtiff, zlib, zstd and crc32c. Core, GUI, and plugins share `vcpkg_installed/`; the build scripts select `x64-windows`, `x64-linux-dynamic`, `arm64-osx-dynamic`, or another supported host triplet. Linux and macOS use the dynamic triplets so Qt is shared between the GUI, ScopeOneCore, and plugins. CMake installs dependencies on the first configure, and the Windows GUI uses vcpkg's `windeployqt` to deploy Qt plugins. Micro-Manager, CUDA, and ONNX Runtime retain their existing dependency setup.
+Later builds only need `.\scripts\build.ps1`. Core, GUI, and plugins share `vcpkg_installed/`, and CMake installs the dependencies on the first configure.
 
 For a direct Core CMake configure:
 
@@ -140,11 +117,9 @@ Run the built application:
 .\build\Release\ScopeOne.exe
 ```
 
-**Linux and macOS Build Steps (experimental):**
+**Linux and macOS Build Steps:**
 
-Linux and macOS use vcpkg for Qt, OpenCV, and ScopeWriter's dependencies. Micro-Manager is built from its own checkout because its native core and device adapters are not vcpkg dependencies.
-
-Step 2 is optional when you run the build script in a terminal. If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. If build tools are missing, the script lists them and stops.
+Micro-Manager is built from its own checkout because its native core and device adapters are not vcpkg dependencies. Everything else comes from vcpkg with the dynamic triplet of the host, so Qt is shared between the GUI, ScopeOneCore, and plugins.
 
 1. Install the system build tools.
 
@@ -152,46 +127,35 @@ Linux:
 
 ```bash
 sudo apt install \
-  git subversion build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja-build curl zip unzip libboost-all-dev
+  git build-essential cmake autoconf automake libtool autoconf-archive \
+  pkg-config ninja-build curl zip unzip
 sudo apt install --no-upgrade \
-  libgl-dev libegl-dev libopengl-dev libx11-dev libx11-xcb-dev libxrender-dev \
-  libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-image0-dev \
-  libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev \
-  libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xkb-dev libxcb-xinput-dev \
-  libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
+  libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+  libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+  libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+  libxkbcommon-x11-dev
 ```
 
-The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system; it is not a system Qt installation. It uses the glvnd `libgl-dev`/`libegl-dev` packages instead of `libgl1-mesa-dev`/`libegl1-mesa-dev`, so `--no-upgrade` can install it without upgrading the installed Mesa drivers.
+The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system. It is not a system Qt installation, and `--no-upgrade` keeps it from upgrading the installed Mesa drivers.
 
 macOS:
 
 ```bash
 xcode-select --install
 brew install \
-  git subversion cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja boost
+  git cmake autoconf automake libtool autoconf-archive \
+  pkg-config ninja
 ```
 
-2. Install and bootstrap vcpkg:
-
-```bash
-git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
-"$HOME/vcpkg/bootstrap-vcpkg.sh"
-export VCPKG_ROOT="$HOME/vcpkg"
-```
-
-3. Build from the ScopeOne repository root:
+2. Build from the ScopeOne repository root:
 
 ```bash
 ./scripts/build-unix.sh
 ```
 
-The script initializes the submodules, clones Micro-Manager into `ScopeOneCore/external/micro-manager` and links `mmCoreAndDevices`, builds MMDevice, MMCore and the DemoCamera and Utilities adapters, builds and installs ScopeOneCore, builds the GUI, and copies the demo adapters next to the executable. It selects the `x64-linux-dynamic`, `arm64-linux-dynamic`, `x64-osx-dynamic`, or `arm64-osx-dynamic` triplet from the host. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`).
+If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. It then builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the plugins and the GUI. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`). Pass `--clean` to discard the previous build directories.
 
-Pass `--clean` once when migrating from a build that used system Qt or OpenCV, or from an earlier static `x64-linux` triplet build.
-
-The executable is `build/ScopeOne`, and `config/MMConfig_demo.cfg` runs with the copied demo adapters. It loads Qt and OpenCV from `vcpkg_installed/<triplet>/lib`, so run it from the build tree; there is no Linux or macOS deployment step yet.
+The executable is `build/ScopeOne`, and `config/MMConfig_demo.cfg` runs with the copied demo adapters. It loads Qt and OpenCV from `vcpkg_installed/<triplet>/lib`, so run it from the build tree.
 
 ## 🤖 Automation and AI Agents
 

@@ -30,7 +30,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git \
-            subversion \
             build-essential \
             cmake \
             autoconf \
@@ -38,13 +37,11 @@ jobs:
             libtool \
             autoconf-archive \
             pkg-config \
-            libboost-all-dev \
             ninja-build curl zip unzip \
-            libgl-dev libegl-dev libopengl-dev libx11-dev libx11-xcb-dev libxrender-dev \
-            libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-image0-dev \
-            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev \
-            libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-xkb-dev libxcb-xinput-dev \
-            libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev
+            libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+            libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+            libxkbcommon-x11-dev
 
       - name: Set up vcpkg
         shell: bash
@@ -80,8 +77,8 @@ jobs:
         shell: bash
         run: |
           brew install \
-            git subversion cmake autoconf automake libtool autoconf-archive \
-            pkg-config ninja boost
+            git cmake autoconf automake libtool autoconf-archive \
+            pkg-config ninja
 
       - name: Set up vcpkg
         shell: bash
