@@ -59,27 +59,15 @@ namespace scopeone::core::internal
     }
 
     // Starts one immutable acquisition event sequence
-    bool MDAManager::start(const QList<AcquisitionEvent>& events, bool block)
+    bool MDAManager::start(const QList<AcquisitionEvent>& events)
     {
         if (m_running.exchange(true))
         {
             emit sequenceError(QStringLiteral("MDA already running"));
             return false;
         }
-        if (events.isEmpty())
-        {
-            m_running.store(false);
-            emit sequenceError(QStringLiteral("MDA event list is empty"));
-            return false;
-        }
 
         m_cancelRequested.store(false);
-        if (block)
-        {
-            runSequence(events);
-            return true;
-        }
-
         m_threadPool.start([this, events]()
         {
             runSequence(events);
@@ -168,7 +156,7 @@ namespace scopeone::core::internal
                 output.startedTimestampNs = currentTimestampNs();
                 output.succeeded = setupEvent(event, state, &errorMessage)
                     && openShutter(event, state, &errorMessage)
-                    && execEvent(event, output, &errorMessage);
+                    && captureCameras(event, output, &errorMessage);
                 closeShutter(event, state);
                 output.completedTimestampNs = currentTimestampNs();
                 output.errorMessage = output.succeeded
@@ -766,17 +754,6 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Routes one event to the active capture implementation
-    bool MDAManager::execEvent(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage)
-    {
-        if (event.cameraIds.isEmpty())
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("No camera selected for acquisition event");
-            return false;
-        }
-        return captureCameras(event, output, errorMessage);
-    }
-
     // Captures one event across all selected camera providers
     bool MDAManager::captureCameras(const AcquisitionEvent& event,
                                     MDAOutput& output,
@@ -834,11 +811,6 @@ namespace scopeone::core::internal
                                  double exposureMs,
                                  QString* errorMessage)
     {
-        if (cameraIds.isEmpty())
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("No camera selected");
-            return false;
-        }
         for (const QString& cameraId : cameraIds)
         {
             if (!m_cameraProvider->setExposure(cameraId, exposureMs))

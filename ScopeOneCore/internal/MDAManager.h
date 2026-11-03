@@ -41,7 +41,7 @@ namespace scopeone::core::internal
         void setStageProvider(StageProvider* stageProvider);
         void setConfigurationProvider(ConfigurationProvider* configurationProvider);
         void setAcquisitionHardware(AcquisitionHardware* hardware);
-        bool start(const QList<AcquisitionEvent>& events, bool block = false);
+        bool start(const QList<AcquisitionEvent>& events);
         void requestCancel();
         void cancelAndWait();
 
@@ -131,7 +131,6 @@ namespace scopeone::core::internal
         bool setupEvent(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         bool applyChannel(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         bool applyZOffset(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
-        bool execEvent(const AcquisitionEvent& event, MDAOutput& output, QString* errorMessage);
         bool captureCameras(const AcquisitionEvent& event,
                             MDAOutput& output,
                             QString* errorMessage);

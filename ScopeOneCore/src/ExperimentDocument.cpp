@@ -658,84 +658,97 @@ namespace scopeone::core
             return result;
         }
 
-        QString recordingFormatName(RecordingFormat format)
+        // The names of the values of an enum as documents store them
+        template <typename Enum>
+        struct EnumName
         {
-            switch (format)
+            Enum value;
+            const char* name;
+        };
+
+        template <typename Enum, std::size_t N>
+        QString enumName(const EnumName<Enum> (&names)[N], Enum value)
+        {
+            for (const EnumName<Enum>& entry : names)
             {
-            case RecordingFormat::OmeTiff:
-                return QStringLiteral("OmeTiff");
-            case RecordingFormat::OmeZarr:
-                return QStringLiteral("OmeZarr");
-            case RecordingFormat::Tiff:
-                return QStringLiteral("Tiff");
-            case RecordingFormat::Binary:
-                return QStringLiteral("Binary");
+                if (entry.value == value)
+                {
+                    return QLatin1String(entry.name);
+                }
             }
             return QStringLiteral("Unknown");
+        }
+
+        template <typename Enum, std::size_t N>
+        bool parseEnum(const EnumName<Enum> (&names)[N], const QString& text, Enum& value)
+        {
+            for (const EnumName<Enum>& entry : names)
+            {
+                if (text == QLatin1String(entry.name))
+                {
+                    value = entry.value;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        constexpr EnumName<RecordingFormat> kRecordingFormatNames[]{
+            {RecordingFormat::OmeTiff, "OmeTiff"},
+            {RecordingFormat::OmeZarr, "OmeZarr"},
+            {RecordingFormat::Tiff, "Tiff"},
+            {RecordingFormat::Binary, "Binary"}};
+        constexpr EnumName<ImagePixelFormat> kImagePixelFormatNames[]{
+            {ImagePixelFormat::Invalid, "Invalid"},
+            {ImagePixelFormat::Mono8, "Mono8"},
+            {ImagePixelFormat::Mono16, "Mono16"}};
+        constexpr EnumName<RecordingAxis> kRecordingAxisNames[]{
+            {RecordingAxis::Time, "Time"},
+            {RecordingAxis::Z, "Z"},
+            {RecordingAxis::XY, "XY"},
+            {RecordingAxis::Channel, "Channel"}};
+        constexpr EnumName<ExperimentRunState> kExperimentRunStateNames[]{
+            {ExperimentRunState::Draft, "Draft"},
+            {ExperimentRunState::Running, "Running"},
+            {ExperimentRunState::Completed, "Completed"},
+            {ExperimentRunState::Canceled, "Canceled"},
+            {ExperimentRunState::Failed, "Failed"}};
+        constexpr EnumName<DocumentLayerKind> kDocumentLayerKindNames[]{
+            {DocumentLayerKind::Raw, "Raw"},
+            {DocumentLayerKind::Processed, "Processed"},
+            {DocumentLayerKind::Static, "Static"},
+            {DocumentLayerKind::Tool, "Tool"},
+            {DocumentLayerKind::Gallery, "Gallery"}};
+        constexpr EnumName<DocumentMarkupType> kDocumentMarkupTypeNames[]{
+            {DocumentMarkupType::Line, "Line"},
+            {DocumentMarkupType::Rect, "Rect"},
+            {DocumentMarkupType::Ellipse, "Ellipse"},
+            {DocumentMarkupType::Polygon, "Polygon"},
+            {DocumentMarkupType::Point, "Point"}};
+        constexpr EnumName<DocumentMarkupRole> kDocumentMarkupRoleNames[]{
+            {DocumentMarkupRole::Generic, "Generic"},
+            {DocumentMarkupRole::CrossSection, "CrossSection"},
+            {DocumentMarkupRole::Roi, "Roi"},
+            {DocumentMarkupRole::Measurement, "Measurement"}};
+
+        QString recordingFormatName(RecordingFormat format)
+        {
+            return enumName(kRecordingFormatNames, format);
         }
 
         QString imagePixelFormatName(ImagePixelFormat format)
         {
-            switch (format)
-            {
-            case ImagePixelFormat::Invalid:
-                return QStringLiteral("Invalid");
-            case ImagePixelFormat::Mono8:
-                return QStringLiteral("Mono8");
-            case ImagePixelFormat::Mono16:
-                return QStringLiteral("Mono16");
-            }
-            return QStringLiteral("Unknown");
+            return enumName(kImagePixelFormatNames, format);
         }
 
         bool parseRecordingFormat(const QString& name, RecordingFormat& format)
         {
-            if (name == QStringLiteral("OmeTiff"))
-            {
-                format = RecordingFormat::OmeTiff;
-                return true;
-            }
-            if (name == QStringLiteral("OmeZarr"))
-            {
-                format = RecordingFormat::OmeZarr;
-                return true;
-            }
-            if (name == QStringLiteral("Tiff"))
-            {
-                format = RecordingFormat::Tiff;
-                return true;
-            }
-            if (name == QStringLiteral("Binary"))
-            {
-                format = RecordingFormat::Binary;
-                return true;
-            }
-            return false;
+            return parseEnum(kRecordingFormatNames, name, format);
         }
 
         bool parseRecordingAxis(const QString& name, RecordingAxis& axis)
         {
-            if (name == QStringLiteral("Time"))
-            {
-                axis = RecordingAxis::Time;
-                return true;
-            }
-            if (name == QStringLiteral("Z"))
-            {
-                axis = RecordingAxis::Z;
-                return true;
-            }
-            if (name == QStringLiteral("XY"))
-            {
-                axis = RecordingAxis::XY;
-                return true;
-            }
-            if (name == QStringLiteral("Channel"))
-            {
-                axis = RecordingAxis::Channel;
-                return true;
-            }
-            return false;
+            return parseEnum(kRecordingAxisNames, name, axis);
         }
 
         QString processingModuleIdFromDocument(const QString& name)
@@ -765,137 +778,27 @@ namespace scopeone::core
 
         bool parseExperimentRunState(const QString& name, ExperimentRunState& state)
         {
-            if (name == QStringLiteral("Draft"))
-            {
-                state = ExperimentRunState::Draft;
-                return true;
-            }
-            if (name == QStringLiteral("Running"))
-            {
-                state = ExperimentRunState::Running;
-                return true;
-            }
-            if (name == QStringLiteral("Completed"))
-            {
-                state = ExperimentRunState::Completed;
-                return true;
-            }
-            if (name == QStringLiteral("Canceled"))
-            {
-                state = ExperimentRunState::Canceled;
-                return true;
-            }
-            if (name == QStringLiteral("Failed"))
-            {
-                state = ExperimentRunState::Failed;
-                return true;
-            }
-            return false;
+            return parseEnum(kExperimentRunStateNames, name, state);
         }
 
         bool parseDocumentLayerKind(const QString& name, DocumentLayerKind& kind)
         {
-            if (name == QStringLiteral("Raw"))
-            {
-                kind = DocumentLayerKind::Raw;
-                return true;
-            }
-            if (name == QStringLiteral("Processed"))
-            {
-                kind = DocumentLayerKind::Processed;
-                return true;
-            }
-            if (name == QStringLiteral("Static"))
-            {
-                kind = DocumentLayerKind::Static;
-                return true;
-            }
-            if (name == QStringLiteral("Tool"))
-            {
-                kind = DocumentLayerKind::Tool;
-                return true;
-            }
-            if (name == QStringLiteral("Gallery"))
-            {
-                kind = DocumentLayerKind::Gallery;
-                return true;
-            }
-            return false;
+            return parseEnum(kDocumentLayerKindNames, name, kind);
         }
 
         bool parseDocumentMarkupType(const QString& name, DocumentMarkupType& type)
         {
-            if (name == QStringLiteral("Line"))
-            {
-                type = DocumentMarkupType::Line;
-                return true;
-            }
-            if (name == QStringLiteral("Rect"))
-            {
-                type = DocumentMarkupType::Rect;
-                return true;
-            }
-            if (name == QStringLiteral("Ellipse"))
-            {
-                type = DocumentMarkupType::Ellipse;
-                return true;
-            }
-            if (name == QStringLiteral("Polygon"))
-            {
-                type = DocumentMarkupType::Polygon;
-                return true;
-            }
-            if (name == QStringLiteral("Point"))
-            {
-                type = DocumentMarkupType::Point;
-                return true;
-            }
-            return false;
+            return parseEnum(kDocumentMarkupTypeNames, name, type);
         }
 
         bool parseDocumentMarkupRole(const QString& name, DocumentMarkupRole& role)
         {
-            if (name == QStringLiteral("Generic"))
-            {
-                role = DocumentMarkupRole::Generic;
-                return true;
-            }
-            if (name == QStringLiteral("CrossSection"))
-            {
-                role = DocumentMarkupRole::CrossSection;
-                return true;
-            }
-            if (name == QStringLiteral("Roi"))
-            {
-                role = DocumentMarkupRole::Roi;
-                return true;
-            }
-            if (name == QStringLiteral("Measurement"))
-            {
-                role = DocumentMarkupRole::Measurement;
-                return true;
-            }
-            return false;
+            return parseEnum(kDocumentMarkupRoleNames, name, role);
         }
 
         bool parseImagePixelFormat(const QString& name, ImagePixelFormat& format)
         {
-            if (name == QStringLiteral("Invalid"))
-            {
-                format = ImagePixelFormat::Invalid;
-                return true;
-            }
-            if (name == QStringLiteral("Mono8"))
-            {
-                format = ImagePixelFormat::Mono8;
-                return true;
-            }
-            if (name == QStringLiteral("Mono16"))
-            {
-                format = ImagePixelFormat::Mono16;
-                return true;
-            }
-            return false;
+            return parseEnum(kImagePixelFormatNames, name, format);
         }
 
         bool perBurstEventCount(const ExperimentPlan& plan, quint64& count, QString* errorMessage, const QString& path)
@@ -3744,88 +3647,27 @@ namespace scopeone::core
 
     QString recordingAxisName(RecordingAxis axis)
     {
-        switch (axis)
-        {
-        case RecordingAxis::Time:
-            return QStringLiteral("Time");
-        case RecordingAxis::Z:
-            return QStringLiteral("Z");
-        case RecordingAxis::XY:
-            return QStringLiteral("XY");
-        case RecordingAxis::Channel:
-            return QStringLiteral("Channel");
-        }
-        return QStringLiteral("Unknown");
+        return enumName(kRecordingAxisNames, axis);
     }
 
     QString experimentRunStateName(ExperimentRunState state)
     {
-        switch (state)
-        {
-        case ExperimentRunState::Draft:
-            return QStringLiteral("Draft");
-        case ExperimentRunState::Running:
-            return QStringLiteral("Running");
-        case ExperimentRunState::Completed:
-            return QStringLiteral("Completed");
-        case ExperimentRunState::Canceled:
-            return QStringLiteral("Canceled");
-        case ExperimentRunState::Failed:
-            return QStringLiteral("Failed");
-        }
-        return QStringLiteral("Unknown");
+        return enumName(kExperimentRunStateNames, state);
     }
 
     QString documentLayerKindName(DocumentLayerKind kind)
     {
-        switch (kind)
-        {
-        case DocumentLayerKind::Raw:
-            return QStringLiteral("Raw");
-        case DocumentLayerKind::Processed:
-            return QStringLiteral("Processed");
-        case DocumentLayerKind::Static:
-            return QStringLiteral("Static");
-        case DocumentLayerKind::Tool:
-            return QStringLiteral("Tool");
-        case DocumentLayerKind::Gallery:
-            return QStringLiteral("Gallery");
-        }
-        return QStringLiteral("Unknown");
+        return enumName(kDocumentLayerKindNames, kind);
     }
 
     QString documentMarkupTypeName(DocumentMarkupType type)
     {
-        switch (type)
-        {
-        case DocumentMarkupType::Line:
-            return QStringLiteral("Line");
-        case DocumentMarkupType::Rect:
-            return QStringLiteral("Rect");
-        case DocumentMarkupType::Ellipse:
-            return QStringLiteral("Ellipse");
-        case DocumentMarkupType::Polygon:
-            return QStringLiteral("Polygon");
-        case DocumentMarkupType::Point:
-            return QStringLiteral("Point");
-        }
-        return QStringLiteral("Unknown");
+        return enumName(kDocumentMarkupTypeNames, type);
     }
 
     QString documentMarkupRoleName(DocumentMarkupRole role)
     {
-        switch (role)
-        {
-        case DocumentMarkupRole::Generic:
-            return QStringLiteral("Generic");
-        case DocumentMarkupRole::CrossSection:
-            return QStringLiteral("CrossSection");
-        case DocumentMarkupRole::Roi:
-            return QStringLiteral("Roi");
-        case DocumentMarkupRole::Measurement:
-            return QStringLiteral("Measurement");
-        }
-        return QStringLiteral("Unknown");
+        return enumName(kDocumentMarkupRoleNames, role);
     }
 
     QPointF ImageTransform2D::map(const QPointF& point) const
@@ -4041,6 +3883,12 @@ namespace scopeone::core
         shape.frames = planeCount / (channels * slices);
         shape.order = omeAcquisitionOrder(plan);
         return shape;
+    }
+
+    bool planNeedsMdaEvents(const ExperimentPlan& plan)
+    {
+        return !plan.positions.empty() || !plan.zPositions.empty() || !plan.channels.empty()
+            || !plan.timeIntervalsMs.empty();
     }
 
     quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event)

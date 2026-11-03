@@ -170,8 +170,6 @@ namespace scopeone::core::internal
                               const QStringList& activeCameraIds,
                               ExperimentPlan& plan,
                               QString& errorMessage) const;
-        bool planUsesMda(const ExperimentPlan& plan) const;
-        bool planStreamsMda(const ExperimentPlan& plan) const;
         void resetCaptureState(const ExperimentPlan& plan);
         void resetSessionState(const ExperimentPlan& plan,
                                const QJsonObject& deviceProperties,

@@ -456,208 +456,198 @@ namespace scopeone::core::internal
                 m_lastError.clear();
                 m_omePlan = plan;
 
-                if (recordingFormat == scopeone::core::RecordingFormat::OmeTiff
-                    || recordingFormat == scopeone::core::RecordingFormat::OmeZarr
-                    || recordingFormat == scopeone::core::RecordingFormat::Tiff
-                    || recordingFormat == scopeone::core::RecordingFormat::Binary)
+                const int storageBits = tiffStorageBitsForFormat(pixelFormat);
+                if (storageBits == 0)
                 {
-                    const int storageBits = tiffStorageBitsForFormat(pixelFormat);
-                    if (storageBits == 0)
-                    {
-                        m_lastError = QStringLiteral("Unsupported bit depth");
-                        return false;
-                    }
-
-                    scopewriter::WriterSettings settings;
-                    switch (recordingFormat)
-                    {
-                    case scopeone::core::RecordingFormat::OmeTiff:
-                        settings.format = scopewriter::Format::OmeTiff;
-                        break;
-                    case scopeone::core::RecordingFormat::OmeZarr:
-                        settings.format = scopewriter::Format::OmeZarr;
-                        break;
-                    case scopeone::core::RecordingFormat::Tiff:
-                        settings.format = scopewriter::Format::Tiff;
-                        break;
-                    case scopeone::core::RecordingFormat::Binary:
-                        settings.format = scopewriter::Format::Binary;
-                        break;
-                    }
-#if defined(_WIN32)
-                    settings.outputPath = std::filesystem::path(filePath.toStdWString());
-                    settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdWString());
-#else
-                    settings.outputPath = std::filesystem::path(filePath.toStdString());
-                    settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdString());
-#endif
-                    settings.linkedMetadataFile = metadataFileName.toStdString();
-                    settings.width = width;
-                    settings.height = height;
-                    settings.pixelType = pixelFormat == ImagePixelFormat::Mono8
-                                             ? scopewriter::PixelType::UInt8
-                                             : scopewriter::PixelType::UInt16;
-                    settings.significantBits = bitsPerSample;
-                    settings.positionCount = (std::max)(1, static_cast<int>(plan.positions.size()));
-                    settings.timeCount = (std::max)(1, plan.framesPerBurst)
-                        * (plan.burstMode ? (std::max)(1, plan.targetBursts) : 1);
-                    settings.channelCount = (std::max)(1, static_cast<int>(plan.channels.size()));
-                    settings.zCount = (std::max)(1, static_cast<int>(plan.zPositions.size()));
-                    settings.acquisitionOrder = omeAcquisitionOrder(plan).toStdString();
-                    settings.physicalSizeXUm = physicalSizeXUm;
-                    settings.physicalSizeYUm = physicalSizeYUm;
-                    settings.timeIncrementMs = uniformTimeIncrementMs(plan);
-                    if (plan.zPositions.size() > 1)
-                    {
-                        const double zStepUm = std::abs(plan.zPositions[1] - plan.zPositions[0]);
-                        bool uniform = zStepUm > 0.0;
-                        for (size_t index = 2; uniform && index < plan.zPositions.size(); ++index)
-                        {
-                            const double step = std::abs(plan.zPositions[index]
-                                                         - plan.zPositions[index - 1]);
-                            uniform = std::abs(step - zStepUm)
-                                <= (std::max)(1e-9, zStepUm * 1e-9);
-                        }
-                        if (uniform)
-                        {
-                            settings.physicalSizeZUm = zStepUm;
-                        }
-                    }
-                    settings.acquisitionStartTimestampNs = acquisitionStartTimestampNs;
-                    // Named after the acquisition, with the camera when there are several
-                    settings.imageName = (plan.baseName.isEmpty()
-                                              ? imageName
-                                              : plan.cameraIds.size() > 1
-                                                    ? plan.baseName + QLatin1Char(' ') + imageName
-                                                    : plan.baseName).toStdString();
-                    settings.description = plan.comment.toStdString();
-                    settings.creator = "ScopeOne";
-                    if (plan.channels.empty())
-                    {
-                        settings.channels.push_back(scopewriter::ChannelMetadata{
-                            .name = settings.imageName
-                        });
-                    }
-                    for (const ChannelSetting& channel : plan.channels)
-                    {
-                        scopewriter::ChannelMetadata metadata;
-                        metadata.name = channel.preset.toStdString();
-                        if (channel.color.size() == 7 && channel.color.startsWith(QLatin1Char('#')))
-                        {
-                            bool ok = false;
-                            const quint32 rgb = channel.color.mid(1).toUInt(&ok, 16);
-                            if (ok)
-                            {
-                                metadata.colorRGB = rgb;
-                            }
-                        }
-                        settings.channels.push_back(metadata);
-                    }
-                    settings.positions.reserve(static_cast<std::size_t>(settings.positionCount));
-                    if (plan.positions.empty())
-                    {
-                        settings.positions.push_back(scopewriter::PositionMetadata{
-                            .name = "Position 1"
-                        });
-                    }
-                    else
-                    {
-                        for (std::size_t index = 0; index < plan.positions.size(); ++index)
-                        {
-                            const auto& position = plan.positions[index];
-                            settings.positions.push_back(scopewriter::PositionMetadata{
-                                .name = positionName(plan, static_cast<int>(index)).toStdString(),
-                                .xUm = position.x(),
-                                .yUm = position.y(),
-                                .zUm = index < plan.positionZ.size() ? plan.positionZ[index]
-                                                                     : std::nullopt
-                            });
-                        }
-                    }
-                    {
-                        // The order of the axes from the slowest to the fastest, positions included,
-                        // like the AxisOrder of the Micro-Manager summary metadata
-                        QStringList axes;
-                        for (const RecordingAxis axis : plan.order)
-                        {
-                            switch (axis)
-                            {
-                            case RecordingAxis::Time: axes.append(QStringLiteral("Time")); break;
-                            case RecordingAxis::XY: axes.append(QStringLiteral("XY")); break;
-                            case RecordingAxis::Z: axes.append(QStringLiteral("Z")); break;
-                            case RecordingAxis::Channel: axes.append(QStringLiteral("Channel")); break;
-                            }
-                        }
-                        settings.metadata["scopeone.acquisition"]["AcquisitionOrder"] =
-                            axes.join(QLatin1Char(',')).toStdString();
-                    }
-                    if (!plan.comment.isEmpty())
-                    {
-                        // Like the comments of the Micro-Manager summary metadata
-                        settings.metadata["scopeone.acquisition"]["Comment"] = plan.comment.toStdString();
-                    }
-                    if (!plan.channels.empty())
-                    {
-                        // Channel setup as Micro-Manager's summary metadata keeps it
-                        auto& channelInfo = settings.metadata["scopeone.channels"];
-                        channelInfo["ChannelGroup"] = plan.channelGroup.toStdString();
-                        for (std::size_t index = 0; index < plan.channels.size(); ++index)
-                        {
-                            const ChannelSetting& channel = plan.channels[index];
-                            const std::string prefix = "Channel" + std::to_string(index) + ".";
-                            channelInfo[prefix + "Preset"] = channel.preset.toStdString();
-                            channelInfo[prefix + "ExposureMs"] = std::to_string(
-                                channel.exposureMs > 0.0 ? channel.exposureMs : plan.exposureMs);
-                            channelInfo[prefix + "ZOffsetUm"] = std::to_string(channel.zOffsetUm);
-                            channelInfo[prefix + "ZStack"] = channel.zStack ? "true" : "false";
-                            channelInfo[prefix + "SkipFrames"] = std::to_string(channel.skipFrames);
-                            if (!channel.cameraId.isEmpty())
-                            {
-                                channelInfo[prefix + "Camera"] = channel.cameraId.toStdString();
-                            }
-                            // The device properties that the preset sets
-                            for (const auto& setting : channel.presetSettings)
-                            {
-                                channelInfo[prefix + "Setting." + setting.device.toStdString()
-                                            + "." + setting.property.toStdString()]
-                                    = setting.value.toStdString();
-                            }
-                        }
-                    }
-                    double value = 0.0;
-                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), value)
-                        && value > 0.0)
-                    {
-                        settings.defaultExposureMs = value;
-                    }
-                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Offset")), value))
-                    {
-                        settings.detector.offset = value;
-                    }
-                    // What the camera reports about itself and how it was set
-                    settings.detector.model = cameraProperties.value(QStringLiteral("CameraName")).toString().toStdString();
-                    settings.detector.serialNumber = cameraProperties.value(QStringLiteral("CameraID")).toString().toStdString();
-                    settings.detector.binning = cameraProperties.value(QStringLiteral("Binning")).toString().toStdString();
-                    if (readFiniteNumber(cameraProperties.value(QStringLiteral("Gain")), value))
-                    {
-                        settings.detector.gain = value;
-                    }
-                    settings.enableCompression = tiff.useDeflate;
-                    settings.compressionLevel = tiff.zipQuality;
-                    settings.zarrPyramidLevels = tiff.pyramid ? 0 : 1;
-
-                    auto writer = std::make_unique<scopewriter::Writer>();
-                    if (!writer->open(settings))
-                    {
-                        m_lastError = QString::fromStdString(writer->lastError());
-                        return false;
-                    }
-                    m_writer = std::move(writer);
-                    return true;
+                    m_lastError = QStringLiteral("Unsupported bit depth");
+                    return false;
                 }
 
-                m_lastError = QStringLiteral("Unsupported recording format");
-                return false;
+                scopewriter::WriterSettings settings;
+                switch (recordingFormat)
+                {
+                case scopeone::core::RecordingFormat::OmeTiff:
+                    settings.format = scopewriter::Format::OmeTiff;
+                    break;
+                case scopeone::core::RecordingFormat::OmeZarr:
+                    settings.format = scopewriter::Format::OmeZarr;
+                    break;
+                case scopeone::core::RecordingFormat::Tiff:
+                    settings.format = scopewriter::Format::Tiff;
+                    break;
+                case scopeone::core::RecordingFormat::Binary:
+                    settings.format = scopewriter::Format::Binary;
+                    break;
+                }
+#if defined(_WIN32)
+                settings.outputPath = std::filesystem::path(filePath.toStdWString());
+                settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdWString());
+#else
+                settings.outputPath = std::filesystem::path(filePath.toStdString());
+                settings.frameMetadataPath = std::filesystem::path(frameInfoPath.toStdString());
+#endif
+                settings.linkedMetadataFile = metadataFileName.toStdString();
+                settings.width = width;
+                settings.height = height;
+                settings.pixelType = pixelFormat == ImagePixelFormat::Mono8
+                                         ? scopewriter::PixelType::UInt8
+                                         : scopewriter::PixelType::UInt16;
+                settings.significantBits = bitsPerSample;
+                settings.positionCount = (std::max)(1, static_cast<int>(plan.positions.size()));
+                settings.timeCount = plan.framesPerBurst * plan.targetBursts;
+                settings.channelCount = (std::max)(1, static_cast<int>(plan.channels.size()));
+                settings.zCount = (std::max)(1, static_cast<int>(plan.zPositions.size()));
+                settings.acquisitionOrder = omeAcquisitionOrder(plan).toStdString();
+                settings.physicalSizeXUm = physicalSizeXUm;
+                settings.physicalSizeYUm = physicalSizeYUm;
+                settings.timeIncrementMs = uniformTimeIncrementMs(plan);
+                if (plan.zPositions.size() > 1)
+                {
+                    const double zStepUm = std::abs(plan.zPositions[1] - plan.zPositions[0]);
+                    bool uniform = zStepUm > 0.0;
+                    for (size_t index = 2; uniform && index < plan.zPositions.size(); ++index)
+                    {
+                        const double step = std::abs(plan.zPositions[index]
+                                                     - plan.zPositions[index - 1]);
+                        uniform = std::abs(step - zStepUm)
+                            <= (std::max)(1e-9, zStepUm * 1e-9);
+                    }
+                    if (uniform)
+                    {
+                        settings.physicalSizeZUm = zStepUm;
+                    }
+                }
+                settings.acquisitionStartTimestampNs = acquisitionStartTimestampNs;
+                // Named after the acquisition, with the camera when there are several
+                settings.imageName = (plan.baseName.isEmpty()
+                                          ? imageName
+                                          : plan.cameraIds.size() > 1
+                                                ? plan.baseName + QLatin1Char(' ') + imageName
+                                                : plan.baseName).toStdString();
+                settings.description = plan.comment.toStdString();
+                settings.creator = "ScopeOne";
+                if (plan.channels.empty())
+                {
+                    settings.channels.push_back(scopewriter::ChannelMetadata{
+                        .name = settings.imageName
+                    });
+                }
+                for (const ChannelSetting& channel : plan.channels)
+                {
+                    scopewriter::ChannelMetadata metadata;
+                    metadata.name = channel.preset.toStdString();
+                    if (channel.color.size() == 7 && channel.color.startsWith(QLatin1Char('#')))
+                    {
+                        bool ok = false;
+                        const quint32 rgb = channel.color.mid(1).toUInt(&ok, 16);
+                        if (ok)
+                        {
+                            metadata.colorRGB = rgb;
+                        }
+                    }
+                    settings.channels.push_back(metadata);
+                }
+                settings.positions.reserve(static_cast<std::size_t>(settings.positionCount));
+                if (plan.positions.empty())
+                {
+                    settings.positions.push_back(scopewriter::PositionMetadata{
+                        .name = "Position 1"
+                    });
+                }
+                else
+                {
+                    for (std::size_t index = 0; index < plan.positions.size(); ++index)
+                    {
+                        const auto& position = plan.positions[index];
+                        settings.positions.push_back(scopewriter::PositionMetadata{
+                            .name = positionName(plan, static_cast<int>(index)).toStdString(),
+                            .xUm = position.x(),
+                            .yUm = position.y(),
+                            .zUm = index < plan.positionZ.size() ? plan.positionZ[index]
+                                                                 : std::nullopt
+                        });
+                    }
+                }
+                {
+                    // The order of the axes from the slowest to the fastest, positions included,
+                    // like the AxisOrder of the Micro-Manager summary metadata
+                    QStringList axes;
+                    for (const RecordingAxis axis : plan.order)
+                    {
+                        switch (axis)
+                        {
+                        case RecordingAxis::Time: axes.append(QStringLiteral("Time")); break;
+                        case RecordingAxis::XY: axes.append(QStringLiteral("XY")); break;
+                        case RecordingAxis::Z: axes.append(QStringLiteral("Z")); break;
+                        case RecordingAxis::Channel: axes.append(QStringLiteral("Channel")); break;
+                        }
+                    }
+                    settings.metadata["scopeone.acquisition"]["AcquisitionOrder"] =
+                        axes.join(QLatin1Char(',')).toStdString();
+                }
+                if (!plan.comment.isEmpty())
+                {
+                    // Like the comments of the Micro-Manager summary metadata
+                    settings.metadata["scopeone.acquisition"]["Comment"] = plan.comment.toStdString();
+                }
+                if (!plan.channels.empty())
+                {
+                    // Channel setup as Micro-Manager's summary metadata keeps it
+                    auto& channelInfo = settings.metadata["scopeone.channels"];
+                    channelInfo["ChannelGroup"] = plan.channelGroup.toStdString();
+                    for (std::size_t index = 0; index < plan.channels.size(); ++index)
+                    {
+                        const ChannelSetting& channel = plan.channels[index];
+                        const std::string prefix = "Channel" + std::to_string(index) + ".";
+                        channelInfo[prefix + "Preset"] = channel.preset.toStdString();
+                        channelInfo[prefix + "ExposureMs"] = std::to_string(
+                            channel.exposureMs > 0.0 ? channel.exposureMs : plan.exposureMs);
+                        channelInfo[prefix + "ZOffsetUm"] = std::to_string(channel.zOffsetUm);
+                        channelInfo[prefix + "ZStack"] = channel.zStack ? "true" : "false";
+                        channelInfo[prefix + "SkipFrames"] = std::to_string(channel.skipFrames);
+                        if (!channel.cameraId.isEmpty())
+                        {
+                            channelInfo[prefix + "Camera"] = channel.cameraId.toStdString();
+                        }
+                        // The device properties that the preset sets
+                        for (const auto& setting : channel.presetSettings)
+                        {
+                            channelInfo[prefix + "Setting." + setting.device.toStdString()
+                                        + "." + setting.property.toStdString()]
+                                = setting.value.toStdString();
+                        }
+                    }
+                }
+                double value = 0.0;
+                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), value)
+                    && value > 0.0)
+                {
+                    settings.defaultExposureMs = value;
+                }
+                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Offset")), value))
+                {
+                    settings.detector.offset = value;
+                }
+                // What the camera reports about itself and how it was set
+                settings.detector.model = cameraProperties.value(QStringLiteral("CameraName")).toString().toStdString();
+                settings.detector.serialNumber = cameraProperties.value(QStringLiteral("CameraID")).toString().toStdString();
+                settings.detector.binning = cameraProperties.value(QStringLiteral("Binning")).toString().toStdString();
+                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Gain")), value))
+                {
+                    settings.detector.gain = value;
+                }
+                settings.enableCompression = tiff.useDeflate;
+                settings.compressionLevel = tiff.zipQuality;
+                settings.zarrPyramidLevels = tiff.pyramid ? 0 : 1;
+
+                auto writer = std::make_unique<scopewriter::Writer>();
+                if (!writer->open(settings))
+                {
+                    m_lastError = QString::fromStdString(writer->lastError());
+                    return false;
+                }
+                m_writer = std::move(writer);
+                return true;
             }
 
             // Appends one frame with its acquisition coordinates and timing
@@ -666,15 +656,6 @@ namespace scopeone::core::internal
                            const ImageFrame& frame,
                            const AcquisitionEvent* event = nullptr)
             {
-                if (!data || !m_writer)
-                {
-                    return false;
-                }
-                if (rawBytes <= 0)
-                {
-                    m_lastError = QStringLiteral("Invalid frame size");
-                    return false;
-                }
                 scopewriter::FrameMetadata metadata;
                 metadata.cameraId = frame.cameraId.toStdString();
                 metadata.frameIndex = frame.frameIndex;
@@ -689,8 +670,7 @@ namespace scopeone::core::internal
                 if (event)
                 {
                     metadata.positionIndex = event->positionIndex;
-                    metadata.t = static_cast<std::int64_t>(event->burstIndex)
-                            * (std::max)(1, m_omePlan.framesPerBurst)
+                    metadata.t = static_cast<std::int64_t>(event->burstIndex) * m_omePlan.framesPerBurst
                         + event->timeIndex;
                     metadata.z = event->zIndex;
                     metadata.c = event->channelIndex;
@@ -938,20 +918,6 @@ namespace scopeone::core::internal
             return false;
         }
         return true;
-    }
-
-    // Returns whether spatial axes require explicit MDA events
-    bool RecordingManager::planUsesMda(const ExperimentPlan& plan) const
-    {
-        // Anything that sets up the hardware between images needs an event for every image
-        return !plan.positions.empty() || !plan.zPositions.empty() || !plan.channels.empty()
-            || !plan.timeIntervalsMs.empty();
-    }
-
-    // Returns whether native preview recording uses the requested frame interval
-    bool RecordingManager::planStreamsMda(const ExperimentPlan& plan) const
-    {
-        return plan.cameraIds.size() == 1 && !planUsesMda(plan);
     }
 
     // Resets counters and MDA state for a new capture plan
@@ -1249,11 +1215,7 @@ namespace scopeone::core::internal
                 });
                 if (output->writeQueue.empty())
                 {
-                    if (output->stopRequested)
-                    {
-                        break;
-                    }
-                    continue;
+                    break;
                 }
                 task = std::move(output->writeQueue.front());
                 output->writeQueue.pop_front();
@@ -1426,8 +1388,9 @@ namespace scopeone::core::internal
                                                                              channel.preset);
         }
 
-        const bool usesMda = planUsesMda(plan);
-        const bool streamsMda = planStreamsMda(plan);
+        const bool usesMda = planNeedsMdaEvents(plan);
+        // A single camera without MDA events records preview frames at the requested interval
+        const bool streamsMda = plan.cameraIds.size() == 1 && !usesMda;
         if (m_mdaState.manager && m_mdaState.manager->isRunning())
         {
             qWarning().noquote() << "Previous MDA acquisition is still running";
@@ -1489,6 +1452,8 @@ namespace scopeone::core::internal
                                              : writerError);
                 finalizeActiveSession(ExperimentRunState::Failed, writerError);
                 m_activeSession.reset();
+                // The directory was reserved above, and stays behind empty unless removed here
+                QDir(sessionOutputDir(plan.saveDir, plan.baseName)).removeRecursively();
                 return false;
             }
         }
@@ -1680,15 +1645,8 @@ namespace scopeone::core::internal
         for (const QString& cameraId : m_captureState.activeCameraIds)
         {
             ImageFrame frame;
-            const bool ok = m_latestFrameFetcher(cameraId, frame);
-            if (ok)
-            {
-                m_captureState.lastFrameIndex[cameraId] = frame.frameIndex;
-            }
-            else
-            {
-                m_captureState.lastFrameIndex[cameraId] = 0;
-            }
+            m_captureState.lastFrameIndex[cameraId] =
+                m_latestFrameFetcher(cameraId, frame) ? frame.frameIndex : 0;
         }
     }
 
@@ -1719,7 +1677,7 @@ namespace scopeone::core::internal
             frameCurrent = minFrames;
         }
 
-        const int tCount = (m_mdaState.plan.framesPerBurst > 0) ? m_mdaState.plan.framesPerBurst : 1;
+        const int tCount = m_mdaState.plan.framesPerBurst;
         const int zCount = m_mdaState.plan.zPositions.empty()
                                ? 1
                                : static_cast<int>(m_mdaState.plan.zPositions.size());
@@ -2119,23 +2077,9 @@ namespace scopeone::core::internal
     // Starts MDA driven recording capture
     bool RecordingManager::startMdaCapture(QString* errorMessage)
     {
-        if (m_captureState.activeCameraIds.isEmpty())
-        {
-            const QString message = QStringLiteral("MDA requires at least one camera");
-            if (errorMessage) *errorMessage = message;
-            qWarning().noquote() << message;
-            return false;
-        }
         if (!m_mdaState.manager)
         {
             m_mdaState.manager = new MDAManager(this);
-        }
-        if (m_mdaState.manager->isRunning())
-        {
-            const QString message = QStringLiteral("Previous MDA acquisition is still running");
-            if (errorMessage) *errorMessage = message;
-            qWarning().noquote() << message;
-            return false;
         }
         m_mdaState.manager->setCameraProvider(m_cameraProvider);
         m_mdaState.manager->setStageProvider(m_stageProvider);
@@ -2239,22 +2183,6 @@ namespace scopeone::core::internal
     // Starts the next MDA burst run
     bool RecordingManager::startMdaRun(QString* errorMessage)
     {
-        if (!m_captureState.isRecording || !m_mdaState.usingMda)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Recording is not active");
-            return false;
-        }
-        if (m_mdaState.burstsRemaining <= 0)
-        {
-            finishRecording(ExperimentRunState::Completed);
-            return true;
-        }
-        if (m_mdaState.manager->isRunning())
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("MDA acquisition is already running");
-            return false;
-        }
-
         for (const QString& cameraId : m_captureState.activeCameraIds)
         {
             m_captureState.framesCapturedThisBurst[cameraId] = 0;
@@ -2283,7 +2211,7 @@ namespace scopeone::core::internal
             return false;
         }
         m_mdaState.eventsThisBurst = events.size();
-        if (!m_mdaState.manager->start(events, false))
+        if (!m_mdaState.manager->start(events))
         {
             if (errorMessage && errorMessage->isEmpty())
             {
@@ -2479,8 +2407,8 @@ namespace scopeone::core::internal
                                             .value(cameraId).toObject(),
                                         tiffOpts))
             {
-                const QString errorMessage = QString("Failed to start raw output for %1").arg(cameraId);
-                return failSave(errorMessage);
+                return failSave(QStringLiteral("Failed to start raw output for %1: %2")
+                                    .arg(cameraId, rawSaver.lastError()));
             }
             int saved = 0;
             for (int frameIndex = 0; frameIndex < static_cast<int>(frameCount); ++frameIndex)
@@ -2515,10 +2443,11 @@ namespace scopeone::core::internal
                                         imageFrame,
                                         event))
                 {
+                    const QString errorMessage = rawSaver.lastError();
                     rawSaver.stopStack();
-                    const QString errorMessage = QString("Failed to append raw frame %1 for %2").arg(saved).arg(
-                        cameraId);
-                    return failSave(errorMessage);
+                    return failSave(QStringLiteral("Failed to append raw frame %1 for %2: %3")
+                                        .arg(saved)
+                                        .arg(cameraId, errorMessage));
                 }
                 saved += 1;
             }

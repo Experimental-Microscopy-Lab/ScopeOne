@@ -880,7 +880,7 @@ namespace scopeone::core::imageops
             double best = -1.0;
             int threshold = peak;
             const int step = flipped ? 1 : -1;
-            for (int i = peak; i != end + step * (flipped ? 1 : 1) && i >= 0 && i < bins; i += step)
+            for (int i = peak; i != end + step; i += step)
             {
                 const double distance = std::abs(dy * (i - end) - dx * static_cast<double>(histogram[static_cast<size_t>(i)])) / norm;
                 if (distance > best)

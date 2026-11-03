@@ -369,6 +369,10 @@ namespace scopeone::core
         {
             return axis == QLatin1Char('C') ? channels : axis == QLatin1Char('Z') ? slices : frames;
         }
+        int& axisSize(QChar axis)
+        {
+            return axis == QLatin1Char('C') ? channels : axis == QLatin1Char('Z') ? slices : frames;
+        }
         int axisCount() const { return (channels > 1) + (slices > 1) + (frames > 1); }
         // At least two axes with more than one step, so one slider is not enough
         bool isHyperstack() const { return axisCount() >= 2; }
@@ -376,6 +380,10 @@ namespace scopeone::core
     // The shape of the planes of a session. Without a shape known from the file, and when the plan has
     // several positions or the planes do not fill the axes, the planes are a single series.
     SCOPEONE_CORE_EXPORT StackShape stackShapeOf(const ExperimentPlan& plan, int planeCount);
+
+    // Whether the plan needs an event for every image rather than a stream of preview frames.
+    // Anything that sets up the hardware between images needs an event for every image.
+    SCOPEONE_CORE_EXPORT bool planNeedsMdaEvents(const ExperimentPlan& plan);
 
     // Position of an event among the planes of one OME image, counting from zero
     SCOPEONE_CORE_EXPORT quint64 omePlaneIndex(const ExperimentPlan& plan, const AcquisitionEvent& event);

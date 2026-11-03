@@ -333,7 +333,7 @@ namespace scopeone::core::internal
 
         cv::Mat sharpenOperation(const cv::Mat& src)
         {
-            const cv::Mat kernel = (cv::Mat_<float>(3, 3) << -1, -1, -1, -1, 12, -1, -1, -1, -1) / 4.0f;
+            const cv::Matx33f kernel = cv::Matx33f(-1, -1, -1, -1, 12, -1, -1, -1, -1) * 0.25f;
             cv::Mat dst;
             cv::filter2D(src, dst, -1, kernel, cv::Point(-1, -1), 0, cv::BORDER_REPLICATE);
             return dst;

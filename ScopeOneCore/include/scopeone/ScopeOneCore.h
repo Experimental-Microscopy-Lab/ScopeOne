@@ -42,6 +42,7 @@ namespace scopeone::core
 
     namespace internal
     {
+        class ProcessingPipelineDefinition;
         class RecordingManager;
         class StageMosaicManager;
     }
@@ -316,7 +317,7 @@ namespace scopeone::core
         static bool writeImageFrames(const QList<ImageFrame>& frames, const QString& filePath,
                                      QString* errorMessage = nullptr);
         int layerSliceCount(const QString& layerKey) const;
-        bool setLayerSliceIndex(const QString& layerKey, int sliceIndex);
+        void setLayerSliceIndex(const QString& layerKey, int sliceIndex);
         ImageFrame publishToolStreamFrame(const QString& sourceId,
                                           const ImageFrame& frame,
                                           const QString& displayName = QString());
@@ -586,7 +587,6 @@ namespace scopeone::core
         void layerFrameRatesUpdated(const QMap<QString, double>& frameRates);
 
      private:
-        static bool planNeedsMdaEvents(const ExperimentPlan& plan);
         bool checkPlanHardware(const ExperimentPlan& plan, QString* errorMessage) const;
         struct Managers;
 
@@ -640,6 +640,12 @@ namespace scopeone::core
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                const QString& errorMessage);
+        void startDeviceUnloadAfterFailedLoad(const LoadConfigResult& result,
+                                              const QString& errorMessage);
+        bool canStartConfigurationOperation();
+        bool hardwareBusy(QString* errorMessage) const;
+        internal::ProcessingPipelineDefinition* editableDefinition(const QString& cameraId) const;
+        QHash<QString, double> cameraPixelSizesUm(const QStringList& cameraIds) const;
         void startConfigurationUnloadTask();
         quint64 queueStageMove(
             const QString& deviceLabel,
