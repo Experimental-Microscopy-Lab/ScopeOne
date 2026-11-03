@@ -93,7 +93,15 @@ ensure_build_tools() {
   # Micro-Manager is built with autotools, which Homebrew installs as glibtoolize
   check_tool libtool "builds Micro-Manager's shared libraries" libtoolize glibtoolize
   check_tool pkg-config "locates libraries while configuring" pkg-config
-  check_tool "C++ compiler" "compiles everything (g++ or clang++)" c++ g++ clang++
+  # The compiler line shows the first one found, which is the one the build tools pick up
+  local compiler_info="compiles everything (g++ or clang++)" compiler_command
+  for compiler_command in c++ g++ clang++; do
+    if command -v "$compiler_command" >/dev/null 2>&1; then
+      compiler_info="$("$compiler_command" --version | sed -n 1p)"
+      break
+    fi
+  done
+  check_tool "C++ compiler" "$compiler_info" c++ g++ clang++
   if (( ${#missing_commands[@]} == 0 )); then
     return
   fi
