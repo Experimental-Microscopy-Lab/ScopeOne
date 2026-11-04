@@ -11,6 +11,7 @@ $clean = $false
 $run = $false
 $package = $false
 $skipCoreInstall = $false
+$assumeYes = $false
 
 function Read-OptionValue {
     param(
@@ -73,6 +74,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         }
         { $_ -in @("--skipCoreInstall", "-skipCoreInstall") } {
             $skipCoreInstall = $true
+            continue
+        }
+        { $_ -in @("--yes", "-yes", "-y") } {
+            $assumeYes = $true
             continue
         }
         default {
@@ -222,8 +227,106 @@ function Import-MsvcEnvironment {
     $env:CXX = "cl.exe"
 }
 
+function Write-ToolLine {
+    param(
+        [bool]$Found,
+        [string]$Label,
+        [string]$Detail
+    )
+
+    $mark = if ($Found) { "[ok]" } else { "[!!]" }
+    $color = if ($Found) { "Green" } else { "Red" }
+    Write-Host "  $mark " -ForegroundColor $color -NoNewline
+    Write-Host ("{0,-12} {1}" -f $Label, $Detail)
+}
+
+function Assert-BuildTools {
+    Write-Step "Checking build tools"
+    $missing = @()
+
+    foreach ($tool in @(
+        @{ Name = "git"; Purpose = "fetches the submodules and vcpkg" },
+        @{ Name = "cmake"; Purpose = "configures and builds ScopeOne" }
+    )) {
+        $found = [bool](Get-Command $tool.Name -ErrorAction SilentlyContinue)
+        Write-ToolLine -Found $found -Label $tool.Name -Detail $tool.Purpose
+        if (-not $found) { $missing += $tool.Name }
+    }
+
+    $compilerDetail = "Visual Studio 2022 with the C++ toolchain was not found"
+    $compilerFound = $false
+    try {
+        Import-MsvcEnvironment
+        $compilerFound = $true
+        # cl.exe prints its banner to stderr, which must not stop the script
+        $compilerDetail = & { $ErrorActionPreference = "Continue"; "$(cl.exe 2>&1 | Select-Object -First 1)" }
+    }
+    catch {
+        $compilerDetail = $_.Exception.Message
+    }
+    Write-ToolLine -Found $compilerFound -Label "C++ compiler" -Detail $compilerDetail
+    if (-not $compilerFound) { $missing += "C++ compiler" }
+
+    $msbuildFound = [bool](Get-Command msbuild.exe -ErrorAction SilentlyContinue)
+    Write-ToolLine -Found $msbuildFound -Label "msbuild" -Detail "builds Micro-Manager"
+    if (-not $msbuildFound) { $missing += "msbuild" }
+
+    if ($missing.Count -eq 0) {
+        return
+    }
+    Write-Host "Missing build tools: $($missing -join ', ')" -ForegroundColor Red
+    Write-Host @"
+
+  Git:           winget install Git.Git
+  CMake:         winget install Kitware.CMake
+  C++ compiler:  install Visual Studio 2022 with the "Desktop development with C++" workload
+
+Run this script again after installing them.
+"@
+    exit 1
+}
+
+function Ensure-Vcpkg {
+    $toolchainFile = "scripts\buildsystems\vcpkg.cmake"
+    if (-not $env:VCPKG_ROOT -or -not (Test-Path (Join-Path $env:VCPKG_ROOT $toolchainFile))) {
+        $vcpkgRoot = Join-Path $HOME "vcpkg"
+        if (-not (Test-Path (Join-Path $vcpkgRoot $toolchainFile))) {
+            if (-not $assumeYes) {
+                if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout, or run this script in a terminal."
+                }
+                Write-Host "vcpkg is a C++ package manager. ScopeOne uses it to download and build Qt, OpenCV and its other libraries, and nothing is installed system wide."
+                $answer = Read-Host "vcpkg was not found. Download it into $vcpkgRoot? Press Enter to accept, type another folder, or n to cancel"
+                if ($answer -in @("n", "N", "no", "No")) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout and run this script again."
+                }
+                if ($answer) { $vcpkgRoot = $answer }
+            }
+            if (-not (Test-Path (Join-Path $vcpkgRoot $toolchainFile))) {
+                Invoke-Step `
+                    -Label "Downloading vcpkg" `
+                    -FilePath "git" `
+                    -Arguments @("clone", "https://github.com/microsoft/vcpkg.git", $vcpkgRoot) `
+                    -WorkingDirectory $PWD.Path
+            }
+        }
+        $env:VCPKG_ROOT = $vcpkgRoot
+        Write-Host "Using vcpkg in $vcpkgRoot. Set the VCPKG_ROOT environment variable to this folder to skip this next time."
+    }
+    if (-not (Test-Path (Join-Path $env:VCPKG_ROOT "vcpkg.exe"))) {
+        Invoke-Step `
+            -Label "Bootstrapping vcpkg" `
+            -FilePath (Join-Path $env:VCPKG_ROOT "bootstrap-vcpkg.bat") `
+            -Arguments @("-disableMetrics") `
+            -WorkingDirectory $env:VCPKG_ROOT
+    }
+}
+
+if ($env:OS -eq "Windows_NT") {
+    Assert-BuildTools
+    Ensure-Vcpkg
+}
 $scopeOneVcpkgRoot = $env:VCPKG_ROOT
-Import-MsvcEnvironment
 
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
 
@@ -253,13 +356,7 @@ $pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
 $vcpkgConfigureArgs = @()
 $writerVcpkgArgs = @()
 if ($env:OS -eq "Windows_NT") {
-    if (-not $scopeOneVcpkgRoot) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
     $vcpkgToolchain = Join-Path $scopeOneVcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-    if (-not (Test-Path $vcpkgToolchain)) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
 }
 if ($env:OS -eq "Windows_NT" -and $target -eq "scopewriter") {
     # Standalone ScopeWriter installs its own vcpkg.json dependencies and ships their DLLs
@@ -424,6 +521,35 @@ if (-not $needCoreConfigure -and $target -in @("all", "core")) {
     }
 }
 
+if ($env:OS -eq "Windows_NT" -and $target -in @("all", "core")) {
+    $mmDir = Join-Path $coreSourceDir "external\mmCoreAndDevices"
+    if (-not ((Test-Path (Join-Path $mmDir "MMCore\MMCore.vcxproj")) -and
+              (Test-Path (Join-Path $writerSourceDir "CMakeLists.txt")))) {
+        Invoke-Step `
+            -Label "Initializing ScopeOne submodules" `
+            -FilePath "git" `
+            -Arguments @("submodule", "update", "--init", "--recursive") `
+            -WorkingDirectory $repoRoot
+    }
+
+    # msbuild builds MMDevice first because MMCore and the adapters reference it
+    foreach ($project in @("MMCore\MMCore", "DeviceAdapters\DemoCamera\DemoCamera", "DeviceAdapters\Utilities\Utilities")) {
+        Invoke-Step `
+            -Label "Building Micro-Manager $(Split-Path $project -Leaf)" `
+            -FilePath "msbuild" `
+            -Arguments @(
+                (Join-Path $mmDir "$project.vcxproj"),
+                "/p:Configuration=Release", "/p:Platform=x64", "/p:SolutionDir=$mmDir\",
+                "/m", "/nologo", "/v:minimal"
+            ) `
+            -WorkingDirectory $repoRoot
+    }
+
+    if (-not (Test-Path (Join-Path $repoRoot "vcpkg_installed\x64-windows"))) {
+        Write-Host "The first build compiles Qt and OpenCV with vcpkg and can take a long time. Later builds reuse the result." -ForegroundColor Yellow
+    }
+}
+
 if ($target -in @("all", "core")) {
     if ($needCoreConfigure) {
         $coreConfigureArgs = @(
@@ -581,6 +707,7 @@ $packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -File -ErrorAction 
     Sort-Object LastWriteTime -Descending
 
 Write-Step "Summary"
+Write-Step "Done"
 Write-Host "Target: $target"
 Write-Host "Config: $config"
 if ($target -eq "scopewriter") {
@@ -595,6 +722,7 @@ else {
 if ($target -ne "scopewriter") {
     if (Test-Path $guiExe) {
         Write-Host "GUI executable: $guiExe"
+        Write-Host "Demo configuration: $(Join-Path $repoRoot 'config\MMConfig_demo.cfg')"
     }
     if ($packageCandidates) {
         Write-Host "Packages:"
