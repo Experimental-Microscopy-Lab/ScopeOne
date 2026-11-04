@@ -18,6 +18,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -812,6 +813,353 @@ namespace ni_daqmx
             std::atomic<DaqState> m_state{DaqState::Idle};
         };
 
+        SignalParameterDescriptor voltsParameter(const QString& key,
+                                                 const QString& name,
+                                                 double value)
+        {
+            SignalParameterDescriptor parameter;
+            parameter.key = key;
+            parameter.name = name;
+            parameter.type = SignalParameterType::Real;
+            parameter.defaultValue = value;
+            parameter.hasRange = true;
+            parameter.minimum = -10.0;
+            parameter.maximum = 10.0;
+            parameter.suffix = QStringLiteral(" V");
+            return parameter;
+        }
+
+        // The analog inputs of one device that run as signal sources. A device runs one analog
+        // input task at a time, so all of them are read by one task on the sample clock of the
+        // first. Adding or removing a channel rebuilds the task, and the samples keep counting
+        // from the first start, so the channels share one time axis and a rebuild leaves a gap.
+        class AiTaskGroup final
+        {
+        public:
+            using ChunkSink = std::function<void(const TimeSeriesChunk&)>;
+            using StateSink = std::function<void(const QString&, SignalSourceState, const QString&)>;
+
+            AiTaskGroup(QString device, ChunkSink chunks, StateSink state)
+                : m_device(std::move(device))
+                  , m_chunks(std::move(chunks))
+                  , m_stateSink(std::move(state))
+            {
+            }
+
+            ~AiTaskGroup()
+            {
+                stopReader();
+            }
+
+            bool add(const QString& sourceId,
+                     const QString& channel,
+                     const SignalAcquisitionConfig& config,
+                     QString* errorMessage)
+            {
+                // load resolves the function pointers again, so the reader that calls them stops first
+                stopReader();
+                QString loadError;
+                if (!m_api.load(true, &loadError))
+                {
+                    return fail(sourceId, loadError, errorMessage);
+                }
+                quint64 offset = 0;
+                {
+                    std::lock_guard lock(m_mutex);
+                    for (const Member& member : m_members)
+                    {
+                        if (member.sourceId == sourceId)
+                        {
+                            restartLocked();
+                            return fail(sourceId, QStringLiteral("%1 is already acquiring").arg(channel),
+                                        errorMessage);
+                        }
+                    }
+                    if (m_members.empty())
+                    {
+                        m_interval = config.sampleIntervalSeconds;
+                        m_origin = std::chrono::steady_clock::now();
+                    }
+                    else if (std::abs(config.sampleIntervalSeconds - m_interval) > 1e-9 * m_interval)
+                    {
+                        restartLocked();
+                        return fail(sourceId,
+                                    QStringLiteral("%1 already samples its analog inputs every %2 s, so %3 "
+                                                   "has to use the same interval")
+                                        .arg(m_device).arg(m_interval).arg(channel),
+                                    errorMessage);
+                    }
+                    offset = elapsedSamples();
+                    Member member;
+                    member.sourceId = sourceId;
+                    member.channel = channel;
+                    member.minimum = config.sourceSettings.value(QStringLiteral("minimumVolts"), -10.0).toDouble();
+                    member.maximum = config.sourceSettings.value(QStringLiteral("maximumVolts"), 10.0).toDouble();
+                    member.endSample = offset + static_cast<quint64>(
+                        std::max(0.0, std::ceil(config.durationMs / 1000.0 / m_interval)));
+                    m_members.push_back(member);
+                }
+                m_stateSink(sourceId, SignalSourceState::Starting, QStringLiteral("Configuring %1").arg(channel));
+                QString error;
+                {
+                    std::lock_guard lock(m_mutex);
+                    error = restartLocked();
+                }
+                if (!error.isEmpty())
+                {
+                    if (errorMessage)
+                    {
+                        *errorMessage = error;
+                    }
+                    return false;
+                }
+                m_stateSink(sourceId, SignalSourceState::Running, QStringLiteral("%1 is acquiring").arg(channel));
+                return true;
+            }
+
+            void remove(const QString& sourceId)
+            {
+                stopReader();
+                QString channel;
+                {
+                    std::lock_guard lock(m_mutex);
+                    const auto found = std::find_if(m_members.begin(), m_members.end(),
+                                                    [&sourceId](const Member& member)
+                                                    {
+                                                        return member.sourceId == sourceId;
+                                                    });
+                    if (found != m_members.end())
+                    {
+                        channel = found->channel;
+                        m_members.erase(found);
+                    }
+                    restartLocked();
+                }
+                if (!channel.isEmpty())
+                {
+                    m_stateSink(sourceId, SignalSourceState::Idle, QStringLiteral("%1 stopped").arg(channel));
+                }
+            }
+
+        private:
+            struct Member
+            {
+                QString sourceId;
+                QString channel;
+                double minimum{-10.0};
+                double maximum{10.0};
+                quint64 endSample{0};
+            };
+
+            quint64 elapsedSamples() const
+            {
+                const double elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - m_origin).count();
+                return static_cast<quint64>(std::llround(elapsed / m_interval));
+            }
+
+            // Builds and starts the task for the current members; on failure every member ends in
+            // the error, since the device then reads none of them
+            QString restartLocked()
+            {
+                if (m_members.empty())
+                {
+                    return {};
+                }
+                const double rate = 1.0 / m_interval;
+                // The buffer of a continuous task holds two seconds, as the stream ring does
+                const auto bufferSamples = static_cast<UInt64>(std::max(1000.0, 2.0 * rate));
+                TaskHandle handle = nullptr;
+                Int32 result = m_api.createTask("", &handle);
+                for (const Member& member : m_members)
+                {
+                    if (result < 0)
+                    {
+                        break;
+                    }
+                    const QByteArray channel = member.channel.toLocal8Bit();
+                    result = m_api.createAiVoltage(handle, channel.constData(), "",
+                                                   kDefaultTerminalConfiguration,
+                                                   member.minimum, member.maximum, kVolts, nullptr);
+                }
+                if (result >= 0)
+                {
+                    result = m_api.configureSampleClock(handle, "", rate, kRising,
+                                                        kContinuousSamples, bufferSamples);
+                }
+                if (result >= 0)
+                {
+                    result = m_api.startTask(handle);
+                }
+                if (result < 0)
+                {
+                    const QString message = m_api.error(result);
+                    if (handle)
+                    {
+                        m_api.clearTask(handle);
+                    }
+                    for (const Member& member : m_members)
+                    {
+                        m_stateSink(member.sourceId, SignalSourceState::Error, message);
+                    }
+                    m_members.clear();
+                    return message;
+                }
+                const quint64 offset = elapsedSamples();
+                m_reading.store(true);
+                m_reader = std::thread([this, handle, members = m_members, offset]()
+                {
+                    read(handle, members, offset);
+                });
+                return {};
+            }
+
+            void stopReader()
+            {
+                m_reading.store(false);
+                if (m_reader.joinable())
+                {
+                    m_reader.join();
+                }
+            }
+
+            // Reports only how members end by themselves, finished or failed; a member that is
+            // stopped or a task that is rebuilt is reported by the caller
+            void read(TaskHandle handle, std::vector<Member> members, quint64 offset)
+            {
+                constexpr UInt32 kSamplesPerRead = 65536;
+                const auto channelCount = static_cast<qsizetype>(members.size());
+                std::vector<bool> finished(members.size(), false);
+                qsizetype running = channelCount;
+                QVector<double> interleaved;
+                quint64 nextSample = offset;
+                QString error;
+                while (m_reading.load() && running > 0)
+                {
+                    UInt32 available = 0;
+                    Int32 result = m_api.availableSamples(handle, &available);
+                    if (result >= 0 && available > 0)
+                    {
+                        const UInt32 wanted = std::min(available, kSamplesPerRead);
+                        interleaved.resize(static_cast<qsizetype>(wanted) * channelCount);
+                        Int32 samplesRead = 0;
+                        result = m_api.readAnalog(handle, static_cast<Int32>(wanted), 0.0,
+                                                  kGroupByScanNumber, interleaved.data(),
+                                                  static_cast<UInt32>(interleaved.size()),
+                                                  &samplesRead, nullptr);
+                        if (result >= 0 && samplesRead > 0)
+                        {
+                            publish(members, finished, running, interleaved, nextSample,
+                                    static_cast<quint64>(samplesRead));
+                            nextSample += static_cast<quint64>(samplesRead);
+                        }
+                    }
+                    if (result < 0)
+                    {
+                        error = m_api.error(result);
+                        break;
+                    }
+                    if (available == 0)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                }
+                m_api.stopTask(handle);
+                m_api.clearTask(handle);
+                if (error.isEmpty())
+                {
+                    return;
+                }
+                std::lock_guard lock(m_mutex);
+                for (std::size_t index = 0; index < members.size(); ++index)
+                {
+                    if (!finished[index])
+                    {
+                        dropMemberLocked(members[index].sourceId);
+                        m_stateSink(members[index].sourceId, SignalSourceState::Error, error);
+                    }
+                }
+            }
+
+            void publish(const std::vector<Member>& members,
+                         std::vector<bool>& finished,
+                         qsizetype& running,
+                         const QVector<double>& interleaved,
+                         quint64 firstSample,
+                         quint64 count)
+            {
+                const auto channelCount = static_cast<qsizetype>(members.size());
+                for (qsizetype channel = 0; channel < channelCount; ++channel)
+                {
+                    const Member& member = members[static_cast<std::size_t>(channel)];
+                    if (finished[static_cast<std::size_t>(channel)])
+                    {
+                        continue;
+                    }
+                    const quint64 usable = std::min(count, member.endSample > firstSample
+                                                               ? member.endSample - firstSample
+                                                               : 0);
+                    if (usable > 0)
+                    {
+                        TimeSeriesChunk chunk;
+                        chunk.sourceId = member.sourceId;
+                        chunk.quantity = QStringLiteral("Voltage");
+                        chunk.unit = QStringLiteral("V");
+                        chunk.startTimeSeconds = static_cast<double>(firstSample) * m_interval;
+                        chunk.sampleIntervalSeconds = m_interval;
+                        chunk.values.resize(static_cast<qsizetype>(usable));
+                        for (qsizetype sample = 0; sample < chunk.values.size(); ++sample)
+                        {
+                            chunk.values[sample] = interleaved[sample * channelCount + channel];
+                        }
+                        m_chunks(chunk);
+                    }
+                    if (firstSample + count >= member.endSample)
+                    {
+                        finished[static_cast<std::size_t>(channel)] = true;
+                        --running;
+                        {
+                            std::lock_guard lock(m_mutex);
+                            dropMemberLocked(member.sourceId);
+                        }
+                        m_stateSink(member.sourceId, SignalSourceState::Idle,
+                                    QStringLiteral("%1 finished").arg(member.channel));
+                    }
+                }
+            }
+
+            void dropMemberLocked(const QString& sourceId)
+            {
+                m_members.erase(std::remove_if(m_members.begin(), m_members.end(),
+                                               [&sourceId](const Member& member)
+                                               {
+                                                   return member.sourceId == sourceId;
+                                               }),
+                                m_members.end());
+            }
+
+            bool fail(const QString& sourceId, const QString& message, QString* errorMessage)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = message;
+                }
+                m_stateSink(sourceId, SignalSourceState::Error, message);
+                return false;
+            }
+
+            QString m_device;
+            ChunkSink m_chunks;
+            StateSink m_stateSink;
+            DaqmxApi m_api;
+            std::mutex m_mutex;
+            std::vector<Member> m_members;
+            double m_interval{0.0};
+            std::chrono::steady_clock::time_point m_origin;
+            std::atomic_bool m_reading{false};
+            std::thread m_reader;
+        };
+
         void appendChannels(DaqDeviceDescriptor& descriptor,
                             const QString& names,
                             DaqChannelType type)
@@ -866,13 +1214,42 @@ namespace ni_daqmx
     }
 
 
-    class NIDaqmxProvider final : public HardwareProvider, public DaqProvider
+    // The DAQ devices for timed sessions, and each of their analog inputs as a signal source of
+    // its own. The sources of one device run in one analog input task. A device runs one such task
+    // at a time, so its sources and a session that reads its analog inputs do not run together,
+    // and NI-DAQmx says so when the later one starts.
+    class NIDaqmxProvider final : public HardwareProvider, public DaqProvider, public SignalSourceProvider
     {
     public:
         explicit NIDaqmxProvider(QList<DaqDeviceDescriptor> devices)
             : m_devices(std::move(devices))
         {
+            for (const DaqDeviceDescriptor& device : m_devices)
+            {
+                for (const DaqChannelDescriptor& channel : device.channels)
+                {
+                    if (channel.type != DaqChannelType::AnalogInput)
+                    {
+                        continue;
+                    }
+                    SignalSourceDescriptor source;
+                    source.id = QStringLiteral("ni:%1").arg(channel.physicalName);
+                    source.name = QStringLiteral("%1 (%2)").arg(channel.physicalName, device.product);
+                    source.provider = QStringLiteral("National Instruments");
+                    source.quantity = QStringLiteral("Voltage");
+                    source.unit = QStringLiteral("V");
+                    source.streamType = SignalStreamType::TimeSeries;
+                    source.parameters.append(voltsParameter(
+                        QStringLiteral("minimumVolts"), QStringLiteral("Minimum"), -10.0));
+                    source.parameters.append(voltsParameter(
+                        QStringLiteral("maximumVolts"), QStringLiteral("Maximum"), 10.0));
+                    m_sources.append(source);
+                    m_sourceChannels.insert(source.id, channel.physicalName);
+                    m_sourceDevices.insert(source.id, device.name);
+                }
+            }
         }
+
 
         HardwareProviderDescriptor descriptor() const override
         {
@@ -890,7 +1267,7 @@ namespace ni_daqmx
             return m_devices;
         }
 
-        void setDaqSinks(InputSink input, StateSink state) override
+        void setDaqSinks(InputSink input, DaqProvider::StateSink state) override
         {
             QMutexLocker locker(&m_sinkMutex);
             m_inputSink = std::move(input);
@@ -919,7 +1296,70 @@ namespace ni_daqmx
             }
         }
 
+        QList<SignalSourceDescriptor> signalSources() const override
+        {
+            return m_sources;
+        }
+
+        void setSignalSinks(TimeSeriesSink timeSeries,
+                            TimestampedEventSink,
+                            SignalSourceProvider::StateSink state) override
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_timeSeriesSink = std::move(timeSeries);
+            m_signalStateSink = std::move(state);
+        }
+
+        bool startSignal(const SignalAcquisitionConfig& config, QString* errorMessage) override
+        {
+            AiTaskGroup* const group = aiGroup(config.sourceId);
+            if (!group)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unknown signal source %1").arg(config.sourceId);
+                }
+                return false;
+            }
+            return group->add(config.sourceId, m_sourceChannels.value(config.sourceId), config, errorMessage);
+        }
+
+        void stopSignal(const QString& sourceId) override
+        {
+            if (AiTaskGroup* const group = m_aiGroups.value(m_sourceDevices.value(sourceId)).get())
+            {
+                group->remove(sourceId);
+            }
+        }
+
     private:
+        AiTaskGroup* aiGroup(const QString& sourceId)
+        {
+            const QString device = m_sourceDevices.value(sourceId);
+            if (device.isEmpty())
+            {
+                return nullptr;
+            }
+            if (const auto existing = m_aiGroups.value(device))
+            {
+                return existing.get();
+            }
+            auto created = std::make_shared<AiTaskGroup>(
+                device,
+                [this](const TimeSeriesChunk& chunk)
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    if (m_timeSeriesSink) m_timeSeriesSink(chunk);
+                },
+                [this](const QString& id, SignalSourceState state, const QString& message)
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    if (m_signalStateSink) m_signalStateSink(id, state, message);
+                });
+            m_aiGroups.insert(device, created);
+            return created.get();
+        }
+
         NIDaqmxController* controller(const QString& deviceId)
         {
             if (const auto existing = m_controllers.value(deviceId))
@@ -952,10 +1392,17 @@ namespace ni_daqmx
         }
 
         QList<DaqDeviceDescriptor> m_devices;
-        QHash<QString, std::shared_ptr<NIDaqmxController>> m_controllers;
+        QList<SignalSourceDescriptor> m_sources;
+        QHash<QString, QString> m_sourceChannels;
+        QHash<QString, QString> m_sourceDevices;
         QMutex m_sinkMutex;
         InputSink m_inputSink;
-        StateSink m_stateSink;
+        DaqProvider::StateSink m_stateSink;
+        TimeSeriesSink m_timeSeriesSink;
+        SignalSourceProvider::StateSink m_signalStateSink;
+        // Declared last so they are destroyed first: their readers call the sinks above until joined
+        QHash<QString, std::shared_ptr<NIDaqmxController>> m_controllers;
+        QHash<QString, std::shared_ptr<AiTaskGroup>> m_aiGroups;
     };
 
     class NIDaqmxDriver final : public QObject, public Driver

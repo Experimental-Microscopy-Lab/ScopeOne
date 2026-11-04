@@ -8,7 +8,7 @@ device, so a crash in a driver or in a vendor library does not take ScopeOne dow
 |---|---|---|
 | Example Camera | `ExampleCamera` | a camera that renders test patterns, the template for camera drivers |
 | Example PMT | `ExamplePmt` | a simulated PMT, the template for signal sources |
-| NI-DAQmx | `NIDaqmx` | National Instruments DAQ devices, through the NI-DAQmx runtime |
+| NI-DAQmx | `NIDaqmx` | National Instruments DAQ devices, through the NI-DAQmx runtime, with each analog input also a signal source for the Signal Monitor; the inputs of one device run in one task on one sample clock |
 
 Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg`
 files. Those adapters are not ScopeOne drivers.
@@ -20,7 +20,8 @@ from Qt's plugin loader and calls `createProvider`, which returns a `HardwarePro
 capabilities its devices have (camera, stage, shutter, state, configuration, signal source, DAQ).
 A signal source, such as a PMT or a photon counter, puts out one value over time:
 `SignalSourceProvider` hands over its chunks of samples or photon events with the scan markers,
-and ScopeOne plots them in the Signal Monitor and assembles scan images from them. A
+and ScopeOne shows them on the oscilloscope screen of the Signal Monitor, up to four sources at
+once on one time axis, and assembles scan images from them. A
 `DaqProvider` runs the timed tasks of a DAQ session and hands over the inputs it reads. From then
 on ScopeOne only exchanges messages and data with the host. The host does not link ScopeOneCore,
 so a driver process holds only the host, the SDK library, Qt Core and Network, and the driver.
