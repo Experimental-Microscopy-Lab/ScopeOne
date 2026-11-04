@@ -7,7 +7,6 @@
 #include <QtGlobal>
 #include <limits>
 
-#include "scopeone/SharedFrame.h"
 
 namespace scopeone::core
 {
@@ -123,85 +122,6 @@ namespace scopeone::core
                 && pixelFormat == other.pixelFormat;
         }
 
-        SharedFrameHeader toSharedFrameHeader() const
-        {
-            SharedFrameHeader header{};
-            if (!isValid())
-            {
-                return header;
-            }
-
-            header.state = 2;
-            header.width = static_cast<quint32>(width);
-            header.height = static_cast<quint32>(height);
-            header.stride = static_cast<quint32>(stride);
-            header.bitsPerSample = static_cast<quint16>(bitsPerSample);
-            header.channels = 1;
-            header.frameIndex = frameIndex;
-            header.timestampNs = timestampNs;
-            header.pixelFormat = pixelFormat == ImagePixelFormat::Mono16
-                                     ? static_cast<quint32>(SharedPixelFormat::Mono16)
-                                     : static_cast<quint32>(SharedPixelFormat::Mono8);
-            if (hasSourceRoi())
-            {
-                setSharedFrameSourceRoi(header, sourceRoiX, sourceRoiY, sourceRoiWidth, sourceRoiHeight);
-            }
-            return header;
-        }
-
-        static ImageFrame fromSharedFrame(const QString& cameraId,
-                                          const SharedFrameHeader& header,
-                                          const QByteArray& payload)
-        {
-            if (header.state != 2
-                || header.channels != 1
-                || header.width > static_cast<quint32>((std::numeric_limits<int>::max)())
-                || header.height > static_cast<quint32>((std::numeric_limits<int>::max)())
-                || header.stride > static_cast<quint32>((std::numeric_limits<int>::max)()))
-            {
-                return {};
-            }
-
-            ImageFrame frame;
-            frame.cameraId = cameraId.trimmed();
-            frame.width = static_cast<int>(header.width);
-            frame.height = static_cast<int>(header.height);
-            frame.bitsPerSample = static_cast<int>(header.bitsPerSample);
-            frame.frameIndex = header.frameIndex;
-            frame.timestampNs = header.timestampNs;
-
-            if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16))
-            {
-                if (header.bitsPerSample == 0 || header.bitsPerSample > 16)
-                {
-                    return {};
-                }
-                frame.pixelFormat = ImagePixelFormat::Mono16;
-            }
-            else if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8))
-            {
-                if (header.bitsPerSample != 8)
-                {
-                    return {};
-                }
-                frame.pixelFormat = ImagePixelFormat::Mono8;
-            }
-            else
-            {
-                return {};
-            }
-
-            frame.stride = static_cast<int>(header.stride);
-            frame.bytes = payload;
-            if (sharedFrameHasSourceRoi(header))
-            {
-                frame.sourceRoiX = static_cast<int>(header.sourceRoiX);
-                frame.sourceRoiY = static_cast<int>(header.sourceRoiY);
-                frame.sourceRoiWidth = static_cast<int>(header.sourceRoiWidth);
-                frame.sourceRoiHeight = static_cast<int>(header.sourceRoiHeight);
-            }
-            return frame.isValid() ? frame : ImageFrame{};
-        }
     };
 }
 

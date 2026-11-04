@@ -64,16 +64,14 @@ endif ()
 
 set(SCOPEONE_UI_SOURCES
         src/main.cpp
-        src/CameraScaleDialog.cpp
         src/ConfigPresetWidget.cpp
         src/DeviceControlWidget.cpp
         src/DevicePropertyWidget.cpp
         src/PositionListFile.cpp
         src/RecordingWidget.cpp
-        src/StageMosaicDialog.cpp
         src/PluginManagerDialog.cpp
         src/ScopeOneLocalApiServer.cpp
-        src/ScopeOneToolPlugin.cpp
+        src/ToolRegistry.cpp
         src/AboutDialog.cpp
         src/Appearance.cpp
         src/CollapsibleSection.cpp
@@ -94,7 +92,6 @@ set(SCOPEONE_UI_SOURCES
         src/InspectWidget.cpp
         src/OrthogonalViewsDialog.cpp
         src/ParameterDialog.cpp
-        src/ParticleDetectionDialog.cpp
         src/PreviewWidget.cpp
         src/ProfilePlotWindow.cpp
         src/ResultsWindow.cpp
@@ -102,17 +99,22 @@ set(SCOPEONE_UI_SOURCES
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
+# Every tool in src/tools registers itself, so a new tool needs no change here
+file(GLOB_RECURSE SCOPEONE_TOOL_FILES CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/src/tools/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/tools/*.h"
+)
+list(APPEND SCOPEONE_UI_SOURCES ${SCOPEONE_TOOL_FILES})
+
 set(SCOPEONE_UI_HEADERS
-        src/CameraScaleDialog.h
         src/ConfigPresetWidget.h
         src/DeviceControlWidget.h
         src/DevicePropertyWidget.h
         src/PositionListFile.h
         src/RecordingWidget.h
-        src/StageMosaicDialog.h
         src/PluginManagerDialog.h
         src/ScopeOneLocalApiServer.h
-        src/ScopeOneToolPlugin.h
+        src/ToolRegistry.h
         src/AboutDialog.h
         src/Appearance.h
         src/CollapsibleSection.h
@@ -133,7 +135,6 @@ set(SCOPEONE_UI_HEADERS
         src/InspectWidget.h
         src/OrthogonalViewsDialog.h
         src/ParameterDialog.h
-        src/ParticleDetectionDialog.h
         src/PreviewWidget.h
         src/ProfilePlotWindow.h
         src/ResultsWindow.h
@@ -264,7 +265,7 @@ if (UNIX AND NOT APPLE)
     )
 endif ()
 
-foreach (_plugin_kind IN ITEMS processing hardware tools)
+foreach (_plugin_kind IN ITEMS processing hardware)
     set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/${_plugin_kind}")
     if (EXISTS "${_plugin_dir}")
         add_custom_command(TARGET ScopeOne POST_BUILD

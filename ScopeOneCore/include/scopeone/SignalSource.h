@@ -202,19 +202,7 @@ namespace scopeone::core
                           const QString& message);
         void sourceError(const QString& errorMessage);
     };
-
-    class SignalSourcePlugin
-    {
-    public:
-        virtual ~SignalSourcePlugin() = default;
-        virtual QList<SignalSourceDescriptor> signalSources() const = 0;
-        virtual SignalSource* createSignalSource(const QString& sourceId,
-                                                  QObject* parent = nullptr) = 0;
-    };
 }
-
-#define SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID "org.scopeone.SignalSourcePlugin/1.0"
-Q_DECLARE_INTERFACE(scopeone::core::SignalSourcePlugin, SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID)
 
 Q_DECLARE_METATYPE(scopeone::core::SignalSourceState)
 Q_DECLARE_METATYPE(scopeone::core::SignalMarker)

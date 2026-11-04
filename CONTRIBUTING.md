@@ -13,7 +13,7 @@ disagree in a specific case, follow the reason and say so in the review.
 | Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops` | Qt Core, OpenCV, MMCore, ScopeWriter. No Qt Widgets. |
 | Application | `src` | `scopeone::ui` | Core, Qt Widgets |
 | MCP server | `src/ScopeOneMcpServer.cpp` | | Qt Core, Qt Network and the Local API protocol. Not Core. |
-| Plugins | `plugins`, `ScopeOneCuda`, `ScopeOneInference` | their own | `scopeone::PluginSDK` |
+| Plugins | `plugins`, `ScopeOneCuda`, `ScopeOneInference` | `scopeone::plugins::cuda` for CUDA, `scopeone::inference` for ONNX, their own for hardware plugins | `scopeone::HardwarePluginSDK` for hardware plugins, `scopeone::ScopeOneCore` for the CUDA and ONNX plugins |
 | Python package | `ScopeOneCore/python/scopeone` | `scopeone` | the Local API protocol |
 
 A lower layer never knows about a higher one. Core does not include from `src`, and plugins do
@@ -21,13 +21,27 @@ not include Core internals. This keeps each part buildable and usable without th
 
 **Entry points.** Code outside Core enters through the public headers in
 `ScopeOneCore/include/scopeone` and the `ScopeOneCore` facade. `ScopeOneCore/internal` is for Core
-alone. Plugins see only the SDK headers; a tool plugin gets `ScopeOneToolCore`, not the Core.
+alone. Plugins see only the SDK headers.
 A narrow entry point is what lets Core change its insides without breaking callers.
 
 **Decide the layer first.** Before writing a feature, decide where it belongs. Anything that
 must work without a window (acquisition, hardware, processing, recording, data) goes into Core
 and is reachable through the Local API before it gets a widget. Anything that only changes what
 is shown goes into `src`. Hardware and optional processing go into plugins.
+
+**Tools.** A window of the Tools menu, with its own state and workflow, goes into its own folder
+under `src/tools`. It uses only the public Core headers and `ScopeOneToolContext` from
+`src/tools/ToolContext.h`, and registers itself with `SCOPEONE_REGISTER_TOOL` at the end of its
+source file, so adding a tool changes neither `MainWindow` nor CMake. Its algorithm belongs in Core.
+A command that takes an image and parameters and returns a result is not a tool; it belongs in the
+image menus.
+
+**Extension boundary.** Hardware plugins and Python processing modules are the only public
+extension points, and both run outside the ScopeOne process. The CUDA and ONNX processing plugins
+exist only to keep CUDA and ONNX Runtime out of Core, and their interface is internal to this
+repository. Everything without such a dependency belongs in Core, with its window in `src`. The
+messages between ScopeOne and `ScopeOne_DriverHost` are internal too and are described in
+`ScopeOneCore/DRIVERHOST_PROTOCOL.md`.
 
 **Python API.** The `ScopeOne` client controls a running ScopeOne and moves frames in and out as
 numpy arrays. It does not reimplement analysis that numpy already does. `scopeone.processing`

@@ -9,10 +9,18 @@
 
 #include "scopeone/SignalSource.h"
 
-class QPluginLoader;
-
 namespace scopeone::core::internal
 {
+    // A kind of signal source built into Core, which lists its sources and creates them
+    class SignalSourceFactory
+    {
+    public:
+        virtual ~SignalSourceFactory() = default;
+        virtual QList<SignalSourceDescriptor> signalSources() const = 0;
+        virtual SignalSource* createSignalSource(const QString& sourceId,
+                                                  QObject* parent = nullptr) = 0;
+    };
+
     class SignalSourceManager final : public QObject
     {
         Q_OBJECT
@@ -37,12 +45,12 @@ namespace scopeone::core::internal
         void sourceError(const QString& sourceId, const QString& errorMessage);
 
     private:
-        void loadPlugins();
+        void registerSources();
         SignalSource* sourceInstance(const QString& sourceId,
                                      QString* errorMessage);
 
-        std::vector<std::unique_ptr<QPluginLoader>> m_loaders;
-        QHash<QString, SignalSourcePlugin*> m_plugins;
+        std::vector<std::unique_ptr<SignalSourceFactory>> m_factories;
+        QHash<QString, SignalSourceFactory*> m_factoryBySource;
         QHash<QString, SignalSourceDescriptor> m_descriptors;
         QHash<QString, QPointer<SignalSource>> m_sources;
         QHash<QString, SignalSourceState> m_states;

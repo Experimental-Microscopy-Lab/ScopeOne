@@ -1835,7 +1835,7 @@ namespace scopeone::core::internal
         }
         QMutexLocker writeLocker(&transport.writeMutex);
         transport.frameIndex = (std::max)(transport.frameIndex + 1, frame.frameIndex);
-        SharedFrameHeader header = frame.toSharedFrameHeader();
+        SharedFrameHeader header = toSharedFrameHeader(frame);
         header.frameIndex = transport.frameIndex;
         if (header.timestampNs == 0)
         {

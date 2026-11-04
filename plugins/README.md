@@ -1,37 +1,42 @@
-# Writing ScopeOne plugins
+# Extending ScopeOne
 
-ScopeOne loads four kinds of extensions:
+ScopeOne has two public extension points. Both run outside the ScopeOne process, so a crash in an
+extension does not take ScopeOne down.
 
-| Kind | Contract | Runs in | Example |
+| Extension | You write | Runs in | Example |
 |---|---|---|---|
-| Processing | `ProcessingPlugin` and `ProcessingModule` in `scopeone/ProcessingPlugin.h` | ScopeOne | `processing/ExampleProcessing` |
-| Python processing | a decorated Python function, see below | its own Python process | `processing/PythonProcessing/examples` |
-| Tool | `ScopeOneToolPlugin` in `scopeone/ToolPlugin.h` | ScopeOne, as a window | `tools/ExampleTool` |
-| Hardware | `DriverHostProviderPlugin`, `DaqDevicePlugin`, `SignalSourcePlugin` | `ScopeOne_DriverHost`, one process per device | `hardware/ExampleHardware` |
+| Hardware plugin | a `DriverHostProviderPlugin` in C++ against `scopeone::HardwarePluginSDK` | `ScopeOne_DriverHost`, one process per device | `hardware/ExampleCamera` |
+| Python processing module | a decorated Python function | its own Python process | `ScopeOneCore/python/scopeone/examples/processing_offset.py` |
 
-A processing module declares its parameters in a `ProcessingModuleDescriptor`. The pipeline
-panel, the Local API and MCP build their controls from it, so a module needs no UI code.
+The CUDA and ONNX processing modules in `ScopeOneCuda` and `ScopeOneInference` are built-in plugins,
+built and released with ScopeOne, because they link CUDA and ONNX Runtime. Their interface,
+`scopeone/ProcessingPlugin.h`, changes with ScopeOne and is not meant for code outside this
+repository. Everything else, including the tool windows and the DAQ and signal source devices, is
+part of ScopeOne itself.
 
-A tool gets a `ScopeOneToolContext`. Its `core()` is a `ScopeOneToolCore`: the layers and their
-images, signal sources and DAQ devices. Tools use only this part of the Core.
+## Hardware plugins
 
-## Building a C++ plugin
+A hardware plugin implements `DriverHostProviderPlugin` and returns a `HardwareProvider` with the
+capabilities its devices have (camera, stage, shutter, state, configuration). The headers it may
+use are the ones `scopeone/HardwarePluginSDK.h` includes. ScopeOne starts one `ScopeOne_DriverHost`
+for each device, the host loads the plugin library, and from then on ScopeOne only exchanges
+messages and frames with the host.
 
-Build and install ScopeOneCore first (`scripts/build-unix.sh` or the Windows script). A plugin
-is then a separate CMake project:
+Build and install ScopeOneCore first (`scripts/build-unix.sh` or `scripts\build.ps1`). A hardware
+plugin is then a separate CMake project:
 
 ```cmake
 cmake_minimum_required(VERSION 3.23)
-project(MyPlugin LANGUAGES CXX)
+project(MyCamera LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core)
 find_package(ScopeOneCore CONFIG REQUIRED)
 
-add_library(MyPlugin MODULE MyPlugin.cpp plugin.json)
-target_link_libraries(MyPlugin PRIVATE scopeone::PluginSDK Qt6::Core)
-scopeone_add_plugin(MyPlugin processing)   # processing, tools or hardware
+add_library(MyCamera MODULE MyCamera.cpp plugin.json)
+target_link_libraries(MyCamera PRIVATE scopeone::HardwarePluginSDK Qt6::Core)
+scopeone_add_plugin(MyCamera hardware)
 ```
 
 Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that ScopeOne uses
@@ -41,33 +46,32 @@ Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that Scop
 
 ```json
 {
-  "id": "my.plugin",
-  "name": "My Plugin",
+  "id": "my.camera",
+  "name": "My Camera",
   "version": "1.0.0",
-  "scopeOneApi": 2,
-  "kind": "processing"
+  "scopeOneApi": 1,
+  "kind": "hardware",
+  "providerId": "my.camera",
+  "autoLoad": false
 }
 ```
 
-`scopeOneApi` is the contract version of the kind (`ScopeOne*PluginApiVersion` in
-`scopeone/PluginManifest.h`). `scopeone_add_plugin` writes `scopeone_plugin.json` from it with
-the Core version added, and the plugin names that file:
+`scopeOneApi` is `ScopeOneHardwarePluginApiVersion` in `scopeone/PluginManifest.h`.
+`scopeone_add_plugin` writes `scopeone_plugin.json` from it with the Core version added, and the
+plugin names that file:
 
 ```cpp
-Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "scopeone_plugin.json")
+Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "scopeone_plugin.json")
 ```
 
-Plugins share C++ types with ScopeOne, so they must be built with the same compiler, the same
-Qt and the same Core release (`MAJOR.MINOR` of `VERSION`). ScopeOne refuses a plugin built
-against another release and names the release it needs. Change `VERSION` when a public header
-of the SDK changes.
+The plugin library is loaded by `ScopeOne_DriverHost`, which links the same Core and Qt as
+ScopeOne, so a hardware plugin is built with the same compiler, Qt and Core release
+(`MAJOR.MINOR` of `VERSION`). ScopeOne refuses a plugin built against another release and names
+the release it needs.
 
-## Installing
-
-Copy the built library into `plugins/<kind>/` beside the ScopeOne executable, or install it
-with **Tools > Plugin Manager**, which puts it in the user's application data directory.
-Hardware plugins are enabled and configured in the Plugin Manager and take effect after a
-restart.
+Copy the built library into `plugins/hardware/` beside the ScopeOne executable, or install it with
+**Tools > Plugin Manager**, which puts it in the user's application data directory. Hardware
+plugins are enabled and configured in the Plugin Manager and take effect after a restart.
 
 ## Python processing modules
 
@@ -85,7 +89,7 @@ The function gets a 2D `uint8` or `uint16` array and the parameters by name, and
 the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Put
 the script in `plugins/processing/python/` beside ScopeOne or in the same folder of the user's
 plugin directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
-there; `processing/PythonProcessing/examples/offset.py` is one to copy.
+there; `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to copy.
 
 Each module in a pipeline runs in its own Python process (`python -m scopeone.processing
 serve script.py`). That interpreter needs numpy and the `scopeone` package
@@ -93,3 +97,10 @@ serve script.py`). That interpreter needs numpy and the `scopeone` package
 Interpreter**, or with `SCOPEONE_PYTHON`, which takes precedence; otherwise ScopeOne runs
 `python3` (`python` on Windows). Output printed by a module goes to the log, and an exception
 in it shows as the error of that pipeline step.
+
+ScopeOne first runs `python -m scopeone.processing describe script.py`, which prints one JSON
+line with the modules of the script and their parameters. While the pipeline runs, each frame is
+one request on stdin: a JSON line with `module`, `parameters`, `width`, `height`, `stride`,
+`format` (`mono8` or `mono16`), `bits` and `bytes`, followed by that many pixel bytes. The reply
+on stdout has the same form with `width`, `height`, `format` and `bytes`, or a JSON line with
+`error`.

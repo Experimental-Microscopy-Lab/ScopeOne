@@ -1,4 +1,5 @@
 #include "ScopeOneLocalApiServer.h"
+#include "scopeone/SharedFrame.h"
 
 #include "scopeone/ImageSceneModel.h"
 #include "PreviewWidget.h"
@@ -4039,7 +4040,7 @@ namespace scopeone::ui
             return false;
         }
 
-        scopeone::core::SharedFrameHeader header = frame.toSharedFrameHeader();
+        scopeone::core::SharedFrameHeader header = scopeone::core::toSharedFrameHeader(frame);
         exportedFrame = frame;
         exportedFrame.cameraId = frame.cameraId.trimmed();
         exportedFrame.timestampNs = header.timestampNs;
@@ -4095,7 +4096,7 @@ namespace scopeone::ui
         const QString resolvedCameraId = cameraId.trimmed().isEmpty()
                                              ? m_frameMappingCameraId
                                              : cameraId.trimmed();
-        frame = scopeone::core::ImageFrame::fromSharedFrame(resolvedCameraId, header, payload);
+        frame = scopeone::core::imageFrameFromShared(resolvedCameraId, header, payload);
         if (!frame.isValid())
         {
             errorMessage = QStringLiteral("Frame mapping metadata is invalid");

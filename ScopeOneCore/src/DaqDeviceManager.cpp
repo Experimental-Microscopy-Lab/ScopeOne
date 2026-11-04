@@ -1,9 +1,6 @@
 #include "internal/DaqDeviceManager.h"
-#include "scopeone/PluginManifest.h"
 
-#include <QDebug>
-#include <QFileInfo>
-#include <QPluginLoader>
+#include "internal/NIDaqmx.h"
 
 #include <algorithm>
 #include <cmath>
@@ -94,14 +91,14 @@ namespace scopeone::core::internal
             delete controller.data();
         }
         m_controllers.clear();
-        m_loaders.clear();
+        m_factories.clear();
     }
 
     QList<DaqDeviceDescriptor> DaqDeviceManager::devices() const
     {
-        if (!m_pluginsLoaded)
+        if (!m_devicesRegistered)
         {
-            const_cast<DaqDeviceManager*>(this)->loadPlugins();
+            const_cast<DaqDeviceManager*>(this)->registerDevices();
         }
         QList<DaqDeviceDescriptor> result = m_descriptors.values();
         std::sort(result.begin(), result.end(),
@@ -116,9 +113,9 @@ namespace scopeone::core::internal
     bool DaqDeviceManager::start(const DaqSessionConfig& config,
                                  QString* errorMessage)
     {
-        if (!m_pluginsLoaded)
+        if (!m_devicesRegistered)
         {
-            loadPlugins();
+            registerDevices();
         }
         const QString deviceId = config.deviceId.trimmed();
         if (!m_descriptors.contains(deviceId))
@@ -163,35 +160,13 @@ namespace scopeone::core::internal
                           : m_messages.value(id, QStringLiteral("DAQ device is idle"));
     }
 
-    void DaqDeviceManager::loadPlugins()
+    void DaqDeviceManager::registerDevices()
     {
-        m_pluginsLoaded = true;
-        for (const DiscoveredPlugin& discovered : discoverPlugins(PluginKind::Hardware))
+        m_devicesRegistered = true;
+        m_factories.push_back(std::make_unique<NIDaqmxDeviceFactory>());
+        for (const std::unique_ptr<DaqDeviceFactory>& factory : m_factories)
         {
-            if (discovered.interfaceId != QStringLiteral(SCOPEONE_DAQ_DEVICE_PLUGIN_IID))
-            {
-                continue;
-            }
-            const QFileInfo file(discovered.path);
-            if (!discovered.error.isEmpty())
-            {
-                qWarning().noquote() << QStringLiteral("Failed to load DAQ plugin %1: %2")
-                                            .arg(file.fileName(), discovered.error);
-                continue;
-            }
-            if (!pluginEnabled(discovered.manifest))
-            {
-                continue;
-            }
-            auto loader = std::make_unique<QPluginLoader>(discovered.path);
-            auto* plugin = qobject_cast<DaqDevicePlugin*>(loader->instance());
-            if (!plugin)
-            {
-                qWarning().noquote() << QStringLiteral("Failed to load DAQ plugin %1: %2")
-                                            .arg(file.fileName(), loader->errorString());
-                continue;
-            }
-            for (const DaqDeviceDescriptor& descriptor : plugin->devices())
+            for (const DaqDeviceDescriptor& descriptor : factory->devices())
             {
                 const QString deviceId = descriptor.id.trimmed();
                 if (deviceId.isEmpty() || m_descriptors.contains(deviceId))
@@ -199,11 +174,10 @@ namespace scopeone::core::internal
                     continue;
                 }
                 m_descriptors.insert(deviceId, descriptor);
-                m_plugins.insert(deviceId, plugin);
+                m_factoryByDevice.insert(deviceId, factory.get());
                 m_states.insert(deviceId, DaqState::Idle);
                 m_messages.insert(deviceId, QStringLiteral("DAQ device is idle"));
             }
-            m_loaders.push_back(std::move(loader));
         }
     }
 
@@ -215,8 +189,8 @@ namespace scopeone::core::internal
         {
             return existing;
         }
-        DaqDevicePlugin* plugin = m_plugins.value(id);
-        if (!plugin)
+        DaqDeviceFactory* factory = m_factoryByDevice.value(id);
+        if (!factory)
         {
             if (errorMessage)
             {
@@ -224,7 +198,7 @@ namespace scopeone::core::internal
             }
             return nullptr;
         }
-        DaqController* created = plugin->createController(id, this);
+        DaqController* created = factory->createController(id, this);
         if (!created)
         {
             if (errorMessage)

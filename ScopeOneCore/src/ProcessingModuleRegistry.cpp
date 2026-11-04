@@ -6,6 +6,7 @@
 #include "internal/FrequencyDomainFilterModule.h"
 #include "internal/MaskModule.h"
 #include "internal/GaussianBlurModule.h"
+#include "internal/IscatModule.h"
 #include "internal/ImageOperationModules.h"
 #include "internal/IFFTModule.h"
 #include "internal/SpatiotemporalBinningModule.h"
@@ -195,6 +196,26 @@ namespace scopeone::core::internal
                                   {"Subtract", "Add", "Multiply", "Divide"})},
                  true});
 
+            registerBuiltIn<IscatModule>(
+                registry,
+                {QStringLiteral("iscat.processing"),
+                 QStringLiteral("iSCAT Processing"),
+                 1,
+                 {choiceParameter("mode", "Background mode", 0,
+                                  {"Flat Field", "Temporal Median", "Dynamic EMA",
+                                   "Snapshot Reference", "Differential Rolling (DRA)"}),
+                  realParameter("blur_sigma", "Blur sigma", 15.0, 1.0, 100.0, 0.5, 1),
+                  integerParameter("median_window", "Median window", 31, 3, 101, 2),
+                  realParameter("ema_alpha", "Smoothing factor", 0.05, 0.001, 0.5, 0.005, 3),
+                  booleanParameter("capture_reference", "Capture Reference", false),
+                  integerParameter("batch_size", "DRA batch size", 16, 1, 500, 1),
+                  realParameter("contrast_gain", "Contrast gain", 20.0, 1.0, 500.0, 1.0, 1),
+                  booleanParameter("enable_high_pass", "Enable High-Pass", false),
+                  realParameter("high_pass_sigma", "High-Pass sigma", 30.0, 2.0, 200.0, 1.0, 1),
+                  choiceParameter("output_mode", "Output mode", 0,
+                                  {"Contrast Centered", "Absolute Contrast", "Estimated Background"})},
+                 true});
+
             registerImageOperationModules(registry);
         }
     }
@@ -274,7 +295,6 @@ namespace scopeone::core::internal
 
             const QList<ProcessingModuleDescriptor> pluginDescriptors = plugin->processingModules();
             QSet<QString> pluginIds;
-            // A plugin may offer no modules, as the Python plugin does without scripts
             bool valid = true;
             for (const ProcessingModuleDescriptor& descriptor : pluginDescriptors)
             {

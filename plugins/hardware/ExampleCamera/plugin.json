@@ -1,0 +1,9 @@
+{
+  "id": "example.camera",
+  "name": "Example Camera",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "hardware",
+  "providerId": "example.camera",
+  "autoLoad": false
+}

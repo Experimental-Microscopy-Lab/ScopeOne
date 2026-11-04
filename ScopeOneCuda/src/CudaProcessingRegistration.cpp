@@ -5,7 +5,7 @@
 
 #include <QObject>
 
-namespace scopeone::cuda_plugin
+namespace scopeone::plugins::cuda
 {
     class CudaProcessingPlugin final : public QObject,
                                        public core::ProcessingPlugin

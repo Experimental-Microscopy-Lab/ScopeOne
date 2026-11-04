@@ -7,6 +7,7 @@
 #include "internal/FrameBufferUtils.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
+#include "internal/PythonProcessingModule.h"
 #include "internal/DriverHostProviderProxy.h"
 #include "internal/HardwareRuntime.h"
 #include "internal/MMCoreManager.h"
@@ -1367,6 +1368,8 @@ namespace scopeone::core
         {
             allProcessingPluginErrors.append(
                 m_managers->processingModuleRegistry->loadPlugins(directory));
+            allProcessingPluginErrors.append(internal::registerPythonProcessingModules(
+                *m_managers->processingModuleRegistry, directory));
         }
         for (const QString& error : allProcessingPluginErrors)
         {

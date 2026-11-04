@@ -18,9 +18,6 @@
 #include "scopeone/ImageSceneModel.h"
 #include "ImageGalleryWidget.h"
 #include "ImageWorkspace.h"
-#include "CameraScaleDialog.h"
-#include "ParticleDetectionDialog.h"
-#include "StageMosaicDialog.h"
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
@@ -1023,45 +1020,15 @@ namespace scopeone::ui
         rebuildWorkspacesMenu();
     }
 
-    // Register built in tools and discover external tool plugins
+    // The tools in src/tools register themselves, so the menu lists whatever was built in
     void MainWindow::setupTools()
     {
-        m_toolCore = new ScopeOneToolCore(*m_scopeonecore, m_scopeonecore);
         m_toolRegistry = std::make_unique<ToolRegistry>(*this);
-        m_toolRegistry->registerTool(
-            {QStringLiteral("scopeone.scale"), tr("&Scale..."), {}, ToolWindowMode::Modal, true},
-            [this](ScopeOneToolContext&, QWidget* parent)
-            {
-                return new CameraScaleDialog(m_scopeonecore, parent);
-            });
-        m_toolRegistry->registerTool(
-            {QStringLiteral("scopeone.stage_mosaic"), tr("Stage &Mosaic..."), {},
-             ToolWindowMode::ModelessSingleton},
-            [this](ScopeOneToolContext& context, QWidget* parent)
-            {
-                return new StageMosaicDialog(m_scopeonecore, context, parent);
-            });
-        m_toolRegistry->registerTool(
-            {QStringLiteral("scopeone.particle_detection"), tr("&Particle Detection..."), {},
-             ToolWindowMode::ModelessSingleton},
-            [this](ScopeOneToolContext& context, QWidget* parent)
-            {
-                return new ParticleDetectionDialog(m_scopeonecore, context, parent);
-            });
-
-        for (const QString& directory : scopeone::core::pluginDirectories(
-                 scopeone::core::PluginKind::Tool))
-        {
-            for (const QString& error : m_toolRegistry->loadPlugins(directory))
-            {
-                qWarning().noquote() << QStringLiteral("Failed to load tool plugin %1").arg(error);
-            }
-        }
     }
 
-    ScopeOneToolCore& MainWindow::core() const
+    scopeone::core::ScopeOneCore& MainWindow::core() const
     {
-        return *m_toolCore;
+        return *m_scopeonecore;
     }
 
     QString MainWindow::currentLayerKey() const

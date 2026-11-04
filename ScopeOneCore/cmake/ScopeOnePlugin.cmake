@@ -2,11 +2,11 @@
 #
 #   find_package(ScopeOneCore CONFIG REQUIRED)
 #   add_library(MyPlugin MODULE MyPlugin.cpp plugin.json)
-#   target_link_libraries(MyPlugin PRIVATE scopeone::PluginSDK)
-#   scopeone_add_plugin(MyPlugin processing)
+#   target_link_libraries(MyPlugin PRIVATE scopeone::HardwarePluginSDK)
+#   scopeone_add_plugin(MyPlugin hardware)
 #
 # The plugin source names the generated manifest:
-#   Q_PLUGIN_METADATA(IID ScopeOneProcessingPlugin_iid FILE "scopeone_plugin.json")
+#   Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "scopeone_plugin.json")
 
 # Writes scopeone_plugin.json from the plugin.json beside the target's CMakeLists, adding the
 # ScopeOneCore version the plugin is built against. ScopeOne loads only plugins built against
@@ -21,7 +21,7 @@ function(scopeone_plugin_manifest target)
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 endfunction()
 
-# Builds the target as a plugin of the given kind (processing, tools or hardware) and installs
+# Builds the target as a plugin of the given kind (processing or hardware) and installs
 # it where ScopeOne looks for that kind
 function(scopeone_add_plugin target kind)
     scopeone_plugin_manifest(${target})

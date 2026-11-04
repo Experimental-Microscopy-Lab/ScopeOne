@@ -1,10 +1,7 @@
 #include "scopeone/PluginManifest.h"
 
-#include "scopeone/DaqDevice.h"
 #include "scopeone/DriverHostProviderPlugin.h"
 #include "scopeone/ProcessingPlugin.h"
-#include "scopeone/SignalSource.h"
-#include "scopeone/ToolPlugin.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -23,8 +20,6 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return QStringLiteral("processing");
-        case PluginKind::Tool:
-            return QStringLiteral("tool");
         case PluginKind::Hardware:
             return QStringLiteral("hardware");
         }
@@ -37,8 +32,6 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return ScopeOneProcessingPluginApiVersion;
-        case PluginKind::Tool:
-            return ScopeOneToolPluginApiVersion;
         case PluginKind::Hardware:
             return ScopeOneHardwarePluginApiVersion;
         }
@@ -47,7 +40,7 @@ namespace scopeone::core
 
     QString pluginDirectoryName(PluginKind kind)
     {
-        return kind == PluginKind::Tool ? QStringLiteral("tools") : pluginKindName(kind);
+        return pluginKindName(kind);
     }
 
     QStringList pluginInterfaceIds(PluginKind kind)
@@ -56,12 +49,8 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return {QStringLiteral(ScopeOneProcessingPlugin_iid)};
-        case PluginKind::Tool:
-            return {QStringLiteral(ScopeOneToolPlugin_iid)};
         case PluginKind::Hardware:
-            return {QStringLiteral(ScopeOneDriverHostProviderPlugin_iid),
-                    QStringLiteral(SCOPEONE_DAQ_DEVICE_PLUGIN_IID),
-                    QStringLiteral(SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID)};
+            return {QStringLiteral(ScopeOneDriverHostProviderPlugin_iid)};
         }
         return {};
     }

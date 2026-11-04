@@ -81,7 +81,7 @@ ScopeOne/
 
 ### Plugin layout
 
-ScopeOne loads plugins from `plugins/processing`, `plugins/tools` and `plugins/hardware` beside the application, and Python processing modules from `plugins/processing/python`. All plugins build against the installed `scopeone::PluginSDK` target and the contracts in `ScopeOneCore/include/scopeone`. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files, while other native cameras use the `HardwareProvider` contract. [plugins/README.md](plugins/README.md) explains how to write, build and install a plugin.
+ScopeOne has two public extension points, hardware plugins and Python processing modules, and both run outside the ScopeOne process. Hardware plugins are loaded from `plugins/hardware` by `ScopeOne_DriverHost`, one process per device, and Python modules from `plugins/processing/python`. The CUDA and ONNX processing plugins are built and released with ScopeOne. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [plugins/README.md](plugins/README.md) explains how to write, build and install an extension.
 
 **Windows Build Steps:**
 

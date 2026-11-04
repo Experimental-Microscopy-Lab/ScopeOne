@@ -6,7 +6,6 @@
 #include "scopeone/ProcessingPlugin.h"
 #include "scopeone/SignalSource.h"
 #include "scopeone/ScopeOneCore.h"
-#include "scopeone/ToolPlugin.h"
 
 #include <QDialogButtonBox>
 #include <QDir>
@@ -41,11 +40,7 @@ namespace scopeone::ui
         {
             QList<DiscoveredPlugin> plugins = scopeone::core::discoverPlugins(
                 scopeone::core::PluginKind::Processing);
-            for (const scopeone::core::PluginKind kind :
-                 {scopeone::core::PluginKind::Tool, scopeone::core::PluginKind::Hardware})
-            {
-                plugins.append(scopeone::core::discoverPlugins(kind));
-            }
+            plugins.append(scopeone::core::discoverPlugins(scopeone::core::PluginKind::Hardware));
             return plugins;
         }
     }
@@ -235,7 +230,6 @@ namespace scopeone::ui
         QList<scopeone::core::DiscoveredPlugin> candidates;
         scopeone::core::PluginKind kind = scopeone::core::PluginKind::Processing;
         for (const auto candidateKind : {scopeone::core::PluginKind::Processing,
-                                         scopeone::core::PluginKind::Tool,
                                          scopeone::core::PluginKind::Hardware})
         {
             for (const auto& candidate :

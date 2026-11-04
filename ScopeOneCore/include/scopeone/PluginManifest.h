@@ -12,7 +12,6 @@ namespace scopeone::core
     enum class PluginKind
     {
         Processing,
-        Tool,
         Hardware
     };
 
@@ -37,7 +36,6 @@ namespace scopeone::core
     };
 
     inline constexpr int ScopeOneProcessingPluginApiVersion = 2;
-    inline constexpr int ScopeOneToolPluginApiVersion = 3;
     inline constexpr int ScopeOneHardwarePluginApiVersion = 1;
 
     SCOPEONE_SDK_EXPORT QString pluginKindName(PluginKind kind);

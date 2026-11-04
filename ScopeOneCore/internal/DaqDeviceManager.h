@@ -9,10 +9,18 @@
 
 #include "scopeone/DaqDevice.h"
 
-class QPluginLoader;
-
 namespace scopeone::core::internal
 {
+    // A kind of DAQ device built into Core, which lists the devices it finds and drives them
+    class DaqDeviceFactory
+    {
+    public:
+        virtual ~DaqDeviceFactory() = default;
+        virtual QList<DaqDeviceDescriptor> devices() const = 0;
+        virtual DaqController* createController(const QString& deviceId,
+                                                 QObject* parent = nullptr) = 0;
+    };
+
     class DaqDeviceManager final : public QObject
     {
         Q_OBJECT
@@ -36,13 +44,13 @@ namespace scopeone::core::internal
         void inputDataReady(const scopeone::core::DaqInputChunk& chunk);
 
     private:
-        void loadPlugins();
+        void registerDevices();
         DaqController* controller(const QString& deviceId,
                                   QString* errorMessage);
 
-        std::vector<std::unique_ptr<QPluginLoader>> m_loaders;
-        mutable bool m_pluginsLoaded{false};
-        QHash<QString, DaqDevicePlugin*> m_plugins;
+        std::vector<std::unique_ptr<DaqDeviceFactory>> m_factories;
+        mutable bool m_devicesRegistered{false};
+        QHash<QString, DaqDeviceFactory*> m_factoryByDevice;
         QHash<QString, DaqDeviceDescriptor> m_descriptors;
         QHash<QString, QPointer<DaqController>> m_controllers;
         QHash<QString, DaqState> m_states;

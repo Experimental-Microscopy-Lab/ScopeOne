@@ -174,19 +174,7 @@ namespace scopeone::core
         void controllerError(const QString& errorMessage);
         void inputDataReady(const scopeone::core::DaqInputChunk& chunk);
     };
-
-    class DaqDevicePlugin
-    {
-    public:
-        virtual ~DaqDevicePlugin() = default;
-        virtual QList<DaqDeviceDescriptor> devices() const = 0;
-        virtual DaqController* createController(const QString& deviceId,
-                                                 QObject* parent = nullptr) = 0;
-    };
 }
-
-#define SCOPEONE_DAQ_DEVICE_PLUGIN_IID "org.scopeone.DaqDevicePlugin/1.0"
-Q_DECLARE_INTERFACE(scopeone::core::DaqDevicePlugin, SCOPEONE_DAQ_DEVICE_PLUGIN_IID)
 
 Q_DECLARE_METATYPE(scopeone::core::DaqState)
 Q_DECLARE_METATYPE(scopeone::core::DaqInputChunk)

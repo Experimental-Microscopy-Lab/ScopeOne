@@ -1,8 +1,0 @@
-{
-  "id": "scopeone.nidaqmx",
-  "name": "NI-DAQmx Device Plugin",
-  "version": "1.0.0",
-  "scopeOneApi": 1,
-  "kind": "hardware",
-  "autoLoad": true
-}

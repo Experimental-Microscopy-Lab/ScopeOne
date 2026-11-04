@@ -1,9 +1,7 @@
 #include "internal/SignalSourceManager.h"
-#include "scopeone/PluginManifest.h"
 
-#include <QDebug>
-#include <QFileInfo>
-#include <QPluginLoader>
+#include "internal/PtuFile.h"
+#include "internal/SimulatedPmt.h"
 
 #include <algorithm>
 #include <cmath>
@@ -159,7 +157,7 @@ namespace scopeone::core::internal
     SignalSourceManager::SignalSourceManager(QObject* parent)
         : QObject(parent)
     {
-        loadPlugins();
+        registerSources();
     }
 
     SignalSourceManager::~SignalSourceManager()
@@ -169,7 +167,7 @@ namespace scopeone::core::internal
             delete source.data();
         }
         m_sources.clear();
-        m_loaders.clear();
+        m_factories.clear();
     }
 
     QList<SignalSourceDescriptor> SignalSourceManager::sources() const
@@ -223,37 +221,13 @@ namespace scopeone::core::internal
                       : m_messages.value(id, QStringLiteral("Signal source is idle"));
     }
 
-    void SignalSourceManager::loadPlugins()
+    void SignalSourceManager::registerSources()
     {
-        for (const DiscoveredPlugin& discovered : discoverPlugins(PluginKind::Hardware))
+        m_factories.push_back(std::make_unique<PtuFileSourceFactory>());
+        m_factories.push_back(std::make_unique<SimulatedPmtSourceFactory>());
+        for (const std::unique_ptr<SignalSourceFactory>& factory : m_factories)
         {
-            if (discovered.interfaceId != QStringLiteral(SCOPEONE_SIGNAL_SOURCE_PLUGIN_IID))
-            {
-                continue;
-            }
-            const QFileInfo file(discovered.path);
-            if (!discovered.error.isEmpty())
-            {
-                qWarning().noquote()
-                    << QStringLiteral("Failed to load signal source plugin %1: %2")
-                           .arg(file.fileName(), discovered.error);
-                continue;
-            }
-            if (!pluginEnabled(discovered.manifest))
-            {
-                continue;
-            }
-            auto loader = std::make_unique<QPluginLoader>(discovered.path);
-            auto* plugin = qobject_cast<SignalSourcePlugin*>(loader->instance());
-            if (!plugin)
-            {
-                qWarning().noquote()
-                    << QStringLiteral("Failed to load signal source plugin %1: %2")
-                           .arg(file.fileName(), loader->errorString());
-                continue;
-            }
-
-            for (const SignalSourceDescriptor& descriptor : plugin->signalSources())
+            for (const SignalSourceDescriptor& descriptor : factory->signalSources())
             {
                 const QString sourceId = descriptor.id.trimmed();
                 if (sourceId.isEmpty() || m_descriptors.contains(sourceId))
@@ -261,11 +235,10 @@ namespace scopeone::core::internal
                     continue;
                 }
                 m_descriptors.insert(sourceId, descriptor);
-                m_plugins.insert(sourceId, plugin);
+                m_factoryBySource.insert(sourceId, factory.get());
                 m_states.insert(sourceId, SignalSourceState::Idle);
                 m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
             }
-            m_loaders.push_back(std::move(loader));
         }
     }
 
@@ -277,8 +250,8 @@ namespace scopeone::core::internal
         {
             return existing;
         }
-        SignalSourcePlugin* plugin = m_plugins.value(id);
-        if (!plugin)
+        SignalSourceFactory* factory = m_factoryBySource.value(id);
+        if (!factory)
         {
             if (errorMessage)
             {
@@ -286,7 +259,7 @@ namespace scopeone::core::internal
             }
             return nullptr;
         }
-        SignalSource* source = plugin->createSignalSource(id, this);
+        SignalSource* source = factory->createSignalSource(id, this);
         if (!source)
         {
             if (errorMessage)

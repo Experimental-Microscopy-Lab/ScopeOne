@@ -2,7 +2,7 @@
 
 #include "scopeone/cuda/CudaRealImageModule.h"
 
-namespace scopeone::cuda_plugin
+namespace scopeone::plugins::cuda
 {
     class CudaGaussianBlurModule final : public scopeone::cuda::CudaRealImageModule
     {

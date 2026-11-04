@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cuda_runtime.h>
 
-namespace scopeone::cuda_plugin
+namespace scopeone::plugins::cuda
 {
     CudaFrequencyFilterModule::CudaFrequencyFilterModule()
         : CudaRealImageModule(scopeone::cuda::GpuMemoryLayout::Contiguous)

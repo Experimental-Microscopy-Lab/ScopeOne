@@ -76,7 +76,6 @@ set(CORE_SOURCES
         src/PluginManifest.cpp
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
-        src/SimulatorProvider.cpp
         src/ImageOps.cpp
         src/ImageSceneModel.cpp
         src/MMCoreManager.cpp
@@ -85,9 +84,7 @@ set(CORE_SOURCES
         src/StageMosaicManager.cpp
         src/ImageProcessingFramework.cpp
         src/ProcessingPipeline.cpp
-        src/ToolTask.cpp
-        src/ToolFrameStream.cpp
-        src/ToolPlugin.cpp
+        src/DhmReconstruction.cpp
         src/ProcessingModuleRegistry.cpp
         src/SpatiotemporalBinningModule.cpp
         src/GaussianBlurModule.cpp
@@ -98,6 +95,12 @@ set(CORE_SOURCES
         src/IFFTModule.cpp
         src/BackgroundCalibrationModule.cpp
         src/DifferentialRollingModule.cpp
+        src/IscatModule.cpp
+        src/PythonProcessingModule.cpp
+        src/NIDaqmx.cpp
+        src/PtuFile.cpp
+        src/SimulatedPmt.cpp
+        src/SimulatedPmtSource.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
         src/CameraBackend.cpp
@@ -119,18 +122,15 @@ set(CORE_HEADERS
         include/scopeone/HardwareTypes.h
         include/scopeone/ImageFrame.h
         include/scopeone/PluginManifest.h
-        include/scopeone/PluginSDK.h
+        include/scopeone/HardwarePluginSDK.h
         include/scopeone/ProcessingPlugin.h
         include/scopeone/ScanImageAssembler.h
         include/scopeone/scopeone_sdk_export.h
         include/scopeone/SharedFrame.h
         include/scopeone/SignalSource.h
-        include/scopeone/ToolFrameStream.h
-        include/scopeone/ToolPlugin.h
-        include/scopeone/ToolTask.h
+        include/scopeone/DhmReconstruction.h
         internal/AcquisitionEngine.h
         internal/CameraRuntimeControl.h
-        include/scopeone/SimulatorProvider.h
         include/scopeone/ImageOps.h
         include/scopeone/ImageSceneModel.h
         internal/HardwareRuntime.h
@@ -157,6 +157,12 @@ set(CORE_HEADERS
         internal/IFFTModule.h
         internal/BackgroundCalibrationModule.h
         internal/DifferentialRollingModule.h
+        internal/IscatModule.h
+        internal/PythonProcessingModule.h
+        internal/NIDaqmx.h
+        internal/PtuFile.h
+        internal/SimulatedPmt.h
+        internal/SimulatedPmtSource.h
         internal/MDAManager.h
         internal/RecordingManager.h
         internal/CameraBackend.h
@@ -168,8 +174,8 @@ set(CORE_HEADERS
 
 add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
-add_library(ScopeOnePluginSDK INTERFACE)
-add_library(scopeone::PluginSDK ALIAS ScopeOnePluginSDK)
+add_library(ScopeOneHardwarePluginSDK INTERFACE)
+add_library(scopeone::HardwarePluginSDK ALIAS ScopeOneHardwarePluginSDK)
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeWriter ScopeOneCore PROPERTIES
             BUILD_RPATH "$ORIGIN"
@@ -177,9 +183,10 @@ if (UNIX AND NOT APPLE)
             INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()
-set_target_properties(ScopeOnePluginSDK PROPERTIES EXPORT_NAME PluginSDK)
-target_link_libraries(ScopeOnePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
-target_include_directories(ScopeOnePluginSDK INTERFACE
+# The public target for hardware plugins outside this repository
+set_target_properties(ScopeOneHardwarePluginSDK PROPERTIES EXPORT_NAME HardwarePluginSDK)
+target_link_libraries(ScopeOneHardwarePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
+target_include_directories(ScopeOneHardwarePluginSDK INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
@@ -311,7 +318,7 @@ write_basic_package_version_file(
         COMPATIBILITY SameMajorVersion
 )
 
-install(TARGETS ScopeOneCore ScopeOnePluginSDK
+install(TARGETS ScopeOneCore ScopeOneHardwarePluginSDK
         EXPORT ScopeOneCoreTargets
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"

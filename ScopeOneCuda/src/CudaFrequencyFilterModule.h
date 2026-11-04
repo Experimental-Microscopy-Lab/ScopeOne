@@ -5,7 +5,7 @@
 
 #include <cufft.h>
 
-namespace scopeone::cuda_plugin
+namespace scopeone::plugins::cuda
 {
     class CudaFrequencyFilterModule final : public scopeone::cuda::CudaRealImageModule
     {

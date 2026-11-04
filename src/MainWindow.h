@@ -1,7 +1,7 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
-#include "ScopeOneToolPlugin.h"
+#include "ToolRegistry.h"
 
 #include <QByteArray>
 #include <QMainWindow>
@@ -54,7 +54,7 @@ namespace scopeone::ui
         explicit MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~MainWindow() override = default;
 
-        ScopeOneToolCore& core() const override;
+        scopeone::core::ScopeOneCore& core() const override;
         QString currentLayerKey() const override;
         void showLayers(const QStringList& layerKeys, bool sideBySide = false) override;
         void showToolStatus(const QString& message, int timeoutMs = 5000) override;
@@ -207,8 +207,6 @@ namespace scopeone::ui
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-        // Owned by the Core, so it outlives the tool windows closed with this window
-        ScopeOneToolCore* m_toolCore{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;

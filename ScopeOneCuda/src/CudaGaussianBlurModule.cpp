@@ -2,7 +2,7 @@
 
 #include "scopeone/cuda/CudaKernelLaunch.h"
 
-namespace scopeone::cuda_plugin
+namespace scopeone::plugins::cuda
 {
     CudaGaussianBlurModule::CudaGaussianBlurModule()
         : CudaRealImageModule(scopeone::cuda::GpuMemoryLayout::Pitched2D)
