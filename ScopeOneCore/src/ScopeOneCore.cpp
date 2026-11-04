@@ -1363,11 +1363,15 @@ namespace scopeone::core
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
         QStringList allProcessingPluginErrors;
-        for (const QString& directory :
-             scopeone::core::pluginDirectories(scopeone::core::PluginKind::Processing))
+        const QStringList processingDirectories =
+            scopeone::core::pluginDirectories(scopeone::core::PluginKind::Processing);
+        // Native processing plugins run inside ScopeOne and are only the built-in CUDA and ONNX
+        // ones beside the executable. Loading them from the user directory too let anyone add
+        // in-process C++ code; users extend processing with Python modules instead.
+        allProcessingPluginErrors.append(
+            m_managers->processingModuleRegistry->loadPlugins(processingDirectories.constFirst()));
+        for (const QString& directory : processingDirectories)
         {
-            allProcessingPluginErrors.append(
-                m_managers->processingModuleRegistry->loadPlugins(directory));
             allProcessingPluginErrors.append(internal::registerPythonProcessingModules(
                 *m_managers->processingModuleRegistry, directory));
         }
@@ -1418,8 +1422,14 @@ namespace scopeone::core
                 this, &ScopeOneCore::previewStateChanged);
         m_managers->hardwareRuntime->registerProvider(m_managers->microManagerProvider);
         m_managers->recordingManager = new RecordingManager(this);
-        m_managers->signalSourceManager = new internal::SignalSourceManager(this);
-        m_managers->daqDeviceManager = new internal::DaqDeviceManager(this);
+        m_managers->signalSourceManager =
+            new internal::SignalSourceManager(m_managers->hardwareRuntime->deviceRegistry(), this);
+        m_managers->daqDeviceManager =
+            new internal::DaqDeviceManager(m_managers->hardwareRuntime->deviceRegistry(), this);
+        connect(m_managers->signalSourceManager, &internal::SignalSourceManager::sourcesChanged,
+                this, &ScopeOneCore::signalSourcesChanged);
+        connect(m_managers->daqDeviceManager, &internal::DaqDeviceManager::devicesChanged,
+                this, &ScopeOneCore::daqDevicesChanged);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingWriterStatus.reset(

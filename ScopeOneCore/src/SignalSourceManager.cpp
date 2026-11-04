@@ -1,167 +1,38 @@
 #include "internal/SignalSourceManager.h"
 
+#include "internal/HardwareRuntime.h"
 #include "internal/PtuFile.h"
-#include "internal/SimulatedPmt.h"
+
+#include <QDebug>
 
 #include <algorithm>
 #include <cmath>
 #include <utility>
 
-namespace scopeone::core
+namespace scopeone::core::internal
 {
-    EventCountBinner::EventCountBinner(const QString& sourceId,
-                                       const QString& quantity,
-                                       const QString& unit,
-                                       double tickPeriodSeconds,
-                                       double sampleIntervalSeconds)
-        : m_sourceId(sourceId)
-          , m_quantity(quantity)
-          , m_unit(unit)
-          , m_tickPeriodSeconds(tickPeriodSeconds)
-          , m_ticksPerSample(std::max<quint64>(
-                1,
-                static_cast<quint64>(std::llround(
-                    sampleIntervalSeconds / tickPeriodSeconds))))
-          , m_nextSampleTick(m_ticksPerSample)
-          , m_sampleIntervalSeconds(
-                static_cast<double>(m_ticksPerSample) * tickPeriodSeconds)
-    {
-    }
-
-    void EventCountBinner::addEvent(quint64 tick)
-    {
-        const quint64 bin = binForTick(tick);
-        advanceToBin(bin);
-        if (bin == m_currentSample)
-        {
-            ++m_currentEventCount;
-            ++m_totalInputEvents;
-        }
-    }
-
-    void EventCountBinner::addMarker(quint64 tick, quint32 code)
-    {
-        advanceToTick(tick);
-        m_pendingMarkers.append({static_cast<double>(tick) * m_tickPeriodSeconds, code});
-        ++m_totalMarkers;
-    }
-
-    void EventCountBinner::advanceToTick(quint64 tick)
-    {
-        advanceToBin(binForTick(tick));
-    }
-
-    void EventCountBinner::advanceToElapsedSeconds(double elapsedSeconds)
-    {
-        if (elapsedSeconds > 0.0)
-        {
-            advanceToBin(static_cast<quint64>(elapsedSeconds / m_sampleIntervalSeconds));
-        }
-    }
-
-    bool EventCountBinner::hasReadyChunks() const
-    {
-        return !m_readyChunks.isEmpty();
-    }
-
-    QList<TimeSeriesChunk> EventCountBinner::takeReadyChunks()
-    {
-        return std::exchange(m_readyChunks, QList<TimeSeriesChunk>{});
-    }
-
-    QList<TimeSeriesChunk> EventCountBinner::takeCompletedChunks()
-    {
-        finishChunk();
-        return takeReadyChunks();
-    }
-
-    void EventCountBinner::appendCompletedValue(double value)
-    {
-        constexpr qsizetype kMaximumChunkSamples = 65536;
-        m_completedValues.append(value);
-        if (m_completedValues.size() >= kMaximumChunkSamples)
-        {
-            finishChunk();
-        }
-    }
-
-    void EventCountBinner::finishChunk()
-    {
-        if (m_completedValues.isEmpty())
-        {
-            return;
-        }
-        TimeSeriesChunk chunk;
-        chunk.sourceId = m_sourceId;
-        chunk.quantity = m_quantity;
-        chunk.unit = m_unit;
-        chunk.startTimeSeconds = static_cast<double>(m_firstCompletedSample)
-            * m_sampleIntervalSeconds;
-        chunk.sampleIntervalSeconds = m_sampleIntervalSeconds;
-        chunk.values.swap(m_completedValues);
-        const double chunkEndTime = static_cast<double>(
-            m_firstCompletedSample + static_cast<quint64>(chunk.values.size()))
-            * m_sampleIntervalSeconds;
-        int markerCount = 0;
-        while (markerCount < m_pendingMarkers.size()
-               && m_pendingMarkers[markerCount].timeSeconds < chunkEndTime)
-        {
-            ++markerCount;
-        }
-        if (markerCount > 0)
-        {
-            chunk.markers = m_pendingMarkers.mid(0, markerCount);
-            m_pendingMarkers.remove(0, markerCount);
-        }
-        chunk.totalInputEvents = m_totalInputEvents;
-        chunk.totalMarkers = m_totalMarkers;
-        m_firstCompletedSample += static_cast<quint64>(chunk.values.size());
-        m_readyChunks.append(std::move(chunk));
-    }
-
-    quint64 EventCountBinner::binForTick(quint64 tick) const
-    {
-        if (tick >= m_currentSampleTick && tick < m_nextSampleTick)
-        {
-            return m_currentSample;
-        }
-        return tick / m_ticksPerSample;
-    }
-
-    void EventCountBinner::advanceToBin(quint64 targetBin)
-    {
-        if (targetBin <= m_currentSample)
-        {
-            return;
-        }
-        while (m_currentSample < targetBin)
-        {
-            appendCompletedValue(static_cast<double>(m_currentEventCount));
-            m_currentEventCount = 0;
-            ++m_currentSample;
-        }
-        m_currentSampleTick = m_currentSample * m_ticksPerSample;
-        m_nextSampleTick = m_currentSampleTick + m_ticksPerSample;
-    }
-
     SignalSource::SignalSource(QObject* parent)
         : QObject(parent)
     {
     }
 
     SignalSource::~SignalSource() = default;
-}
 
-namespace scopeone::core::internal
-{
-    SignalSourceManager::SignalSourceManager(QObject* parent)
+    SignalSourceManager::SignalSourceManager(DeviceRegistry* registry, QObject* parent)
         : QObject(parent)
+          , m_registry(registry)
     {
-        registerSources();
+        registerBuiltInSources();
+        connect(m_registry, &DeviceRegistry::changed, this, &SignalSourceManager::refreshProviderSources);
+        refreshProviderSources();
     }
 
     SignalSourceManager::~SignalSourceManager()
     {
+        for (const HardwareProviderPtr& provider : std::as_const(m_attachedProviders))
+        {
+            detachProvider(provider);
+        }
         for (const QPointer<SignalSource>& source : std::as_const(m_sources))
         {
             delete source.data();
@@ -194,13 +65,25 @@ namespace scopeone::core::internal
             }
             return false;
         }
+        if (const HardwareProviderPtr provider = m_providerBySource.value(sourceId))
+        {
+            SignalAcquisitionConfig normalized = config;
+            normalized.sourceId = sourceId;
+            return dynamic_cast<SignalSourceProvider*>(provider.get())->startSignal(normalized, errorMessage);
+        }
         SignalSource* source = sourceInstance(sourceId, errorMessage);
         return source && source->start(config, errorMessage);
     }
 
     void SignalSourceManager::stopTrace(const QString& sourceId)
     {
-        if (SignalSource* source = m_sources.value(sourceId.trimmed()))
+        const QString id = sourceId.trimmed();
+        if (const HardwareProviderPtr provider = m_providerBySource.value(id))
+        {
+            dynamic_cast<SignalSourceProvider*>(provider.get())->stopSignal(id);
+            return;
+        }
+        if (SignalSource* source = m_sources.value(id))
         {
             source->stop();
         }
@@ -221,10 +104,9 @@ namespace scopeone::core::internal
                       : m_messages.value(id, QStringLiteral("Signal source is idle"));
     }
 
-    void SignalSourceManager::registerSources()
+    void SignalSourceManager::registerBuiltInSources()
     {
         m_factories.push_back(std::make_unique<PtuFileSourceFactory>());
-        m_factories.push_back(std::make_unique<SimulatedPmtSourceFactory>());
         for (const std::unique_ptr<SignalSourceFactory>& factory : m_factories)
         {
             for (const SignalSourceDescriptor& descriptor : factory->signalSources())
@@ -239,6 +121,114 @@ namespace scopeone::core::internal
                 m_states.insert(sourceId, SignalSourceState::Idle);
                 m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
             }
+        }
+    }
+
+    // Follows the drivers as they are registered and removed: the sources of each
+    // plugin that provides signal sources join the list, and their chunks are passed on
+    void SignalSourceManager::refreshProviderSources()
+    {
+        QHash<QString, HardwareProviderPtr> current;
+        for (const HardwareProviderDescriptor& descriptor : m_registry->providers())
+        {
+            const HardwareProviderPtr provider = m_registry->provider(descriptor.id);
+            if (dynamic_cast<SignalSourceProvider*>(provider.get()))
+            {
+                current.insert(descriptor.id, provider);
+            }
+        }
+        bool changed = false;
+        for (auto it = m_attachedProviders.begin(); it != m_attachedProviders.end();)
+        {
+            if (current.value(it.key()) == it.value())
+            {
+                ++it;
+                continue;
+            }
+            detachProvider(it.value());
+            it = m_attachedProviders.erase(it);
+            changed = true;
+        }
+        for (auto it = current.cbegin(); it != current.cend(); ++it)
+        {
+            if (m_attachedProviders.contains(it.key()))
+            {
+                continue;
+            }
+            auto* const signalProvider = dynamic_cast<SignalSourceProvider*>(it.value().get());
+            const QPointer<SignalSourceManager> self(this);
+            signalProvider->setSignalSinks(
+                [self](const TimeSeriesChunk& chunk)
+                {
+                    QMetaObject::invokeMethod(self, [self, chunk]() { if (self) emit self->timeSeriesReady(chunk); },
+                                              Qt::QueuedConnection);
+                },
+                [self](const TimestampedEventChunk& chunk)
+                {
+                    QMetaObject::invokeMethod(self, [self, chunk]() { if (self) emit self->timestampedEventsReady(chunk); },
+                                              Qt::QueuedConnection);
+                },
+                [self](const QString& sourceId, SignalSourceState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(self, [self, sourceId, state, message]()
+                    {
+                        if (self) self->updateState(sourceId, state, message);
+                    }, Qt::QueuedConnection);
+                });
+            for (const SignalSourceDescriptor& descriptor : signalProvider->signalSources())
+            {
+                const QString sourceId = descriptor.id.trimmed();
+                if (sourceId.isEmpty() || m_descriptors.contains(sourceId))
+                {
+                    qWarning().noquote() << QStringLiteral("Hardware provider %1: invalid or duplicate signal source %2")
+                                                .arg(it.key(), descriptor.id);
+                    continue;
+                }
+                m_descriptors.insert(sourceId, descriptor);
+                m_providerBySource.insert(sourceId, it.value());
+                m_states.insert(sourceId, SignalSourceState::Idle);
+                m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
+            }
+            m_attachedProviders.insert(it.key(), it.value());
+            changed = true;
+        }
+        if (changed)
+        {
+            emit sourcesChanged();
+        }
+    }
+
+    void SignalSourceManager::detachProvider(const HardwareProviderPtr& provider)
+    {
+        dynamic_cast<SignalSourceProvider*>(provider.get())->setSignalSinks({}, {}, {});
+        for (auto it = m_providerBySource.begin(); it != m_providerBySource.end();)
+        {
+            if (it.value() != provider)
+            {
+                ++it;
+                continue;
+            }
+            m_descriptors.remove(it.key());
+            m_states.remove(it.key());
+            m_messages.remove(it.key());
+            it = m_providerBySource.erase(it);
+        }
+    }
+
+    void SignalSourceManager::updateState(const QString& sourceId,
+                                          SignalSourceState state,
+                                          const QString& message)
+    {
+        if (!m_providerBySource.contains(sourceId))
+        {
+            return;
+        }
+        m_states.insert(sourceId, state);
+        m_messages.insert(sourceId, message);
+        emit sourceStateChanged(sourceId, state, message);
+        if (state == SignalSourceState::Error)
+        {
+            emit sourceError(sourceId, message);
         }
     }
 

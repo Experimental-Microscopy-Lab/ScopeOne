@@ -5,6 +5,8 @@
 !/ScopeOneCore/**
 !/plugins/
 !/plugins/**
+!/drivers/
+!/drivers/**
 !/ScopeOneCuda/
 !/ScopeOneCuda/**
 !/ScopeOneInference/

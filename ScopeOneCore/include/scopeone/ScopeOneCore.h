@@ -488,6 +488,9 @@ namespace scopeone::core
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
+        // The signal sources or DAQ devices changed as a driver was registered or removed
+        void signalSourcesChanged();
+        void daqDevicesChanged();
         void signalTimeSeriesReady(const TimeSeriesChunk& chunk);
         void signalSourceStateChanged(const QString& sourceId,
                                       SignalSourceState state,

@@ -1,6 +1,6 @@
 #include "scopeone/PluginManifest.h"
 
-#include "scopeone/DriverHostProviderPlugin.h"
+#include "scopeone/Driver.h"
 #include "scopeone/ProcessingPlugin.h"
 
 #include <QCoreApplication>
@@ -20,8 +20,8 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return QStringLiteral("processing");
-        case PluginKind::Hardware:
-            return QStringLiteral("hardware");
+        case PluginKind::Driver:
+            return QStringLiteral("driver");
         }
         return {};
     }
@@ -32,15 +32,16 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return ScopeOneProcessingPluginApiVersion;
-        case PluginKind::Hardware:
-            return ScopeOneHardwarePluginApiVersion;
+        case PluginKind::Driver:
+            return ScopeOneDriverApiVersion;
         }
         return 0;
     }
 
     QString pluginDirectoryName(PluginKind kind)
     {
-        return pluginKindName(kind);
+        return kind == PluginKind::Driver ? QStringLiteral("drivers")
+                                          : QStringLiteral("plugins/%1").arg(pluginKindName(kind));
     }
 
     QStringList pluginInterfaceIds(PluginKind kind)
@@ -49,8 +50,8 @@ namespace scopeone::core
         {
         case PluginKind::Processing:
             return {QStringLiteral(ScopeOneProcessingPlugin_iid)};
-        case PluginKind::Hardware:
-            return {QStringLiteral(ScopeOneDriverHostProviderPlugin_iid)};
+        case PluginKind::Driver:
+            return {QStringLiteral(ScopeOneDriver_iid)};
         }
         return {};
     }
@@ -60,9 +61,9 @@ namespace scopeone::core
         const QString directoryName = pluginDirectoryName(kind);
         return {
             QDir(QCoreApplication::applicationDirPath())
-                .filePath(QStringLiteral("plugins/%1").arg(directoryName)),
+                .filePath(directoryName),
             QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("plugins/%1").arg(directoryName))};
+                .filePath(directoryName)};
     }
 
     QString pluginSettingsKey(const QString& pluginId, const QString& name)

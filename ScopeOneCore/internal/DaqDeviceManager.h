@@ -2,31 +2,23 @@
 
 #include <QHash>
 #include <QObject>
-#include <QPointer>
-
-#include <memory>
-#include <vector>
 
 #include "scopeone/DaqDevice.h"
+#include "scopeone/DaqProvider.h"
+#include "scopeone/HardwareProvider.h"
 
 namespace scopeone::core::internal
 {
-    // A kind of DAQ device built into Core, which lists the devices it finds and drives them
-    class DaqDeviceFactory
-    {
-    public:
-        virtual ~DaqDeviceFactory() = default;
-        virtual QList<DaqDeviceDescriptor> devices() const = 0;
-        virtual DaqController* createController(const QString& deviceId,
-                                                 QObject* parent = nullptr) = 0;
-    };
+    class DeviceRegistry;
 
+    // The DAQ devices of the drivers. Their inputs and states arrive on a thread of the
+    // provider and are passed on in this object's thread.
     class DaqDeviceManager final : public QObject
     {
         Q_OBJECT
 
     public:
-        explicit DaqDeviceManager(QObject* parent = nullptr);
+        explicit DaqDeviceManager(DeviceRegistry* registry, QObject* parent = nullptr);
         ~DaqDeviceManager() override;
 
         QList<DaqDeviceDescriptor> devices() const;
@@ -37,6 +29,7 @@ namespace scopeone::core::internal
         QString stateMessage(const QString& deviceId) const;
 
     signals:
+        void devicesChanged();
         void stateChanged(const QString& deviceId,
                           scopeone::core::DaqState state,
                           const QString& message);
@@ -44,15 +37,14 @@ namespace scopeone::core::internal
         void inputDataReady(const scopeone::core::DaqInputChunk& chunk);
 
     private:
-        void registerDevices();
-        DaqController* controller(const QString& deviceId,
-                                  QString* errorMessage);
+        void refreshProviderDevices();
+        void detachProvider(const HardwareProviderPtr& provider);
+        void updateState(const QString& deviceId, DaqState state, const QString& message);
 
-        std::vector<std::unique_ptr<DaqDeviceFactory>> m_factories;
-        mutable bool m_devicesRegistered{false};
-        QHash<QString, DaqDeviceFactory*> m_factoryByDevice;
+        DeviceRegistry* m_registry{nullptr};
+        QHash<QString, HardwareProviderPtr> m_attachedProviders;
+        QHash<QString, HardwareProviderPtr> m_providerByDevice;
         QHash<QString, DaqDeviceDescriptor> m_descriptors;
-        QHash<QString, QPointer<DaqController>> m_controllers;
         QHash<QString, DaqState> m_states;
         QHash<QString, QString> m_messages;
     };

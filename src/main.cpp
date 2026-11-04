@@ -28,9 +28,9 @@ int main(int argc, char *argv[])
     scopeone::ui::ConsoleWidget::installQtMessageHandler();
 
     auto scopeOneCore = std::make_unique<scopeone::core::ScopeOneCore>();
-    for (const QString& error : scopeone::ui::loadConfiguredHardwarePlugins(*scopeOneCore))
+    for (const QString& error : scopeone::ui::loadConfiguredDrivers(*scopeOneCore))
     {
-        qWarning().noquote() << QStringLiteral("Failed to load hardware plugin %1").arg(error);
+        qWarning().noquote() << QStringLiteral("Failed to load driver %1").arg(error);
     }
     scopeone::ui::MainWindow window(scopeOneCore.get());
     window.show();

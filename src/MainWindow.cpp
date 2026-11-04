@@ -1485,7 +1485,7 @@ namespace scopeone::ui
         });
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
-        auto* pluginManagerAction = toolsMenu->addAction(tr("Plugin &Manager..."));
+        auto* pluginManagerAction = toolsMenu->addAction(tr("&Drivers and Plugins..."));
         connect(pluginManagerAction, &QAction::triggered, this, [this]()
         {
             PluginManagerDialog(this).exec();

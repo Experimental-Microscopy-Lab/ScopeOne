@@ -360,6 +360,8 @@ namespace scopeone::ui
             m_serpentineCheck->setEnabled(editable);
             m_mirrorHorizontalCheck->setEnabled(editable);
         });
+        connect(m_core, &scopeone::core::ScopeOneCore::signalSourcesChanged,
+                this, &SignalMonitorWidget::refreshSources);
         connect(m_core, &scopeone::core::ScopeOneCore::signalTimeSeriesReady,
                 this, &SignalMonitorWidget::handleTimeSeries);
         connect(m_core, &scopeone::core::ScopeOneCore::signalSourceStateChanged,

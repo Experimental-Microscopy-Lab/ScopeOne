@@ -1,19 +1,30 @@
-#include "internal/SimulatedPmtSource.h"
+// A driver for a PMT, written the way a detector maker would write one. It uses only the
+// headers of scopeone::DriverSDK. Where a real driver reads its counter or digitizer, this
+// one draws photon counts on a thread of its own: a stream of count rates, or the photon events
+// of a raster scan with its line and frame markers, from which ScopeOne assembles the image.
+#include "scopeone/DriverSDK.h"
+
+#include <QMutex>
+#include <QMutexLocker>
+#include <QObject>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <random>
+#include <thread>
 #include <utility>
 
-namespace scopeone::core::internal
+namespace example_pmt
 {
     using namespace scopeone::core;
 
     namespace
     {
-        constexpr auto kSourceId = "pmt:simulator";
+        constexpr auto kSourceId = "example.pmt";
         constexpr double kTickPeriodSeconds = 1.0e-9;
         constexpr double Pi = 3.14159265358979323846;
         constexpr quint32 kPhotonCode = 1;
@@ -152,112 +163,251 @@ namespace scopeone::core::internal
                              0.5 + 0.5 * std::sin(2.0 * Pi * (4.0 * x + 2.0 * y)));
             return value;
         }
+
+        scopeone::core::SignalParameterDescriptor realParameter(
+            const QString& key,
+            const QString& name,
+            double value,
+            double minimum,
+            double maximum,
+            const QString& suffix)
+        {
+            scopeone::core::SignalParameterDescriptor parameter;
+            parameter.key = key;
+            parameter.name = name;
+            parameter.type = scopeone::core::SignalParameterType::Real;
+            parameter.defaultValue = value;
+            parameter.hasRange = true;
+            parameter.minimum = minimum;
+            parameter.maximum = maximum;
+            parameter.suffix = suffix;
+            return parameter;
+        }
+
+        scopeone::core::SignalParameterDescriptor choiceParameter(
+            const QString& key,
+            const QString& name,
+            const QStringList& values,
+            const QStringList& names,
+            const QString& value)
+        {
+            scopeone::core::SignalParameterDescriptor parameter;
+            parameter.key = key;
+            parameter.name = name;
+            parameter.type = scopeone::core::SignalParameterType::Choice;
+            parameter.defaultValue = value;
+            for (int index = 0; index < values.size(); ++index)
+            {
+                parameter.choices.append(values[index]);
+                parameter.choiceNames.append(names[index]);
+            }
+            return parameter;
+        }
+
+        scopeone::core::SignalSourceDescriptor sourceDescriptor()
+        {
+                        SignalSourceDescriptor descriptor;
+            descriptor.id = QString::fromLatin1(kSourceId);
+            descriptor.name = QStringLiteral("Example PMT");
+            descriptor.provider = QStringLiteral("Example PMT");
+            descriptor.quantity = QStringLiteral("Photon count rate");
+            descriptor.unit = QStringLiteral("counts/s");
+            descriptor.streamType = SignalStreamType::TimestampedEvents;
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("voltage"),
+                QStringLiteral("Control voltage"),
+                1.0,
+                0.0,
+                1.25,
+                QStringLiteral(" V")));
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("gain"),
+                QStringLiteral("Gain"),
+                1.0,
+                1.0,
+                100.0,
+                QString()));
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("baseRate"),
+                QStringLiteral("Base rate"),
+                1000000.0,
+                10000.0,
+                1000000.0,
+                QStringLiteral(" counts/s")));
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("darkCountRate"),
+                QStringLiteral("Dark count rate"),
+                500.0,
+                0.0,
+                5000.0,
+                QStringLiteral(" counts/s")));
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("modulationFrequency"),
+                QStringLiteral("Modulation frequency"),
+                2.0,
+                0.0,
+                1000.0,
+                QStringLiteral(" Hz")));
+            descriptor.parameters.append(realParameter(
+                QStringLiteral("scanFrameRate"),
+                QStringLiteral("Scan frame rate"),
+                2.0,
+                0.5,
+                10.0,
+                QStringLiteral(" Hz")));
+            descriptor.parameters.append(choiceParameter(
+                QStringLiteral("waveform"),
+                QStringLiteral("Waveform"),
+                {QStringLiteral("constant"), QStringLiteral("sine"), QStringLiteral("square")},
+                {QStringLiteral("Constant"), QStringLiteral("Sine"), QStringLiteral("Square")},
+                QStringLiteral("constant")));
+            descriptor.parameters.append(choiceParameter(
+                QStringLiteral("noiseMode"),
+                QStringLiteral("Noise"),
+                {QStringLiteral("poisson"), QStringLiteral("gaussian"), QStringLiteral("none")},
+                {QStringLiteral("Poisson"), QStringLiteral("Gaussian"), QStringLiteral("None")},
+                QStringLiteral("poisson")));
+            descriptor.parameters.append(choiceParameter(
+                QStringLiteral("pattern"),
+                QStringLiteral("Pattern"),
+                {QStringLiteral("beads"), QStringLiteral("usaf"),
+                 QStringLiteral("grid"), QStringLiteral("cells")},
+                {QStringLiteral("Fluorescent Beads"), QStringLiteral("USAF Target"),
+                 QStringLiteral("Concentric Grid"), QStringLiteral("Cell Structure")},
+                QStringLiteral("beads")));
+            return descriptor;
+        }
     }
 
-    SimulatedPmtSource::SimulatedPmtSource(QObject* parent)
-        : SignalSource(parent)
+    // The PMT and the counter behind it. It reports its chunks and states through the sinks of the provider.
+    class PmtSource
     {
-    }
+    public:
+        struct Settings
+        {
+            double voltage{1.0};
+            double gain{1.0};
+            double baseRate{1000000.0};
+            double darkCountRate{500.0};
+            double modulationFrequency{2.0};
+            double scanFrameRate{2.0};
+            QString waveform{QStringLiteral("constant")};
+            QString noiseMode{QStringLiteral("poisson")};
+            QString pattern{QStringLiteral("beads")};
+        };
 
-    SimulatedPmtSource::~SimulatedPmtSource()
-    {
-        std::lock_guard lock(m_threadMutex);
-        if (m_worker.joinable())
+        ~PmtSource()
+        {
+            stop();
+            if (m_worker.joinable())
+            {
+                m_worker.join();
+            }
+        }
+
+        void setSinks(SignalSourceProvider::TimeSeriesSink timeSeries,
+                      SignalSourceProvider::TimestampedEventSink timestampedEvents,
+                      SignalSourceProvider::StateSink state)
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_timeSeriesSink = std::move(timeSeries);
+            m_timestampedEventSink = std::move(timestampedEvents);
+            m_stateSink = std::move(state);
+        }
+
+        bool start(const SignalAcquisitionConfig& config, QString* errorMessage)
+        {
+            if (m_running.load())
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("The PMT is already acquiring");
+                }
+                return false;
+            }
+            if (m_worker.joinable())
+            {
+                m_worker.join();
+            }
+            Settings settings;
+            const QVariantMap& values = config.sourceSettings;
+            settings.voltage = values.value(QStringLiteral("voltage"), settings.voltage).toDouble();
+            settings.gain = values.value(QStringLiteral("gain"), settings.gain).toDouble();
+            settings.baseRate = values.value(QStringLiteral("baseRate"), settings.baseRate).toDouble();
+            settings.darkCountRate = values.value(QStringLiteral("darkCountRate"), settings.darkCountRate).toDouble();
+            settings.modulationFrequency =
+                values.value(QStringLiteral("modulationFrequency"), settings.modulationFrequency).toDouble();
+            settings.scanFrameRate = values.value(QStringLiteral("scanFrameRate"), settings.scanFrameRate).toDouble();
+            settings.waveform = values.value(QStringLiteral("waveform"), settings.waveform).toString();
+            settings.noiseMode = values.value(QStringLiteral("noiseMode"), settings.noiseMode).toString();
+            settings.pattern = values.value(QStringLiteral("pattern"), settings.pattern).toString();
+
+            m_running.store(true);
+            reportState(SignalSourceState::Running, QStringLiteral("The PMT is acquiring"));
+            m_worker = std::jthread([this, config, settings](std::stop_token stopToken)
+            {
+                if (config.scanImage.enabled)
+                {
+                    runScan(stopToken, config, settings);
+                }
+                else
+                {
+                    runStream(stopToken, config, settings);
+                }
+                m_running.store(false);
+                reportState(SignalSourceState::Idle, stopToken.stop_requested()
+                                                         ? QStringLiteral("The PMT stopped")
+                                                         : QStringLiteral("The PMT finished"));
+            });
+            return true;
+        }
+
+        void stop()
         {
             m_worker.request_stop();
-            m_worker.join();
         }
-    }
 
-    bool SimulatedPmtSource::start(const SignalAcquisitionConfig& config,
-                                   QString* errorMessage)
-    {
-        if (config.sourceId.trimmed() != QString::fromLatin1(kSourceId))
+    private:
+        double rateAt(double timeSeconds, const Settings& settings) const;
+        void runStream(std::stop_token stopToken, const SignalAcquisitionConfig& config, const Settings& settings);
+        void runScan(std::stop_token stopToken, const SignalAcquisitionConfig& config, const Settings& settings);
+
+        void publish(const TimeSeriesChunk& chunk)
         {
-            if (errorMessage)
+            QMutexLocker locker(&m_sinkMutex);
+            if (m_timeSeriesSink)
             {
-                *errorMessage = QStringLiteral("Unknown simulated PMT source");
+                m_timeSeriesSink(chunk);
             }
-            return false;
         }
 
-        std::lock_guard lock(m_threadMutex);
-        if (m_state == SignalSourceState::Starting
-            || m_state == SignalSourceState::Running
-            || m_state == SignalSourceState::Stopping)
+        void publish(const TimestampedEventChunk& chunk)
         {
-            if (errorMessage)
+            QMutexLocker locker(&m_sinkMutex);
+            if (m_timestampedEventSink)
             {
-                *errorMessage = QStringLiteral("Simulated PMT is already active");
+                m_timestampedEventSink(chunk);
             }
-            return false;
-        }
-        if (m_worker.joinable())
-        {
-            m_worker.join();
         }
 
-        Settings settings;
-        settings.voltage = config.sourceSettings
-            .value(QStringLiteral("voltage"), settings.voltage).toDouble();
-        settings.gain = config.sourceSettings
-            .value(QStringLiteral("gain"), settings.gain).toDouble();
-        settings.baseRate = config.sourceSettings
-            .value(QStringLiteral("baseRate"), settings.baseRate).toDouble();
-        settings.darkCountRate = config.sourceSettings
-            .value(QStringLiteral("darkCountRate"), settings.darkCountRate).toDouble();
-        settings.modulationFrequency = config.sourceSettings
-            .value(QStringLiteral("modulationFrequency"), settings.modulationFrequency).toDouble();
-        settings.scanFrameRate = config.sourceSettings
-            .value(QStringLiteral("scanFrameRate"), settings.scanFrameRate).toDouble();
-        settings.waveform = config.sourceSettings
-            .value(QStringLiteral("waveform"), settings.waveform).toString();
-        settings.noiseMode = config.sourceSettings
-            .value(QStringLiteral("noiseMode"), settings.noiseMode).toString();
-        settings.pattern = config.sourceSettings
-            .value(QStringLiteral("pattern"), settings.pattern).toString();
-
-        setState(SignalSourceState::Starting, QStringLiteral("Starting simulated PMT"));
-        m_worker = std::jthread([this, config, settings](std::stop_token stopToken)
+        void reportState(SignalSourceState state, const QString& message)
         {
-            run(stopToken, config, settings);
-        });
-        return true;
-    }
-
-    void SimulatedPmtSource::stop()
-    {
-        std::lock_guard lock(m_threadMutex);
-        if (m_state == SignalSourceState::Starting
-            || m_state == SignalSourceState::Running)
-        {
-            setState(SignalSourceState::Stopping, QStringLiteral("Stopping simulated PMT"));
-            m_worker.request_stop();
+            QMutexLocker locker(&m_sinkMutex);
+            if (m_stateSink)
+            {
+                m_stateSink(QString::fromLatin1(kSourceId), state, message);
+            }
         }
-    }
 
-    SignalSourceState SimulatedPmtSource::state() const
-    {
-        return m_state.load();
-    }
+        QMutex m_sinkMutex;
+        SignalSourceProvider::TimeSeriesSink m_timeSeriesSink;
+        SignalSourceProvider::TimestampedEventSink m_timestampedEventSink;
+        SignalSourceProvider::StateSink m_stateSink;
+        std::atomic_bool m_running{false};
+        std::jthread m_worker;
+    };
 
-    QString SimulatedPmtSource::stateMessage() const
-    {
-        std::lock_guard lock(m_stateMutex);
-        return m_stateMessage;
-    }
-
-    void SimulatedPmtSource::setState(SignalSourceState state, const QString& message)
-    {
-        {
-            std::lock_guard lock(m_stateMutex);
-            m_stateMessage = message;
-            m_state.store(state);
-        }
-        emit stateChanged(state, message);
-    }
-
-    double SimulatedPmtSource::rateAt(double timeSeconds, const Settings& settings) const
+    double PmtSource::rateAt(double timeSeconds, const Settings& settings) const
     {
         const double gain = settings.gain * std::pow(settings.voltage, 3.0);
         const double signalRate = settings.baseRate * gain + settings.darkCountRate;
@@ -274,31 +424,7 @@ namespace scopeone::core::internal
         return signalRate;
     }
 
-    void SimulatedPmtSource::run(std::stop_token stopToken,
-                                 const SignalAcquisitionConfig& config,
-                                 const Settings& settings)
-    {
-        setState(SignalSourceState::Running, QStringLiteral("Simulated PMT is running"));
-        if (config.scanImage.enabled)
-        {
-            runScan(stopToken, config, settings);
-        }
-        else
-        {
-            runStream(stopToken, config, settings);
-        }
-
-        if (stopToken.stop_requested())
-        {
-            setState(SignalSourceState::Idle, QStringLiteral("Simulated PMT stopped"));
-        }
-        else
-        {
-            setState(SignalSourceState::Idle, QStringLiteral("Simulated PMT finished"));
-        }
-    }
-
-    void SimulatedPmtSource::runStream(std::stop_token stopToken,
+    void PmtSource::runStream(std::stop_token stopToken,
                                        const SignalAcquisitionConfig& config,
                                        const Settings& settings)
     {
@@ -351,10 +477,10 @@ namespace scopeone::core::internal
             }
             chunk.totalInputEvents = totalEvents;
             chunk.totalMarkers = 0;
-            emit timeSeriesReady(chunk);
+            publish(chunk);
             if (events.isValid())
             {
-                emit timestampedEventsReady(events);
+                publish(events);
             }
             std::this_thread::sleep_until(
                 startTime + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -362,7 +488,7 @@ namespace scopeone::core::internal
         }
     }
 
-    void SimulatedPmtSource::runScan(std::stop_token stopToken,
+    void PmtSource::runScan(std::stop_token stopToken,
                                      const SignalAcquisitionConfig& config,
                                      const Settings& settings)
     {
@@ -440,7 +566,7 @@ namespace scopeone::core::internal
                 binner.addMarker(lineEnd, scan.lineMarker);
                 for (const TimeSeriesChunk& chunk : binner.takeReadyChunks())
                 {
-                    emit timeSeriesReady(chunk);
+                    publish(chunk);
                 }
             }
 
@@ -453,9 +579,9 @@ namespace scopeone::core::internal
             binner.advanceToElapsedSeconds((frameIndex + 1) * actualFrameDuration);
             for (const TimeSeriesChunk& chunk : binner.takeCompletedChunks())
             {
-                emit timeSeriesReady(chunk);
+                publish(chunk);
             }
-            emit timestampedEventsReady(events);
+            publish(events);
             ++frameIndex;
 
             std::this_thread::sleep_until(
@@ -463,4 +589,79 @@ namespace scopeone::core::internal
                     std::chrono::duration<double>(frameIndex * actualFrameDuration)));
         }
     }
+
+    class PmtProvider final : public HardwareProvider, public SignalSourceProvider
+    {
+    public:
+        HardwareProviderDescriptor descriptor() const override
+        {
+            return {QString::fromLatin1(kSourceId), QStringLiteral("Example PMT"), QStringLiteral("1.0.0")};
+        }
+
+        // The PMT is listed as a signal source, not as a device with properties
+        QList<HardwareDeviceDescriptor> devices() const override
+        {
+            return {};
+        }
+
+        QList<SignalSourceDescriptor> signalSources() const override
+        {
+            return {sourceDescriptor()};
+        }
+
+        void setSignalSinks(TimeSeriesSink timeSeries,
+                            TimestampedEventSink timestampedEvents,
+                            StateSink state) override
+        {
+            m_pmt.setSinks(std::move(timeSeries), std::move(timestampedEvents), std::move(state));
+        }
+
+        bool startSignal(const SignalAcquisitionConfig& config, QString* errorMessage) override
+        {
+            if (config.sourceId != QString::fromLatin1(kSourceId))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unknown signal source %1").arg(config.sourceId);
+                }
+                return false;
+            }
+            return m_pmt.start(config, errorMessage);
+        }
+
+        void stopSignal(const QString& sourceId) override
+        {
+            if (sourceId == QString::fromLatin1(kSourceId))
+            {
+                m_pmt.stop();
+            }
+        }
+
+    private:
+        PmtSource m_pmt;
+    };
+
+    class ExamplePmtDriver final : public QObject, public Driver
+    {
+        Q_OBJECT
+        Q_PLUGIN_METADATA(IID ScopeOneDriver_iid FILE "scopeone_driver.json")
+        Q_INTERFACES(scopeone::core::Driver)
+
+    public:
+        QString providerId() const override
+        {
+            return QString::fromLatin1(kSourceId);
+        }
+
+        HardwareProviderPtr createProvider(const QJsonObject&, QString* errorMessage) override
+        {
+            if (errorMessage)
+            {
+                errorMessage->clear();
+            }
+            return std::make_shared<PmtProvider>();
+        }
+    };
 }
+
+#include "ExamplePmtDriver.moc"

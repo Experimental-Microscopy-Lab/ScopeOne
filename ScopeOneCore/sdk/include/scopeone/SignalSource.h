@@ -2,7 +2,6 @@
 
 #include <QList>
 #include <QMetaType>
-#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -10,7 +9,6 @@
 #include <QVariantMap>
 #include <QVector>
 #include <QtGlobal>
-#include <QtPlugin>
 
 #include "scopeone/scopeone_sdk_export.h"
 
@@ -179,28 +177,6 @@ namespace scopeone::core
         QVector<double> m_completedValues;
         QVector<SignalMarker> m_pendingMarkers;
         QList<TimeSeriesChunk> m_readyChunks;
-    };
-
-    class SCOPEONE_SDK_EXPORT SignalSource : public QObject
-    {
-        Q_OBJECT
-
-    public:
-        explicit SignalSource(QObject* parent = nullptr);
-        ~SignalSource() override;
-
-        virtual bool start(const SignalAcquisitionConfig& config,
-                           QString* errorMessage = nullptr) = 0;
-        virtual void stop() = 0;
-        virtual SignalSourceState state() const = 0;
-        virtual QString stateMessage() const = 0;
-
-    signals:
-        void timeSeriesReady(const scopeone::core::TimeSeriesChunk& chunk);
-        void timestampedEventsReady(const scopeone::core::TimestampedEventChunk& chunk);
-        void stateChanged(scopeone::core::SignalSourceState state,
-                          const QString& message);
-        void sourceError(const QString& errorMessage);
     };
 }
 

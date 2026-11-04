@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scopeone/scopeone_sdk_export.h"
+#include "scopeone/scopeone_core_export.h"
 
 #include <QJsonObject>
 #include <QList>
@@ -9,10 +9,12 @@
 
 namespace scopeone::core
 {
+    // A library ScopeOne discovers and loads: a built-in processing plugin, or a driver that
+    // ScopeOne_DriverHost loads for its device
     enum class PluginKind
     {
         Processing,
-        Hardware
+        Driver
     };
 
     struct PluginManifest
@@ -36,20 +38,21 @@ namespace scopeone::core
     };
 
     inline constexpr int ScopeOneProcessingPluginApiVersion = 2;
-    inline constexpr int ScopeOneHardwarePluginApiVersion = 1;
+    inline constexpr int ScopeOneDriverApiVersion = 1;
 
-    SCOPEONE_SDK_EXPORT QString pluginKindName(PluginKind kind);
-    SCOPEONE_SDK_EXPORT int pluginApiVersion(PluginKind kind);
-    SCOPEONE_SDK_EXPORT QString pluginDirectoryName(PluginKind kind);
-    SCOPEONE_SDK_EXPORT QStringList pluginInterfaceIds(PluginKind kind);
-    SCOPEONE_SDK_EXPORT QStringList pluginDirectories(PluginKind kind);
-    SCOPEONE_SDK_EXPORT QString pluginSettingsKey(const QString& pluginId,
+    SCOPEONE_CORE_EXPORT QString pluginKindName(PluginKind kind);
+    SCOPEONE_CORE_EXPORT int pluginApiVersion(PluginKind kind);
+    // The directory of the kind relative to the application or the user data directory
+    SCOPEONE_CORE_EXPORT QString pluginDirectoryName(PluginKind kind);
+    SCOPEONE_CORE_EXPORT QStringList pluginInterfaceIds(PluginKind kind);
+    SCOPEONE_CORE_EXPORT QStringList pluginDirectories(PluginKind kind);
+    SCOPEONE_CORE_EXPORT QString pluginSettingsKey(const QString& pluginId,
                                                   const QString& name);
-    SCOPEONE_SDK_EXPORT bool pluginEnabled(const PluginManifest& manifest);
-    SCOPEONE_SDK_EXPORT QList<DiscoveredPlugin> discoverPlugins(
+    SCOPEONE_CORE_EXPORT bool pluginEnabled(const PluginManifest& manifest);
+    SCOPEONE_CORE_EXPORT QList<DiscoveredPlugin> discoverPlugins(
         PluginKind kind,
         const QStringList& directories = {});
-    SCOPEONE_SDK_EXPORT bool parsePluginManifest(const QJsonObject& metadata,
+    SCOPEONE_CORE_EXPORT bool parsePluginManifest(const QJsonObject& metadata,
                                                   PluginKind expectedKind,
                                                   PluginManifest& manifest,
                                                   QString* errorMessage = nullptr);

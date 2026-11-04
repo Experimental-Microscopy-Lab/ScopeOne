@@ -2,7 +2,7 @@
 
 #include "scopeone/PluginManifest.h"
 #include "scopeone/DaqDevice.h"
-#include "scopeone/DriverHostProviderPlugin.h"
+#include "scopeone/Driver.h"
 #include "scopeone/ProcessingPlugin.h"
 #include "scopeone/SignalSource.h"
 #include "scopeone/ScopeOneCore.h"
@@ -40,22 +40,22 @@ namespace scopeone::ui
         {
             QList<DiscoveredPlugin> plugins = scopeone::core::discoverPlugins(
                 scopeone::core::PluginKind::Processing);
-            plugins.append(scopeone::core::discoverPlugins(scopeone::core::PluginKind::Hardware));
+            plugins.append(scopeone::core::discoverPlugins(scopeone::core::PluginKind::Driver));
             return plugins;
         }
     }
 
-    QStringList loadConfiguredHardwarePlugins(scopeone::core::ScopeOneCore& core)
+    QStringList loadConfiguredDrivers(scopeone::core::ScopeOneCore& core)
     {
         QStringList errors;
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         for (const DiscoveredPlugin& plugin : discoverPlugins())
         {
-            if (plugin.expectedKind != scopeone::core::PluginKind::Hardware)
+            if (plugin.expectedKind != scopeone::core::PluginKind::Driver)
             {
                 continue;
             }
-            if (plugin.interfaceId != QStringLiteral(ScopeOneDriverHostProviderPlugin_iid))
+            if (plugin.interfaceId != QStringLiteral(ScopeOneDriver_iid))
             {
                 continue;
             }
@@ -77,7 +77,7 @@ namespace scopeone::ui
                                            .toString().trimmed();
             if (providerId != id)
             {
-                errors.append(QStringLiteral("%1: providerId must match plugin id")
+                errors.append(QStringLiteral("%1: providerId must match the driver id")
                                   .arg(QFileInfo(plugin.path).fileName()));
                 continue;
             }
@@ -97,7 +97,7 @@ namespace scopeone::ui
     PluginManagerDialog::PluginManagerDialog(QWidget* parent)
         : QDialog(parent)
     {
-        setWindowTitle(tr("Plugin Manager"));
+        setWindowTitle(tr("Drivers and Plugins"));
         resize(900, 600);
 
         auto* layout = new QVBoxLayout(this);
@@ -113,13 +113,13 @@ namespace scopeone::ui
         m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
         layout->addWidget(m_table, 1);
 
-        layout->addWidget(new QLabel(tr("Plugin metadata and diagnostics"), this));
+        layout->addWidget(new QLabel(tr("Metadata and diagnostics"), this));
         m_detailsEdit = new QPlainTextEdit(this);
         m_detailsEdit->setReadOnly(true);
         m_detailsEdit->setMaximumHeight(160);
         layout->addWidget(m_detailsEdit);
 
-        layout->addWidget(new QLabel(tr("Hardware options (JSON)"), this));
+        layout->addWidget(new QLabel(tr("Driver options (JSON)"), this));
         m_optionsEdit = new QPlainTextEdit(this);
         m_optionsEdit->setMaximumHeight(100);
         m_optionsEdit->setPlaceholderText(QStringLiteral("{}"));
@@ -127,10 +127,10 @@ namespace scopeone::ui
 
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Close,
                                              this);
-        auto* installButton = buttons->addButton(tr("Install..."), QDialogButtonBox::ActionRole);
+        auto* installButton = buttons->addButton(tr("Install Driver..."), QDialogButtonBox::ActionRole);
         layout->addWidget(buttons);
         connect(buttons->button(QDialogButtonBox::Save), &QPushButton::clicked,
-                this, &PluginManagerDialog::saveHardwareSettings);
+                this, &PluginManagerDialog::saveSettings);
         connect(installButton, &QPushButton::clicked,
                 this, &PluginManagerDialog::installPlugin);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -147,7 +147,7 @@ namespace scopeone::ui
         for (int row = 0; row < plugins.size(); ++row)
         {
             const DiscoveredPlugin& plugin = plugins.at(row);
-            const bool hardware = plugin.expectedKind == scopeone::core::PluginKind::Hardware;
+            const bool driver = plugin.expectedKind == scopeone::core::PluginKind::Driver;
             auto* enabled = new QTableWidgetItem();
             enabled->setData(kIdRole, plugin.manifest.id);
             enabled->setData(kKindRole, static_cast<int>(plugin.expectedKind));
@@ -156,7 +156,7 @@ namespace scopeone::ui
             enabled->setData(
                 kMetadataRole,
                 QString::fromUtf8(QJsonDocument(plugin.metadata).toJson(QJsonDocument::Indented)));
-            if (hardware && plugin.error.isEmpty())
+            if (driver && plugin.error.isEmpty())
             {
                 enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable);
                 const QString key = scopeone::core::pluginSettingsKey(
@@ -201,11 +201,11 @@ namespace scopeone::ui
             item->data(kMetadataRole).toString()
             + QStringLiteral("\n\n")
             + tr("Status: %1").arg(status));
-        const bool hardware = kind == scopeone::core::PluginKind::Hardware
+        const bool driver = kind == scopeone::core::PluginKind::Driver
                               && !id.isEmpty()
                               && status == tr("Ready");
-        m_optionsEdit->setEnabled(hardware);
-        if (!hardware)
+        m_optionsEdit->setEnabled(driver);
+        if (!driver)
         {
             m_optionsEdit->clear();
             return;
@@ -221,46 +221,42 @@ namespace scopeone::ui
     void PluginManagerDialog::installPlugin()
     {
         const QString sourceDirectory = QFileDialog::getExistingDirectory(
-            this, tr("Install Plugin Package"));
+            this, tr("Install Driver"));
         if (sourceDirectory.isEmpty())
         {
             return;
         }
 
+        // Only drivers are installed here. Native processing plugins come with ScopeOne, and
+        // ScopeOne does not load them from the user directory.
+        const scopeone::core::PluginKind kind = scopeone::core::PluginKind::Driver;
         QList<scopeone::core::DiscoveredPlugin> candidates;
-        scopeone::core::PluginKind kind = scopeone::core::PluginKind::Processing;
-        for (const auto candidateKind : {scopeone::core::PluginKind::Processing,
-                                         scopeone::core::PluginKind::Hardware})
+        for (const auto& candidate : scopeone::core::discoverPlugins(kind, {sourceDirectory}))
         {
-            for (const auto& candidate :
-                 scopeone::core::discoverPlugins(candidateKind, {sourceDirectory}))
+            if (candidate.error.isEmpty())
             {
-                if (candidate.error.isEmpty())
-                {
-                    candidates.append(candidate);
-                    kind = candidateKind;
-                }
+                candidates.append(candidate);
             }
         }
         if (candidates.size() != 1)
         {
-            QMessageBox::warning(this, tr("Plugin Manager"),
-                                 tr("A plugin package must contain one plugin library."));
+            QMessageBox::warning(this, tr("Drivers and Plugins"),
+                                 tr("The folder must contain one driver library."));
             return;
         }
 
         QDir userRoot(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
         const QString pluginDirectory = userRoot.filePath(
-            QStringLiteral("plugins/%1").arg(scopeone::core::pluginDirectoryName(kind)));
+            scopeone::core::pluginDirectoryName(kind));
         if (!QDir().mkpath(pluginDirectory))
         {
-            QMessageBox::warning(this, tr("Plugin Manager"), tr("The plugin directory could not be created."));
+            QMessageBox::warning(this, tr("Drivers and Plugins"), tr("The install directory could not be created."));
             return;
         }
         if (QFileInfo(sourceDirectory).canonicalFilePath()
             == QFileInfo(pluginDirectory).canonicalFilePath())
         {
-            QMessageBox::information(this, tr("Plugin Manager"), tr("This plugin is already installed."));
+            QMessageBox::information(this, tr("Drivers and Plugins"), tr("This is already installed."));
             return;
         }
         for (const QFileInfo& source : QDir(sourceDirectory).entryInfoList(QDir::Files))
@@ -269,17 +265,17 @@ namespace scopeone::ui
             QFile::remove(destination);
             if (!QFile::copy(source.absoluteFilePath(), destination))
             {
-                QMessageBox::warning(this, tr("Plugin Manager"),
-                                     tr("The plugin package could not be installed."));
+                QMessageBox::warning(this, tr("Drivers and Plugins"),
+                                     tr("The files could not be installed."));
                 return;
             }
         }
         refreshPlugins();
-        QMessageBox::information(this, tr("Plugin Manager"),
-                                 tr("The plugin will be available after ScopeOne restarts."));
+        QMessageBox::information(this, tr("Drivers and Plugins"),
+                                 tr("It will be available after ScopeOne restarts."));
     }
 
-    void PluginManagerDialog::saveHardwareSettings()
+    void PluginManagerDialog::saveSettings()
     {
         const int row = m_table->currentRow();
         if (row < 0)
@@ -290,7 +286,7 @@ namespace scopeone::ui
         const auto kind = static_cast<scopeone::core::PluginKind>(item->data(kKindRole).toInt());
         const QString id = item->data(kIdRole).toString();
         QVariantMap selectedOptions;
-        if (kind == scopeone::core::PluginKind::Hardware && !id.isEmpty())
+        if (kind == scopeone::core::PluginKind::Driver && !id.isEmpty())
         {
             QJsonParseError parseError;
             QByteArray optionJson = m_optionsEdit->toPlainText().trimmed().toUtf8();
@@ -301,7 +297,7 @@ namespace scopeone::ui
             const QJsonDocument options = QJsonDocument::fromJson(optionJson, &parseError);
             if (parseError.error != QJsonParseError::NoError || !options.isObject())
             {
-                QMessageBox::warning(this, tr("Plugin Manager"), tr("Hardware options must be a JSON object."));
+                QMessageBox::warning(this, tr("Drivers and Plugins"), tr("Driver options must be a JSON object."));
                 return;
             }
             selectedOptions = options.object().toVariantMap();
@@ -314,19 +310,19 @@ namespace scopeone::ui
             const auto pluginKind = static_cast<scopeone::core::PluginKind>(
                 pluginItem->data(kKindRole).toInt());
             const QString pluginId = pluginItem->data(kIdRole).toString();
-            if (pluginKind == scopeone::core::PluginKind::Hardware && !pluginId.isEmpty())
+            if (pluginKind == scopeone::core::PluginKind::Driver && !pluginId.isEmpty())
             {
                 settings.setValue(scopeone::core::pluginSettingsKey(
                                       pluginId, QStringLiteral("enabled")),
                                   pluginItem->checkState() == Qt::Checked);
             }
         }
-        if (kind == scopeone::core::PluginKind::Hardware && !id.isEmpty())
+        if (kind == scopeone::core::PluginKind::Driver && !id.isEmpty())
         {
             settings.setValue(scopeone::core::pluginSettingsKey(
                                   id, QStringLiteral("options")), selectedOptions);
         }
-        QMessageBox::information(this, tr("Plugin Manager"),
-                                 tr("Plugin settings will take effect after ScopeOne restarts."));
+        QMessageBox::information(this, tr("Drivers and Plugins"),
+                                 tr("The settings will take effect after ScopeOne restarts."));
     }
 }

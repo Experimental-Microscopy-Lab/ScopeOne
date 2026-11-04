@@ -1,10 +1,10 @@
-// A hardware plugin written the way a camera maker would write one. It uses only the headers of
-// scopeone::HardwarePluginSDK. Where a real plugin calls its vendor SDK, this one renders the test
+// A driver written the way a camera maker would write one. It uses only the headers of
+// scopeone::DriverSDK. Where a real driver calls its vendor SDK, this one renders the test
 // patterns of TestPatterns.h on an acquisition thread, as a vendor SDK delivers frames from a
 // thread of its own.
 #include "TestPatterns.h"
 
-#include "scopeone/HardwarePluginSDK.h"
+#include "scopeone/DriverSDK.h"
 
 #include <QMutex>
 #include <QMutexLocker>
@@ -252,7 +252,7 @@ namespace example_camera
         std::thread m_thread;
     };
 
-    // One provider that offers several cameras, as the plugin of a camera maker does when its SDK
+    // One provider that offers several cameras, as the driver of a camera maker does when its SDK
     // finds several. ScopeOne addresses each camera by its id.
     class MultiCameraProvider final : public HardwareProvider, public CameraProvider
     {
@@ -564,12 +564,12 @@ namespace example_camera
         bool m_lastPreviewState{false};
     };
 
-    class ExampleCameraPlugin final : public QObject,
-                                        public scopeone::core::DriverHostProviderPlugin
+    class ExampleCameraDriver final : public QObject,
+                                        public scopeone::core::Driver
     {
         Q_OBJECT
-        Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "scopeone_plugin.json")
-        Q_INTERFACES(scopeone::core::DriverHostProviderPlugin)
+        Q_PLUGIN_METADATA(IID ScopeOneDriver_iid FILE "scopeone_driver.json")
+        Q_INTERFACES(scopeone::core::Driver)
 
     public:
         QString providerId() const override
@@ -601,4 +601,4 @@ namespace example_camera
     };
 }
 
-#include "ExampleCameraPlugin.moc"
+#include "ExampleCameraDriver.moc"

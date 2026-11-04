@@ -1,0 +1,9 @@
+{
+  "id": "example.pmt",
+  "name": "Example PMT",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "driver",
+  "providerId": "example.pmt",
+  "autoLoad": false
+}

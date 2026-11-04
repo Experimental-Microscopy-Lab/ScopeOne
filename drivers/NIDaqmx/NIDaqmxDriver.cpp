@@ -1,19 +1,28 @@
-#include "internal/NIDaqmx.h"
+// The driver for National Instruments DAQ devices. It loads the NI-DAQmx runtime when
+// DriverHost starts it, so ScopeOne itself never loads the vendor library, and it runs the
+// timed tasks of a DAQ session: scan waveforms and clocks out, analog and digital inputs read
+// continuously on a thread of their own.
+#include "scopeone/DriverSDK.h"
 
-#include <QMetaObject>
+#include <QHash>
 #include <QLibrary>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QObject>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
 
-namespace scopeone::core::internal
+namespace ni_daqmx
 {
     using namespace scopeone::core;
 
@@ -298,22 +307,27 @@ namespace scopeone::core::internal
                        : QStringLiteral("/%1/%2").arg(device, value);
         }
 
-        class NIDaqmxController final : public DaqController
+        // One DAQ device and the tasks of its session
+        class NIDaqmxController final
         {
         public:
-            explicit NIDaqmxController(QString device, QObject* parent)
-                : DaqController(parent)
-                  , m_device(std::move(device))
+            using InputSink = std::function<void(const DaqInputChunk&)>;
+            using StateSink = std::function<void(DaqState, const QString&)>;
+
+            NIDaqmxController(QString device, InputSink input, StateSink state)
+                : m_device(std::move(device))
+                  , m_input(std::move(input))
+                  , m_stateSink(std::move(state))
             {
             }
 
-            ~NIDaqmxController() override
+            ~NIDaqmxController()
             {
-                stop();
+                releaseHardware();
             }
 
             bool start(const DaqSessionConfig& config,
-                       QString* errorMessage) override
+                       QString* errorMessage)
             {
                 if (m_state == DaqState::Armed || m_state == DaqState::Running)
                 {
@@ -323,6 +337,8 @@ namespace scopeone::core::internal
                     }
                     return false;
                 }
+                // A read error ends the reader and leaves the tasks of that session to be cleared here
+                releaseHardware();
 
                 QString loadError;
                 if (!m_api.load(true, &loadError))
@@ -394,23 +410,13 @@ namespace scopeone::core::internal
                 return true;
             }
 
-            void stop() override
+            void stop()
             {
                 releaseHardware();
                 if (m_state != DaqState::Idle)
                 {
                     emitState(DaqState::Idle, QStringLiteral("DAQ device is idle"));
                 }
-            }
-
-            DaqState state() const override
-            {
-                return m_state.load();
-            }
-
-            QString stateMessage() const override
-            {
-                return m_message;
             }
 
         private:
@@ -744,7 +750,7 @@ namespace scopeone::core::internal
                         if (samplesRead > 0)
                         {
                             task.nextSample += static_cast<quint64>(samplesRead);
-                            emit inputDataReady(chunk);
+                            m_input(chunk);
                         }
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -771,15 +777,11 @@ namespace scopeone::core::internal
                 m_routes.clear();
             }
 
+            // Runs on the reader thread, which cannot join itself, so the tasks are cleared on the next start or stop
             void reportReadError(const QString& message)
             {
-                QMetaObject::invokeMethod(this, [this, message]()
-                {
-                    if (m_state == DaqState::Armed || m_state == DaqState::Running)
-                    {
-                        fail(message, nullptr);
-                    }
-                }, Qt::QueuedConnection);
+                m_reading.store(false);
+                emitState(DaqState::Error, message);
             }
 
             bool fail(const QString& message, QString* errorMessage)
@@ -790,25 +792,24 @@ namespace scopeone::core::internal
                     *errorMessage = message;
                 }
                 emitState(DaqState::Error, message);
-                emit controllerError(message);
                 return false;
             }
 
             void emitState(DaqState state, const QString& message)
             {
                 m_state = state;
-                m_message = message;
-                emit stateChanged(state, message);
+                m_stateSink(state, message);
             }
 
             QString m_device;
+            InputSink m_input;
+            StateSink m_stateSink;
             DaqmxApi m_api;
             std::vector<ActiveTask> m_tasks;
             std::vector<std::pair<QByteArray, QByteArray>> m_routes;
             std::atomic_bool m_reading{false};
             std::thread m_reader;
             std::atomic<DaqState> m_state{DaqState::Idle};
-            QString m_message{QStringLiteral("DAQ device is idle")};
         };
 
         void appendChannels(DaqDeviceDescriptor& descriptor,
@@ -822,10 +823,10 @@ namespace scopeone::core::internal
         }
     }
 
-    QList<DaqDeviceDescriptor> NIDaqmxDeviceFactory::devices() const
+    QList<DaqDeviceDescriptor> findDevices(QString* errorMessage)
     {
         DaqmxApi api;
-        if (!api.load(false))
+        if (!api.load(false, errorMessage))
         {
             return {};
         }
@@ -864,10 +865,125 @@ namespace scopeone::core::internal
         return result;
     }
 
-    DaqController* NIDaqmxDeviceFactory::createController(const QString& deviceId,
-                                                    QObject* parent)
+
+    class NIDaqmxProvider final : public HardwareProvider, public DaqProvider
     {
-        const QString device = nativeDeviceId(deviceId.trimmed());
-        return new NIDaqmxController(device, parent);
-    }
+    public:
+        explicit NIDaqmxProvider(QList<DaqDeviceDescriptor> devices)
+            : m_devices(std::move(devices))
+        {
+        }
+
+        HardwareProviderDescriptor descriptor() const override
+        {
+            return {QStringLiteral("scopeone.nidaqmx"), QStringLiteral("NI-DAQmx"), QStringLiteral("1.0.0")};
+        }
+
+        // The DAQ devices are listed as DAQ devices, not as devices with properties
+        QList<HardwareDeviceDescriptor> devices() const override
+        {
+            return {};
+        }
+
+        QList<DaqDeviceDescriptor> daqDevices() const override
+        {
+            return m_devices;
+        }
+
+        void setDaqSinks(InputSink input, StateSink state) override
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_inputSink = std::move(input);
+            m_stateSink = std::move(state);
+        }
+
+        bool startDaq(const DaqSessionConfig& config, QString* errorMessage) override
+        {
+            NIDaqmxController* const device = controller(config.deviceId);
+            if (!device)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Unknown DAQ device %1").arg(config.deviceId);
+                }
+                return false;
+            }
+            return device->start(config, errorMessage);
+        }
+
+        void stopDaq(const QString& deviceId) override
+        {
+            if (NIDaqmxController* const device = m_controllers.value(deviceId).get())
+            {
+                device->stop();
+            }
+        }
+
+    private:
+        NIDaqmxController* controller(const QString& deviceId)
+        {
+            if (const auto existing = m_controllers.value(deviceId))
+            {
+                return existing.get();
+            }
+            const bool known = std::any_of(m_devices.cbegin(), m_devices.cend(),
+                                           [&deviceId](const DaqDeviceDescriptor& device)
+                                           {
+                                               return device.id == deviceId;
+                                           });
+            if (!known)
+            {
+                return nullptr;
+            }
+            auto created = std::make_shared<NIDaqmxController>(
+                nativeDeviceId(deviceId),
+                [this](const DaqInputChunk& chunk)
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    if (m_inputSink) m_inputSink(chunk);
+                },
+                [this, deviceId](DaqState state, const QString& message)
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    if (m_stateSink) m_stateSink(deviceId, state, message);
+                });
+            m_controllers.insert(deviceId, created);
+            return created.get();
+        }
+
+        QList<DaqDeviceDescriptor> m_devices;
+        QHash<QString, std::shared_ptr<NIDaqmxController>> m_controllers;
+        QMutex m_sinkMutex;
+        InputSink m_inputSink;
+        StateSink m_stateSink;
+    };
+
+    class NIDaqmxDriver final : public QObject, public Driver
+    {
+        Q_OBJECT
+        Q_PLUGIN_METADATA(IID ScopeOneDriver_iid FILE "scopeone_driver.json")
+        Q_INTERFACES(scopeone::core::Driver)
+
+    public:
+        QString providerId() const override
+        {
+            return QStringLiteral("scopeone.nidaqmx");
+        }
+
+        // Fails when the NI-DAQmx runtime is not installed, so the driver can be turned off under Drivers and Plugins
+        HardwareProviderPtr createProvider(const QJsonObject&, QString* errorMessage) override
+        {
+            QString error;
+            QList<DaqDeviceDescriptor> devices = findDevices(&error);
+            if (!error.isEmpty())
+            {
+                if (errorMessage) *errorMessage = error;
+                return {};
+            }
+            if (errorMessage) errorMessage->clear();
+            return std::make_shared<NIDaqmxProvider>(std::move(devices));
+        }
+    };
 }
+
+#include "NIDaqmxDriver.moc"

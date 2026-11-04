@@ -5,73 +5,17 @@ extension does not take ScopeOne down.
 
 | Extension | You write | Runs in | Example |
 |---|---|---|---|
-| Hardware plugin | a `DriverHostProviderPlugin` in C++ against `scopeone::HardwarePluginSDK` | `ScopeOne_DriverHost`, one process per device | `hardware/ExampleCamera` |
+| Driver | a `Driver` in C++ against `scopeone::DriverSDK` | `ScopeOne_DriverHost`, one process per device | `drivers/ExampleCamera`, `drivers/ExamplePmt` |
 | Python processing module | a decorated Python function | its own Python process | `ScopeOneCore/python/scopeone/examples/processing_offset.py` |
 
-The CUDA and ONNX processing modules in `ScopeOneCuda` and `ScopeOneInference` are built-in plugins,
-built and released with ScopeOne, because they link CUDA and ONNX Runtime. Their interface,
-`scopeone/ProcessingPlugin.h`, changes with ScopeOne and is not meant for code outside this
-repository. Everything else, including the tool windows and the DAQ and signal source devices, is
-part of ScopeOne itself.
-
-## Hardware plugins
-
-A hardware plugin implements `DriverHostProviderPlugin` and returns a `HardwareProvider` with the
-capabilities its devices have (camera, stage, shutter, state, configuration). The headers it may
-use are the ones `scopeone/HardwarePluginSDK.h` includes. ScopeOne starts one `ScopeOne_DriverHost`
-for each device, the host loads the plugin library, and from then on ScopeOne only exchanges
-messages and frames with the host.
-
-Build and install ScopeOneCore first (`scripts/build-unix.sh` or `scripts\build.ps1`). A hardware
-plugin is then a separate CMake project:
-
-```cmake
-cmake_minimum_required(VERSION 3.23)
-project(MyCamera LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_AUTOMOC ON)
-
-find_package(Qt6 REQUIRED COMPONENTS Core)
-find_package(ScopeOneCore CONFIG REQUIRED)
-
-add_library(MyCamera MODULE MyCamera.cpp plugin.json)
-target_link_libraries(MyCamera PRIVATE scopeone::HardwarePluginSDK Qt6::Core)
-scopeone_add_plugin(MyCamera hardware)
-```
-
-Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that ScopeOne uses
-(`vcpkg_installed/<triplet>`).
-
-`plugin.json` sits beside `CMakeLists.txt`:
-
-```json
-{
-  "id": "my.camera",
-  "name": "My Camera",
-  "version": "1.0.0",
-  "scopeOneApi": 1,
-  "kind": "hardware",
-  "providerId": "my.camera",
-  "autoLoad": false
-}
-```
-
-`scopeOneApi` is `ScopeOneHardwarePluginApiVersion` in `scopeone/PluginManifest.h`.
-`scopeone_add_plugin` writes `scopeone_plugin.json` from it with the Core version added, and the
-plugin names that file:
-
-```cpp
-Q_PLUGIN_METADATA(IID ScopeOneDriverHostProviderPlugin_iid FILE "scopeone_plugin.json")
-```
-
-The plugin library is loaded by `ScopeOne_DriverHost`, which links the same Core and Qt as
-ScopeOne, so a hardware plugin is built with the same compiler, Qt and Core release
-(`MAJOR.MINOR` of `VERSION`). ScopeOne refuses a plugin built against another release and names
-the release it needs.
-
-Copy the built library into `plugins/hardware/` beside the ScopeOne executable, or install it with
-**Tools > Plugin Manager**, which puts it in the user's application data directory. Hardware
-plugins are enabled and configured in the Plugin Manager and take effect after a restart.
+Drivers have their own folder and guide, [drivers/README.md](../drivers/README.md). This folder
+builds the drivers together with the CUDA and ONNX processing modules in `ScopeOneCuda` and
+`ScopeOneInference`. Those two are built-in plugins, built and released with ScopeOne, because
+they link CUDA and ONNX Runtime. Their interface, `scopeone/ProcessingPlugin.h`, changes with
+ScopeOne and is not meant for code outside this repository, and ScopeOne loads native
+processing plugins only from `plugins/processing` beside the executable, never from the user's
+directory. Everything else, including the tool
+windows and the PTU file reader, is part of ScopeOne itself.
 
 ## Python processing modules
 

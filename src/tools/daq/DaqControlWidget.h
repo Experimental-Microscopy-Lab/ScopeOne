@@ -33,6 +33,7 @@ namespace scopeone::ui
     private:
         scopeone::core::DaqDeviceDescriptor currentDevice() const;
         QStringList terminalChoices(const scopeone::core::DaqDeviceDescriptor& device) const;
+        void refreshDeviceList();
         void refreshDevice();
         void addPulseRow();
         void addBufferedRow();

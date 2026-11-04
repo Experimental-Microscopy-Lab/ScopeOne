@@ -2,14 +2,14 @@
 
 #include "scopeone/ImageFrame.h"
 #include "scopeone/SignalSource.h"
-#include "scopeone/scopeone_sdk_export.h"
+#include "scopeone/scopeone_core_export.h"
 
 #include <QList>
 #include <QVector>
 
 namespace scopeone::core
 {
-    class SCOPEONE_SDK_EXPORT ScanImageAssembler final
+    class SCOPEONE_CORE_EXPORT ScanImageAssembler final
     {
     public:
         explicit ScanImageAssembler(const QString& sourceId,

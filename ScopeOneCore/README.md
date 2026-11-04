@@ -8,7 +8,8 @@ The desktop app consumes `ScopeOneCore` through its installed CMake package.
 
 ```text
 ScopeOneCore/
-|-- include/scopeone/   Core facade, public models and the hardware plugin contract
+|-- include/scopeone/   Core facade and public models used by the app and the built-in plugins
+|-- sdk/                Driver SDK: its headers and the small library behind them
 |-- internal/           Private headers used only while building ScopeOneCore
 |-- src/                C++ implementations for both public and private types
 |-- python/scopeone/    External Python client for a running ScopeOne app
@@ -18,12 +19,14 @@ ScopeOneCore/
 `-- install/            Generated local installation consumed by the desktop app
 ```
 
-`include/scopeone` contains the Core facade, Core-owned public models and the plugin contracts:
+`include/scopeone` contains the Core facade, Core-owned public models and the processing plugin contract:
 
 ```cpp
 #include <scopeone/ScopeOneCore.h>
-#include <scopeone/ImageFrame.h>
+#include <scopeone/ExperimentDocument.h>
 ```
+
+`sdk/include/scopeone` contains the driver contract and the types it carries, such as `Driver`, `HardwareProvider`, `CameraProvider`, `SignalSourceProvider`, `DaqProvider` and `ImageFrame`. These headers keep the `scopeone/` include prefix. They build the `ScopeOneDriverSDK` library (`scopeone::DriverSDK`), which Core links publicly. A driver links only that target, so it sees neither the other Core headers nor the Core library, and on Linux it is linked with `--no-undefined`. An SDK header includes only Qt and other SDK headers.
 
 `internal` contains implementation contracts between Core managers, processing modules and DriverHost. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
 
@@ -31,7 +34,8 @@ ScopeOneCore/
 
 Use this placement rule:
 
-- Put every public Core model and plugin contract in `ScopeOneCore/include/scopeone`.
+- Put what drivers are written against in `ScopeOneCore/sdk`, and keep it small.
+- Put every other public Core model and contract in `ScopeOneCore/include/scopeone`.
 - Put a Core-only manager, algorithm or protocol detail in `internal`.
 - Put executable implementation in `src`.
 - Keep desktop widgets and Qt UI behavior in the top-level ScopeOne `src` directory, outside `ScopeOneCore`.
@@ -43,8 +47,8 @@ Use this placement rule:
 | Namespace | Purpose | Examples |
 |---|---|---|
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ExperimentDocument`, `ImageSceneModel` |
-| `scopeone::core` hardware plugin contract | Stable types of `HardwarePluginSDK.h` | `ImageFrame`, `CameraProvider`, `HardwareProvider`, `DriverHostProviderPlugin` |
-| `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `CameraManager`, `MMCoreManager`, `RecordingManager`, `IscatModule`, `NIDaqmxDeviceFactory` |
+| `scopeone::core` driver contract | Stable types of `DriverSDK.h` | `Driver`, `HardwareProvider`, `CameraProvider`, `SignalSourceProvider`, `DaqProvider`, `ImageFrame` |
+| `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `CameraManager`, `MMCoreManager`, `RecordingManager`, `IscatModule`, `SignalSourceManager` |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `DhmTool`, `ToolRegistry` |
 | `scopeone::plugins::<name>` | The CUDA processing plugin. The ONNX plugin stays in `scopeone::inference`, the namespace of its library | `scopeone::plugins::cuda` |
@@ -90,37 +94,37 @@ Outputs:
 - `build/Release/ScopeOneCore.dll`
 - `build/Release/ScopeOneCore.lib`
 - `build/Release/ScopeOne_DriverHost.exe`
-- External plugins are built under `plugins`.
+- Drivers and the CUDA and ONNX plugins are built by the `plugins` project.
 - `build/ScopeOneCoreConfig.cmake`
 - `install/bin/ScopeOneCore.dll`
 - `install/bin/ScopeOne_DriverHost.exe`
-- Hardware plugins are installed under `plugins/hardware`, and the CUDA and ONNX processing plugins under `plugins/processing`.
+- Drivers are installed under `drivers`, and the CUDA and ONNX processing plugins under `plugins/processing`.
 - `install/lib/cmake/ScopeOneCore/ScopeOneCoreConfig.cmake`
 
 
 ## Core and SDK API
 
-The installed headers in `include/scopeone` are the source of truth for the public API:
+The installed headers in `include/scopeone` and `include/sdk/scopeone` are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
 - `ProcessingPipeline.h`, `ExperimentDocument.h` and `ImageSceneModel.h` are Core-owned runtime models and services.
-- `HardwarePluginSDK.h` includes the headers of the public hardware plugin contract: `CameraProvider.h`, `DriverHostProviderPlugin.h`, `HardwareCapabilities.h`, `HardwareProvider.h`, `HardwareTypes.h`, `ImageFrame.h` and `PluginManifest.h`. The `scopeone::HardwarePluginSDK` CMake target provides them.
+- `DriverSDK.h` includes the headers of the public driver contract: `CameraProvider.h`, `DaqDevice.h`, `DaqProvider.h`, `Driver.h`, `HardwareCapabilities.h`, `HardwareProvider.h`, `HardwareTypes.h`, `ImageFrame.h`, `SignalSource.h` and `SignalSourceProvider.h`. The `scopeone::DriverSDK` CMake target provides them.
 - `ProcessingPlugin.h` is the interface of the CUDA and ONNX processing plugins. It is internal to this repository.
-- `DaqDevice.h`, `SignalSource.h`, `ScanImageAssembler.h`, `SharedFrame.h` and `DhmReconstruction.h` serve the application and are not plugin contracts.
+- `PluginManifest.h` is how ScopeOne discovers and enables drivers and plugins. `ScanImageAssembler.h`, `SharedFrame.h` and `DhmReconstruction.h` serve the application. None of them are driver contracts.
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
-Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Core loads a hardware plugin with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Core loads a driver with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
 
-## Plugin Boundaries
+## Driver and Plugin Boundaries
 
-- `plugins/hardware` contains native `HardwareProvider` modules. Each provider runs in an isolated DriverHost process. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne plugins.
+- `drivers` contains the drivers, among them NI-DAQmx and the example camera and PMT. Each provider runs in an isolated DriverHost process, so a vendor library such as NI-DAQmx is never loaded into ScopeOne. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne drivers.
 - Python processing modules are scripts in the `python` folder of a processing plugin directory. Core runs each module of a pipeline in its own Python process.
-- The CUDA and ONNX processing modules are processing plugins, because they link CUDA and ONNX Runtime, which Core does not. Every other processing method, the NI-DAQmx device, the PTU file and simulated PMT signal sources and the DHM reconstruction are part of Core.
+- The CUDA and ONNX processing modules are processing plugins, because they link CUDA and ONNX Runtime, which Core does not. Every other processing method, the PTU file signal source and the DHM reconstruction are part of Core.
 - The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ScopeOneToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
 
-Hardware plugins outside this repository consume the exported `scopeone::HardwarePluginSDK` CMake target. Every plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; the processing and hardware contracts are versioned independently and incompatible manifests are rejected before the plugin instance is created.
+Drivers outside this repository consume the exported `scopeone::DriverSDK` CMake target. Every driver and plugin manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`; the processing and driver contracts are versioned independently and incompatible manifests are rejected before the library instance is created.
 
 ## Processing Data Flow
 

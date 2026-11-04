@@ -79,9 +79,9 @@ ScopeOne/
       ScopeWriter/
 ```
 
-### Plugin layout
+### Drivers and plugins
 
-ScopeOne has two public extension points, hardware plugins and Python processing modules, and both run outside the ScopeOne process. Hardware plugins are loaded from `plugins/hardware` by `ScopeOne_DriverHost`, one process per device, and Python modules from `plugins/processing/python`. The CUDA and ONNX processing plugins are built and released with ScopeOne. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [plugins/README.md](plugins/README.md) explains how to write, build and install an extension.
+ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `plugins/processing/python`. The CUDA and ONNX processing plugins are built and released with ScopeOne. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [plugins/README.md](plugins/README.md) how to write a Python processing module.
 
 **Windows Build Steps:**
 

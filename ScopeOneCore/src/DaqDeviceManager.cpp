@@ -1,21 +1,14 @@
 #include "internal/DaqDeviceManager.h"
 
-#include "internal/NIDaqmx.h"
+#include "internal/HardwareRuntime.h"
+
+#include <QDebug>
+#include <QPointer>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
-
-namespace scopeone::core
-{
-    DaqController::DaqController(QObject* parent)
-        : QObject(parent)
-    {
-    }
-
-    DaqController::~DaqController() = default;
-}
 
 namespace scopeone::core::internal
 {
@@ -79,27 +72,24 @@ namespace scopeone::core::internal
         }
     }
 
-    DaqDeviceManager::DaqDeviceManager(QObject* parent)
+    DaqDeviceManager::DaqDeviceManager(DeviceRegistry* registry, QObject* parent)
         : QObject(parent)
+          , m_registry(registry)
     {
+        connect(m_registry, &DeviceRegistry::changed, this, &DaqDeviceManager::refreshProviderDevices);
+        refreshProviderDevices();
     }
 
     DaqDeviceManager::~DaqDeviceManager()
     {
-        for (const QPointer<DaqController>& controller : std::as_const(m_controllers))
+        for (const HardwareProviderPtr& provider : std::as_const(m_attachedProviders))
         {
-            delete controller.data();
+            detachProvider(provider);
         }
-        m_controllers.clear();
-        m_factories.clear();
     }
 
     QList<DaqDeviceDescriptor> DaqDeviceManager::devices() const
     {
-        if (!m_devicesRegistered)
-        {
-            const_cast<DaqDeviceManager*>(this)->registerDevices();
-        }
         QList<DaqDeviceDescriptor> result = m_descriptors.values();
         std::sort(result.begin(), result.end(),
                   [](const DaqDeviceDescriptor& left,
@@ -113,12 +103,9 @@ namespace scopeone::core::internal
     bool DaqDeviceManager::start(const DaqSessionConfig& config,
                                  QString* errorMessage)
     {
-        if (!m_devicesRegistered)
-        {
-            registerDevices();
-        }
         const QString deviceId = config.deviceId.trimmed();
-        if (!m_descriptors.contains(deviceId))
+        const HardwareProviderPtr provider = m_providerByDevice.value(deviceId);
+        if (!provider)
         {
             if (errorMessage)
             {
@@ -133,96 +120,125 @@ namespace scopeone::core::internal
         {
             expandRasterScan(scan, expanded);
         }
-        DaqController* deviceController = controller(deviceId, errorMessage);
-        return deviceController && deviceController->start(expanded, errorMessage);
+        return dynamic_cast<DaqProvider*>(provider.get())->startDaq(expanded, errorMessage);
     }
 
     void DaqDeviceManager::stop(const QString& deviceId)
     {
-        if (DaqController* deviceController = m_controllers.value(deviceId.trimmed()))
+        const QString id = deviceId.trimmed();
+        if (const HardwareProviderPtr provider = m_providerByDevice.value(id))
         {
-            deviceController->stop();
+            dynamic_cast<DaqProvider*>(provider.get())->stopDaq(id);
         }
     }
 
     DaqState DaqDeviceManager::state(const QString& deviceId) const
     {
-        const QString id = deviceId.trimmed();
-        const QPointer<DaqController> controller = m_controllers.value(id);
-        return controller ? controller->state() : m_states.value(id, DaqState::Idle);
+        return m_states.value(deviceId.trimmed(), DaqState::Idle);
     }
 
     QString DaqDeviceManager::stateMessage(const QString& deviceId) const
     {
-        const QString id = deviceId.trimmed();
-        const QPointer<DaqController> controller = m_controllers.value(id);
-        return controller ? controller->stateMessage()
-                          : m_messages.value(id, QStringLiteral("DAQ device is idle"));
+        return m_messages.value(deviceId.trimmed(), QStringLiteral("DAQ device is idle"));
     }
 
-    void DaqDeviceManager::registerDevices()
+    // Follows the drivers as they are registered and removed, like the signal sources
+    void DaqDeviceManager::refreshProviderDevices()
     {
-        m_devicesRegistered = true;
-        m_factories.push_back(std::make_unique<NIDaqmxDeviceFactory>());
-        for (const std::unique_ptr<DaqDeviceFactory>& factory : m_factories)
+        QHash<QString, HardwareProviderPtr> current;
+        for (const HardwareProviderDescriptor& descriptor : m_registry->providers())
         {
-            for (const DaqDeviceDescriptor& descriptor : factory->devices())
+            const HardwareProviderPtr provider = m_registry->provider(descriptor.id);
+            if (dynamic_cast<DaqProvider*>(provider.get()))
+            {
+                current.insert(descriptor.id, provider);
+            }
+        }
+        bool changed = false;
+        for (auto it = m_attachedProviders.begin(); it != m_attachedProviders.end();)
+        {
+            if (current.value(it.key()) == it.value())
+            {
+                ++it;
+                continue;
+            }
+            detachProvider(it.value());
+            it = m_attachedProviders.erase(it);
+            changed = true;
+        }
+        for (auto it = current.cbegin(); it != current.cend(); ++it)
+        {
+            if (m_attachedProviders.contains(it.key()))
+            {
+                continue;
+            }
+            auto* const daqProvider = dynamic_cast<DaqProvider*>(it.value().get());
+            const QPointer<DaqDeviceManager> self(this);
+            daqProvider->setDaqSinks(
+                [self](const DaqInputChunk& chunk)
+                {
+                    QMetaObject::invokeMethod(self, [self, chunk]() { if (self) emit self->inputDataReady(chunk); },
+                                              Qt::QueuedConnection);
+                },
+                [self](const QString& deviceId, DaqState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(self, [self, deviceId, state, message]()
+                    {
+                        if (self) self->updateState(deviceId, state, message);
+                    }, Qt::QueuedConnection);
+                });
+            for (const DaqDeviceDescriptor& descriptor : daqProvider->daqDevices())
             {
                 const QString deviceId = descriptor.id.trimmed();
                 if (deviceId.isEmpty() || m_descriptors.contains(deviceId))
                 {
+                    qWarning().noquote() << QStringLiteral("Hardware provider %1: invalid or duplicate DAQ device %2")
+                                                .arg(it.key(), descriptor.id);
                     continue;
                 }
                 m_descriptors.insert(deviceId, descriptor);
-                m_factoryByDevice.insert(deviceId, factory.get());
+                m_providerByDevice.insert(deviceId, it.value());
                 m_states.insert(deviceId, DaqState::Idle);
                 m_messages.insert(deviceId, QStringLiteral("DAQ device is idle"));
             }
+            m_attachedProviders.insert(it.key(), it.value());
+            changed = true;
+        }
+        if (changed)
+        {
+            emit devicesChanged();
         }
     }
 
-    DaqController* DaqDeviceManager::controller(const QString& deviceId,
-                                                QString* errorMessage)
+    void DaqDeviceManager::detachProvider(const HardwareProviderPtr& provider)
     {
-        const QString id = deviceId.trimmed();
-        if (DaqController* existing = m_controllers.value(id))
+        dynamic_cast<DaqProvider*>(provider.get())->setDaqSinks({}, {});
+        for (auto it = m_providerByDevice.begin(); it != m_providerByDevice.end();)
         {
-            return existing;
-        }
-        DaqDeviceFactory* factory = m_factoryByDevice.value(id);
-        if (!factory)
-        {
-            if (errorMessage)
+            if (it.value() != provider)
             {
-                *errorMessage = QStringLiteral("Unknown DAQ device: %1").arg(id);
+                ++it;
+                continue;
             }
-            return nullptr;
+            m_descriptors.remove(it.key());
+            m_states.remove(it.key());
+            m_messages.remove(it.key());
+            it = m_providerByDevice.erase(it);
         }
-        DaqController* created = factory->createController(id, this);
-        if (!created)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Failed to create DAQ controller: %1").arg(id);
-            }
-            return nullptr;
-        }
+    }
 
-        connect(created, &DaqController::stateChanged,
-                this, [this, id](DaqState state, const QString& message)
-                {
-                    m_states.insert(id, state);
-                    m_messages.insert(id, message);
-                    emit stateChanged(id, state, message);
-                });
-        connect(created, &DaqController::controllerError,
-                this, [this, id](const QString& message)
-                {
-                    emit deviceError(id, message);
-                });
-        connect(created, &DaqController::inputDataReady,
-                this, &DaqDeviceManager::inputDataReady);
-        m_controllers.insert(id, created);
-        return created;
+    void DaqDeviceManager::updateState(const QString& deviceId, DaqState state, const QString& message)
+    {
+        if (!m_providerByDevice.contains(deviceId))
+        {
+            return;
+        }
+        m_states.insert(deviceId, state);
+        m_messages.insert(deviceId, message);
+        emit stateChanged(deviceId, state, message);
+        if (state == DaqState::Error)
+        {
+            emit deviceError(deviceId, message);
+        }
     }
 }

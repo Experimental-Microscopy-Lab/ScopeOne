@@ -236,6 +236,7 @@ else ()
             LIST_DIRECTORIES false
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_DriverHost"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
     )
 endif ()
@@ -257,6 +258,7 @@ if (UNIX AND NOT APPLE)
     file(GLOB SCOPEONE_CORE_SHARED_LIBRARIES
             LIST_DIRECTORIES false
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
     )
     install(FILES
@@ -265,15 +267,15 @@ if (UNIX AND NOT APPLE)
     )
 endif ()
 
-foreach (_plugin_kind IN ITEMS processing hardware)
-    set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/plugins/${_plugin_kind}")
+foreach (_plugin_kind IN ITEMS plugins/processing drivers)
+    set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/${_plugin_kind}")
     if (EXISTS "${_plugin_dir}")
         add_custom_command(TARGET ScopeOne POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${_plugin_dir}"
-                "$<TARGET_FILE_DIR:ScopeOne>/plugins/${_plugin_kind}"
+                "$<TARGET_FILE_DIR:ScopeOne>/${_plugin_kind}"
         )
-        install(DIRECTORY "${_plugin_dir}/" DESTINATION "plugins/${_plugin_kind}")
+        install(DIRECTORY "${_plugin_dir}/" DESTINATION "${_plugin_kind}")
     endif ()
 endforeach ()
 

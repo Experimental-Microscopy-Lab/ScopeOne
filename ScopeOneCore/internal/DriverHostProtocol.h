@@ -17,7 +17,7 @@
 
 namespace scopeone::core::internal::driverhost
 {
-    inline constexpr quint32 kProtocolVersion = 5;
+    inline constexpr quint32 kProtocolVersion = 6;
 
     // The names of the device kinds as the protocol sends them
     inline constexpr std::pair<HardwareDeviceKind, const char*> kDeviceKindNames[]{
@@ -61,7 +61,8 @@ namespace scopeone::core::internal::driverhost
         }
         return HardwareDeviceKind::Unknown;
     }
-    inline constexpr quint32 kMaxControlMessageBytes = 256 * 1024;
+    // A DAQ session carries its output waveforms in the control message
+    inline constexpr quint32 kMaxControlMessageBytes = 64 * 1024 * 1024;
 
     inline const QString kEnvelopeKindField = QStringLiteral("kind");
     inline const QString kEnvelopeVersionField = QStringLiteral("version");
@@ -82,6 +83,13 @@ namespace scopeone::core::internal::driverhost
     inline const QString kSharedMemoryKeyField = QStringLiteral("sharedMemoryKey");
     inline const QString kDefaultXYStageField = QStringLiteral("defaultXYStage");
     inline const QString kDefaultZStageField = QStringLiteral("defaultZStage");
+    inline const QString kSignalSourcesField = QStringLiteral("signalSources");
+    inline const QString kDaqDevicesField = QStringLiteral("daqDevices");
+    inline const QString kSourceIdField = QStringLiteral("sourceId");
+    inline const QString kStreamIdField = QStringLiteral("streamId");
+    inline const QString kConfigField = QStringLiteral("config");
+    inline const QString kStateField = QStringLiteral("state");
+    inline const QString kStateMessageField = QStringLiteral("message");
 
     inline const QString kMessageKindRequest = QStringLiteral("Request");
     inline const QString kMessageKindResponse = QStringLiteral("Response");
@@ -116,6 +124,10 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandListConfigs = QStringLiteral("ListConfigs");
     inline const QString kCommandGetCurrentConfig = QStringLiteral("GetCurrentConfig");
     inline const QString kCommandSetConfig = QStringLiteral("SetConfig");
+    inline const QString kCommandStartSignal = QStringLiteral("StartSignal");
+    inline const QString kCommandStopSignal = QStringLiteral("StopSignal");
+    inline const QString kCommandStartDaq = QStringLiteral("StartDaq");
+    inline const QString kCommandStopDaq = QStringLiteral("StopDaq");
 
     inline const QString kCapabilityCamera = QStringLiteral("Camera");
     inline const QString kCapabilityProperties = QStringLiteral("Properties");
@@ -132,6 +144,10 @@ namespace scopeone::core::internal::driverhost
     inline const QString kEventFrameAvailable = QStringLiteral("FrameAvailable");
     inline const QString kEventPreviewState = QStringLiteral("PreviewState");
     inline const QString kEventDriverHostError = QStringLiteral("DriverHostError");
+    // New records in the stream ring of a signal source or a DAQ device
+    inline const QString kEventStreamAvailable = QStringLiteral("StreamAvailable");
+    inline const QString kEventSignalState = QStringLiteral("SignalState");
+    inline const QString kEventDaqState = QStringLiteral("DaqState");
 
 #ifdef Q_OS_WIN
     inline const QString kExecutableFileName = QStringLiteral("ScopeOne_DriverHost.exe");
@@ -166,6 +182,14 @@ namespace scopeone::core::internal::driverhost
         return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.%2.shm")
                                        .arg(hostKey)
                                        .arg(cameraIndex));
+    }
+
+    // Each start of a stream gets a ring of its own, sized for what that acquisition delivers
+    inline QString streamSharedMemoryKey(const QString& hostKey, quint64 streamIndex)
+    {
+        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.stream%2.shm")
+                                       .arg(hostKey)
+                                       .arg(streamIndex));
     }
 
     inline QString encodeUInt64(quint64 value)

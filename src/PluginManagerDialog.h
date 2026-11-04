@@ -13,7 +13,7 @@ namespace scopeone::core
 
 namespace scopeone::ui
 {
-    QStringList loadConfiguredHardwarePlugins(scopeone::core::ScopeOneCore& core);
+    QStringList loadConfiguredDrivers(scopeone::core::ScopeOneCore& core);
 
     class PluginManagerDialog final : public QDialog
     {
@@ -26,7 +26,7 @@ namespace scopeone::ui
         void refreshPlugins();
         void installPlugin();
         void showSelectedOptions();
-        void saveHardwareSettings();
+        void saveSettings();
 
         QTableWidget* m_table{nullptr};
         QPlainTextEdit* m_detailsEdit{nullptr};

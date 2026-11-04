@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStyle>
 #include <QTableWidget>
@@ -199,14 +200,13 @@ namespace scopeone::ui
         m_statusLabel->setWordWrap(true);
         layout->addWidget(m_statusLabel);
 
-        for (const auto& device : m_core->daqDevices())
-        {
-            m_deviceCombo->addItem(device.name, device.id);
-            m_deviceCombo->setItemData(
-                m_deviceCombo->count() - 1,
-                QStringLiteral("%1, %2").arg(device.provider, device.product),
-                Qt::ToolTipRole);
-        }
+        refreshDeviceList();
+        connect(m_core, &scopeone::core::ScopeOneCore::daqDevicesChanged,
+                this, [this]()
+                {
+                    refreshDeviceList();
+                    refreshDevice();
+                });
 
         connect(m_deviceCombo, &QComboBox::currentIndexChanged,
                 this, &DaqControlWidget::refreshDevice);
@@ -290,6 +290,27 @@ namespace scopeone::ui
                       return left.compare(right, Qt::CaseInsensitive) < 0;
                   });
         return choices;
+    }
+
+    // DAQ devices come from drivers, which can be registered after the window opens
+    void DaqControlWidget::refreshDeviceList()
+    {
+        const QString selectedId = m_deviceCombo->currentData().toString();
+        const QSignalBlocker blocker(m_deviceCombo);
+        m_deviceCombo->clear();
+        for (const auto& device : m_core->daqDevices())
+        {
+            m_deviceCombo->addItem(device.name, device.id);
+            m_deviceCombo->setItemData(
+                m_deviceCombo->count() - 1,
+                QStringLiteral("%1, %2").arg(device.provider, device.product),
+                Qt::ToolTipRole);
+        }
+        const int selected = m_deviceCombo->findData(selectedId);
+        if (selected >= 0)
+        {
+            m_deviceCombo->setCurrentIndex(selected);
+        }
     }
 
     void DaqControlWidget::refreshDevice()

@@ -7,10 +7,12 @@
 
 namespace scopeone::core
 {
-    class DriverHostProviderPlugin
+    // The entry point of a driver library. ScopeOne_DriverHost loads the library, gets this
+    // object from Qt's plugin loader and asks it for the provider of the devices.
+    class Driver
     {
     public:
-        virtual ~DriverHostProviderPlugin() = default;
+        virtual ~Driver() = default;
 
         virtual QString providerId() const = 0;
         virtual HardwareProviderPtr createProvider(const QJsonObject& options,
@@ -18,6 +20,5 @@ namespace scopeone::core
     };
 }
 
-#define ScopeOneDriverHostProviderPlugin_iid "org.scopeone.DriverHostProviderPlugin/1.0"
-Q_DECLARE_INTERFACE(scopeone::core::DriverHostProviderPlugin,
-                    ScopeOneDriverHostProviderPlugin_iid)
+#define ScopeOneDriver_iid "org.scopeone.Driver/1.0"
+Q_DECLARE_INTERFACE(scopeone::core::Driver, ScopeOneDriver_iid)

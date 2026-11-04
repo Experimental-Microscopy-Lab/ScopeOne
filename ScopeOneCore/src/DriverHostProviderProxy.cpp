@@ -2,8 +2,12 @@
 
 #include "internal/CameraRuntimeControl.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/HardwareStreamCodec.h"
 #include "internal/SharedFrameRing.h"
+#include "internal/StreamRing.h"
 #include "scopeone/CameraProvider.h"
+#include "scopeone/DaqProvider.h"
+#include "scopeone/SignalSourceProvider.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
 
@@ -65,23 +69,37 @@ namespace scopeone::core::internal
         using FrameHandler = std::function<void(const ImageFrame&)>;
         using PreviewHandler = std::function<void(const QString&, bool)>;
 
+        // Where the chunks and states of the signal sources and DAQ devices go, on the transport thread
+        struct StreamHandlers
+        {
+            SignalSourceProvider::TimeSeriesSink timeSeries;
+            SignalSourceProvider::TimestampedEventSink timestampedEvents;
+            SignalSourceProvider::StateSink signalState;
+            DaqProvider::InputSink daqInput;
+            DaqProvider::StateSink daqState;
+        };
+
         DriverHostProviderTransport(QString providerId,
                                     QString pluginPath,
                                     QString hostKey,
                                     QJsonObject options,
                                     FrameHandler frameHandler,
-                                    PreviewHandler previewHandler)
+                                    PreviewHandler previewHandler,
+                                    StreamHandlers streamHandlers)
             : m_providerId(std::move(providerId))
               , m_pluginPath(std::move(pluginPath))
               , m_hostKey(std::move(hostKey))
               , m_options(std::move(options))
               , m_frameHandler(std::move(frameHandler))
               , m_previewHandler(std::move(previewHandler))
+              , m_streamHandlers(std::move(streamHandlers))
         {
         }
 
         bool initialize(HardwareProviderDescriptor& descriptor,
                         QList<HardwareDeviceDescriptor>& devices,
+                        QList<SignalSourceDescriptor>& signalSources,
+                        QList<DaqDeviceDescriptor>& daqDevices,
                         QString& defaultXYStage,
                         QString& defaultZStage,
                         QString* errorMessage)
@@ -138,12 +156,13 @@ namespace scopeone::core::internal
                             if (m_previewHandler) m_previewHandler(cameraId, false);
                         }
                         m_runningCameras.clear();
+                        endActiveStreams();
                         finishWaitingRequest();
                     });
 
             QStringList arguments;
             arguments << QStringLiteral("--provider") << m_providerId
-                      << QStringLiteral("--plugin") << m_pluginPath
+                      << QStringLiteral("--driver") << m_pluginPath
                       << QStringLiteral("--hostKey") << m_hostKey
                       << QStringLiteral("--launcherPid")
                       << QString::number(QCoreApplication::applicationPid());
@@ -265,10 +284,62 @@ namespace scopeone::core::internal
                     m_cameraIds.append(device.logicalId);
                 }
             }
+            for (const QJsonValue& value : response.value(driverhost::kSignalSourcesField).toArray())
+            {
+                signalSources.append(hardwarestream::signalSourceDescriptorFromJson(value.toObject()));
+            }
+            for (const QJsonValue& value : response.value(driverhost::kDaqDevicesField).toArray())
+            {
+                daqDevices.append(hardwarestream::daqDeviceDescriptorFromJson(value.toObject()));
+            }
             defaultXYStage = response.value(driverhost::kDefaultXYStageField).toString();
             defaultZStage = response.value(driverhost::kDefaultZStageField).toString();
             if (errorMessage) errorMessage->clear();
             return true;
+        }
+
+        // Starts a signal source or a DAQ session and attaches the ring DriverHost made for it
+        bool startStream(const QString& command, const QJsonObject& config, QString* errorMessage)
+        {
+            QJsonObject request;
+            request.insert(driverhost::kMessageTypeField, command);
+            request.insert(driverhost::kConfigField, config);
+            QJsonObject response;
+            if (!sendRequest(request, response, kControlRequestTimeoutMs, errorMessage)
+                || !responseSucceeded(response, errorMessage))
+            {
+                return false;
+            }
+            const bool signal = command == driverhost::kCommandStartSignal;
+            const QString id = signal ? config.value(QStringLiteral("sourceId")).toString()
+                                      : config.value(QStringLiteral("deviceId")).toString();
+            auto stream = std::make_shared<StreamReader>();
+            stream->streamId = response.value(driverhost::kStreamIdField).toString();
+            if (!streamring::attachSharedRing(stream->shm,
+                                              response.value(driverhost::kSharedMemoryKeyField).toString(),
+                                              errorMessage))
+            {
+                stopStream(signal ? driverhost::kCommandStopSignal : driverhost::kCommandStopDaq, id, nullptr);
+                return false;
+            }
+            stream->reader = streamring::Reader(stream->shm.data());
+            m_streams.insert(stream->streamId, stream);
+            (signal ? m_activeSignals : m_activeDaqDevices).insert(id);
+            // Chunks written before the ring was attached have no notice of their own
+            drainStream(stream->streamId);
+            return true;
+        }
+
+        bool stopStream(const QString& command, const QString& id, QString* errorMessage)
+        {
+            QJsonObject request;
+            request.insert(driverhost::kMessageTypeField, command);
+            request.insert(command == driverhost::kCommandStopSignal ? driverhost::kSourceIdField
+                                                                     : driverhost::kDeviceIdField,
+                           id);
+            QJsonObject response;
+            return sendRequest(request, response, kControlRequestTimeoutMs, errorMessage)
+                && responseSucceeded(response, errorMessage);
         }
 
         bool sendRequest(QJsonObject request,
@@ -444,6 +515,7 @@ namespace scopeone::core::internal
                 m_socket->disconnectFromServer();
             }
             m_readers.clear();
+            m_streams.clear();
             m_socket.reset();
             if (m_process && m_process->state() != QProcess::NotRunning)
             {
@@ -461,6 +533,71 @@ namespace scopeone::core::internal
         }
 
     private:
+        struct StreamReader
+        {
+            QString streamId;
+            QSharedMemory shm;
+            streamring::Reader reader;
+        };
+
+        void drainStream(const QString& streamId)
+        {
+            const auto it = m_streams.constFind(streamId);
+            if (it == m_streams.cend()) return;
+            const std::shared_ptr<StreamReader> stream = it.value();
+            streamring::Record record;
+            while (stream->reader.read(record))
+            {
+                if (record.droppedBefore > 0)
+                {
+                    qWarning().noquote() << QStringLiteral("DriverHost '%1' dropped %2 chunks of %3 because ScopeOne read too slowly")
+                                                .arg(m_providerId).arg(record.droppedBefore).arg(streamId);
+                }
+                switch (record.type)
+                {
+                case streamring::RecordType::TimeSeries:
+                {
+                    TimeSeriesChunk chunk;
+                    if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.timeSeries)
+                        m_streamHandlers.timeSeries(chunk);
+                    break;
+                }
+                case streamring::RecordType::TimestampedEvents:
+                {
+                    TimestampedEventChunk chunk;
+                    if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.timestampedEvents)
+                        m_streamHandlers.timestampedEvents(chunk);
+                    break;
+                }
+                case streamring::RecordType::DaqInput:
+                {
+                    DaqInputChunk chunk;
+                    if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.daqInput)
+                        m_streamHandlers.daqInput(chunk);
+                    break;
+                }
+                case streamring::RecordType::Skip:
+                    break;
+                }
+            }
+        }
+
+        // The sources and sessions that were running when DriverHost went away end with an error
+        void endActiveStreams()
+        {
+            const QString message = QStringLiteral("DriverHost process exited");
+            for (const QString& sourceId : std::exchange(m_activeSignals, {}))
+            {
+                if (m_streamHandlers.signalState)
+                    m_streamHandlers.signalState(sourceId, SignalSourceState::Error, message);
+            }
+            for (const QString& deviceId : std::exchange(m_activeDaqDevices, {}))
+            {
+                if (m_streamHandlers.daqState) m_streamHandlers.daqState(deviceId, DaqState::Error, message);
+            }
+            m_streams.clear();
+        }
+
         struct Reader
         {
             QString cameraId;
@@ -542,6 +679,39 @@ namespace scopeone::core::internal
                 else m_runningCameras.remove(deviceId);
                 if (m_previewHandler) m_previewHandler(deviceId, running);
             }
+            else if (type == driverhost::kEventStreamAvailable)
+            {
+                drainStream(event.value(driverhost::kStreamIdField).toString());
+            }
+            else if (type == driverhost::kEventSignalState)
+            {
+                const QString sourceId = event.value(driverhost::kSourceIdField).toString();
+                const auto state = static_cast<SignalSourceState>(event.value(driverhost::kStateField).toInt());
+                // The last chunks reach the reader before the state that ends the stream
+                drainStream(QStringLiteral("signal:") + sourceId);
+                if (state == SignalSourceState::Idle || state == SignalSourceState::Error)
+                {
+                    m_activeSignals.remove(sourceId);
+                }
+                if (m_streamHandlers.signalState)
+                {
+                    m_streamHandlers.signalState(sourceId, state,
+                                                 event.value(driverhost::kStateMessageField).toString());
+                }
+            }
+            else if (type == driverhost::kEventDaqState)
+            {
+                const auto state = static_cast<DaqState>(event.value(driverhost::kStateField).toInt());
+                drainStream(QStringLiteral("daq:") + deviceId);
+                if (state == DaqState::Idle || state == DaqState::Error)
+                {
+                    m_activeDaqDevices.remove(deviceId);
+                }
+                if (m_streamHandlers.daqState)
+                {
+                    m_streamHandlers.daqState(deviceId, state, event.value(driverhost::kStateMessageField).toString());
+                }
+            }
             else if (type == driverhost::kEventDriverHostError)
             {
                 qWarning().noquote()
@@ -600,6 +770,10 @@ namespace scopeone::core::internal
         QJsonObject m_options;
         FrameHandler m_frameHandler;
         PreviewHandler m_previewHandler;
+        StreamHandlers m_streamHandlers;
+        QHash<QString, std::shared_ptr<StreamReader>> m_streams;
+        QSet<QString> m_activeSignals;
+        QSet<QString> m_activeDaqDevices;
         std::unique_ptr<QProcess> m_process;
         std::unique_ptr<QLocalSocket> m_socket;
         QByteArray m_readBuffer;
@@ -624,6 +798,8 @@ namespace scopeone::core::internal
                                           public ShutterProvider,
                                           public StateProvider,
                                           public ConfigurationProvider,
+                                          public SignalSourceProvider,
+                                          public DaqProvider,
                                           public CameraRuntimeControl
     {
     public:
@@ -674,7 +850,8 @@ namespace scopeone::core::internal
                          sink = m_previewStateSink;
                      }
                      if (sink) sink(anyRunning);
-                 });
+                 },
+                 streamHandlers());
             m_worker->moveToThread(&m_workerThread);
             connect(&m_workerThread, &QThread::finished,
                     m_worker, &QObject::deleteLater);
@@ -691,6 +868,8 @@ namespace scopeone::core::internal
                 {
                     initialized = worker->initialize(m_descriptor,
                                                      m_devices,
+                                                     m_signalSources,
+                                                     m_daqDevices,
                                                      m_defaultXYStage,
                                                      m_defaultZStage,
                                                      &error);
@@ -713,6 +892,47 @@ namespace scopeone::core::internal
 
         HardwareProviderDescriptor descriptor() const override { return m_descriptor; }
         QList<HardwareDeviceDescriptor> devices() const override { return m_devices; }
+
+        QList<SignalSourceDescriptor> signalSources() const override { return m_signalSources; }
+
+        void setSignalSinks(TimeSeriesSink timeSeries,
+                            TimestampedEventSink timestampedEvents,
+                            SignalSourceProvider::StateSink state) override
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_timeSeriesSink = std::move(timeSeries);
+            m_timestampedEventSink = std::move(timestampedEvents);
+            m_signalStateSink = std::move(state);
+        }
+
+        bool startSignal(const SignalAcquisitionConfig& config, QString* errorMessage) override
+        {
+            return startStream(driverhost::kCommandStartSignal, hardwarestream::toJson(config), errorMessage);
+        }
+
+        void stopSignal(const QString& sourceId) override
+        {
+            stopStream(driverhost::kCommandStopSignal, sourceId);
+        }
+
+        QList<DaqDeviceDescriptor> daqDevices() const override { return m_daqDevices; }
+
+        void setDaqSinks(InputSink input, DaqProvider::StateSink state) override
+        {
+            QMutexLocker locker(&m_sinkMutex);
+            m_daqInputSink = std::move(input);
+            m_daqStateSink = std::move(state);
+        }
+
+        bool startDaq(const DaqSessionConfig& config, QString* errorMessage) override
+        {
+            return startStream(driverhost::kCommandStartDaq, hardwarestream::toJson(config), errorMessage);
+        }
+
+        void stopDaq(const QString& deviceId) override
+        {
+            stopStream(driverhost::kCommandStopDaq, deviceId);
+        }
 
         void setFrameSink(FrameSink sink) override
         {
@@ -1348,6 +1568,76 @@ namespace scopeone::core::internal
             return request(command, deviceId, fields, response, errorMessage);
         }
 
+        bool startStream(const QString& command, const QJsonObject& config, QString* errorMessage)
+        {
+            QMutexLocker requestLocker(&m_requestMutex);
+            bool ok = false;
+            QString error;
+            DriverHostProviderTransport* const worker = m_worker;
+            runOnWorker([worker, &command, &config, &ok, &error]() { ok = worker->startStream(command, config, &error); });
+            if (errorMessage) *errorMessage = error;
+            return ok;
+        }
+
+        void stopStream(const QString& command, const QString& id)
+        {
+            QMutexLocker requestLocker(&m_requestMutex);
+            DriverHostProviderTransport* const worker = m_worker;
+            runOnWorker([worker, &command, &id]() { worker->stopStream(command, id, nullptr); });
+        }
+
+        // The transport calls these on its thread; each hands the chunk or state to the sink Core set
+        DriverHostProviderTransport::StreamHandlers streamHandlers()
+        {
+            DriverHostProviderTransport::StreamHandlers handlers;
+            handlers.timeSeries = [this](const TimeSeriesChunk& chunk)
+            {
+                TimeSeriesSink sink;
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    sink = m_timeSeriesSink;
+                }
+                if (sink) sink(chunk);
+            };
+            handlers.timestampedEvents = [this](const TimestampedEventChunk& chunk)
+            {
+                TimestampedEventSink sink;
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    sink = m_timestampedEventSink;
+                }
+                if (sink) sink(chunk);
+            };
+            handlers.signalState = [this](const QString& sourceId, SignalSourceState state, const QString& message)
+            {
+                SignalSourceProvider::StateSink sink;
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    sink = m_signalStateSink;
+                }
+                if (sink) sink(sourceId, state, message);
+            };
+            handlers.daqInput = [this](const DaqInputChunk& chunk)
+            {
+                InputSink sink;
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    sink = m_daqInputSink;
+                }
+                if (sink) sink(chunk);
+            };
+            handlers.daqState = [this](const QString& deviceId, DaqState state, const QString& message)
+            {
+                DaqProvider::StateSink sink;
+                {
+                    QMutexLocker locker(&m_sinkMutex);
+                    sink = m_daqStateSink;
+                }
+                if (sink) sink(deviceId, state, message);
+            };
+            return handlers;
+        }
+
         bool setDeliveryMode(const QString& mode)
         {
             QMutexLocker requestLocker(&m_requestMutex);
@@ -1390,6 +1680,13 @@ namespace scopeone::core::internal
         mutable QMutex m_sinkMutex;
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;
+        TimeSeriesSink m_timeSeriesSink;
+        TimestampedEventSink m_timestampedEventSink;
+        SignalSourceProvider::StateSink m_signalStateSink;
+        InputSink m_daqInputSink;
+        DaqProvider::StateSink m_daqStateSink;
+        QList<SignalSourceDescriptor> m_signalSources;
+        QList<DaqDeviceDescriptor> m_daqDevices;
         mutable QMutex m_stateMutex;
         QSet<QString> m_runningCameras;
         bool m_recordingDelivery{false};

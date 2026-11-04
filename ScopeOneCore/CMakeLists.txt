@@ -72,7 +72,6 @@ set(CORE_SOURCES
         src/AcquisitionEngine.cpp
         src/DriverHostProviderProxy.cpp
         src/DaqDeviceManager.cpp
-        src/HardwareProvider.cpp
         src/PluginManifest.cpp
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
@@ -97,10 +96,9 @@ set(CORE_SOURCES
         src/DifferentialRollingModule.cpp
         src/IscatModule.cpp
         src/PythonProcessingModule.cpp
-        src/NIDaqmx.cpp
         src/PtuFile.cpp
-        src/SimulatedPmt.cpp
-        src/SimulatedPmtSource.cpp
+        src/HardwareStreamCodec.cpp
+        src/StreamRing.cpp
         src/MDAManager.cpp
         src/RecordingManager.cpp
         src/CameraBackend.cpp
@@ -114,20 +112,10 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
-        include/scopeone/CameraProvider.h
-        include/scopeone/DaqDevice.h
-        include/scopeone/DriverHostProviderPlugin.h
-        include/scopeone/HardwareCapabilities.h
-        include/scopeone/HardwareProvider.h
-        include/scopeone/HardwareTypes.h
-        include/scopeone/ImageFrame.h
         include/scopeone/PluginManifest.h
-        include/scopeone/HardwarePluginSDK.h
         include/scopeone/ProcessingPlugin.h
         include/scopeone/ScanImageAssembler.h
-        include/scopeone/scopeone_sdk_export.h
         include/scopeone/SharedFrame.h
-        include/scopeone/SignalSource.h
         include/scopeone/DhmReconstruction.h
         internal/AcquisitionEngine.h
         internal/CameraRuntimeControl.h
@@ -145,6 +133,8 @@ set(CORE_HEADERS
         include/scopeone/ProcessingPipeline.h
         internal/DriverHostProtocol.h
         internal/SharedFrameRing.h
+        internal/HardwareStreamCodec.h
+        internal/StreamRing.h
         internal/DriverHostProviderProxy.h
         internal/DaqDeviceManager.h
         internal/SignalSourceManager.h
@@ -159,10 +149,7 @@ set(CORE_HEADERS
         internal/DifferentialRollingModule.h
         internal/IscatModule.h
         internal/PythonProcessingModule.h
-        internal/NIDaqmx.h
         internal/PtuFile.h
-        internal/SimulatedPmt.h
-        internal/SimulatedPmtSource.h
         internal/MDAManager.h
         internal/RecordingManager.h
         internal/CameraBackend.h
@@ -172,26 +159,48 @@ set(CORE_HEADERS
         include/scopeone/ScopeOneCore.h
 )
 
+# The driver SDK: the only headers and the only library a driver sees. It is a library of its
+# own so a driver that reaches for anything else of Core does not compile or link.
+set(SDK_HEADERS
+        sdk/include/scopeone/CameraProvider.h
+        sdk/include/scopeone/DaqDevice.h
+        sdk/include/scopeone/DaqProvider.h
+        sdk/include/scopeone/Driver.h
+        sdk/include/scopeone/HardwareCapabilities.h
+        sdk/include/scopeone/DriverSDK.h
+        sdk/include/scopeone/HardwareProvider.h
+        sdk/include/scopeone/HardwareTypes.h
+        sdk/include/scopeone/ImageFrame.h
+        sdk/include/scopeone/scopeone_sdk_export.h
+        sdk/include/scopeone/SignalSource.h
+        sdk/include/scopeone/SignalSourceProvider.h
+)
+add_library(ScopeOneDriverSDK SHARED
+        sdk/src/HardwareProvider.cpp
+        sdk/src/SignalSource.cpp
+        ${SDK_HEADERS}
+)
+add_library(scopeone::DriverSDK ALIAS ScopeOneDriverSDK)
+set_target_properties(ScopeOneDriverSDK PROPERTIES EXPORT_NAME DriverSDK)
+target_link_libraries(ScopeOneDriverSDK PUBLIC Qt::Core)
+target_compile_definitions(ScopeOneDriverSDK PRIVATE SCOPEONE_SDK_EXPORTS)
+target_include_directories(ScopeOneDriverSDK PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sdk/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/sdk>
+)
+
 add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
-add_library(ScopeOneHardwarePluginSDK INTERFACE)
-add_library(scopeone::HardwarePluginSDK ALIAS ScopeOneHardwarePluginSDK)
 if (UNIX AND NOT APPLE)
-    set_target_properties(ScopeWriter ScopeOneCore PROPERTIES
+    set_target_properties(ScopeWriter ScopeOneCore ScopeOneDriverSDK PROPERTIES
             BUILD_RPATH "$ORIGIN"
             INSTALL_RPATH "$ORIGIN"
             INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()
-# The public target for hardware plugins outside this repository
-set_target_properties(ScopeOneHardwarePluginSDK PROPERTIES EXPORT_NAME HardwarePluginSDK)
-target_link_libraries(ScopeOneHardwarePluginSDK INTERFACE ScopeOneCore Qt::Core Qt::Gui)
-target_include_directories(ScopeOneHardwarePluginSDK INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-)
 target_link_libraries(ScopeOneCore
         PUBLIC
+        ScopeOneDriverSDK
         Qt::Core
         Qt::Gui
         PRIVATE
@@ -247,6 +256,11 @@ target_precompile_headers(ScopeOneCore PRIVATE
         <vector>
 )
 target_link_directories(ScopeOneCore PRIVATE ${MMCORE_BIN_DIR})
+# Keeps the symbols of the static libraries in Core, MMCore among them, out of its exports. Linux
+# exported them all, so DriverHost had linked MMCore through Core without noticing.
+if (UNIX AND NOT APPLE)
+    target_link_options(ScopeOneCore PRIVATE "LINKER:--exclude-libs,ALL")
+endif ()
 
 scopeone_add_runtime_copy_commands(ScopeOneCore $<TARGET_FILE_DIR:ScopeOneCore>)
 add_custom_command(TARGET ScopeOneCore POST_BUILD
@@ -255,8 +269,13 @@ add_custom_command(TARGET ScopeOneCore POST_BUILD
         $<TARGET_FILE_DIR:ScopeOneCore>
 )
 
+# DriverHost does not link Core, so a driver process loads only the SDK, Qt Core and Network and
+# MMCore. It builds the few Core sources it needs itself.
 add_executable(ScopeOne_DriverHost
         src/DriverHostMain.cpp
+        src/HardwareStreamCodec.cpp
+        src/PluginManifest.cpp
+        src/StreamRing.cpp
 )
 if (UNIX AND NOT APPLE)
     set_target_properties(ScopeOne_DriverHost PROPERTIES
@@ -266,12 +285,16 @@ if (UNIX AND NOT APPLE)
     )
 endif ()
 target_link_libraries(ScopeOne_DriverHost
-        ScopeOneCore
+        ScopeOneDriverSDK
         MMCore
         Qt::Core
         Qt::Network
 )
-target_compile_definitions(ScopeOne_DriverHost PRIVATE MMDEVICE_CLIENT_BUILD)
+target_compile_definitions(ScopeOne_DriverHost PRIVATE
+        MMDEVICE_CLIENT_BUILD
+        SCOPEONE_CORE_STATIC
+        SCOPEONE_CORE_VERSION_STRING="${PROJECT_VERSION}"
+)
 target_include_directories(ScopeOne_DriverHost PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -318,7 +341,7 @@ write_basic_package_version_file(
         COMPATIBILITY SameMajorVersion
 )
 
-install(TARGETS ScopeOneCore ScopeOneHardwarePluginSDK
+install(TARGETS ScopeOneCore ScopeOneDriverSDK
         EXPORT ScopeOneCoreTargets
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -329,6 +352,11 @@ install(TARGETS ScopeOne_DriverHost
 )
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        FILES_MATCHING
+        PATTERN "*.h"
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/sdk/include/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/sdk"
         FILES_MATCHING
         PATTERN "*.h"
 )

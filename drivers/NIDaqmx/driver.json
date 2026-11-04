@@ -1,0 +1,9 @@
+{
+  "id": "scopeone.nidaqmx",
+  "name": "NI-DAQmx",
+  "version": "1.0.0",
+  "scopeOneApi": 1,
+  "kind": "driver",
+  "providerId": "scopeone.nidaqmx",
+  "autoLoad": true
+}

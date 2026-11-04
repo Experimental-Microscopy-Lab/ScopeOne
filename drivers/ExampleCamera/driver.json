@@ -3,7 +3,7 @@
   "name": "Example Camera",
   "version": "1.0.0",
   "scopeOneApi": 1,
-  "kind": "hardware",
+  "kind": "driver",
   "providerId": "example.camera",
   "autoLoad": false
 }

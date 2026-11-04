@@ -8,7 +8,7 @@ namespace scopeone::core::internal
     {
     public:
         QList<scopeone::core::SignalSourceDescriptor> signalSources() const override;
-        scopeone::core::SignalSource* createSignalSource(
+        SignalSource* createSignalSource(
             const QString& sourceId,
             QObject* parent = nullptr) override;
     };

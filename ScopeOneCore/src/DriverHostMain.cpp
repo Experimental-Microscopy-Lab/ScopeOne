@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -49,12 +50,16 @@
 
 #include "MMCore.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/HardwareStreamCodec.h"
 #include "internal/SharedFrameRing.h"
+#include "internal/StreamRing.h"
 #include "scopeone/CameraProvider.h"
-#include "scopeone/DriverHostProviderPlugin.h"
+#include "scopeone/DaqProvider.h"
+#include "scopeone/Driver.h"
 #include "scopeone/PluginManifest.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
+#include "scopeone/SignalSourceProvider.h"
 
 namespace scopeone::core::internal
 {
@@ -1490,6 +1495,30 @@ namespace scopeone::core::internal
         void emitPreviewStateEvent(const QString& deviceId, bool running);
         void emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex);
 
+        // The ring a signal source or a DAQ device writes its chunks to while it runs
+        struct StreamTransport
+        {
+            QString streamId;
+            QString shmKey;
+            QSharedMemory shm;
+            streamring::Writer writer;
+            QMutex writeMutex;
+            std::atomic_bool notifyQueued{false};
+        };
+
+        void installStreamSinks();
+        bool handleStreamRequest(quint64 requestId,
+                                 const QString& type,
+                                 const QJsonObject& message,
+                                 const std::function<void(const QJsonObject&)>& reply);
+        std::shared_ptr<StreamTransport> openStream(const QString& streamId,
+                                                    qsizetype capacity,
+                                                    QString* errorMessage);
+        void closeStream(const QString& streamId);
+        void writeStream(const QString& streamId, streamring::RecordType type, const QByteArray& payload);
+        qsizetype signalStreamCapacity(const SignalAcquisitionConfig& config) const;
+        static qsizetype daqStreamCapacity(const DaqSessionConfig& config);
+
         QString m_pluginPath;
         QString m_providerId;
         QString m_hostKey;
@@ -1508,7 +1537,15 @@ namespace scopeone::core::internal
         ShutterProvider* m_shutter{nullptr};
         StateProvider* m_state{nullptr};
         ConfigurationProvider* m_configuration{nullptr};
+        SignalSourceProvider* m_signals{nullptr};
+        DaqProvider* m_daq{nullptr};
+        QList<SignalSourceDescriptor> m_signalSources;
+        QList<DaqDeviceDescriptor> m_daqDevices;
+        QHash<QString, std::shared_ptr<StreamTransport>> m_streams;
+        QMutex m_streamsMutex;
+        quint64 m_nextStreamIndex{0};
         std::atomic_bool m_acceptFrames{false};
+        std::atomic_bool m_acceptStreams{false};
     };
 
     bool ProviderDriverRuntime::initializeRuntime()
@@ -1518,7 +1555,7 @@ namespace scopeone::core::internal
         PluginManifest manifest;
         if (!parsePluginManifest(
                 m_pluginLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
-                PluginKind::Hardware,
+                PluginKind::Driver,
                 manifest,
                 &m_lastError))
         {
@@ -1538,10 +1575,10 @@ namespace scopeone::core::internal
             return false;
         }
 
-        auto* const factory = qobject_cast<DriverHostProviderPlugin*>(instance);
+        auto* const factory = qobject_cast<Driver*>(instance);
         if (!factory)
         {
-            m_lastError = QStringLiteral("Module does not implement DriverHostProviderPlugin");
+            m_lastError = QStringLiteral("Module does not implement Driver");
             return false;
         }
         if (factory->providerId() != m_providerId)
@@ -1575,6 +1612,8 @@ namespace scopeone::core::internal
         m_shutter = dynamic_cast<ShutterProvider*>(provider);
         m_state = dynamic_cast<StateProvider*>(provider);
         m_configuration = dynamic_cast<ConfigurationProvider*>(provider);
+        m_signals = dynamic_cast<SignalSourceProvider*>(provider);
+        m_daq = dynamic_cast<DaqProvider*>(provider);
 
         QSet<QString> logicalIds;
         int cameraIndex = 0;
@@ -1625,6 +1664,227 @@ namespace scopeone::core::internal
             m_acceptFrames.store(true, std::memory_order_release);
             m_camera->setFrameSink([this](const ImageFrame& frame) { enqueueFrame(frame); });
         }
+        installStreamSinks();
+        return true;
+    }
+
+    void ProviderDriverRuntime::installStreamSinks()
+    {
+        if (m_signals)
+        {
+            m_signalSources = m_signals->signalSources();
+            m_signals->setSignalSinks(
+                [this](const TimeSeriesChunk& chunk)
+                {
+                    writeStream(QStringLiteral("signal:") + chunk.sourceId,
+                                streamring::RecordType::TimeSeries, hardwarestream::encode(chunk));
+                },
+                [this](const TimestampedEventChunk& chunk)
+                {
+                    writeStream(QStringLiteral("signal:") + chunk.sourceId,
+                                streamring::RecordType::TimestampedEvents, hardwarestream::encode(chunk));
+                },
+                [this](const QString& sourceId, SignalSourceState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(this, [this, sourceId, state, message]()
+                    {
+                        QJsonObject event = makeEvent(driverhost::kEventSignalState);
+                        event.insert(driverhost::kSourceIdField, sourceId);
+                        event.insert(driverhost::kStateField, static_cast<int>(state));
+                        event.insert(driverhost::kStateMessageField, message);
+                        emit eventReady(event);
+                    }, Qt::QueuedConnection);
+                });
+        }
+        if (m_daq)
+        {
+            m_daqDevices = m_daq->daqDevices();
+            m_daq->setDaqSinks(
+                [this](const DaqInputChunk& chunk)
+                {
+                    writeStream(QStringLiteral("daq:") + chunk.deviceId,
+                                streamring::RecordType::DaqInput, hardwarestream::encode(chunk));
+                },
+                [this](const QString& deviceId, DaqState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(this, [this, deviceId, state, message]()
+                    {
+                        QJsonObject event = makeEvent(driverhost::kEventDaqState);
+                        event.insert(driverhost::kDeviceIdField, deviceId);
+                        event.insert(driverhost::kStateField, static_cast<int>(state));
+                        event.insert(driverhost::kStateMessageField, message);
+                        emit eventReady(event);
+                    }, Qt::QueuedConnection);
+                });
+        }
+        m_acceptStreams.store(m_signals || m_daq, std::memory_order_release);
+    }
+
+    std::shared_ptr<ProviderDriverRuntime::StreamTransport> ProviderDriverRuntime::openStream(
+        const QString& streamId,
+        qsizetype capacity,
+        QString* errorMessage)
+    {
+        auto stream = std::make_shared<StreamTransport>();
+        stream->streamId = streamId;
+        stream->shmKey = driverhost::streamSharedMemoryKey(m_hostKey, m_nextStreamIndex++);
+        if (!streamring::createSharedRing(stream->shm, stream->shmKey, capacity, errorMessage))
+        {
+            return {};
+        }
+        stream->writer = streamring::Writer(stream->shm.data());
+        QMutexLocker locker(&m_streamsMutex);
+        m_streams.insert(streamId, stream);
+        return stream;
+    }
+
+    void ProviderDriverRuntime::closeStream(const QString& streamId)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        m_streams.remove(streamId);
+    }
+
+    void ProviderDriverRuntime::writeStream(const QString& streamId,
+                                            streamring::RecordType type,
+                                            const QByteArray& payload)
+    {
+        if (!m_acceptStreams.load(std::memory_order_acquire))
+        {
+            return;
+        }
+        std::shared_ptr<StreamTransport> stream;
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            stream = m_streams.value(streamId);
+        }
+        if (!stream)
+        {
+            return;
+        }
+        {
+            QMutexLocker locker(&stream->writeMutex);
+            stream->writer.write(type, payload.constData(), static_cast<std::size_t>(payload.size()));
+        }
+        // One notice stands for every record written until it is sent, as the reader drains the ring
+        if (!stream->notifyQueued.exchange(true))
+        {
+            QMetaObject::invokeMethod(this, [this, stream]()
+            {
+                stream->notifyQueued.store(false);
+                QJsonObject event = makeEvent(driverhost::kEventStreamAvailable);
+                event.insert(driverhost::kStreamIdField, stream->streamId);
+                emit eventReady(event);
+            }, Qt::QueuedConnection);
+        }
+    }
+
+    // Two seconds of the stream. Photon events have no fixed rate, so their rings are sized for
+    // bright scans instead.
+    qsizetype ProviderDriverRuntime::signalStreamCapacity(const SignalAcquisitionConfig& config) const
+    {
+        constexpr qsizetype kMinimum = 4 * 1024 * 1024;
+        constexpr qsizetype kEvents = 64 * 1024 * 1024;
+        constexpr qsizetype kMaximum = 256 * 1024 * 1024;
+        const auto source = std::find_if(m_signalSources.cbegin(), m_signalSources.cend(),
+                                         [&config](const SignalSourceDescriptor& descriptor)
+                                         {
+                                             return descriptor.id == config.sourceId;
+                                         });
+        if (config.scanImage.enabled || config.publishTimestampedEvents
+            || (source != m_signalSources.cend() && source->streamType == SignalStreamType::TimestampedEvents))
+        {
+            return kEvents;
+        }
+        const double bytesPerSecond = sizeof(double) / (std::max)(config.sampleIntervalSeconds, 1.0e-9);
+        return std::clamp(static_cast<qsizetype>(2.0 * std::min(bytesPerSecond, 1.0e12)), kMinimum, kMaximum);
+    }
+
+    qsizetype ProviderDriverRuntime::daqStreamCapacity(const DaqSessionConfig& config)
+    {
+        constexpr qsizetype kMinimum = 4 * 1024 * 1024;
+        constexpr qsizetype kMaximum = 256 * 1024 * 1024;
+        double bytesPerSecond = 0.0;
+        for (const DaqAnalogTaskConfig& task : config.analogTasks)
+        {
+            if (task.direction == DaqTaskDirection::Input)
+            {
+                bytesPerSecond += task.timing.sampleRateHz * task.channels.size() * sizeof(double);
+            }
+        }
+        for (const DaqDigitalTaskConfig& task : config.digitalTasks)
+        {
+            if (task.direction == DaqTaskDirection::Input)
+            {
+                bytesPerSecond += task.timing.sampleRateHz * sizeof(quint32);
+            }
+        }
+        return std::clamp(static_cast<qsizetype>(2.0 * std::min(bytesPerSecond, 1.0e12)), kMinimum, kMaximum);
+    }
+
+    bool ProviderDriverRuntime::handleStreamRequest(quint64 requestId,
+                                                    const QString& type,
+                                                    const QJsonObject& message,
+                                                    const std::function<void(const QJsonObject&)>& reply)
+    {
+        const bool signalCommand = type == driverhost::kCommandStartSignal
+            || type == driverhost::kCommandStopSignal;
+        const bool daqCommand = type == driverhost::kCommandStartDaq || type == driverhost::kCommandStopDaq;
+        if (!signalCommand && !daqCommand)
+        {
+            return false;
+        }
+        if ((signalCommand && !m_signals) || (daqCommand && !m_daq))
+        {
+            reply(makeErrorResponse(type, requestId, QStringLiteral("Provider does not support %1")
+                                                         .arg(signalCommand ? QStringLiteral("signal sources")
+                                                                            : QStringLiteral("DAQ devices"))));
+            return true;
+        }
+        if (type == driverhost::kCommandStopSignal)
+        {
+            m_signals->stopSignal(message.value(driverhost::kSourceIdField).toString());
+            reply(makeResponse(type, requestId, true));
+            return true;
+        }
+        if (type == driverhost::kCommandStopDaq)
+        {
+            m_daq->stopDaq(message.value(driverhost::kDeviceIdField).toString());
+            reply(makeResponse(type, requestId, true));
+            return true;
+        }
+
+        const QJsonObject configObject = message.value(driverhost::kConfigField).toObject();
+        QString streamId;
+        qsizetype capacity = 0;
+        SignalAcquisitionConfig signalConfig;
+        DaqSessionConfig daqConfig;
+        if (signalCommand)
+        {
+            signalConfig = hardwarestream::signalAcquisitionConfigFromJson(configObject);
+            streamId = QStringLiteral("signal:") + signalConfig.sourceId;
+            capacity = signalStreamCapacity(signalConfig);
+        }
+        else
+        {
+            daqConfig = hardwarestream::daqSessionConfigFromJson(configObject);
+            streamId = QStringLiteral("daq:") + daqConfig.deviceId;
+            capacity = daqStreamCapacity(daqConfig);
+        }
+        QString error;
+        const auto stream = openStream(streamId, capacity, &error);
+        const bool started = stream
+            && (signalCommand ? m_signals->startSignal(signalConfig, &error)
+                              : m_daq->startDaq(daqConfig, &error));
+        if (!started)
+        {
+            closeStream(streamId);
+            reply(makeErrorResponse(type, requestId, error.isEmpty() ? QStringLiteral("Start failed") : error));
+            return true;
+        }
+        QJsonObject response = makeResponse(type, requestId, true);
+        response.insert(driverhost::kStreamIdField, streamId);
+        response.insert(driverhost::kSharedMemoryKeyField, stream->shmKey);
+        reply(response);
         return true;
     }
 
@@ -1901,6 +2161,18 @@ namespace scopeone::core::internal
                 devices.append(deviceDescription(device));
             }
             response.insert(driverhost::kDevicesField, devices);
+            QJsonArray signalSources;
+            for (const SignalSourceDescriptor& source : m_signalSources)
+            {
+                signalSources.append(hardwarestream::toJson(source));
+            }
+            response.insert(driverhost::kSignalSourcesField, signalSources);
+            QJsonArray daqDevices;
+            for (const DaqDeviceDescriptor& daqDevice : m_daqDevices)
+            {
+                daqDevices.append(hardwarestream::toJson(daqDevice));
+            }
+            response.insert(driverhost::kDaqDevicesField, daqDevices);
             if (m_stage)
             {
                 response.insert(driverhost::kDefaultXYStageField, m_stage->defaultXYStage());
@@ -1919,6 +2191,10 @@ namespace scopeone::core::internal
         if (!m_provider)
         {
             reply(makeErrorResponse(type, requestId, QStringLiteral("Provider is not initialized")));
+            return;
+        }
+        if (handleStreamRequest(requestId, type, message, reply))
+        {
             return;
         }
 
@@ -2400,6 +2676,29 @@ namespace scopeone::core::internal
     void ProviderDriverRuntime::stopForExit()
     {
         m_acceptFrames.store(false, std::memory_order_release);
+        m_acceptStreams.store(false, std::memory_order_release);
+        if (m_signals)
+        {
+            for (const SignalSourceDescriptor& source : std::as_const(m_signalSources))
+            {
+                m_signals->stopSignal(source.id);
+            }
+            m_signals->setSignalSinks({}, {}, {});
+        }
+        if (m_daq)
+        {
+            for (const DaqDeviceDescriptor& daqDevice : std::as_const(m_daqDevices))
+            {
+                m_daq->stopDaq(daqDevice.id);
+            }
+            m_daq->setDaqSinks({}, {});
+        }
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            m_streams.clear();
+        }
+        m_signals = nullptr;
+        m_daq = nullptr;
         for (const auto& transport : m_cameraTransports)
         {
             if (transport && transport->previewTimer)
@@ -2718,8 +3017,8 @@ int main(int argc, char* argv[])
     QCommandLineOption optDeviceId(QStringLiteral("deviceId"),
                                    QStringLiteral("Provider device ID"),
                                    QStringLiteral("id"));
-    QCommandLineOption optPlugin(QStringLiteral("plugin"),
-                                 QStringLiteral("Provider module path"),
+    QCommandLineOption optDriver(QStringLiteral("driver"),
+                                 QStringLiteral("Driver library path"),
                                  QStringLiteral("path"));
     QCommandLineOption optHostKey(QStringLiteral("hostKey"),
                                   QStringLiteral("DriverHost instance key"),
@@ -2753,7 +3052,7 @@ int main(int argc, char* argv[])
 
     parser.addOption(optProvider);
     parser.addOption(optDeviceId);
-    parser.addOption(optPlugin);
+    parser.addOption(optDriver);
     parser.addOption(optHostKey);
     parser.addOption(optProviderOption);
     parser.addOption(optAdapter);
@@ -2816,11 +3115,11 @@ int main(int argc, char* argv[])
     }
     else
     {
-        const QString pluginPath = parser.value(optPlugin).trimmed();
+        const QString pluginPath = parser.value(optDriver).trimmed();
         const QString hostKey = parser.value(optHostKey).trimmed();
         if (pluginPath.isEmpty() || hostKey.isEmpty())
         {
-            qCritical().noquote() << "External providers require --plugin and --hostKey";
+            qCritical().noquote() << "External providers require --driver and --hostKey";
             return 2;
         }
 

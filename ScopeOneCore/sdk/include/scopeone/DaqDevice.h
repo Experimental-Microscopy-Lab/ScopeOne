@@ -2,11 +2,9 @@
 
 #include <QList>
 #include <QMetaType>
-#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QVector>
-#include <QtPlugin>
 
 #include "scopeone/scopeone_sdk_export.h"
 
@@ -152,27 +150,6 @@ namespace scopeone::core
         QList<DaqAnalogTaskConfig> analogTasks;
         QList<DaqDigitalTaskConfig> digitalTasks;
         QList<DaqTerminalRoute> routes;
-    };
-
-    class SCOPEONE_SDK_EXPORT DaqController : public QObject
-    {
-        Q_OBJECT
-
-    public:
-        explicit DaqController(QObject* parent = nullptr);
-        ~DaqController() override;
-
-        virtual bool start(const DaqSessionConfig& config,
-                           QString* errorMessage = nullptr) = 0;
-        virtual void stop() = 0;
-        virtual DaqState state() const = 0;
-        virtual QString stateMessage() const = 0;
-
-    signals:
-        void stateChanged(scopeone::core::DaqState state,
-                          const QString& message);
-        void controllerError(const QString& errorMessage);
-        void inputDataReady(const scopeone::core::DaqInputChunk& chunk);
     };
 }
 
