@@ -825,21 +825,10 @@ namespace ni_daqmx
             std::atomic<DaqState> m_state{DaqState::Idle};
         };
 
-        SignalParameterDescriptor voltsParameter(const QString& key,
-                                                 const QString& name,
-                                                 double value)
-        {
-            SignalParameterDescriptor parameter;
-            parameter.key = key;
-            parameter.name = name;
-            parameter.type = SignalParameterType::Real;
-            parameter.defaultValue = value;
-            parameter.hasRange = true;
-            parameter.minimum = -10.0;
-            parameter.maximum = 10.0;
-            parameter.suffix = QStringLiteral(" V");
-            return parameter;
-        }
+        // A signal source reads the widest input range, as the scale on the screen does the
+        // zooming; a range per channel was one more setting that restarted the task when changed
+        constexpr double kSourceMinimumVolts = -10.0;
+        constexpr double kSourceMaximumVolts = 10.0;
 
         // The analog inputs of one device that run as signal sources. A device runs one analog
         // input task at a time, so all of them are read by one task, which a thread of the group
@@ -918,8 +907,6 @@ namespace ni_daqmx
                         Member member;
                         member.sourceId = sourceId;
                         member.channel = channel;
-                        member.minimum = config.sourceSettings.value(QStringLiteral("minimumVolts"), -10.0).toDouble();
-                        member.maximum = config.sourceSettings.value(QStringLiteral("maximumVolts"), 10.0).toDouble();
                         member.token = ++m_nextToken;
                         member.endSeconds = elapsedSecondsLocked() + config.durationMs / 1000.0;
                         m_members.push_back(member);
@@ -964,8 +951,6 @@ namespace ni_daqmx
             {
                 QString sourceId;
                 QString channel;
-                double minimum{-10.0};
-                double maximum{10.0};
                 quint64 token{0};
                 double endSeconds{0.0};
             };
@@ -1141,7 +1126,7 @@ namespace ni_daqmx
                     const QByteArray channel = member.channel.toLocal8Bit();
                     result = m_api.createAiVoltage(handle, channel.constData(), "",
                                                    kDefaultTerminalConfiguration,
-                                                   member.minimum, member.maximum, kVolts, nullptr);
+                                                   kSourceMinimumVolts, kSourceMaximumVolts, kVolts, nullptr);
                 }
                 if (result >= 0)
                 {
@@ -1341,10 +1326,6 @@ namespace ni_daqmx
                     source.quantity = QStringLiteral("Voltage");
                     source.unit = QStringLiteral("V");
                     source.streamType = SignalStreamType::TimeSeries;
-                    source.parameters.append(voltsParameter(
-                        QStringLiteral("minimumVolts"), QStringLiteral("Minimum"), -10.0));
-                    source.parameters.append(voltsParameter(
-                        QStringLiteral("maximumVolts"), QStringLiteral("Maximum"), 10.0));
                     m_sources.append(source);
                     m_sourceChannels.insert(source.id, channel.physicalName);
                     m_sourceDevices.insert(source.id, device.name);

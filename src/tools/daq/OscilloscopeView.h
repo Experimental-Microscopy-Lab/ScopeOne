@@ -67,6 +67,9 @@ namespace scopeone::ui
         void appendChunk(const scopeone::core::TimeSeriesChunk& chunk);
         void clear();
         bool displayedRange(int channel, double* minimum, double* maximum) const;
+        double displayedFrequency(int channel) const;
+        // A message on the screen, such as the error that stopped a source; empty removes it
+        void setMessage(const QString& message);
 
         static QColor channelColor(int index);
         static QString formatValue(double value, const QString& unit);
@@ -75,6 +78,12 @@ namespace scopeone::ui
         void runningChanged(bool running);
         // The wheel over the screen turns the timebase, positive steps to a longer one
         void timebaseStepRequested(int steps);
+        // The wheel over a channel marker turns its scale, positive steps to a larger one
+        void channelScaleStepRequested(int channel, int steps);
+        // The markers dragged on the screen, or the trigger level turned with Shift and the wheel
+        void triggerLevelChanged(double level);
+        void triggerPositionChanged(double position);
+        void channelOffsetChanged(int channel, double offset);
 
     protected:
         void paintEvent(QPaintEvent* event) override;
@@ -90,6 +99,21 @@ namespace scopeone::ui
             Triggered,
             Auto,
             Ready
+        };
+
+        enum class Handle
+        {
+            None,
+            Cursor,
+            TriggerLevel,
+            TriggerPosition,
+            ChannelOffset
+        };
+
+        struct Hit
+        {
+            Handle handle{Handle::None};
+            int index{-1};
         };
 
         // The extremes and sums of the samples in one slice of time, a fixed fraction of the screen
@@ -114,6 +138,7 @@ namespace scopeone::ui
             QVector<double> times;
             QVector<double> values;
             qsizetype begin{0};
+            double interval{0.0};
             std::deque<Bucket> buckets;
 
             bool empty() const;
@@ -162,6 +187,11 @@ namespace scopeone::ui
         void processTrigger();
         void buildFrame(double start, double end, double triggerTime);
         void resetTriggerSearch();
+        void updateHysteresis();
+        double triggerY() const;
+        double channelTagY(int channel) const;
+        double divisionsAt(double y) const;
+        Hit hitTest(const QPointF& point) const;
         double divisionsOf(int channel, double value) const;
         void drawGrid(QPainter& painter) const;
         void drawTraces(QPainter& painter) const;
@@ -188,6 +218,9 @@ namespace scopeone::ui
         double m_scanTime{-std::numeric_limits<double>::infinity()};
         QElapsedTimer m_sinceTrigger;
         QElapsedTimer m_sinceFrequency;
+        QElapsedTimer m_sinceHysteresis;
+        double m_triggerHysteresis{std::numeric_limits<double>::quiet_NaN()};
+        QString m_message;
         std::array<double, kChannelCount> m_frequencies{};
         QPixmap m_gridCache;
         QRectF m_gridScreen;
@@ -196,7 +229,7 @@ namespace scopeone::ui
         int m_cursorChannel{0};
         // Two time cursors as fractions of the screen width, then two level cursors in divisions
         std::array<double, 4> m_cursors{0.3, 0.7, 2.0, -2.0};
-        int m_dragCursor{-1};
+        Hit m_drag;
         int m_wheelAngle{0};
         QRectF m_screen;
     };

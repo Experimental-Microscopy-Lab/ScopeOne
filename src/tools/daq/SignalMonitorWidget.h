@@ -105,7 +105,7 @@ namespace scopeone::ui
         QPushButton* m_runButton{nullptr};
         QPushButton* m_singleButton{nullptr};
         QPushButton* m_autoScaleButton{nullptr};
-        QCheckBox* m_cursorsCheck{nullptr};
+        QGroupBox* m_cursorsGroup{nullptr};
         QComboBox* m_cursorChannelCombo{nullptr};
 
         QGroupBox* m_scanGroup{nullptr};

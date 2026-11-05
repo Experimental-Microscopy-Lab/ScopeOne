@@ -100,6 +100,21 @@ namespace scopeone::ui
             spin->setStepType(QAbstractSpinBox::AdaptiveDecimalStepType);
             return spin;
         }
+
+        // A checkable group that is off shows only its title, so the panel holds what is in use
+        void showContents(QGroupBox* box)
+        {
+            for (QWidget* child : box->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+            {
+                child->setVisible(box->isChecked());
+            }
+        }
+
+        void collapseWhenOff(QGroupBox* box)
+        {
+            QObject::connect(box, &QGroupBox::toggled, box, [box]() { showContents(box); });
+            showContents(box);
+        }
     }
 
     SignalMonitorWidget::SignalMonitorWidget(scopeone::core::ScopeOneCore* core,
@@ -132,7 +147,9 @@ namespace scopeone::ui
         m_singleButton = new QPushButton(tr("Single"), controlBox);
         m_singleButton->setToolTip(tr("Take the next triggered screen and stop"));
         m_autoScaleButton = new QPushButton(tr("Auto Scale"), controlBox);
-        m_autoScaleButton->setToolTip(tr("Fit the scale and offset of each channel to the screen"));
+        m_autoScaleButton->setToolTip(tr("Fit the scale and offset of each channel to the screen, put "
+                                         "three periods of the trigger channel on it and trigger in "
+                                         "the middle of its signal"));
         controlButtons->addWidget(m_runButton);
         controlButtons->addWidget(m_singleButton);
         controlButtons->addWidget(m_autoScaleButton);
@@ -201,14 +218,14 @@ namespace scopeone::ui
             panelLayout->addWidget(createChannelBox(index));
         }
 
-        auto* displayBox = new QGroupBox(tr("Cursors"), panel);
-        auto* displayForm = new QFormLayout(displayBox);
-        m_cursorsCheck = new QCheckBox(tr("Show cursors"), displayBox);
-        m_cursorsCheck->setToolTip(tr("Drag the cursors on the screen"));
-        displayForm->addRow(m_cursorsCheck);
-        m_cursorChannelCombo = channelCombo(displayBox);
-        displayForm->addRow(tr("Channel"), m_cursorChannelCombo);
-        panelLayout->addWidget(displayBox);
+        m_cursorsGroup = new QGroupBox(tr("Cursors"), panel);
+        m_cursorsGroup->setCheckable(true);
+        m_cursorsGroup->setChecked(false);
+        m_cursorsGroup->setToolTip(tr("Drag the cursors on the screen"));
+        auto* cursorsForm = new QFormLayout(m_cursorsGroup);
+        m_cursorChannelCombo = channelCombo(m_cursorsGroup);
+        cursorsForm->addRow(tr("Channel"), m_cursorChannelCombo);
+        panelLayout->addWidget(m_cursorsGroup);
 
         m_scanGroup = new QGroupBox(tr("Scan image from CH1"), panel);
         m_scanGroup->setCheckable(true);
@@ -259,6 +276,12 @@ namespace scopeone::ui
         panelLayout->addStretch(1);
 
         loadSettings();
+        collapseWhenOff(m_cursorsGroup);
+        collapseWhenOff(m_scanGroup);
+        for (const ChannelControls& channel : m_channels)
+        {
+            collapseWhenOff(channel.box);
+        }
 
         m_restartTimer = new QTimer(this);
         m_restartTimer->setSingleShot(true);
@@ -321,7 +344,29 @@ namespace scopeone::ui
         connect(m_triggerChannelCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::updateUnits);
         connect(m_triggerSlopeCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::applyView);
         connect(m_triggerLevelSpin, &QDoubleSpinBox::valueChanged, this, &SignalMonitorWidget::applyView);
-        connect(m_cursorsCheck, &QCheckBox::toggled, this, &SignalMonitorWidget::applyView);
+        connect(m_cursorsGroup, &QGroupBox::toggled, this, &SignalMonitorWidget::applyView);
+        // What is dragged or turned on the screen goes back to the controls, which the view
+        // already follows
+        connect(m_view, &OscilloscopeView::channelScaleStepRequested, this, [this](int index, int steps)
+        {
+            QComboBox* const scale = m_channels[index].scale;
+            scale->setCurrentIndex(std::clamp(scale->currentIndex() + steps, 0, scale->count() - 1));
+        });
+        connect(m_view, &OscilloscopeView::triggerLevelChanged, this, [this](double level)
+        {
+            const QSignalBlocker blocker(m_triggerLevelSpin);
+            m_triggerLevelSpin->setValue(level);
+        });
+        connect(m_view, &OscilloscopeView::triggerPositionChanged, this, [this](double position)
+        {
+            const QSignalBlocker blocker(m_triggerPositionSpin);
+            m_triggerPositionSpin->setValue(position * 100.0);
+        });
+        connect(m_view, &OscilloscopeView::channelOffsetChanged, this, [this](int index, double offset)
+        {
+            const QSignalBlocker blocker(m_channels[index].offset);
+            m_channels[index].offset->setValue(offset);
+        });
         connect(m_cursorChannelCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::applyView);
 
         connect(m_core, &scopeone::core::ScopeOneCore::signalSourcesChanged,
@@ -549,6 +594,7 @@ namespace scopeone::ui
                 connect(edit, &QLineEdit::editingFinished, this, &SignalMonitorWidget::scheduleRestart);
             }
         }
+        showContents(channel.box);
         updateControls();
     }
 
@@ -593,7 +639,7 @@ namespace scopeone::ui
                            static_cast<ScopeTriggerSlope>(m_triggerSlopeCombo->currentData().toInt()),
                            m_triggerLevelSpin->value(),
                            m_triggerPositionSpin->value() / 100.0);
-        m_view->setCursors(m_cursorsCheck->isChecked(), m_cursorChannelCombo->currentIndex());
+        m_view->setCursors(m_cursorsGroup->isChecked(), m_cursorChannelCombo->currentIndex());
     }
 
     bool SignalMonitorWidget::startAcquisition()
@@ -652,6 +698,7 @@ namespace scopeone::ui
                 qWarning().noquote() << errorMessage;
                 stopAcquisition();
                 m_statusLabel->setText(errorMessage);
+                m_view->setMessage(errorMessage);
                 return false;
             }
             if (!m_activeSources.contains(sourceId))
@@ -688,6 +735,7 @@ namespace scopeone::ui
     void SignalMonitorWidget::run()
     {
         m_restartTimer->stop();
+        m_view->setMessage({});
         m_acquiring = startAcquisition();
         m_view->setRunning(m_acquiring);
         updateControls();
@@ -821,6 +869,17 @@ namespace scopeone::ui
                 m_triggerLevelSpin->setValue((minimum + maximum) / 2.0);
             }
         }
+        // Three periods of the trigger channel on the screen, triggered in the middle, as the
+        // autoset of a scope; a signal with no period found keeps the timebase
+        const QSignalBlocker modeBlocker(m_triggerModeCombo);
+        const QSignalBlocker positionBlocker(m_triggerPositionSpin);
+        m_triggerModeCombo->setCurrentIndex(m_triggerModeCombo->findData(static_cast<int>(ScopeTriggerMode::Auto)));
+        m_triggerPositionSpin->setValue(50.0);
+        const double frequency = m_view->displayedFrequency(m_triggerChannelCombo->currentIndex());
+        if (std::isfinite(frequency) && frequency > 0.0)
+        {
+            selectNearest(m_timebaseCombo, 3.0 / frequency / OscilloscopeView::kHorizontalDivisions);
+        }
         applyView();
     }
 
@@ -846,8 +905,11 @@ namespace scopeone::ui
             return;
         }
         m_sourceMessages.insert(sourceId, message);
+        // The error that stops the run is shown on the screen, where it is not missed
         if (state == scopeone::core::SignalSourceState::Error && m_acquiring)
         {
+            const QString name = descriptor(sourceId).name;
+            m_view->setMessage(QStringLiteral("%1: %2").arg(name.isEmpty() ? sourceId : name, message));
             stop();
         }
         const bool active = state == scopeone::core::SignalSourceState::Starting
@@ -994,7 +1056,7 @@ namespace scopeone::ui
 {
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.signal_monitor"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Signal Monitor")),
-         QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Acquisition")), ToolWindowMode::ModelessSingleton},
+         {}, ToolWindowMode::ModelessSingleton},
         [](ScopeOneToolContext& context, QWidget* parent)
         {
             return new SignalMonitorWidget(&context.core(), context, parent);

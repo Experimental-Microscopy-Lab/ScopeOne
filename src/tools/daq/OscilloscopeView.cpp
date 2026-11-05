@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace scopeone::ui
 {
@@ -34,6 +35,11 @@ namespace scopeone::ui
         constexpr int kRefreshMilliseconds = 33;
         constexpr qint64 kAutoTriggerMilliseconds = 200;
         constexpr qint64 kFrequencyMilliseconds = 250;
+        // The newest raw samples of the trigger channel its noise is measured on, a few times a second
+        constexpr qsizetype kNoiseSamples = 4096;
+        constexpr qint64 kHysteresisMilliseconds = 250;
+        // How far from a marker the mouse still takes it
+        constexpr double kReach = 9.0;
         // A triggered screen whose part after the edge takes longer than this is drawn as it fills
         constexpr double kProgressiveSeconds = 0.1;
     }
@@ -73,6 +79,7 @@ namespace scopeone::ui
         // No reserve here: reserving the exact new size on every chunk made each chunk reallocate
         // and copy the whole history, which froze the screen on a long timebase
         const qsizetype count = chunk.values.size();
+        interval = chunk.sampleIntervalSeconds;
         for (qsizetype index = 0; index < count; ++index)
         {
             const double time = chunk.startTimeSeconds + static_cast<double>(index) * chunk.sampleIntervalSeconds;
@@ -147,11 +154,13 @@ namespace scopeone::ui
     {
         setMinimumSize(480, 320);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMouseTracking(true);
         auto* timer = new QTimer(this);
         connect(timer, &QTimer::timeout, this, &OscilloscopeView::refresh);
         timer->start(kRefreshMilliseconds);
         m_sinceTrigger.start();
         m_sinceFrequency.start();
+        m_sinceHysteresis.start();
         m_frequencies.fill(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -196,6 +205,7 @@ namespace scopeone::ui
         {
             m_triggerArmed = false;
             m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
+            m_triggerHysteresis = std::numeric_limits<double>::quiet_NaN();
         }
         m_mode = mode;
         m_triggerChannel = channel;
@@ -310,6 +320,18 @@ namespace scopeone::ui
         return true;
     }
 
+    double OscilloscopeView::displayedFrequency(int channel) const
+    {
+        const Measurement& measurement = m_frame.measurements[channel];
+        return m_frame.valid && measurement.valid ? measurement.frequency : std::numeric_limits<double>::quiet_NaN();
+    }
+
+    void OscilloscopeView::setMessage(const QString& message)
+    {
+        m_message = message;
+        update();
+    }
+
     QColor OscilloscopeView::channelColor(int index)
     {
         static const std::array<QColor, kChannelCount> colors{
@@ -393,8 +415,8 @@ namespace scopeone::ui
     }
 
     // Scans the trigger channel once over the samples that arrived, from where the last scan
-    // ended. The trigger re-arms only after the signal moves a tenth of a division past the level,
-    // so noise on a slow edge does not trigger twice. An edge whose screen has been received is
+    // ended. The trigger re-arms only after the signal moves the hysteresis past the level, so
+    // noise on a slow edge does not trigger twice. An edge whose screen has been received is
     // shown; an edge still waiting for the part after it is kept and, on a slow timebase, drawn
     // as the samples come in, as a scope does, and edges are not looked for until it is complete.
     void OscilloscopeView::processTrigger()
@@ -417,7 +439,11 @@ namespace scopeone::ui
         const Trace& trace = m_traces[m_triggerChannel];
         if (m_channels[m_triggerChannel].enabled && !trace.empty())
         {
-            const double hysteresis = 0.1 * m_channels[m_triggerChannel].scale;
+            if (!std::isfinite(m_triggerHysteresis) || m_sinceHysteresis.elapsed() >= kHysteresisMilliseconds)
+            {
+                updateHysteresis();
+            }
+            const double hysteresis = m_triggerHysteresis;
             const bool rising = m_slope == ScopeTriggerSlope::Rising;
             // The time before the edge may be held only by the buckets
             qsizetype index = trace.indexAtOrAfter(
@@ -670,6 +696,121 @@ namespace scopeone::ui
         m_triggerArmed = false;
         m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
         m_scanTime = -std::numeric_limits<double>::infinity();
+        m_triggerHysteresis = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    // A fixed tenth of a division let the noise on a slow edge trigger on the other slope, so the
+    // picture jumped, and on a signal smaller than that never re-armed, so nothing was shown. The
+    // hysteresis now is six standard deviations of the noise, at most 40 % of the peak to peak so
+    // a real edge still re-arms. The noise is taken from the second difference, which cancels a
+    // slow signal, by its median absolute deviation, which ignores the edges.
+    void OscilloscopeView::updateHysteresis()
+    {
+        m_sinceHysteresis.restart();
+        const Trace& trace = m_traces[m_triggerChannel];
+        const double scale = m_channels[m_triggerChannel].scale;
+        const qsizetype count = std::min(kNoiseSamples, trace.times.size() - trace.begin);
+        if (count < 8)
+        {
+            m_triggerHysteresis = 0.1 * scale;
+            return;
+        }
+        const qsizetype first = trace.times.size() - count;
+        std::vector<double> differences(static_cast<std::size_t>(count - 2));
+        double minimum = trace.values[first];
+        double maximum = minimum;
+        for (qsizetype index = 0; index < count - 2; ++index)
+        {
+            const double* value = trace.values.constData() + first + index;
+            differences[static_cast<std::size_t>(index)] = value[2] - 2.0 * value[1] + value[0];
+            minimum = std::min({minimum, value[1], value[2]});
+            maximum = std::max({maximum, value[1], value[2]});
+        }
+        const auto middle = differences.begin() + static_cast<std::ptrdiff_t>(differences.size() / 2);
+        std::nth_element(differences.begin(), middle, differences.end());
+        const double median = *middle;
+        for (double& difference : differences)
+        {
+            difference = std::abs(difference - median);
+        }
+        std::nth_element(differences.begin(), middle, differences.end());
+        const double sigma = 1.4826 * *middle / std::sqrt(6.0);
+        m_triggerHysteresis = std::min(std::max(6.0 * sigma, 0.02 * scale), 0.4 * (maximum - minimum));
+    }
+
+    double OscilloscopeView::divisionsAt(double y) const
+    {
+        const double divisionHeight = m_screen.height() / kVerticalDivisions;
+        return std::clamp((m_screen.center().y() - y) / divisionHeight,
+                          -kVerticalDivisions / 2.0, kVerticalDivisions / 2.0);
+    }
+
+    double OscilloscopeView::triggerY() const
+    {
+        const double divisionHeight = m_screen.height() / kVerticalDivisions;
+        return std::clamp(m_screen.center().y() - divisionsOf(m_triggerChannel, m_triggerLevel) * divisionHeight,
+                          m_screen.top(), m_screen.bottom());
+    }
+
+    // The level that zero, or with AC coupling the mean, is drawn at
+    double OscilloscopeView::channelTagY(int channel) const
+    {
+        const double divisionHeight = m_screen.height() / kVerticalDivisions;
+        return std::clamp(m_screen.center().y()
+                              - m_channels[channel].offset / m_channels[channel].scale * divisionHeight,
+                          m_screen.top(), m_screen.bottom());
+    }
+
+    // The trigger marker right of the screen, the trigger position above it, the channel markers
+    // left of it and the cursors on it
+    OscilloscopeView::Hit OscilloscopeView::hitTest(const QPointF& point) const
+    {
+        if (triggerShown())
+        {
+            if (point.x() >= m_screen.right() && point.x() <= m_screen.right() + 30.0
+                && std::abs(point.y() - triggerY()) <= kReach)
+            {
+                return {Handle::TriggerLevel, m_triggerChannel};
+            }
+            const double x = m_screen.left() + m_triggerPosition * m_screen.width();
+            if (point.y() <= m_screen.top() && point.y() >= m_screen.top() - 16.0 && std::abs(point.x() - x) <= kReach)
+            {
+                return {Handle::TriggerPosition, 0};
+            }
+        }
+        if (point.x() <= m_screen.left() && point.x() >= m_screen.left() - 30.0)
+        {
+            Hit hit;
+            double nearest = kReach;
+            for (int channel = 0; channel < kChannelCount; ++channel)
+            {
+                const double distance = std::abs(point.y() - channelTagY(channel));
+                if (m_channels[channel].enabled && distance <= nearest)
+                {
+                    nearest = distance;
+                    hit = {Handle::ChannelOffset, channel};
+                }
+            }
+            return hit;
+        }
+        if (m_cursorsVisible && m_screen.contains(point))
+        {
+            Hit hit;
+            double nearest = kReach;
+            for (int cursor = 0; cursor < 4; ++cursor)
+            {
+                const QPointF position = cursorPoint(cursor);
+                const double distance = cursor < 2 ? std::abs(point.x() - position.x())
+                                                   : std::abs(point.y() - position.y());
+                if (distance < nearest)
+                {
+                    nearest = distance;
+                    hit = {Handle::Cursor, cursor};
+                }
+            }
+            return hit;
+        }
+        return {};
     }
 
     // The value of a channel in divisions above the centre line; with AC coupling the mean of
@@ -743,12 +884,30 @@ namespace scopeone::ui
             }
         }
         painter.setPen(stateColor);
-        painter.drawText(m_screen.adjusted(6.0, 4.0, -6.0, -4.0), Qt::AlignTop | Qt::AlignRight, stateText);
+        const QRectF inside = m_screen.adjusted(6.0, 4.0, -6.0, -4.0);
+        painter.drawText(inside, Qt::AlignTop | Qt::AlignRight, stateText);
+        // The rate the samples really come at, which a DAQ device may hold below the one asked for
+        for (int channel = 0; channel < kChannelCount; ++channel)
+        {
+            if (m_channels[channel].enabled && m_traces[channel].interval > 0.0)
+            {
+                painter.setPen(kTextColor);
+                painter.drawText(inside, Qt::AlignTop | Qt::AlignLeft,
+                                 formatValue(1.0 / m_traces[channel].interval, QStringLiteral("S/s")));
+                break;
+            }
+        }
 
-        if (!m_frame.valid)
+        if (!m_message.isEmpty())
+        {
+            painter.setPen(kStoppedColor);
+            painter.drawText(inside, (m_frame.valid ? Qt::AlignBottom | Qt::AlignLeft : Qt::AlignCenter)
+                                 | Qt::TextWordWrap, m_message);
+        }
+        else if (!m_frame.valid)
         {
             painter.setPen(kTextColor);
-            painter.drawText(m_screen, Qt::AlignCenter, tr("No signal data"));
+            painter.drawText(m_screen, Qt::AlignCenter, m_running ? tr("Waiting for samples") : tr("Press Run"));
         }
         drawReadouts(painter, m_screen.bottom() + 8.0);
     }
@@ -875,8 +1034,6 @@ namespace scopeone::ui
 
     void OscilloscopeView::drawMarkers(QPainter& painter) const
     {
-        const double divisionHeight = m_screen.height() / kVerticalDivisions;
-        const double centreY = m_screen.center().y();
         painter.setRenderHint(QPainter::Antialiasing, true);
         for (int channel = 0; channel < kChannelCount; ++channel)
         {
@@ -884,10 +1041,7 @@ namespace scopeone::ui
             {
                 continue;
             }
-            // The level that zero, or with AC coupling the mean, is drawn at
-            const double y = std::clamp(centreY - m_channels[channel].offset / m_channels[channel].scale
-                                                    * divisionHeight,
-                                        m_screen.top(), m_screen.bottom());
+            const double y = channelTagY(channel);
             const double right = m_screen.left() - 3.0;
             const QPolygonF tag({QPointF(right - 24.0, y - 7.0), QPointF(right - 6.0, y - 7.0),
                                  QPointF(right, y), QPointF(right - 6.0, y + 7.0),
@@ -902,8 +1056,7 @@ namespace scopeone::ui
 
         if (triggerShown())
         {
-            const double level = centreY - divisionsOf(m_triggerChannel, m_triggerLevel) * divisionHeight;
-            const double y = std::clamp(level, m_screen.top(), m_screen.bottom());
+            const double y = triggerY();
             const double left = m_screen.right() + 3.0;
             const QPolygonF tag({QPointF(left, y), QPointF(left + 6.0, y - 7.0),
                                  QPointF(left + 24.0, y - 7.0), QPointF(left + 24.0, y + 7.0),
@@ -1048,61 +1201,95 @@ namespace scopeone::ui
 
     void OscilloscopeView::mousePressEvent(QMouseEvent* event)
     {
-        m_dragCursor = -1;
-        if (!m_cursorsVisible || !m_screen.contains(event->position()))
-        {
-            return;
-        }
-        double nearest = 8.0;
-        for (int cursor = 0; cursor < 4; ++cursor)
-        {
-            const QPointF point = cursorPoint(cursor);
-            const double distance = cursor < 2 ? std::abs(event->position().x() - point.x())
-                                               : std::abs(event->position().y() - point.y());
-            if (distance < nearest)
-            {
-                nearest = distance;
-                m_dragCursor = cursor;
-            }
-        }
+        m_drag = event->button() == Qt::LeftButton ? hitTest(event->position()) : Hit{};
     }
 
     void OscilloscopeView::mouseMoveEvent(QMouseEvent* event)
     {
-        if (m_dragCursor < 0)
+        const QPointF point = event->position();
+        if (m_drag.handle == Handle::None)
         {
+            const Hit hit = hitTest(point);
+            const bool horizontal = hit.handle == Handle::TriggerPosition
+                || (hit.handle == Handle::Cursor && hit.index < 2);
+            if (hit.handle == Handle::None)
+            {
+                unsetCursor();
+            }
+            else
+            {
+                setCursor(horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor);
+            }
             return;
         }
-        if (m_dragCursor < 2)
+        const double fraction = std::clamp((point.x() - m_screen.left()) / m_screen.width(), 0.0, 1.0);
+        const double divisions = divisionsAt(point.y());
+        switch (m_drag.handle)
         {
-            m_cursors[m_dragCursor] = std::clamp(
-                (event->position().x() - m_screen.left()) / m_screen.width(), 0.0, 1.0);
+        case Handle::Cursor:
+            m_cursors[m_drag.index] = m_drag.index < 2 ? fraction : divisions;
+            break;
+        case Handle::TriggerLevel:
+        {
+            const ScopeChannel& channel = m_channels[m_triggerChannel];
+            const double mean = channel.acCoupled && m_frame.measurements[m_triggerChannel].valid
+                                    ? m_frame.measurements[m_triggerChannel].mean
+                                    : 0.0;
+            m_triggerLevel = divisions * channel.scale - channel.offset + mean;
+            m_dirty = true;
+            emit triggerLevelChanged(m_triggerLevel);
+            break;
         }
-        else
-        {
-            const double divisionHeight = m_screen.height() / kVerticalDivisions;
-            m_cursors[m_dragCursor] = std::clamp(
-                (m_screen.center().y() - event->position().y()) / divisionHeight,
-                -kVerticalDivisions / 2.0, kVerticalDivisions / 2.0);
+        case Handle::TriggerPosition:
+            m_triggerPosition = fraction;
+            m_dirty = true;
+            emit triggerPositionChanged(fraction);
+            break;
+        case Handle::ChannelOffset:
+            m_channels[m_drag.index].offset = divisions * m_channels[m_drag.index].scale;
+            emit channelOffsetChanged(m_drag.index, m_channels[m_drag.index].offset);
+            break;
+        case Handle::None:
+            break;
         }
         update();
     }
 
     void OscilloscopeView::mouseReleaseEvent(QMouseEvent*)
     {
-        m_dragCursor = -1;
+        m_drag = {};
     }
 
-    // Wheel up zooms in to a shorter timebase; a touchpad's small steps add up to whole notches
+    // Wheel up zooms in: over a channel marker to a smaller scale, elsewhere to a shorter
+    // timebase; with Shift or over the trigger marker it moves the trigger level a tenth of a
+    // division. A touchpad's small steps add up to whole notches.
     void OscilloscopeView::wheelEvent(QWheelEvent* event)
     {
-        m_wheelAngle += event->angleDelta().y();
+        // Shift turns the wheel sideways on some systems
+        const QPoint angle = event->angleDelta();
+        m_wheelAngle += angle.y() != 0 ? angle.y() : angle.x();
         const int notches = m_wheelAngle / 120;
-        if (notches != 0)
+        event->accept();
+        if (notches == 0)
         {
-            m_wheelAngle -= notches * 120;
+            return;
+        }
+        m_wheelAngle -= notches * 120;
+        const Hit hit = hitTest(event->position());
+        if ((event->modifiers() & Qt::ShiftModifier) || hit.handle == Handle::TriggerLevel)
+        {
+            m_triggerLevel += notches * 0.1 * m_channels[m_triggerChannel].scale;
+            m_dirty = true;
+            update();
+            emit triggerLevelChanged(m_triggerLevel);
+        }
+        else if (hit.handle == Handle::ChannelOffset)
+        {
+            emit channelScaleStepRequested(hit.index, -notches);
+        }
+        else
+        {
             emit timebaseStepRequested(-notches);
         }
-        event->accept();
     }
 }
