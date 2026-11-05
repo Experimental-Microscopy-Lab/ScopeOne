@@ -222,22 +222,52 @@ target_compile_definitions(ScopeOneCore PRIVATE
 # Turning them off builds the plain CPU Core, which neither links nor ships CUDA or ONNX Runtime.
 set(_with_cuda OFF)
 set(_with_inference OFF)
+# Why a module that is turned on was left out, for the summary of the build scripts
+set(_cuda_reason "")
+set(_inference_reason "")
 option(SCOPEONE_ENABLE_CUDA "Build the CUDA processing modules into Core when nvcc is available" ON)
 option(SCOPEONE_ENABLE_INFERENCE "Build the ONNX Runtime processing module into Core when ONNX Runtime is available" ON)
 if (SCOPEONE_ENABLE_CUDA)
+    # An nvcc that was uninstalled since the last configure is looked up again
+    if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND NOT EXISTS "${SCOPEONE_CUDA_NVCC_EXECUTABLE}")
+        unset(SCOPEONE_CUDA_NVCC_EXECUTABLE CACHE)
+        unset(CMAKE_CUDA_COMPILER CACHE)
+    endif ()
     find_program(SCOPEONE_CUDA_NVCC_EXECUTABLE nvcc)
+    if (NOT SCOPEONE_CUDA_NVCC_EXECUTABLE)
+        set(_cuda_reason "nvcc was not found on the path")
+        message(STATUS "${_cuda_reason}; building Core without CUDA")
+    endif ()
 else ()
     unset(SCOPEONE_CUDA_NVCC_EXECUTABLE CACHE)
+    set(_cuda_reason "turned off with SCOPEONE_ENABLE_CUDA")
 endif ()
 if (SCOPEONE_CUDA_NVCC_EXECUTABLE)
-    set(CMAKE_CUDA_COMPILER "${SCOPEONE_CUDA_NVCC_EXECUTABLE}" CACHE FILEPATH
-            "CUDA compiler selected by the environment" FORCE)
-    get_filename_component(_cuda_toolkit_root "${CMAKE_CUDA_COMPILER}" DIRECTORY)
-    get_filename_component(_cuda_toolkit_root "${_cuda_toolkit_root}" DIRECTORY)
-    set(CUDAToolkit_ROOT "${_cuda_toolkit_root}" CACHE PATH
-            "CUDA toolkit selected by the compiler" FORCE)
-    enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
+    # A CUDA that cannot build here, such as one installed before Visual Studio and so without its
+    # MSBuild integration, or one too old for the MSVC version, left the configure failing.
+    # check_language tries it in a separate project first, and CUDA is left out when it fails.
+    if (NOT CMAKE_CUDA_COMPILER)
+        set(ENV{CUDACXX} "${SCOPEONE_CUDA_NVCC_EXECUTABLE}")
+        include(CheckLanguage)
+        check_language(CUDA)
+    endif ()
+    if (CMAKE_CUDA_COMPILER)
+        get_filename_component(_cuda_toolkit_root "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+        get_filename_component(_cuda_toolkit_root "${_cuda_toolkit_root}" DIRECTORY)
+        set(CUDAToolkit_ROOT "${_cuda_toolkit_root}" CACHE PATH
+                "CUDA toolkit selected by the compiler" FORCE)
+        enable_language(CUDA)
+        find_package(CUDAToolkit)
+        if (NOT TARGET CUDA::cufft)
+            set(_cuda_reason "the CUDA toolkit at ${_cuda_toolkit_root} has no cuFFT")
+            message(STATUS "${_cuda_reason}; building Core without CUDA")
+        endif ()
+    else ()
+        set(_cuda_reason "nvcc at ${SCOPEONE_CUDA_NVCC_EXECUTABLE} cannot build with this compiler, often a CUDA installed before Visual Studio or too old for it")
+        message(STATUS "${_cuda_reason}; building Core without CUDA")
+    endif ()
+endif ()
+if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND TARGET CUDA::cufft)
     set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING "Target CUDA architectures")
     target_sources(ScopeOneCore PRIVATE
             src/cuda/CudaKernels.cu
@@ -319,11 +349,16 @@ if (SCOPEONE_ENABLE_INFERENCE AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRAR
         list(APPEND SCOPEONE_RUNTIME_DLLS ${_onnxruntime_dlls})
     endif ()
 elseif (SCOPEONE_ENABLE_INFERENCE)
-    message(STATUS "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}; building Core without ONNX inference")
+    set(_inference_reason "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}")
+    message(STATUS "${_inference_reason}; building Core without ONNX inference")
+else ()
+    set(_inference_reason "turned off with SCOPEONE_ENABLE_INFERENCE")
 endif ()
 # What this configure built in, for the build scripts to report
 set(SCOPEONE_BUILT_WITH_CUDA "${_with_cuda}" CACHE INTERNAL "")
 set(SCOPEONE_BUILT_WITH_INFERENCE "${_with_inference}" CACHE INTERNAL "")
+set(SCOPEONE_CUDA_SKIP_REASON "${_cuda_reason}" CACHE INTERNAL "")
+set(SCOPEONE_INFERENCE_SKIP_REASON "${_inference_reason}" CACHE INTERNAL "")
 target_include_directories(ScopeOneCore
         PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

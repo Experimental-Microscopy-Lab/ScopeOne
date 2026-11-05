@@ -246,10 +246,13 @@ run cp -L "$DEMO_ADAPTER" "$UTILITIES_ADAPTER" "$ROOT_DIR/build/"
 # Core builds the CUDA and ONNX modules only when it finds their toolkits, so a missing one
 # leaves them out without failing the build
 core_module() {
-  local value
-  value="$(sed -n "s/^$1:INTERNAL=//p" "$CORE_DIR/build/CMakeCache.txt")"
+  local value reason
+  value="$(sed -n "s/^SCOPEONE_BUILT_WITH_$1:INTERNAL=//p" "$CORE_DIR/build/CMakeCache.txt")"
+  reason="$(sed -n "s/^SCOPEONE_$1_SKIP_REASON:INTERNAL=//p" "$CORE_DIR/build/CMakeCache.txt")"
   if [[ "$value" == ON ]]; then
     printf '%son%s' "$GREEN" "$RESET"
+  elif [[ -n "$reason" ]]; then
+    printf '%soff%s (%s)' "$YELLOW" "$RESET" "$reason"
   else
     printf '%soff%s' "$YELLOW" "$RESET"
   fi
@@ -258,4 +261,5 @@ core_module() {
 step "Done"
 echo "GUI executable: $ROOT_DIR/build/ScopeOne"
 echo "Demo configuration: $ROOT_DIR/config/MMConfig_demo.cfg"
-echo "Core modules: CUDA: $(core_module SCOPEONE_BUILT_WITH_CUDA), ONNX: $(core_module SCOPEONE_BUILT_WITH_INFERENCE)"
+echo "CUDA: $(core_module CUDA)"
+echo "ONNX: $(core_module INFERENCE)"

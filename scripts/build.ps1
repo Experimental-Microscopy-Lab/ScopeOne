@@ -762,19 +762,20 @@ else {
     # Core builds the CUDA and ONNX modules only when it finds their toolkits, so a missing one
     # leaves them out without failing the build
     if (Test-Path $coreCachePath) {
-        Write-Host -NoNewline "Core modules: CUDA: "
-        foreach ($module in @(
-                @{ Key = "SCOPEONE_BUILT_WITH_CUDA"; Next = ", ONNX: " },
-                @{ Key = "SCOPEONE_BUILT_WITH_INFERENCE"; Next = "" })) {
-            if ((Get-CMakeCacheValue -CachePath $coreCachePath -Key $module.Key) -eq "ON") {
-                Write-Host -NoNewline "on" -ForegroundColor Green
+        foreach ($module in @(@{ Label = "CUDA"; Key = "CUDA" }, @{ Label = "ONNX"; Key = "INFERENCE" })) {
+            Write-Host -NoNewline "$($module.Label): "
+            $reason = Get-CMakeCacheValue -CachePath $coreCachePath -Key "SCOPEONE_$($module.Key)_SKIP_REASON"
+            if ((Get-CMakeCacheValue -CachePath $coreCachePath -Key "SCOPEONE_BUILT_WITH_$($module.Key)") -eq "ON") {
+                Write-Host "on" -ForegroundColor Green
+            }
+            elseif ($reason) {
+                Write-Host -NoNewline "off" -ForegroundColor Yellow
+                Write-Host " ($reason)"
             }
             else {
-                Write-Host -NoNewline "off" -ForegroundColor Yellow
+                Write-Host "off" -ForegroundColor Yellow
             }
-            Write-Host -NoNewline $module.Next
         }
-        Write-Host ""
     }
     if ($target -in @("all", "drivers")) {
         Write-Host "Drivers: $driverBuildDir"
