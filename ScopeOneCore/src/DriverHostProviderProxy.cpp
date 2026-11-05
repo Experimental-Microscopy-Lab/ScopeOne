@@ -80,14 +80,14 @@ namespace scopeone::core::internal
         };
 
         DriverHostProviderTransport(QString providerId,
-                                    QString pluginPath,
+                                    QString driverPath,
                                     QString hostKey,
                                     QJsonObject options,
                                     FrameHandler frameHandler,
                                     PreviewHandler previewHandler,
                                     StreamHandlers streamHandlers)
             : m_providerId(std::move(providerId))
-              , m_pluginPath(std::move(pluginPath))
+              , m_driverPath(std::move(driverPath))
               , m_hostKey(std::move(hostKey))
               , m_options(std::move(options))
               , m_frameHandler(std::move(frameHandler))
@@ -124,12 +124,12 @@ namespace scopeone::core::internal
                 }
                 return false;
             }
-            if (!QFileInfo::exists(m_pluginPath))
+            if (!QFileInfo::exists(m_driverPath))
             {
                 if (errorMessage)
                 {
                     *errorMessage = QStringLiteral("Provider module not found: %1")
-                                        .arg(m_pluginPath);
+                                        .arg(m_driverPath);
                 }
                 return false;
             }
@@ -162,7 +162,7 @@ namespace scopeone::core::internal
 
             QStringList arguments;
             arguments << QStringLiteral("--provider") << m_providerId
-                      << QStringLiteral("--driver") << m_pluginPath
+                      << QStringLiteral("--driver") << m_driverPath
                       << QStringLiteral("--hostKey") << m_hostKey
                       << QStringLiteral("--launcherPid")
                       << QString::number(QCoreApplication::applicationPid());
@@ -332,6 +332,13 @@ namespace scopeone::core::internal
 
         bool stopStream(const QString& command, const QString& id, QString* errorMessage)
         {
+            const QString streamId = (command == driverhost::kCommandStopSignal ? QStringLiteral("signal:")
+                                                                              : QStringLiteral("daq:"))
+                                     + id;
+            if (const auto stream = m_streams.value(streamId))
+            {
+                stream->stopRequested = true;
+            }
             QJsonObject request;
             request.insert(driverhost::kMessageTypeField, command);
             request.insert(command == driverhost::kCommandStopSignal ? driverhost::kSourceIdField
@@ -538,7 +545,20 @@ namespace scopeone::core::internal
             QString streamId;
             QSharedMemory shm;
             streamring::Reader reader;
+            bool stopRequested{false};
         };
+
+        // A stopped stream kept its ring attached until the next start of the same source. It is
+        // dropped once the source has ended, and only the ring that was stopped, as the end of an
+        // earlier run can arrive after the next start.
+        void releaseEndedStream(const QString& streamId, bool failed)
+        {
+            const auto it = m_streams.constFind(streamId);
+            if (it != m_streams.cend() && (it.value()->stopRequested || failed))
+            {
+                m_streams.remove(streamId);
+            }
+        }
 
         void drainStream(const QString& streamId)
         {
@@ -692,6 +712,7 @@ namespace scopeone::core::internal
                 if (state == SignalSourceState::Idle || state == SignalSourceState::Error)
                 {
                     m_activeSignals.remove(sourceId);
+                    releaseEndedStream(QStringLiteral("signal:") + sourceId, state == SignalSourceState::Error);
                 }
                 if (m_streamHandlers.signalState)
                 {
@@ -706,6 +727,7 @@ namespace scopeone::core::internal
                 if (state == DaqState::Idle || state == DaqState::Error)
                 {
                     m_activeDaqDevices.remove(deviceId);
+                    releaseEndedStream(QStringLiteral("daq:") + deviceId, state == DaqState::Error);
                 }
                 if (m_streamHandlers.daqState)
                 {
@@ -765,7 +787,7 @@ namespace scopeone::core::internal
         }
 
         QString m_providerId;
-        QString m_pluginPath;
+        QString m_driverPath;
         QString m_hostKey;
         QJsonObject m_options;
         FrameHandler m_frameHandler;
@@ -804,10 +826,10 @@ namespace scopeone::core::internal
     {
     public:
         DriverHostProviderProxy(QString providerId,
-                                QString pluginPath,
+                                QString driverPath,
                                 QJsonObject options)
             : m_expectedProviderId(std::move(providerId))
-              , m_pluginPath(std::move(pluginPath))
+              , m_driverPath(std::move(driverPath))
               , m_options(std::move(options))
         {
         }
@@ -831,7 +853,7 @@ namespace scopeone::core::internal
             const QString hostKey = QUuid::createUuid().toString(QUuid::WithoutBraces);
             m_worker = new DriverHostProviderTransport(
                 m_expectedProviderId,
-                m_pluginPath,
+                m_driverPath,
                 hostKey,
                 m_options,
                 [this](const ImageFrame& frame) { deliverFrame(frame); },
@@ -1668,7 +1690,7 @@ namespace scopeone::core::internal
         }
 
         QString m_expectedProviderId;
-        QString m_pluginPath;
+        QString m_driverPath;
         QJsonObject m_options;
         HardwareProviderDescriptor m_descriptor;
         QList<HardwareDeviceDescriptor> m_devices;
@@ -1694,19 +1716,19 @@ namespace scopeone::core::internal
     };
 
     HardwareProviderPtr createDriverHostProviderProxy(const QString& providerId,
-                                                      const QString& pluginPath,
+                                                      const QString& driverPath,
                                                       const QJsonObject& options,
                                                       QString* errorMessage)
     {
         const QString normalizedProviderId = providerId.trimmed();
-        const QString normalizedPluginPath = QFileInfo(pluginPath).absoluteFilePath();
-        if (normalizedProviderId.isEmpty() || pluginPath.trimmed().isEmpty())
+        const QString normalizedDriverPath = QFileInfo(driverPath).absoluteFilePath();
+        if (normalizedProviderId.isEmpty() || driverPath.trimmed().isEmpty())
         {
             if (errorMessage) *errorMessage = QStringLiteral("Provider ID and module path are required");
             return {};
         }
         auto proxy = std::make_shared<DriverHostProviderProxy>(normalizedProviderId,
-                                                               normalizedPluginPath,
+                                                               normalizedDriverPath,
                                                                options);
         if (!proxy->initialize(errorMessage)) return {};
         return proxy;

@@ -1,14 +1,11 @@
 #pragma once
 
-#include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingTypes.h"
 
 #include <QHash>
 #include <QStringList>
 #include <functional>
 #include <memory>
-#include <vector>
-
-class QPluginLoader;
 
 namespace scopeone::core::internal
 {
@@ -24,7 +21,6 @@ namespace scopeone::core::internal
         QList<ProcessingModuleDescriptor> descriptors() const;
         ProcessingModuleDescriptor descriptor(const QString& moduleId) const;
         std::unique_ptr<ProcessingModule> create(const QString& moduleId) const;
-        QStringList loadPlugins(const QString& directoryPath);
 
     private:
         struct Entry
@@ -35,6 +31,5 @@ namespace scopeone::core::internal
 
         QHash<QString, Entry> m_entries;
         QStringList m_order;
-        std::vector<std::unique_ptr<QPluginLoader>> m_pluginLoaders;
     };
 }

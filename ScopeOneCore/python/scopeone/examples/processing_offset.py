@@ -1,4 +1,4 @@
-# A processing module in Python. Copy it into plugins/processing/python/ and ScopeOne lists it
+# A processing module in Python. Copy it into processing/python/ and ScopeOne lists it
 # in the pipeline as "Python Offset".
 import numpy as np
 

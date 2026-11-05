@@ -16,7 +16,7 @@ ScopeOne_DriverHost --provider <providerId> --driver <driver library> --hostKey 
                     --launcherPid <pid> [--option <JSON object>]
 ```
 
-`--option` carries the options from Drivers and Plugins. The host loads the driver, creates the
+`--option` carries the options from the Drivers dialog. The host loads the driver, creates the
 devices and listens on the local socket `ScopeOne.DriverHost.<hostKey>.ctrl` (a named pipe on
 Windows, a Unix domain socket elsewhere). ScopeOne connects to it, and the host exits when the
 process `--launcherPid` is gone.
@@ -144,8 +144,11 @@ skipped by the writer, so the reader never sees a frame change under it.
 
 Each `StartSignal` and `StartDaq` gets a new ring in shared memory under the `sharedMemoryKey` of
 its response, sized for about two seconds of that acquisition. The host writes the chunks of the
-source or session into it, and ScopeOne reads them after each `StreamAvailable`. The layout is
-`ScopeOneCore/internal/StreamRing.h`.
+source or session into it, and ScopeOne reads them after each `StreamAvailable`. After
+`StopSignal` or `StopDaq`, both ends keep the ring until the `SignalState` or `DaqState` event
+with `Idle` or `Error`, which follows the last record. ScopeOne reads what is left and both ends
+then release the ring. A source that ends with `Error` releases its ring without a stop. The
+layout is `ScopeOneCore/internal/StreamRing.h`.
 
 The ring begins with a control block of three 64-byte lines: `magic` u32 and `version` u32 and
 `capacity` u64 in the first, `writeCursor` u64 in the second and `readCursor` u64 in the third.

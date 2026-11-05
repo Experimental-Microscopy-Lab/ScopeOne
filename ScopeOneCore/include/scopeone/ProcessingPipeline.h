@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingTypes.h"
 #include "scopeone/scopeone_core_export.h"
 
 #include <memory>

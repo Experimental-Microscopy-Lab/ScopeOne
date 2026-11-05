@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingTypes.h"
 
 namespace scopeone::core::internal
 {

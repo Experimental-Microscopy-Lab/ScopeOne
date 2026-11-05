@@ -3,14 +3,8 @@
 !/src/**
 !/ScopeOneCore/
 !/ScopeOneCore/**
-!/plugins/
-!/plugins/**
 !/drivers/
 !/drivers/**
-!/ScopeOneCuda/
-!/ScopeOneCuda/**
-!/ScopeOneInference/
-!/ScopeOneInference/**
 /ScopeOneCore/install/
 /ScopeOneCore/build/
 /drivers/build/

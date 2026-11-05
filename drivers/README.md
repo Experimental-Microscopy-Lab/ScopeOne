@@ -69,7 +69,7 @@ the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build co
 }
 ```
 
-`scopeOneApi` is `ScopeOneDriverApiVersion` in `scopeone/PluginManifest.h`.
+`scopeOneApi` is `ScopeOneDriverApiVersion` in `scopeone/DriverManifest.h`.
 `scopeone_add_driver` writes `scopeone_driver.json` from it with the Core version added, and the
 entry class names that file:
 
@@ -95,5 +95,5 @@ needs.
 ## Installing a driver
 
 Copy the built library into `drivers/` beside the ScopeOne executable, or install it with
-**Tools > Drivers and Plugins**, which puts it in the user's application data directory. Drivers
+**Tools > Drivers**, which puts it in the user's application data directory. Drivers
 are enabled and configured there and take effect after a restart.

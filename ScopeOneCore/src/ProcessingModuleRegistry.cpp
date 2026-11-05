@@ -10,10 +10,14 @@
 #include "internal/ImageOperationModules.h"
 #include "internal/IFFTModule.h"
 #include "internal/SpatiotemporalBinningModule.h"
-#include "scopeone/PluginManifest.h"
 
-#include <QFileInfo>
-#include <QPluginLoader>
+#ifdef SCOPEONE_WITH_CUDA
+#include "internal/cuda/CudaProcessingRegistration.h"
+#endif
+#ifdef SCOPEONE_WITH_INFERENCE
+#include "internal/inference/InferenceProcessingRegistration.h"
+#endif
+
 #include <QSet>
 
 namespace scopeone::core::internal
@@ -223,6 +227,12 @@ namespace scopeone::core::internal
     ProcessingModuleRegistry::ProcessingModuleRegistry()
     {
         registerBuiltIns(*this);
+#ifdef SCOPEONE_WITH_CUDA
+        cuda::registerCudaProcessingModules(*this);
+#endif
+#ifdef SCOPEONE_WITH_INFERENCE
+        inference::registerInferenceProcessingModules(*this);
+#endif
     }
 
     ProcessingModuleRegistry::~ProcessingModuleRegistry() = default;
@@ -268,64 +278,5 @@ namespace scopeone::core::internal
         }
         std::unique_ptr<ProcessingModule> module = it->factory();
         return module && module->id() == it->descriptor.id ? std::move(module) : nullptr;
-    }
-
-    QStringList ProcessingModuleRegistry::loadPlugins(const QString& directoryPath)
-    {
-        QStringList errors;
-        for (const DiscoveredPlugin& discovered :
-             discoverPlugins(PluginKind::Processing, {directoryPath}))
-        {
-            const QFileInfo file(discovered.path);
-            if (!discovered.error.isEmpty())
-            {
-                errors.append(QStringLiteral("%1: %2").arg(file.fileName(), discovered.error));
-                continue;
-            }
-
-            auto loader = std::make_unique<QPluginLoader>(discovered.path);
-            QObject* instance = loader->instance();
-            auto* plugin = qobject_cast<ProcessingPlugin*>(instance);
-            if (!plugin)
-            {
-                errors.append(QStringLiteral("%1: %2")
-                                  .arg(file.fileName(), loader->errorString()));
-                continue;
-            }
-
-            const QList<ProcessingModuleDescriptor> pluginDescriptors = plugin->processingModules();
-            QSet<QString> pluginIds;
-            bool valid = true;
-            for (const ProcessingModuleDescriptor& descriptor : pluginDescriptors)
-            {
-                const QString id = descriptor.id.trimmed();
-                if (!validDescriptor(descriptor)
-                    || pluginIds.contains(id)
-                    || m_entries.contains(id))
-                {
-                    valid = false;
-                    break;
-                }
-                pluginIds.insert(id);
-            }
-            if (!valid)
-            {
-                errors.append(QStringLiteral("%1: invalid or duplicate processing module id")
-                                  .arg(file.fileName()));
-                loader->unload();
-                continue;
-            }
-
-            for (const ProcessingModuleDescriptor& descriptor : pluginDescriptors)
-            {
-                const QString id = descriptor.id.trimmed();
-                registerModule(descriptor, [plugin, id]()
-                {
-                    return plugin->createProcessingModule(id);
-                });
-            }
-            m_pluginLoaders.push_back(std::move(loader));
-        }
-        return errors;
     }
 }

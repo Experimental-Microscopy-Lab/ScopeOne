@@ -199,8 +199,8 @@ jobs:
           }
           else {
             $options += @(
-              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF",
-              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_INFERENCE=OFF"
+              "--coreConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF",
+              "--coreConfigureOption", "-DSCOPEONE_ENABLE_INFERENCE=OFF"
             )
           }
           .\scripts\build.ps1 --configure --package @options
@@ -214,7 +214,7 @@ jobs:
             Get-Item $file | Select-Object Name, Length
           }
           $listing = 7z l "build\$name.zip"
-          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime|ScopeOneInference")
+          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime")
           if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA or ONNX Runtime files." }
           if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA or ONNX Runtime files." }
 

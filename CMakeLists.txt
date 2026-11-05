@@ -69,7 +69,7 @@ set(SCOPEONE_UI_SOURCES
         src/DevicePropertyWidget.cpp
         src/PositionListFile.cpp
         src/RecordingWidget.cpp
-        src/PluginManagerDialog.cpp
+        src/DriversDialog.cpp
         src/ScopeOneLocalApiServer.cpp
         src/ToolRegistry.cpp
         src/AboutDialog.cpp
@@ -112,7 +112,7 @@ set(SCOPEONE_UI_HEADERS
         src/DevicePropertyWidget.h
         src/PositionListFile.h
         src/RecordingWidget.h
-        src/PluginManagerDialog.h
+        src/DriversDialog.h
         src/ScopeOneLocalApiServer.h
         src/ToolRegistry.h
         src/AboutDialog.h
@@ -267,17 +267,15 @@ if (UNIX AND NOT APPLE)
     )
 endif ()
 
-foreach (_plugin_kind IN ITEMS plugins/processing drivers)
-    set(_plugin_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/${_plugin_kind}")
-    if (EXISTS "${_plugin_dir}")
-        add_custom_command(TARGET ScopeOne POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${_plugin_dir}"
-                "$<TARGET_FILE_DIR:ScopeOne>/${_plugin_kind}"
-        )
-        install(DIRECTORY "${_plugin_dir}/" DESTINATION "${_plugin_kind}")
-    endif ()
-endforeach ()
+set(_driver_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/drivers")
+if (EXISTS "${_driver_dir}")
+    add_custom_command(TARGET ScopeOne POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${_driver_dir}"
+            "$<TARGET_FILE_DIR:ScopeOne>/drivers"
+    )
+    install(DIRECTORY "${_driver_dir}/" DESTINATION "drivers")
+endif ()
 
 if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)
@@ -295,12 +293,12 @@ if (WIN32)
     endif ()
 endif ()
 
-# # Fast Release build
-# if (MSVC)
-#     target_compile_options(ScopeOne PRIVATE
-#             $<$<CONFIG:Release>:/MP>
-#     )
-# endif ()
+# The Visual Studio generator compiles the sources of one project one after another unless the
+# compiler runs them in parallel itself
+if (MSVC)
+    target_compile_options(ScopeOne PRIVATE /MP)
+    target_compile_options(ScopeOneMcpServer PRIVATE /MP)
+endif ()
 
 # LTO Release build
 if (MSVC)

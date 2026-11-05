@@ -1500,7 +1500,7 @@ namespace ni_daqmx
             return QStringLiteral("scopeone.nidaqmx");
         }
 
-        // Fails when the NI-DAQmx runtime is not installed, so the driver can be turned off under Drivers and Plugins
+        // Fails when the NI-DAQmx runtime is not installed, so the driver can be turned off under Tools > Drivers
         HardwareProviderPtr createProvider(const QJsonObject&, QString* errorMessage) override
         {
             QString error;

@@ -10,15 +10,14 @@ disagree in a specific case, follow the reason and say so in the review.
 
 | Part | Folder | Namespace | May use |
 |---|---|---|---|
-| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops` | Qt Core, OpenCV, MMCore, ScopeWriter. No Qt Widgets. |
+| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops`, `scopeone::cuda` and `scopeone::inference` for the CUDA and ONNX modules | Qt Core, OpenCV, MMCore, ScopeWriter, and CUDA and ONNX Runtime when they are built. No Qt Widgets. |
 | Application | `src` | `scopeone::ui` | Core, Qt Widgets |
 | MCP server | `src/ScopeOneMcpServer.cpp` | | Qt Core, Qt Network and the Local API protocol. Not Core. |
 | Drivers | `drivers` | their own | `scopeone::DriverSDK` |
-| Plugins | `plugins`, `ScopeOneCuda`, `ScopeOneInference` | `scopeone::plugins::cuda` for CUDA, `scopeone::inference` for ONNX | `scopeone::ScopeOneCore` |
 | Python package | `ScopeOneCore/python/scopeone` | `scopeone` | the Local API protocol |
 
-A lower layer never knows about a higher one. Core does not include from `src`, and drivers and plugins do
-not include Core internals. This keeps each part buildable and usable without the ones above it.
+A lower layer never knows about a higher one. Core does not include from `src`, and drivers do not include
+Core internals. This keeps each part buildable and usable without the ones above it.
 
 **Entry points.** Code outside Core enters through the public headers in
 `ScopeOneCore/include/scopeone` and the `ScopeOneCore` facade. `ScopeOneCore/internal` is for Core
@@ -28,7 +27,7 @@ A narrow entry point is what lets Core change its insides without breaking calle
 **Decide the layer first.** Before writing a feature, decide where it belongs. Anything that
 must work without a window (acquisition, hardware, processing, recording, data) goes into Core
 and is reachable through the Local API before it gets a widget. Anything that only changes what
-is shown goes into `src`. Hardware goes into drivers and optional processing into plugins.
+is shown goes into `src`. Hardware goes into drivers.
 
 **Tools.** A window of the Tools menu, with its own state and workflow, goes into its own folder
 under `src/tools`. It uses only the public Core headers and `ScopeOneToolContext` from
@@ -38,9 +37,10 @@ A command that takes an image and parameters and returns a result is not a tool;
 image menus.
 
 **Extension boundary.** Drivers and Python processing modules are the only public
-extension points, and both run outside the ScopeOne process. The CUDA and ONNX processing plugins
-exist only to keep CUDA and ONNX Runtime out of Core, and their interface is internal to this
-repository. Everything without such a dependency belongs in Core, with its window in `src`. The
+extension points, and both run outside the ScopeOne process. Every other processing method
+belongs in Core, with its window in `src`. The CUDA and ONNX modules are in Core too, under
+`src/cuda` and `src/inference`, and `SCOPEONE_ENABLE_CUDA` and `SCOPEONE_ENABLE_INFERENCE` build
+Core without them. The
 messages between ScopeOne and `ScopeOne_DriverHost` are internal too and are described in
 `ScopeOneCore/DRIVERHOST_PROTOCOL.md`.
 
@@ -140,7 +140,7 @@ not send style-only changes.
 - Constant strings use `QStringLiteral`; text the user sees goes through `tr()`.
 - Our own code does not throw. MMCore, OpenCV and ONNX Runtime do, so catch their exceptions at
   the call site and turn them into an error value or a log message.
-- Casts: `qobject_cast` for QObjects, `static_cast` otherwise. `dynamic_cast` only across plugin
+- Casts: `qobject_cast` for QObjects, `static_cast` otherwise. `dynamic_cast` only across library
   interfaces.
 - Logging: `qWarning` for real problems. Do not leave `qDebug` behind.
 
@@ -197,7 +197,7 @@ with a slash.
 and moving code are separate changes, because they hide the real change in review. Do not touch
 lines you are not changing.
 
-**Build everything you touched.** Core, the application and the plugins all build before you
+**Build everything you touched.** Core, the drivers and the application all build before you
 send a change, with no new warnings. A change in a header builds every part that includes it.
 
 **Run what you changed.** A change to behavior is run in the application, with a configuration
@@ -221,8 +221,8 @@ a pinned version in `vcpkg.json`.
 
 **Core.** The version is `MAJOR.MINOR.MMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
 the date of the last commit. Raise `MINOR` whenever a public SDK header changes. ScopeOne loads
-a driver or plugin only when its Core `MAJOR.MINOR` matches, and drivers and processing plugins
-each have their own `scopeOneApi` contract version.
+a driver only when its Core `MAJOR.MINOR` matches, and drivers have their own `scopeOneApi`
+contract version.
 
 **Dependencies are pinned.** vcpkg packages, Python (`==3.14.*`) and Python packages
 (`numpy==2.5.3`) use exact versions. Upgrade them together, on purpose.

@@ -2,8 +2,8 @@
 
 A module is a function that takes a 2D numpy array (uint8 or uint16) and its parameters and
 returns a 2D uint8 or uint16 array. A function with a ``bits`` argument also gets the bits per
-sample of the frame, 12 for a 12-bit camera in a uint16 array. Put the script in the ``python``
-folder of a ScopeOne processing plugin directory and it shows up in the pipeline beside the C++
+sample of the frame, 12 for a 12-bit camera in a uint16 array. Put the script in
+``processing/python`` beside ScopeOne or in the application data folder and it shows up in the pipeline beside the C++
 modules::
 
     import numpy as np

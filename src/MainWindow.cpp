@@ -6,7 +6,6 @@
 #include "WelcomeOverlay.h"
 
 #include "scopeone/ScopeOneCore.h"
-#include "scopeone/PluginManifest.h"
 #include "AboutDialog.h"
 #include "Appearance.h"
 #include "InspectWidget.h"
@@ -21,7 +20,7 @@
 #include "ImageProcessingWidget.h"
 #include "RecordingWidget.h"
 #include "SettingsDialog.h"
-#include "PluginManagerDialog.h"
+#include "DriversDialog.h"
 #include "ScopeOneLocalApiServer.h"
 
 #include <QAction>
@@ -1485,10 +1484,10 @@ namespace scopeone::ui
         });
         m_toolRegistry->populateMenu(toolsMenu, this);
         toolsMenu->addSeparator();
-        auto* pluginManagerAction = toolsMenu->addAction(tr("&Drivers and Plugins..."));
-        connect(pluginManagerAction, &QAction::triggered, this, [this]()
+        auto* driversAction = toolsMenu->addAction(tr("&Drivers..."));
+        connect(driversAction, &QAction::triggered, this, [this]()
         {
-            PluginManagerDialog(this).exec();
+            DriversDialog(this).exec();
         });
         auto* settingsAction = toolsMenu->addAction(tr("&Settings..."));
         connect(settingsAction, &QAction::triggered,

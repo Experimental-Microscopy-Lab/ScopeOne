@@ -56,7 +56,7 @@
 #include "scopeone/CameraProvider.h"
 #include "scopeone/DaqProvider.h"
 #include "scopeone/Driver.h"
-#include "scopeone/PluginManifest.h"
+#include "scopeone/DriverManifest.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
 #include "scopeone/SignalSourceProvider.h"
@@ -1423,13 +1423,13 @@ namespace scopeone::core::internal
     class ProviderDriverRuntime final : public DriverHostRuntime
     {
     public:
-        ProviderDriverRuntime(QString pluginPath,
+        ProviderDriverRuntime(QString driverPath,
                               QString providerId,
                               QString hostKey,
                               QJsonObject options,
                               QObject* parent = nullptr)
             : DriverHostRuntime(parent)
-              , m_pluginPath(std::move(pluginPath))
+              , m_driverPath(std::move(driverPath))
               , m_providerId(std::move(providerId))
               , m_hostKey(std::move(hostKey))
               , m_options(std::move(options))
@@ -1504,6 +1504,7 @@ namespace scopeone::core::internal
             streamring::Writer writer;
             QMutex writeMutex;
             std::atomic_bool notifyQueued{false};
+            bool stopRequested{false};
         };
 
         void installStreamSinks();
@@ -1515,11 +1516,13 @@ namespace scopeone::core::internal
                                                     qsizetype capacity,
                                                     QString* errorMessage);
         void closeStream(const QString& streamId);
+        void markStreamStopped(const QString& streamId);
+        void releaseEndedStream(const QString& streamId, bool failed);
         void writeStream(const QString& streamId, streamring::RecordType type, const QByteArray& payload);
         qsizetype signalStreamCapacity(const SignalAcquisitionConfig& config) const;
         static qsizetype daqStreamCapacity(const DaqSessionConfig& config);
 
-        QString m_pluginPath;
+        QString m_driverPath;
         QString m_providerId;
         QString m_hostKey;
         QJsonObject m_options;
@@ -1529,7 +1532,7 @@ namespace scopeone::core::internal
         QHash<QString, HardwareDeviceDescriptor> m_devicesById;
         QHash<QString, std::shared_ptr<CameraTransport>> m_cameraTransports;
         mutable QReadWriteLock m_cameraTransportsLock;
-        std::unique_ptr<QPluginLoader> m_pluginLoader;
+        std::unique_ptr<QPluginLoader> m_driverLoader;
         HardwareProviderPtr m_provider;
         CameraProvider* m_camera{nullptr};
         DevicePropertyProvider* m_properties{nullptr};
@@ -1551,11 +1554,10 @@ namespace scopeone::core::internal
     bool ProviderDriverRuntime::initializeRuntime()
     {
         m_lastError.clear();
-        m_pluginLoader = std::make_unique<QPluginLoader>(m_pluginPath);
-        PluginManifest manifest;
-        if (!parsePluginManifest(
-                m_pluginLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
-                PluginKind::Driver,
+        m_driverLoader = std::make_unique<QPluginLoader>(m_driverPath);
+        DriverManifest manifest;
+        if (!parseDriverManifest(
+                m_driverLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
                 manifest,
                 &m_lastError))
         {
@@ -1568,10 +1570,10 @@ namespace scopeone::core::internal
             m_lastError = QStringLiteral("Provider manifest identity mismatch");
             return false;
         }
-        QObject* const instance = m_pluginLoader->instance();
+        QObject* const instance = m_driverLoader->instance();
         if (!instance)
         {
-            m_lastError = m_pluginLoader->errorString();
+            m_lastError = m_driverLoader->errorString();
             return false;
         }
 
@@ -1693,6 +1695,11 @@ namespace scopeone::core::internal
                         event.insert(driverhost::kStateField, static_cast<int>(state));
                         event.insert(driverhost::kStateMessageField, message);
                         emit eventReady(event);
+                        if (state == SignalSourceState::Idle || state == SignalSourceState::Error)
+                        {
+                            releaseEndedStream(QStringLiteral("signal:") + sourceId,
+                                               state == SignalSourceState::Error);
+                        }
                     }, Qt::QueuedConnection);
                 });
         }
@@ -1714,6 +1721,10 @@ namespace scopeone::core::internal
                         event.insert(driverhost::kStateField, static_cast<int>(state));
                         event.insert(driverhost::kStateMessageField, message);
                         emit eventReady(event);
+                        if (state == DaqState::Idle || state == DaqState::Error)
+                        {
+                            releaseEndedStream(QStringLiteral("daq:") + deviceId, state == DaqState::Error);
+                        }
                     }, Qt::QueuedConnection);
                 });
         }
@@ -1742,6 +1753,28 @@ namespace scopeone::core::internal
     {
         QMutexLocker locker(&m_streamsMutex);
         m_streams.remove(streamId);
+    }
+
+    void ProviderDriverRuntime::markStreamStopped(const QString& streamId)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        if (const auto stream = m_streams.value(streamId))
+        {
+            stream->stopRequested = true;
+        }
+    }
+
+    // A stopped stream kept its ring until the next start of the same source, up to 256 MB in
+    // each process per source. The ring goes once the source has ended, and only the ring that
+    // was stopped, as the end of an earlier run can arrive after the next start.
+    void ProviderDriverRuntime::releaseEndedStream(const QString& streamId, bool failed)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        const auto stream = m_streams.value(streamId);
+        if (stream && (stream->stopRequested || failed))
+        {
+            m_streams.remove(streamId);
+        }
     }
 
     void ProviderDriverRuntime::writeStream(const QString& streamId,
@@ -1842,13 +1875,17 @@ namespace scopeone::core::internal
         }
         if (type == driverhost::kCommandStopSignal)
         {
-            m_signals->stopSignal(message.value(driverhost::kSourceIdField).toString());
+            const QString sourceId = message.value(driverhost::kSourceIdField).toString();
+            markStreamStopped(QStringLiteral("signal:") + sourceId);
+            m_signals->stopSignal(sourceId);
             reply(makeResponse(type, requestId, true));
             return true;
         }
         if (type == driverhost::kCommandStopDaq)
         {
-            m_daq->stopDaq(message.value(driverhost::kDeviceIdField).toString());
+            const QString deviceId = message.value(driverhost::kDeviceIdField).toString();
+            markStreamStopped(QStringLiteral("daq:") + deviceId);
+            m_daq->stopDaq(deviceId);
             reply(makeResponse(type, requestId, true));
             return true;
         }
@@ -2739,10 +2776,10 @@ namespace scopeone::core::internal
         }
         m_devicesById.clear();
         m_devices.clear();
-        if (m_pluginLoader)
+        if (m_driverLoader)
         {
-            m_pluginLoader->unload();
-            m_pluginLoader.reset();
+            m_driverLoader->unload();
+            m_driverLoader.reset();
         }
     }
 
@@ -3115,9 +3152,9 @@ int main(int argc, char* argv[])
     }
     else
     {
-        const QString pluginPath = parser.value(optDriver).trimmed();
+        const QString driverPath = parser.value(optDriver).trimmed();
         const QString hostKey = parser.value(optHostKey).trimmed();
-        if (pluginPath.isEmpty() || hostKey.isEmpty())
+        if (driverPath.isEmpty() || hostKey.isEmpty())
         {
             qCritical().noquote() << "External providers require --driver and --hostKey";
             return 2;
@@ -3143,7 +3180,7 @@ int main(int argc, char* argv[])
         }
 
         runtime = new scopeone::core::internal::ProviderDriverRuntime(
-            pluginPath,
+            driverPath,
             providerId,
             hostKey,
             providerOptions);

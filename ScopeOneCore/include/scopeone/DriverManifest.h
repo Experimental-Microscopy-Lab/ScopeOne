@@ -1,0 +1,42 @@
+#pragma once
+
+#include "scopeone/scopeone_core_export.h"
+
+#include <QJsonObject>
+#include <QList>
+#include <QString>
+#include <QStringList>
+
+namespace scopeone::core
+{
+    // The manifest of a driver, which ScopeOne reads from the library without loading it and
+    // ScopeOne_DriverHost loads for its device
+    struct DriverManifest
+    {
+        QString id;
+        QString name;
+        QString version;
+        bool autoLoad{false};
+        QJsonObject metadata;
+    };
+
+    struct DiscoveredDriver
+    {
+        DriverManifest manifest;
+        QString path;
+        QString interfaceId;
+        QJsonObject metadata;
+        QString error;
+    };
+
+    inline constexpr int ScopeOneDriverApiVersion = 1;
+
+    // The drivers directory beside the application and in the user data directory
+    SCOPEONE_CORE_EXPORT QStringList driverDirectories();
+    SCOPEONE_CORE_EXPORT QString driverSettingsKey(const QString& driverId, const QString& name);
+    SCOPEONE_CORE_EXPORT bool driverEnabled(const DriverManifest& manifest);
+    SCOPEONE_CORE_EXPORT QList<DiscoveredDriver> discoverDrivers(const QStringList& directories = {});
+    SCOPEONE_CORE_EXPORT bool parseDriverManifest(const QJsonObject& metadata,
+                                                  DriverManifest& manifest,
+                                                  QString* errorMessage = nullptr);
+}

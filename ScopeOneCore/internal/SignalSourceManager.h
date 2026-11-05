@@ -49,7 +49,7 @@ namespace scopeone::core::internal
     };
 
     // The signal sources of Core and of the drivers under one list. The chunks of a
-    // plugin source arrive on a thread of its provider and are passed on in this object's thread.
+    // driver source arrive on a thread of its provider and are passed on in this object's thread.
     class SignalSourceManager final : public QObject
     {
         Q_OBJECT

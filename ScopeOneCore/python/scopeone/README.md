@@ -37,8 +37,40 @@ python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
 - Python package project root: `ScopeOneCore/python/scopeone`
 - Package source: `ScopeOneCore/python/scopeone/src/scopeone`
 - `scopeone.ScopeOne`, `FrameResult`, `RecordingSession` and `ExperimentSession` (in `scopeone.client`) control a running ScopeOne and move frames in and out of it as numpy arrays
-- `scopeone.processing` goes the other way: ScopeOne runs Python functions as pipeline modules, see [Writing ScopeOne plugins](../../../plugins/README.md#python-processing-modules)
+- `scopeone.processing` goes the other way: ScopeOne runs Python functions as pipeline modules, see [Python processing modules](#python-processing-modules)
 - `scopeone._shm` reads and writes the shared frame layout and is internal
+
+## Python processing modules
+
+```python
+import numpy as np
+from scopeone.processing import Integer, Real, Boolean, Choice, module
+
+@module("my.python.threshold", "My Threshold", Integer("level", "Level", 100, 0, 65535))
+def threshold(image, level, bits):
+    return np.where(image > level, (1 << bits) - 1, 0).astype(image.dtype)
+```
+
+The function gets a 2D `uint8` or `uint16` array and the parameters by name, and returns a 2D
+`uint8` or `uint16` array. A function with a `bits` argument also gets the bits per sample of
+the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Put
+the script in `processing/python/` beside ScopeOne or in the same folder under the
+user's application data directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
+there; `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to copy.
+
+Each module in a pipeline runs in its own Python process (`python -m scopeone.processing
+serve script.py`). That interpreter needs numpy and the `scopeone` package
+(`pip install ScopeOneCore/python/scopeone`). Choose it under **Settings > Python
+Interpreter**, or with `SCOPEONE_PYTHON`, which takes precedence; otherwise ScopeOne runs
+`python3` (`python` on Windows). Output printed by a module goes to the log, and an exception
+in it shows as the error of that pipeline step.
+
+ScopeOne first runs `python -m scopeone.processing describe script.py`, which prints one JSON
+line with the modules of the script and their parameters. While the pipeline runs, each frame is
+one request on stdin: a JSON line with `module`, `parameters`, `width`, `height`, `stride`,
+`format` (`mono8` or `mono16`), `bits` and `bytes`, followed by that many pixel bytes. The reply
+on stdout has the same form with `width`, `height`, `format` and `bytes`, or a JSON line with
+`error`.
 
 ## Current API
 
@@ -345,7 +377,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
 - `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
-- `session_close`: fields `sessionId`; releases the recorded session held by the app.
+- `session_close`: fields `sessionId`; releases the recorded session held by the app together with its experiment document, which then no longer appears among the retained experiments of `state_snapshot`.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
 - `latest_raw_frame`: fields `camera`; response `mappingName`, `mappingSize`, and frame metadata.
 - `layer_frame`: field `layerKey`; exports the current raw, processed, static, mosaic, or Gallery layer frame and returns shared-memory metadata.
@@ -414,7 +446,7 @@ These plan fields are optional and follow the Micro-Manager acquisition engine:
 - `comment` is free text that is stored with the acquisition, as the OME image description and in the `scopeone.acquisition` metadata, which also holds the `AcquisitionOrder` of the axes from the slowest to the fastest.
 - Exposure, XY and Z are sent only when they change, and the stage positions, the channel preset and the shutter are restored when the run ends.
 
-Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes modules supplied by installed processing plugins.
+Processing module editing follows the desktop UI rules: stop real-time processing before changing bit depth, adding/removing modules, updating module parameters, or resetting module state. Pass `add_processing_module` a stable module ID returned in `processing_modules.availableModules`; this includes the CUDA and ONNX processing modules and Python modules.
 
 ### Frame transfer
 

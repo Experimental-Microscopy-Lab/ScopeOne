@@ -125,7 +125,7 @@ namespace scopeone::core::internal
     }
 
     // Follows the drivers as they are registered and removed: the sources of each
-    // plugin that provides signal sources join the list, and their chunks are passed on
+    // driver that provides signal sources join the list, and their chunks are passed on
     void SignalSourceManager::refreshProviderSources()
     {
         QHash<QString, HardwareProviderPtr> current;

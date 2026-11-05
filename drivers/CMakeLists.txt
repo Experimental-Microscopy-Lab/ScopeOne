@@ -9,6 +9,11 @@ if (APPLE)
     add_compile_options(-fexperimental-library)
     add_link_options(-fexperimental-library)
 endif ()
+# The Visual Studio generator compiles the sources of one project one after another unless the
+# compiler runs them in parallel itself
+if (MSVC)
+    add_compile_options(/MP)
+endif ()
 
 # A driver has the driver SDK and Qt Core and nothing else, so one that reaches for widgets,
 # OpenCV or Core itself does not build

@@ -1,6 +1,5 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
-#include "scopeone/PluginManifest.h"
 #include "scopeone/ScanImageAssembler.h"
 
 #include "internal/AcquisitionEngine.h"
@@ -1362,22 +1361,19 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        QStringList allProcessingPluginErrors;
-        const QStringList processingDirectories =
-            scopeone::core::pluginDirectories(scopeone::core::PluginKind::Processing);
-        // Native processing plugins run inside ScopeOne and are only the built-in CUDA and ONNX
-        // ones beside the executable. Loading them from the user directory too let anyone add
-        // in-process C++ code; users extend processing with Python modules instead.
-        allProcessingPluginErrors.append(
-            m_managers->processingModuleRegistry->loadPlugins(processingDirectories.constFirst()));
+        // Python processing modules are scripts in processing/python beside the application and in
+        // the user data directory
+        const QStringList processingDirectories{
+            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("processing")),
+            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("processing"))};
         for (const QString& directory : processingDirectories)
         {
-            allProcessingPluginErrors.append(internal::registerPythonProcessingModules(
-                *m_managers->processingModuleRegistry, directory));
-        }
-        for (const QString& error : allProcessingPluginErrors)
-        {
-            qWarning().noquote() << QStringLiteral("Failed to load processing plugin %1").arg(error);
+            for (const QString& error : internal::registerPythonProcessingModules(
+                     *m_managers->processingModuleRegistry, directory))
+            {
+                qWarning().noquote() << QStringLiteral("Failed to load Python processing module %1").arg(error);
+            }
         }
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
@@ -2366,7 +2362,7 @@ namespace scopeone::core
         return m_managers->cameraProvider->getROI(target, x, y, width, height);
     }
 
-    // List signal sources discovered through external source plugins
+    // List signal sources discovered through drivers
     QList<SignalSourceDescriptor> ScopeOneCore::signalSources() const
     {
         return m_managers->signalSourceManager->sources();
@@ -5362,6 +5358,12 @@ namespace scopeone::core
             return false;
         }
         m_managers->sessions.remove(id);
+        // The experiment document stayed after its session was closed, so the event and frame
+        // records of every closed recording were kept until ScopeOne exited
+        if (id != m_managers->activeExperimentId)
+        {
+            m_managers->experiments.remove(id);
+        }
         emit recordingSessionClosed(id);
         emit recordingSessionsChanged();
         return true;

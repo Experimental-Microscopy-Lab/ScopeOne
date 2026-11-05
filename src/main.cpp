@@ -7,7 +7,7 @@
 #include "ConsoleWidget.h"
 #include "Appearance.h"
 #include "MainWindow.h"
-#include "PluginManagerDialog.h"
+#include "DriversDialog.h"
 
 int main(int argc, char *argv[])
 {

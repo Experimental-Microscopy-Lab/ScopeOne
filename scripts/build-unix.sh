@@ -221,13 +221,6 @@ run cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "
 run cmake --build "$CORE_DIR/build" --parallel "$JOBS"
 run cmake --install "$CORE_DIR/build"
 
-step "Building and installing ScopeOne plugins"
-run cmake -S "$ROOT_DIR/plugins" -B "$ROOT_DIR/build/plugins" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-  -DScopeOneCore_ROOT="$CORE_DIR/install" -DCMAKE_PREFIX_PATH="$CORE_DIR/install" \
-  -DCMAKE_INSTALL_PREFIX="$CORE_DIR/install/bin" "${VCPKG_ARGS[@]}"
-run cmake --build "$ROOT_DIR/build/plugins" --parallel "$JOBS"
-run cmake --install "$ROOT_DIR/build/plugins"
-
 step "Building and installing ScopeOne drivers"
 run cmake -S "$ROOT_DIR/drivers" -B "$ROOT_DIR/drivers/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
   -DScopeOneCore_ROOT="$CORE_DIR/install" -DCMAKE_PREFIX_PATH="$CORE_DIR/install" \
@@ -250,6 +243,19 @@ if [[ ! -f "$UTILITIES_ADAPTER" ]]; then
 fi
 run cp -L "$DEMO_ADAPTER" "$UTILITIES_ADAPTER" "$ROOT_DIR/build/"
 
+# Core builds the CUDA and ONNX modules only when it finds their toolkits, so a missing one
+# leaves them out without failing the build
+core_module() {
+  local value
+  value="$(sed -n "s/^$1:INTERNAL=//p" "$CORE_DIR/build/CMakeCache.txt")"
+  if [[ "$value" == ON ]]; then
+    printf '%son%s' "$GREEN" "$RESET"
+  else
+    printf '%soff%s' "$YELLOW" "$RESET"
+  fi
+}
+
 step "Done"
 echo "GUI executable: $ROOT_DIR/build/ScopeOne"
 echo "Demo configuration: $ROOT_DIR/config/MMConfig_demo.cfg"
+echo "Core modules: CUDA: $(core_module SCOPEONE_BUILT_WITH_CUDA), ONNX: $(core_module SCOPEONE_BUILT_WITH_INFERENCE)"

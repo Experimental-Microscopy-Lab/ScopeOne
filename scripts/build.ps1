@@ -3,7 +3,6 @@ $ErrorActionPreference = "Stop"
 $target = "all"
 $coreConfigureOption = @()
 $guiConfigureOption = @()
-$pluginConfigureOption = @()
 $coreBuildOption = @()
 $guiBuildOption = @()
 $configure = $false
@@ -43,10 +42,6 @@ for ($i = 0; $i -lt $args.Count; $i++) {
             $guiConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
             continue
         }
-        { $_ -in @("--pluginConfigureOption", "-pluginConfigureOption") } {
-            $pluginConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
-            continue
-        }
         { $_ -in @("--coreBuildOption", "-coreBuildOption") } {
             $coreBuildOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
             continue
@@ -81,10 +76,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($target -notin @("all", "core", "gui", "plugins", "drivers", "scopewriter")) {
-    throw "Invalid target '$target'. Expected one of: all, core, gui, plugins, drivers, scopewriter."
+if ($target -notin @("all", "core", "gui", "drivers", "scopewriter")) {
+    throw "Invalid target '$target'. Expected one of: all, core, gui, drivers, scopewriter."
 }
-if ($package -and $target -in @("core", "plugins", "drivers", "scopewriter")) {
+if ($package -and $target -in @("core", "drivers", "scopewriter")) {
     throw "--package requires --target gui or --target all."
 }
 if ($run -and $target -eq "scopewriter") {
@@ -242,16 +237,13 @@ $writerBuildDir = Join-Path $writerBuildRoot "standalone"
 $writerInstallDir = Join-Path $writerSourceDir "install"
 $writerConsumerSourceDir = Join-Path $writerSourceDir "tests\consumer"
 $writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
-$pluginSourceDir = Join-Path $repoRoot "plugins"
-$pluginBuildDir = Join-Path $repoRoot "build\plugins"
-$pluginInstallDir = Join-Path $coreInstallDir "bin"
+$driverInstallDir = Join-Path $coreInstallDir "bin"
 # Inside drivers rather than build, whose drivers folder is where the GUI build puts the drivers it runs
 $driverSourceDir = Join-Path $repoRoot "drivers"
 $driverBuildDir = Join-Path $driverSourceDir "build"
 $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
-$pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
 $driverCachePath = Join-Path $driverBuildDir "CMakeCache.txt"
 
 $vcpkgConfigureArgs = @()
@@ -301,10 +293,6 @@ if ($clean) {
         Write-Step "Removing GUI build directory"
         Remove-Item -LiteralPath $guiBuildDir -Recurse -Force
     }
-    if ($target -in @("all", "plugins") -and (Test-Path $pluginBuildDir)) {
-        Write-Step "Removing plugin build directory"
-        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
-    }
     if ($target -in @("all", "drivers") -and (Test-Path $driverBuildDir)) {
         Write-Step "Removing driver build directory"
         Remove-Item -LiteralPath $driverBuildDir -Recurse -Force
@@ -322,28 +310,6 @@ $guiConfigureOptionOverride = $guiConfigureOption.Count -gt 0
 
 $needCoreConfigure = $configure -or $coreConfigureOptionOverride -or -not (Test-Path $coreCachePath)
 $needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Path $guiCachePath)
-$pluginBuildFilesExist = (Test-Path (Join-Path $pluginBuildDir "ALL_BUILD.vcxproj")) -or
-    (Test-Path (Join-Path $pluginBuildDir "build.ninja")) -or
-    (Test-Path (Join-Path $pluginBuildDir "Makefile"))
-$needPluginConfigure = $configure -or $pluginConfigureOption.Count -gt 0 -or -not (Test-Path $pluginCachePath) -or
-    -not $pluginBuildFilesExist
-$pluginCachedInstallPrefix = Normalize-CMakePath (
-    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_INSTALL_PREFIX")
-$pluginCachedSourceDir = Normalize-CMakePath (
-    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_HOME_DIRECTORY")
-if ($pluginCachedSourceDir -and
-    $pluginCachedSourceDir -ne (Normalize-CMakePath $pluginSourceDir)) {
-    $needPluginConfigure = $true
-    if (Test-Path $pluginBuildDir) {
-        Write-Step "Removing stale plugin build directory"
-        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
-    }
-}
-if ($pluginCachedInstallPrefix -and
-    $pluginCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
-    $needPluginConfigure = $true
-}
-
 $driverBuildFilesExist = (Test-Path (Join-Path $driverBuildDir "ALL_BUILD.vcxproj")) -or
     (Test-Path (Join-Path $driverBuildDir "build.ninja")) -or
     (Test-Path (Join-Path $driverBuildDir "Makefile"))
@@ -351,7 +317,7 @@ $needDriverConfigure = $configure -or -not (Test-Path $driverCachePath) -or -not
 $driverCachedInstallPrefix = Normalize-CMakePath (
     Get-CMakeCacheValue -CachePath $driverCachePath -Key "CMAKE_INSTALL_PREFIX")
 if ($driverCachedInstallPrefix -and
-    $driverCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
+    $driverCachedInstallPrefix -ne (Normalize-CMakePath $driverInstallDir)) {
     $needDriverConfigure = $true
 }
 
@@ -444,6 +410,17 @@ if (-not $needCoreConfigure -and $target -in @("all", "core")) {
 }
 
 if ($target -in @("all", "core")) {
+    # Core builds the CUDA processing modules, which need the CUDA toolset. A generator keeps the
+    # toolset it was first configured with, so a build directory made without it is configured
+    # again from scratch.
+    $coreToolset = if ($env:CUDA_PATH) { "cuda=$env:CUDA_PATH" } else { "" }
+    if ($coreToolset -and (Test-Path $coreCachePath) -and
+        (Get-CMakeCacheValue -CachePath $coreCachePath -Key "CMAKE_GENERATOR_TOOLSET") -ne $coreToolset) {
+        Write-Step "Removing ScopeOneCore build directory configured without the CUDA toolset"
+        Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
+        $needCoreConfigure = $true
+    }
+
     if ($needCoreConfigure) {
         $coreConfigureArgs = @(
             "-S", $coreSourceDir,
@@ -455,6 +432,9 @@ if ($target -in @("all", "core")) {
         }
 
         $coreConfigureArgs += $vcpkgConfigureArgs + $coreConfigureOption
+        if ($coreToolset) {
+            $coreConfigureArgs += @("-T", $coreToolset)
+        }
 
         Invoke-Step `
             -Label "Configuring ScopeOneCore" `
@@ -487,55 +467,6 @@ if ($target -in @("all", "core")) {
     }
 }
 
-if ($target -in @("all", "plugins")) {
-    $coreConfigFile = Join-Path $coreInstallDir "lib\cmake\ScopeOneCore\ScopeOneCoreConfig.cmake"
-    if (-not (Test-Path $coreConfigFile)) {
-        throw "ScopeOneCore is not installed at $coreInstallDir. Build the core first."
-    }
-
-    if ($needPluginConfigure) {
-        $pluginConfigureArgs = @(
-            "-S", $pluginSourceDir,
-            "-B", $pluginBuildDir,
-            "-DScopeOneCore_ROOT=$coreInstallDir",
-            "-DCMAKE_PREFIX_PATH=$coreInstallDir",
-            "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
-        )
-        $pluginConfigureArgs += $vcpkgConfigureArgs + $pluginConfigureOption
-        if ($env:CUDA_PATH) {
-            $pluginConfigureArgs += @("-T", "cuda=$env:CUDA_PATH")
-        }
-        Invoke-Step `
-            -Label "Configuring ScopeOne plugins" `
-            -FilePath $cmake `
-            -Arguments $pluginConfigureArgs `
-            -WorkingDirectory $repoRoot
-    }
-
-    Invoke-Step `
-        -Label "Building ScopeOne plugins ($config)" `
-        -FilePath $cmake `
-        -Arguments @(
-            "--build", $pluginBuildDir,
-            "--config", $config,
-            "--parallel"
-        ) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Installing ScopeOne plugins" `
-        -FilePath $cmake `
-        -Arguments @(
-            "--install", $pluginBuildDir,
-            "--config", $config
-        ) `
-        -WorkingDirectory $repoRoot
-
-    if ($target -eq "all") {
-        $needGuiConfigure = $true
-    }
-}
-
 if ($target -in @("all", "drivers")) {
     $coreConfigFile = Join-Path $coreInstallDir "lib\cmake\ScopeOneCore\ScopeOneCoreConfig.cmake"
     if (-not (Test-Path $coreConfigFile)) {
@@ -551,7 +482,7 @@ if ($target -in @("all", "drivers")) {
                 "-B", $driverBuildDir,
                 "-DScopeOneCore_ROOT=$coreInstallDir",
                 "-DCMAKE_PREFIX_PATH=$coreInstallDir",
-                "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
+                "-DCMAKE_INSTALL_PREFIX=$driverInstallDir"
             ) + $vcpkgConfigureArgs) `
             -WorkingDirectory $repoRoot
     }
@@ -653,8 +584,22 @@ if ($target -eq "scopewriter") {
 }
 else {
     Write-Host "ScopeOneCore install: $coreInstallDir"
-    if ($target -in @("all", "plugins")) {
-        Write-Host "Plugins: $pluginBuildDir"
+    # Core builds the CUDA and ONNX modules only when it finds their toolkits, so a missing one
+    # leaves them out without failing the build
+    if (Test-Path $coreCachePath) {
+        Write-Host -NoNewline "Core modules: CUDA: "
+        foreach ($module in @(
+                @{ Key = "SCOPEONE_BUILT_WITH_CUDA"; Next = ", ONNX: " },
+                @{ Key = "SCOPEONE_BUILT_WITH_INFERENCE"; Next = "" })) {
+            if ((Get-CMakeCacheValue -CachePath $coreCachePath -Key $module.Key) -eq "ON") {
+                Write-Host -NoNewline "on" -ForegroundColor Green
+            }
+            else {
+                Write-Host -NoNewline "off" -ForegroundColor Yellow
+            }
+            Write-Host -NoNewline $module.Next
+        }
+        Write-Host ""
     }
     if ($target -in @("all", "drivers")) {
         Write-Host "Drivers: $driverBuildDir"

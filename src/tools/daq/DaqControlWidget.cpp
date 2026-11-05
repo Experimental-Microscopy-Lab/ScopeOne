@@ -372,7 +372,7 @@ namespace scopeone::ui
         }
         m_statusLabel->setText(available
                                    ? m_core->daqStateMessage(device.id)
-                                   : tr("Install a DAQ device plugin and driver"));
+                                   : tr("Install a DAQ driver"));
         setControlsEnabled(available);
         m_stopButton->setEnabled(false);
     }

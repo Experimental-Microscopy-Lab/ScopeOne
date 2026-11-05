@@ -72,7 +72,7 @@ set(CORE_SOURCES
         src/AcquisitionEngine.cpp
         src/DriverHostProviderProxy.cpp
         src/DaqDeviceManager.cpp
-        src/PluginManifest.cpp
+        src/DriverManifest.cpp
         src/HardwareRuntime.cpp
         src/MicroManagerProvider.cpp
         src/ImageOps.cpp
@@ -112,8 +112,8 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
-        include/scopeone/PluginManifest.h
-        include/scopeone/ProcessingPlugin.h
+        include/scopeone/DriverManifest.h
+        include/scopeone/ProcessingTypes.h
         include/scopeone/ScanImageAssembler.h
         include/scopeone/SharedFrame.h
         include/scopeone/DhmReconstruction.h
@@ -217,6 +217,113 @@ target_compile_definitions(ScopeOneCore PRIVATE
         SCOPEONE_CORE_EXPORTS
         SCOPEONE_CORE_VERSION_STRING="${PROJECT_VERSION}"
 )
+
+# The CUDA and ONNX Runtime processing modules are part of Core when their toolkits are found.
+# Turning them off builds the plain CPU Core, which neither links nor ships CUDA or ONNX Runtime.
+set(_with_cuda OFF)
+set(_with_inference OFF)
+option(SCOPEONE_ENABLE_CUDA "Build the CUDA processing modules into Core when nvcc is available" ON)
+option(SCOPEONE_ENABLE_INFERENCE "Build the ONNX Runtime processing module into Core when ONNX Runtime is available" ON)
+if (SCOPEONE_ENABLE_CUDA)
+    find_program(SCOPEONE_CUDA_NVCC_EXECUTABLE nvcc)
+else ()
+    unset(SCOPEONE_CUDA_NVCC_EXECUTABLE CACHE)
+endif ()
+if (SCOPEONE_CUDA_NVCC_EXECUTABLE)
+    set(CMAKE_CUDA_COMPILER "${SCOPEONE_CUDA_NVCC_EXECUTABLE}" CACHE FILEPATH
+            "CUDA compiler selected by the environment" FORCE)
+    get_filename_component(_cuda_toolkit_root "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+    get_filename_component(_cuda_toolkit_root "${_cuda_toolkit_root}" DIRECTORY)
+    set(CUDAToolkit_ROOT "${_cuda_toolkit_root}" CACHE PATH
+            "CUDA toolkit selected by the compiler" FORCE)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING "Target CUDA architectures")
+    target_sources(ScopeOneCore PRIVATE
+            src/cuda/CudaKernels.cu
+            src/cuda/CudaDevice.cpp
+            src/cuda/CudaFrequencyFilterModule.cpp
+            src/cuda/CudaGaussianBlurModule.cpp
+            src/cuda/CudaProcessingRegistration.cpp
+            src/cuda/CudaRealImageModule.cpp
+            src/cuda/GpuComplexFrame.cpp
+            src/cuda/GpuRealFrame.cpp
+            internal/cuda/CudaDevice.h
+            internal/cuda/CudaFrequencyFilterModule.h
+            internal/cuda/CudaGaussianBlurModule.h
+            internal/cuda/CudaKernelLaunch.h
+            internal/cuda/CudaProcessingRegistration.h
+            internal/cuda/CudaRealImageModule.h
+            internal/cuda/GpuComplexFrame.h
+            internal/cuda/GpuRealFrame.h
+    )
+    set_source_files_properties(src/cuda/CudaKernels.cu PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    set_target_properties(ScopeOneCore PROPERTIES
+            CUDA_ARCHITECTURES "${SCOPEONE_CUDA_ARCHITECTURES}"
+            CUDA_SEPARABLE_COMPILATION OFF
+    )
+    target_link_libraries(ScopeOneCore PRIVATE CUDA::cudart CUDA::cufft)
+    target_compile_definitions(ScopeOneCore PRIVATE SCOPEONE_WITH_CUDA)
+    set(_with_cuda ON)
+    if (WIN32)
+        file(GLOB _cuda_runtime_dlls
+                "${CUDAToolkit_BIN_DIR}/cudart64_*.dll"
+                "${CUDAToolkit_BIN_DIR}/cufft64_*.dll"
+        )
+        list(APPEND SCOPEONE_RUNTIME_DLLS ${_cuda_runtime_dlls})
+    endif ()
+endif ()
+
+if (SCOPEONE_ENABLE_INFERENCE)
+    set(ONNXRUNTIME_ROOT
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu_cuda12-1.30.0"
+            CACHE PATH "ONNX Runtime SDK root"
+    )
+    find_path(ONNXRUNTIME_INCLUDE_DIR
+            NAMES onnxruntime_cxx_api.h
+            PATHS "${ONNXRUNTIME_ROOT}/include"
+            NO_DEFAULT_PATH
+    )
+    find_library(ONNXRUNTIME_LIBRARY
+            NAMES onnxruntime
+            PATHS "${ONNXRUNTIME_ROOT}/lib"
+            NO_DEFAULT_PATH
+    )
+endif ()
+if (SCOPEONE_ENABLE_INFERENCE AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+    target_sources(ScopeOneCore PRIVATE
+            src/inference/InferenceProcessingRegistration.cpp
+            src/inference/OnnxInferenceModule.cpp
+            src/inference/OnnxRuntime.cpp
+            src/inference/OnnxSession.cpp
+            internal/inference/ExecutionProvider.h
+            internal/inference/InferenceProcessingRegistration.h
+            internal/inference/OnnxInferenceModule.h
+            internal/inference/OnnxInternal.h
+            internal/inference/OnnxRuntime.h
+            internal/inference/OnnxSession.h
+            internal/inference/TensorInfo.h
+    )
+    target_include_directories(ScopeOneCore PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+    target_link_libraries(ScopeOneCore PRIVATE "${ONNXRUNTIME_LIBRARY}")
+    target_compile_definitions(ScopeOneCore PRIVATE SCOPEONE_WITH_INFERENCE)
+    set(_with_inference ON)
+    if (WIN32)
+        file(GLOB _onnxruntime_dlls
+                "${ONNXRUNTIME_ROOT}/bin/onnxruntime*.dll"
+                "${ONNXRUNTIME_ROOT}/lib/onnxruntime*.dll"
+        )
+        if (NOT _onnxruntime_dlls)
+            message(FATAL_ERROR "No ONNX Runtime DLLs found under ${ONNXRUNTIME_ROOT}")
+        endif ()
+        list(APPEND SCOPEONE_RUNTIME_DLLS ${_onnxruntime_dlls})
+    endif ()
+elseif (SCOPEONE_ENABLE_INFERENCE)
+    message(STATUS "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}; building Core without ONNX inference")
+endif ()
+# What this configure built in, for the build scripts to report
+set(SCOPEONE_BUILT_WITH_CUDA "${_with_cuda}" CACHE INTERNAL "")
+set(SCOPEONE_BUILT_WITH_INFERENCE "${_with_inference}" CACHE INTERNAL "")
 target_include_directories(ScopeOneCore
         PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -274,7 +381,7 @@ add_custom_command(TARGET ScopeOneCore POST_BUILD
 add_executable(ScopeOne_DriverHost
         src/DriverHostMain.cpp
         src/HardwareStreamCodec.cpp
-        src/PluginManifest.cpp
+        src/DriverManifest.cpp
         src/StreamRing.cpp
 )
 if (UNIX AND NOT APPLE)
@@ -305,17 +412,20 @@ target_link_directories(ScopeOne_DriverHost PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOne_DriverHost>)
 
-# Fast Release build
-# if (MSVC)
-#     target_compile_options(ScopeOneCore PRIVATE
-#             $<$<CONFIG:Release>:/MP>
-#     )
-# endif ()
+# The Visual Studio generator compiles the sources of one project one after another unless the
+# compiler runs them in parallel itself. Only for C++, nvcc does not take /MP.
+if (MSVC)
+    target_compile_options(ScopeOneCore PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP>)
+    target_compile_options(ScopeOne_DriverHost PRIVATE /MP)
+    target_compile_options(ScopeOneDriverSDK PRIVATE /MP)
+endif ()
 
 # LTO Release build
 if (MSVC)
+    # Only for C++, nvcc does not take these flags
+    set(_release_cxx "$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>")
     target_compile_options(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
+            "$<${_release_cxx}:/GL>" "$<${_release_cxx}:/fp:fast>" "$<${_release_cxx}:/arch:AVX2>"
     )
     target_link_options(ScopeOneCore PRIVATE
             $<$<CONFIG:Release>:/LTCG>
@@ -368,7 +478,7 @@ install(EXPORT ScopeOneCoreTargets
 install(FILES
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfig.cmake"
         "${CMAKE_CURRENT_BINARY_DIR}/ScopeOneCoreConfigVersion.cmake"
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScopeOnePlugin.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScopeOneDriver.cmake"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ScopeOneCore"
 )
 

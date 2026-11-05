@@ -26,7 +26,7 @@
 #include "scopeone/HardwareTypes.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/ImageFrame.h"
-#include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingTypes.h"
 #include "scopeone/ProcessingPipeline.h"
 #include "scopeone/RecordingSession.h"
 #include "scopeone/SignalSource.h"

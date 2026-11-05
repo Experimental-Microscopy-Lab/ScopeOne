@@ -261,10 +261,10 @@ namespace scopeone::core::internal
     }
 
     QStringList registerPythonProcessingModules(ProcessingModuleRegistry& registry,
-                                                const QString& pluginDirectory)
+                                                const QString& processingDirectory)
     {
         QStringList errors;
-        const QDir scripts(QDir(pluginDirectory).filePath(QStringLiteral("python")));
+        const QDir scripts(QDir(processingDirectory).filePath(QStringLiteral("python")));
         for (const QString& name : scripts.entryList({QStringLiteral("*.py")}, QDir::Files, QDir::Name))
         {
             QString error;
