@@ -1,6 +1,6 @@
 #pragma once
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     enum class ExecutionProvider
     {

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     class OnnxSession;
 

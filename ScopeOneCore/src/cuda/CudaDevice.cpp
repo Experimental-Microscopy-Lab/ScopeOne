@@ -2,7 +2,7 @@
 
 #include <cuda_runtime.h>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     bool isCudaDeviceAvailable()
     {

@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     class OnnxRuntime;
 

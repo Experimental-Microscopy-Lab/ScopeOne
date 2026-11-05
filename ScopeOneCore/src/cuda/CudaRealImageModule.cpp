@@ -4,7 +4,7 @@
 
 #include <utility>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     CudaRealImageModule::CudaRealImageModule(GpuMemoryLayout layout)
         : m_layout(layout)

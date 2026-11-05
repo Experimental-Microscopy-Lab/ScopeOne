@@ -4,7 +4,7 @@
 
 #include "internal/ProcessingModuleRegistry.h"
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     namespace
     {

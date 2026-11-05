@@ -2,10 +2,10 @@
 
 #include "internal/cuda/CudaKernelLaunch.h"
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     CudaGaussianBlurModule::CudaGaussianBlurModule()
-        : CudaRealImageModule(scopeone::cuda::GpuMemoryLayout::Pitched2D)
+        : CudaRealImageModule(scopeone::core::internal::cuda::GpuMemoryLayout::Pitched2D)
     {
     }
 
@@ -50,11 +50,11 @@ namespace scopeone::cuda
     }
 
     bool CudaGaussianBlurModule::processDevice(
-        const scopeone::cuda::GpuRealFrame& input,
-        scopeone::cuda::GpuRealFrame& output,
+        const scopeone::core::internal::cuda::GpuRealFrame& input,
+        scopeone::core::internal::cuda::GpuRealFrame& output,
         int)
     {
-        return scopeone::cuda::detail::launchGaussian(input.data(),
+        return scopeone::core::internal::cuda::detail::launchGaussian(input.data(),
                                                      input.pitchBytes(),
                                                      output.data(),
                                                      output.pitchBytes(),

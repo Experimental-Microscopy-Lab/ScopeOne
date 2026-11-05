@@ -12,7 +12,7 @@ disagree in a specific case, follow the reason and say so in the review.
 
 | Part | Folder | Namespace | May use |
 |---|---|---|---|
-| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops`, `scopeone::cuda` and `scopeone::inference` for the CUDA and ONNX modules | Qt Core, OpenCV, MMCore, ScopeWriter, and CUDA and ONNX Runtime when they are built. No Qt Widgets. |
+| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops`, `core::internal::cuda` and `core::internal::inference` for the CUDA and ONNX modules | Qt Core, OpenCV, MMCore, ScopeWriter, and CUDA and ONNX Runtime when they are built. No Qt Widgets. |
 | Application | `src` | `scopeone::ui` | Core, Qt Widgets |
 | MCP server | `src/ScopeOneMcpServer.cpp` | | Qt Core, Qt Network and the Local API protocol. Not Core. |
 | Drivers | `drivers` | their own | `scopeone::DriverSDK` |

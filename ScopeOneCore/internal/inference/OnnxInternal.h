@@ -5,7 +5,7 @@
 
 #include <onnxruntime_cxx_api.h>
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     struct OnnxRuntime::Impl
     {

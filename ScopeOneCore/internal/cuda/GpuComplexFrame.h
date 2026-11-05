@@ -3,7 +3,7 @@
 
 #include <cstddef>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     class GpuComplexFrame
     {

@@ -6,7 +6,7 @@
 
 #include <memory>
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     class OnnxInferenceModule final : public core::ProcessingModule
     {

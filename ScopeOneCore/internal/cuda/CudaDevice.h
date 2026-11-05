@@ -1,7 +1,7 @@
 #pragma once
 
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     bool isCudaDeviceAvailable();
     int cudaDeviceCount();

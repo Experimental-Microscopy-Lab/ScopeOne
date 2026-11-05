@@ -1,6 +1,6 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
-#include "scopeone/ScanImageAssembler.h"
+#include "internal/ScanImageAssembler.h"
 
 #include "internal/AcquisitionEngine.h"
 #include "internal/FrameBufferUtils.h"
@@ -1149,7 +1149,7 @@ namespace scopeone::core
             QString baseName;
             quint64 lastTimestampNs{0};
         };
-        QHash<QString, std::shared_ptr<ScanImageAssembler>> scanImageAssemblers;
+        QHash<QString, std::shared_ptr<internal::ScanImageAssembler>> scanImageAssemblers;
         QHash<QString, ScanImageSessionState> scanImageSessions;
         QHash<QString, ExperimentDocument> experiments;
         QHash<QString, std::shared_ptr<RecordingSessionData>> sessions;
@@ -2373,10 +2373,10 @@ namespace scopeone::core
                                         QString* errorMessage)
     {
         const QString sourceId = config.sourceId.trimmed();
-        std::shared_ptr<ScanImageAssembler> assembler;
+        std::shared_ptr<internal::ScanImageAssembler> assembler;
         if (config.scanImage.enabled)
         {
-            assembler = std::make_shared<ScanImageAssembler>(sourceId, config.scanImage);
+            assembler = std::make_shared<internal::ScanImageAssembler>(sourceId, config.scanImage);
             if (!assembler->isValid())
             {
                 if (errorMessage)

@@ -5,10 +5,10 @@
 #include <algorithm>
 #include <cuda_runtime.h>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     CudaFrequencyFilterModule::CudaFrequencyFilterModule()
-        : CudaRealImageModule(scopeone::cuda::GpuMemoryLayout::Contiguous)
+        : CudaRealImageModule(scopeone::core::internal::cuda::GpuMemoryLayout::Contiguous)
     {
     }
 
@@ -98,8 +98,8 @@ namespace scopeone::cuda
     }
 
     bool CudaFrequencyFilterModule::processDevice(
-        const scopeone::cuda::GpuRealFrame& input,
-        scopeone::cuda::GpuRealFrame& output,
+        const scopeone::core::internal::cuda::GpuRealFrame& input,
+        scopeone::core::internal::cuda::GpuRealFrame& output,
         int bitDepth)
     {
         if (m_planWidth != input.width() || m_planHeight != input.height())
@@ -129,7 +129,7 @@ namespace scopeone::cuda
         {
             return false;
         }
-        return scopeone::cuda::detail::launchFrequencyFilter(input.data(),
+        return scopeone::core::internal::cuda::detail::launchFrequencyFilter(input.data(),
                                                             output.data(),
                                                             m_spectrum.data(),
                                                             input.width(),

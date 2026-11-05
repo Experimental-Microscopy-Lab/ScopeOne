@@ -3,7 +3,7 @@
 #include "scopeone/ProcessingTypes.h"
 #include "internal/cuda/GpuRealFrame.h"
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     class CudaRealImageModule
         : public scopeone::core::ProcessingModule

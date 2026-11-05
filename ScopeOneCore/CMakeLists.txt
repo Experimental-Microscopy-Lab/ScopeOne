@@ -114,7 +114,7 @@ set(CORE_HEADERS
         include/scopeone/ExperimentDocument.h
         include/scopeone/DriverManifest.h
         include/scopeone/ProcessingTypes.h
-        include/scopeone/ScanImageAssembler.h
+        internal/ScanImageAssembler.h
         include/scopeone/SharedFrame.h
         include/scopeone/DhmReconstruction.h
         internal/AcquisitionEngine.h

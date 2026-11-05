@@ -2,9 +2,9 @@
 
 #include "internal/cuda/CudaRealImageModule.h"
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
-    class CudaGaussianBlurModule final : public scopeone::cuda::CudaRealImageModule
+    class CudaGaussianBlurModule final : public scopeone::core::internal::cuda::CudaRealImageModule
     {
     public:
         CudaGaussianBlurModule();
@@ -16,8 +16,8 @@ namespace scopeone::cuda
         std::unique_ptr<scopeone::core::ProcessingModule> createRuntime() const override;
 
     protected:
-        bool processDevice(const scopeone::cuda::GpuRealFrame& input,
-                           scopeone::cuda::GpuRealFrame& output,
+        bool processDevice(const scopeone::core::internal::cuda::GpuRealFrame& input,
+                           scopeone::core::internal::cuda::GpuRealFrame& output,
                            int bitDepth) override;
 
     private:

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     OnnxRuntime::Impl::Impl()
         : environment(ORT_LOGGING_LEVEL_WARNING, "ScopeOneInference")

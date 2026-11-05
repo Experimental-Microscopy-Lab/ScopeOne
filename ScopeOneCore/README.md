@@ -51,7 +51,7 @@ Use this placement rule:
 | `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `CameraManager`, `MMCoreManager`, `RecordingManager`, `IscatModule`, `SignalSourceManager` |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `DhmTool`, `ToolRegistry` |
-| `scopeone::cuda`, `scopeone::inference` | The CUDA and ONNX processing modules in `src/cuda` and `src/inference` | `scopeone::cuda` |
+| `scopeone::core::internal::cuda`, `scopeone::core::internal::inference` | The CUDA and ONNX processing modules in `src/cuda` and `src/inference` | `core::internal::cuda` |
 
 Code in `src` that implements a public type remains in `scopeone::core`. Code that implements an `internal` header remains in `scopeone::core::internal`. The Python package named `scopeone` is an external client package and is not an embedded form of the C++ namespace.
 
@@ -110,7 +110,7 @@ The installed headers in `include/scopeone` and `include/sdk/scopeone` are the s
 - `ProcessingPipeline.h`, `ExperimentDocument.h` and `ImageSceneModel.h` are Core-owned runtime models and services.
 - `DriverSDK.h` includes the headers of the public driver contract: `CameraProvider.h`, `DaqDevice.h`, `DaqProvider.h`, `Driver.h`, `HardwareCapabilities.h`, `HardwareProvider.h`, `HardwareTypes.h`, `ImageFrame.h`, `SignalSource.h` and `SignalSourceProvider.h`. The `scopeone::DriverSDK` CMake target provides them.
 - `ProcessingTypes.h` holds the processing module base class and the descriptors of modules and their parameters.
-- `DriverManifest.h` is how ScopeOne discovers and enables drivers. `ScanImageAssembler.h`, `SharedFrame.h` and `DhmReconstruction.h` serve the application. None of them are driver contracts.
+- `DriverManifest.h` is how ScopeOne discovers and enables drivers. `SharedFrame.h` and `DhmReconstruction.h` serve the application. None of them are driver contracts.
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.

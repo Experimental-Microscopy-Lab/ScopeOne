@@ -3,7 +3,7 @@
 
 #include "internal/ProcessingModuleRegistry.h"
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     namespace
     {

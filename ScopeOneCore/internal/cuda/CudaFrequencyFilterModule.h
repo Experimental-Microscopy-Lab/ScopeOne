@@ -5,9 +5,9 @@
 
 #include <cufft.h>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
-    class CudaFrequencyFilterModule final : public scopeone::cuda::CudaRealImageModule
+    class CudaFrequencyFilterModule final : public scopeone::core::internal::cuda::CudaRealImageModule
     {
     public:
         CudaFrequencyFilterModule();
@@ -21,15 +21,15 @@ namespace scopeone::cuda
         bool resetState() override;
 
     protected:
-        bool processDevice(const scopeone::cuda::GpuRealFrame& input,
-                           scopeone::cuda::GpuRealFrame& output,
+        bool processDevice(const scopeone::core::internal::cuda::GpuRealFrame& input,
+                           scopeone::core::internal::cuda::GpuRealFrame& output,
                            int bitDepth) override;
 
     private:
         void destroyPlans();
         void releaseScratch();
 
-        scopeone::cuda::GpuComplexFrame m_spectrum;
+        scopeone::core::internal::cuda::GpuComplexFrame m_spectrum;
         cufftHandle m_forwardPlan{0};
         cufftHandle m_inversePlan{0};
         int m_planWidth{0};

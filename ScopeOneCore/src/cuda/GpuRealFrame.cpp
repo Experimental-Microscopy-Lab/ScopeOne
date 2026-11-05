@@ -6,7 +6,7 @@
 
 #include <utility>
 
-namespace scopeone::cuda
+namespace scopeone::core::internal::cuda
 {
     GpuRealFrame::GpuRealFrame(int width, int height, GpuMemoryLayout layout)
     {

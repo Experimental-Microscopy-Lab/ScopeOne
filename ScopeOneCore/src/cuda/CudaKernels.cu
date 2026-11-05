@@ -267,7 +267,7 @@ namespace
     }
 }
 
-namespace scopeone::cuda::detail
+namespace scopeone::core::internal::cuda::detail
 {
     bool convertToFloat(const void* source,
                         int sourceStride,

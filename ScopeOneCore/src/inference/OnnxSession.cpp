@@ -7,10 +7,10 @@
 
 namespace
 {
-    scopeone::inference::TensorElementType tensorElementType(
+    scopeone::core::internal::inference::TensorElementType tensorElementType(
         ONNXTensorElementDataType type)
     {
-        using scopeone::inference::TensorElementType;
+        using scopeone::core::internal::inference::TensorElementType;
         switch (type)
         {
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: return TensorElementType::Float32;
@@ -42,13 +42,13 @@ namespace
                                });
     }
 
-    std::vector<scopeone::inference::TensorInfo> tensorMetadata(
+    std::vector<scopeone::core::internal::inference::TensorInfo> tensorMetadata(
         Ort::Session& session,
         bool input)
     {
         const std::size_t count = input ? session.GetInputCount() : session.GetOutputCount();
         Ort::AllocatorWithDefaultOptions allocator;
-        std::vector<scopeone::inference::TensorInfo> metadata;
+        std::vector<scopeone::core::internal::inference::TensorInfo> metadata;
         metadata.reserve(count);
         for (std::size_t index = 0; index < count; ++index)
         {
@@ -67,7 +67,7 @@ namespace
     }
 }
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     struct OnnxSession::Impl
     {

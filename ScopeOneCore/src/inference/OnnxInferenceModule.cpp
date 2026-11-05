@@ -59,7 +59,7 @@ namespace
         return target;
     }
 
-    TensorLayout resolveLayout(const scopeone::inference::TensorInfo& tensor,
+    TensorLayout resolveLayout(const scopeone::core::internal::inference::TensorInfo& tensor,
                                int configuredLayout,
                                TensorLayout fallback)
     {
@@ -82,18 +82,18 @@ namespace
         return fallback;
     }
 
-    int tensorHeight(const scopeone::inference::TensorInfo& tensor, TensorLayout layout)
+    int tensorHeight(const scopeone::core::internal::inference::TensorInfo& tensor, TensorLayout layout)
     {
         return static_cast<int>(tensor.shape[layout == TensorLayout::Nchw ? 2 : 1]);
     }
 
-    int tensorWidth(const scopeone::inference::TensorInfo& tensor, TensorLayout layout)
+    int tensorWidth(const scopeone::core::internal::inference::TensorInfo& tensor, TensorLayout layout)
     {
         return static_cast<int>(tensor.shape[layout == TensorLayout::Nchw ? 3 : 2]);
     }
 }
 
-namespace scopeone::inference
+namespace scopeone::core::internal::inference
 {
     QString OnnxInferenceModule::id() const
     {
