@@ -18,6 +18,7 @@ class QGroupBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QTimer;
 
 namespace scopeone::core
 {
@@ -27,7 +28,7 @@ namespace scopeone::core
 namespace scopeone::ui
 {
     // The signal sources shown as an oscilloscope: each of the four channels shows one source,
-    // and Start runs the sources of the channels that are on
+    // and Run acquires the sources of the channels that are on at a rate that follows the timebase
     class SignalMonitorWidget final : public QWidget
     {
         Q_OBJECT
@@ -59,8 +60,16 @@ namespace scopeone::ui
         void rebuildParameters(int index);
         void updateUnits();
         void applyView();
-        void startAcquisition();
+        bool startAcquisition();
         void stopAcquisition();
+        void run();
+        void stop();
+        void single();
+        void scheduleRestart();
+        void restartAcquisition();
+        double sampleRate() const;
+        double autoSampleRate() const;
+        void updateSampleRateText();
         void autoScale();
         void handleTimeSeries(const scopeone::core::TimeSeriesChunk& chunk);
         void handleStateChanged(const QString& sourceId,
@@ -80,10 +89,10 @@ namespace scopeone::ui
         std::array<ChannelControls, OscilloscopeView::kChannelCount> m_channels;
         QList<scopeone::core::SignalSourceDescriptor> m_sources;
 
-        QDoubleSpinBox* m_sampleIntervalSpin{nullptr};
-        QPushButton* m_startButton{nullptr};
-        QPushButton* m_stopButton{nullptr};
         QLabel* m_statusLabel{nullptr};
+        QComboBox* m_sampleRateCombo{nullptr};
+        QTimer* m_restartTimer{nullptr};
+        bool m_acquiring{false};
 
         QComboBox* m_timebaseCombo{nullptr};
         QDoubleSpinBox* m_triggerPositionSpin{nullptr};

@@ -2,6 +2,7 @@
 
 #include <QFontMetricsF>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QPainter>
 #include <QPolygonF>
 #include <QTimer>
@@ -33,6 +34,8 @@ namespace scopeone::ui
         constexpr int kRefreshMilliseconds = 33;
         constexpr qint64 kAutoTriggerMilliseconds = 200;
         constexpr qint64 kFrequencyMilliseconds = 250;
+        // A triggered screen whose part after the edge takes longer than this is drawn as it fills
+        constexpr double kProgressiveSeconds = 0.1;
     }
 
     bool OscilloscopeView::Trace::empty() const
@@ -67,9 +70,9 @@ namespace scopeone::ui
 
     void OscilloscopeView::Trace::append(const scopeone::core::TimeSeriesChunk& chunk, double bucketSeconds)
     {
+        // No reserve here: reserving the exact new size on every chunk made each chunk reallocate
+        // and copy the whole history, which froze the screen on a long timebase
         const qsizetype count = chunk.values.size();
-        times.reserve(times.size() + count);
-        values.reserve(values.size() + count);
         for (qsizetype index = 0; index < count; ++index)
         {
             const double time = chunk.startTimeSeconds + static_cast<double>(index) * chunk.sampleIntervalSeconds;
@@ -192,6 +195,7 @@ namespace scopeone::ui
         if (mode != m_mode || channel != m_triggerChannel || slope != m_slope)
         {
             m_triggerArmed = false;
+            m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
         }
         m_mode = mode;
         m_triggerChannel = channel;
@@ -228,6 +232,11 @@ namespace scopeone::ui
     bool OscilloscopeView::isRunning() const
     {
         return m_running;
+    }
+
+    bool OscilloscopeView::isSingleArmed() const
+    {
+        return m_singleArmed;
     }
 
     void OscilloscopeView::armSingle()
@@ -384,9 +393,10 @@ namespace scopeone::ui
     }
 
     // Scans the trigger channel once over the samples that arrived, from where the last scan
-    // ended, and shows the latest edge whose whole screen has been received. The trigger re-arms
-    // only after the signal moves a tenth of a division past the level, so noise on a slow edge
-    // does not trigger twice.
+    // ended. The trigger re-arms only after the signal moves a tenth of a division past the level,
+    // so noise on a slow edge does not trigger twice. An edge whose screen has been received is
+    // shown; an edge still waiting for the part after it is kept and, on a slow timebase, drawn
+    // as the samples come in, as a scope does, and edges are not looked for until it is complete.
     void OscilloscopeView::processTrigger()
     {
         const double screen = screenSeconds();
@@ -398,11 +408,15 @@ namespace scopeone::ui
             return;
         }
 
-        double crossing = std::numeric_limits<double>::quiet_NaN();
+        double complete = std::numeric_limits<double>::quiet_NaN();
+        if (std::isfinite(m_pendingTrigger) && m_pendingTrigger + after <= newest)
+        {
+            complete = m_pendingTrigger;
+            m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
+        }
         const Trace& trace = m_traces[m_triggerChannel];
         if (m_channels[m_triggerChannel].enabled && !trace.empty())
         {
-            const double limit = newest - after;
             const double hysteresis = 0.1 * m_channels[m_triggerChannel].scale;
             const bool rising = m_slope == ScopeTriggerSlope::Rising;
             // The time before the edge may be held only by the buckets
@@ -412,7 +426,7 @@ namespace scopeone::ui
             {
                 ++index;
             }
-            for (; index < trace.times.size() && trace.times[index] <= limit; ++index)
+            for (; index < trace.times.size() && trace.times[index] <= newest; ++index)
             {
                 const double value = trace.values[index];
                 const bool beyond = rising ? value >= m_triggerLevel : value <= m_triggerLevel;
@@ -427,31 +441,47 @@ namespace scopeone::ui
                     const double previousValue = trace.values[index - 1];
                     const double previousTime = trace.times[index - 1];
                     const double fraction = (m_triggerLevel - previousValue) / (value - previousValue);
-                    crossing = previousTime + std::clamp(fraction, 0.0, 1.0)
+                    const double crossing = previousTime + std::clamp(fraction, 0.0, 1.0)
                         * (trace.times[index] - previousTime);
                     m_triggerArmed = false;
+                    if (crossing + after <= newest)
+                    {
+                        complete = crossing;
+                    }
+                    else if (!std::isfinite(m_pendingTrigger))
+                    {
+                        m_pendingTrigger = crossing;
+                    }
                 }
                 m_scanTime = trace.times[index];
             }
         }
 
-        if (std::isfinite(crossing))
+        if (std::isfinite(complete))
         {
-            buildFrame(crossing - before, crossing + after, crossing);
+            buildFrame(complete - before, complete + after, complete);
             m_state = DisplayState::Triggered;
             m_sinceTrigger.restart();
             if (m_singleArmed)
             {
+                m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
                 setRunning(false);
             }
             return;
         }
-        if (m_mode == ScopeTriggerMode::Auto && !m_singleArmed
+        if (std::isfinite(m_pendingTrigger) && after > kProgressiveSeconds)
+        {
+            buildFrame(m_pendingTrigger - before, m_pendingTrigger + after, m_pendingTrigger);
+            m_state = DisplayState::Triggered;
+            m_sinceTrigger.restart();
+            return;
+        }
+        // Without an edge Auto runs free on every refresh, so a slow screen still moves smoothly
+        if (m_mode == ScopeTriggerMode::Auto && !m_singleArmed && !std::isfinite(m_pendingTrigger)
             && m_sinceTrigger.elapsed() > kAutoTriggerMilliseconds)
         {
             buildFrame(newest - screen, newest, std::numeric_limits<double>::quiet_NaN());
             m_state = DisplayState::Auto;
-            m_sinceTrigger.restart();
             return;
         }
         if (m_state != DisplayState::Triggered || m_singleArmed)
@@ -638,6 +668,7 @@ namespace scopeone::ui
     void OscilloscopeView::resetTriggerSearch()
     {
         m_triggerArmed = false;
+        m_pendingTrigger = std::numeric_limits<double>::quiet_NaN();
         m_scanTime = -std::numeric_limits<double>::infinity();
     }
 
@@ -1060,5 +1091,18 @@ namespace scopeone::ui
     void OscilloscopeView::mouseReleaseEvent(QMouseEvent*)
     {
         m_dragCursor = -1;
+    }
+
+    // Wheel up zooms in to a shorter timebase; a touchpad's small steps add up to whole notches
+    void OscilloscopeView::wheelEvent(QWheelEvent* event)
+    {
+        m_wheelAngle += event->angleDelta().y();
+        const int notches = m_wheelAngle / 120;
+        if (notches != 0)
+        {
+            m_wheelAngle -= notches * 120;
+            emit timebaseStepRequested(-notches);
+        }
+        event->accept();
     }
 }

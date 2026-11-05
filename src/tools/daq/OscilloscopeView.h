@@ -62,6 +62,7 @@ namespace scopeone::ui
         void setCursors(bool visible, int channel);
         void setRunning(bool running);
         bool isRunning() const;
+        bool isSingleArmed() const;
         void armSingle();
         void appendChunk(const scopeone::core::TimeSeriesChunk& chunk);
         void clear();
@@ -72,12 +73,15 @@ namespace scopeone::ui
 
     signals:
         void runningChanged(bool running);
+        // The wheel over the screen turns the timebase, positive steps to a longer one
+        void timebaseStepRequested(int steps);
 
     protected:
         void paintEvent(QPaintEvent* event) override;
         void mousePressEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
+        void wheelEvent(QWheelEvent* event) override;
 
     private:
         enum class DisplayState
@@ -179,6 +183,8 @@ namespace scopeone::ui
         bool m_singleArmed{false};
         bool m_dirty{false};
         bool m_triggerArmed{false};
+        // An edge whose screen is still being received
+        double m_pendingTrigger{std::numeric_limits<double>::quiet_NaN()};
         double m_scanTime{-std::numeric_limits<double>::infinity()};
         QElapsedTimer m_sinceTrigger;
         QElapsedTimer m_sinceFrequency;
@@ -191,6 +197,7 @@ namespace scopeone::ui
         // Two time cursors as fractions of the screen width, then two level cursors in divisions
         std::array<double, 4> m_cursors{0.3, 0.7, 2.0, -2.0};
         int m_dragCursor{-1};
+        int m_wheelAngle{0};
         QRectF m_screen;
     };
 }

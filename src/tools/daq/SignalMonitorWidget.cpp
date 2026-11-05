@@ -22,6 +22,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStyle>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -32,6 +33,10 @@ namespace scopeone::ui
 {
     namespace
     {
+        constexpr double kMaximumSampleRate = 1e6;
+        constexpr int kAutoSamplesPerScreen = 5000;
+        constexpr int kRestartDelayMilliseconds = 300;
+
         QString parameterSettingKey(const QString& sourceId, const QString& parameterKey)
         {
             return QStringLiteral("signalSources/%1/%2").arg(sourceId, parameterKey);
@@ -117,28 +122,25 @@ namespace scopeone::ui
         scroll->setWidget(panel);
         layout->addWidget(scroll);
 
-        auto* acquisitionBox = new QGroupBox(tr("Acquisition"), panel);
-        auto* acquisitionForm = new QFormLayout(acquisitionBox);
-        m_sampleIntervalSpin = new QDoubleSpinBox(acquisitionBox);
-        m_sampleIntervalSpin->setRange(0.001, 10000.0);
-        m_sampleIntervalSpin->setDecimals(3);
-        m_sampleIntervalSpin->setSuffix(tr(" ms"));
-        m_sampleIntervalSpin->setValue(1.0);
-        m_sampleIntervalSpin->setToolTip(
-            tr("The sample clock of a time series such as a DAQ input, and the bin of an event source"));
-        acquisitionForm->addRow(tr("Interval"), m_sampleIntervalSpin);
-        auto* acquisitionButtons = new QHBoxLayout();
-        m_startButton = new QPushButton(tr("Start"), acquisitionBox);
-        m_startButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        m_stopButton = new QPushButton(tr("Stop"), acquisitionBox);
-        m_stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-        acquisitionButtons->addWidget(m_startButton);
-        acquisitionButtons->addWidget(m_stopButton);
-        acquisitionForm->addRow(acquisitionButtons);
-        m_statusLabel = new QLabel(tr("No signal sources available"), acquisitionBox);
+        // The front panel keys of a scope: Run/Stop starts and stops the sources of the channels
+        // that are on, Single takes one triggered screen and stops
+        auto* controlBox = new QGroupBox(tr("Control"), panel);
+        auto* controlLayout = new QVBoxLayout(controlBox);
+        auto* controlButtons = new QHBoxLayout();
+        m_runButton = new QPushButton(tr("Run"), controlBox);
+        m_runButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        m_singleButton = new QPushButton(tr("Single"), controlBox);
+        m_singleButton->setToolTip(tr("Take the next triggered screen and stop"));
+        m_autoScaleButton = new QPushButton(tr("Auto Scale"), controlBox);
+        m_autoScaleButton->setToolTip(tr("Fit the scale and offset of each channel to the screen"));
+        controlButtons->addWidget(m_runButton);
+        controlButtons->addWidget(m_singleButton);
+        controlButtons->addWidget(m_autoScaleButton);
+        controlLayout->addLayout(controlButtons);
+        m_statusLabel = new QLabel(tr("No signal sources available"), controlBox);
         m_statusLabel->setWordWrap(true);
-        acquisitionForm->addRow(m_statusLabel);
-        panelLayout->addWidget(acquisitionBox);
+        controlLayout->addWidget(m_statusLabel);
+        panelLayout->addWidget(controlBox);
 
         auto* horizontalBox = new QGroupBox(tr("Horizontal"), panel);
         auto* horizontalForm = new QFormLayout(horizontalBox);
@@ -149,6 +151,20 @@ namespace scopeone::ui
                 QStringLiteral("%1/div").arg(OscilloscopeView::formatValue(step, QStringLiteral("s"))), step);
         }
         horizontalForm->addRow(tr("Timebase"), m_timebaseCombo);
+        m_sampleRateCombo = new QComboBox(horizontalBox);
+        m_sampleRateCombo->addItem(tr("Auto"), 0.0);
+        for (const double step : knobSteps(0, 6))
+        {
+            if (step <= kMaximumSampleRate)
+            {
+                m_sampleRateCombo->addItem(OscilloscopeView::formatValue(step, QStringLiteral("S/s")), step);
+            }
+        }
+        m_sampleRateCombo->setToolTip(
+            tr("Auto follows the timebase with about %1 samples on the screen; a fixed rate is the "
+               "sample clock of a DAQ input and the counting bin of a photon counter")
+                .arg(kAutoSamplesPerScreen));
+        horizontalForm->addRow(tr("Sample rate"), m_sampleRateCombo);
         m_triggerPositionSpin = new QDoubleSpinBox(horizontalBox);
         m_triggerPositionSpin->setRange(0.0, 100.0);
         m_triggerPositionSpin->setDecimals(0);
@@ -176,14 +192,6 @@ namespace scopeone::ui
         triggerForm->addRow(tr("Slope"), m_triggerSlopeCombo);
         m_triggerLevelSpin = valueSpin(triggerBox);
         triggerForm->addRow(tr("Level"), m_triggerLevelSpin);
-        auto* displayButtons = new QHBoxLayout();
-        m_runButton = new QPushButton(tr("Stop"), triggerBox);
-        m_runButton->setToolTip(tr("Hold or resume the screen; the sources keep acquiring"));
-        m_singleButton = new QPushButton(tr("Single"), triggerBox);
-        m_singleButton->setToolTip(tr("Show the next edge and hold the screen"));
-        displayButtons->addWidget(m_runButton);
-        displayButtons->addWidget(m_singleButton);
-        triggerForm->addRow(displayButtons);
         panelLayout->addWidget(triggerBox);
 
         for (int index = 0; index < OscilloscopeView::kChannelCount; ++index)
@@ -191,16 +199,13 @@ namespace scopeone::ui
             panelLayout->addWidget(createChannelBox(index));
         }
 
-        auto* displayBox = new QGroupBox(tr("Display"), panel);
+        auto* displayBox = new QGroupBox(tr("Cursors"), panel);
         auto* displayForm = new QFormLayout(displayBox);
-        m_autoScaleButton = new QPushButton(tr("Auto Scale"), displayBox);
-        m_autoScaleButton->setToolTip(tr("Fit the scale and offset of each channel to the screen"));
-        displayForm->addRow(m_autoScaleButton);
         m_cursorsCheck = new QCheckBox(tr("Show cursors"), displayBox);
         m_cursorsCheck->setToolTip(tr("Drag the cursors on the screen"));
-        displayForm->addRow(tr("Cursors"), m_cursorsCheck);
+        displayForm->addRow(m_cursorsCheck);
         m_cursorChannelCombo = channelCombo(displayBox);
-        displayForm->addRow(tr("Cursor channel"), m_cursorChannelCombo);
+        displayForm->addRow(tr("Channel"), m_cursorChannelCombo);
         panelLayout->addWidget(displayBox);
 
         m_scanGroup = new QGroupBox(tr("Scan image from CH1"), panel);
@@ -253,19 +258,60 @@ namespace scopeone::ui
 
         loadSettings();
 
-        connect(m_startButton, &QPushButton::clicked, this, &SignalMonitorWidget::startAcquisition);
-        connect(m_stopButton, &QPushButton::clicked, this, &SignalMonitorWidget::stopAcquisition);
-        connect(m_autoScaleButton, &QPushButton::clicked, this, &SignalMonitorWidget::autoScale);
+        m_restartTimer = new QTimer(this);
+        m_restartTimer->setSingleShot(true);
+        m_restartTimer->setInterval(kRestartDelayMilliseconds);
+        connect(m_restartTimer, &QTimer::timeout, this, &SignalMonitorWidget::restartAcquisition);
+
         connect(m_runButton, &QPushButton::clicked, this, [this]()
         {
-            m_view->setRunning(!m_view->isRunning());
+            if (m_acquiring)
+            {
+                stop();
+            }
+            else
+            {
+                run();
+            }
         });
-        connect(m_singleButton, &QPushButton::clicked, m_view, &OscilloscopeView::armSingle);
+        connect(m_singleButton, &QPushButton::clicked, this, &SignalMonitorWidget::single);
+        connect(m_autoScaleButton, &QPushButton::clicked, this, &SignalMonitorWidget::autoScale);
+        // A single screen that was taken stops the acquisition, as on a scope
         connect(m_view, &OscilloscopeView::runningChanged, this, [this](bool running)
         {
-            m_runButton->setText(running ? tr("Stop") : tr("Run"));
+            if (!running && m_acquiring)
+            {
+                stop();
+            }
         });
-        connect(m_timebaseCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::applyView);
+        connect(m_view, &OscilloscopeView::timebaseStepRequested, this, [this](int steps)
+        {
+            m_timebaseCombo->setCurrentIndex(
+                std::clamp(m_timebaseCombo->currentIndex() + steps, 0, m_timebaseCombo->count() - 1));
+        });
+        connect(m_timebaseCombo, &QComboBox::currentIndexChanged, this, [this]()
+        {
+            applyView();
+            updateSampleRateText();
+            scheduleRestart();
+        });
+        connect(m_sampleRateCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::scheduleRestart);
+        for (QWidget* widget : m_scanGroup->findChildren<QWidget*>())
+        {
+            if (auto* spin = qobject_cast<QSpinBox*>(widget))
+            {
+                connect(spin, &QSpinBox::valueChanged, this, &SignalMonitorWidget::scheduleRestart);
+            }
+            else if (auto* combo = qobject_cast<QComboBox*>(widget))
+            {
+                connect(combo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::scheduleRestart);
+            }
+            else if (auto* check = qobject_cast<QCheckBox*>(widget))
+            {
+                connect(check, &QCheckBox::toggled, this, &SignalMonitorWidget::scheduleRestart);
+            }
+        }
+        connect(m_scanGroup, &QGroupBox::toggled, this, &SignalMonitorWidget::scheduleRestart);
         connect(m_triggerPositionSpin, &QDoubleSpinBox::valueChanged, this, &SignalMonitorWidget::applyView);
         connect(m_triggerModeCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::applyView);
         connect(m_triggerChannelCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::updateUnits);
@@ -318,7 +364,7 @@ namespace scopeone::ui
     // drivers with nothing left to show or stop them
     void SignalMonitorWidget::closeEvent(QCloseEvent* event)
     {
-        stopAcquisition();
+        stop();
         QWidget::closeEvent(event);
     }
 
@@ -355,12 +401,14 @@ namespace scopeone::ui
         {
             applyView();
             updateControls();
+            scheduleRestart();
         });
         connect(channel.source, &QComboBox::currentIndexChanged, this, [this, index]()
         {
             m_channels[index].preferredSource = channelSource(index);
             rebuildParameters(index);
             updateUnits();
+            scheduleRestart();
         });
         connect(channel.scale, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::applyView);
         connect(channel.offset, &QDoubleSpinBox::valueChanged, this, &SignalMonitorWidget::applyView);
@@ -480,6 +528,22 @@ namespace scopeone::ui
             }
             channel.parameterForm->addRow(parameter.name, row ? row : editor);
             channel.editors.insert(parameter.key, editor);
+            if (auto* spin = qobject_cast<QSpinBox*>(editor))
+            {
+                connect(spin, &QSpinBox::valueChanged, this, &SignalMonitorWidget::scheduleRestart);
+            }
+            else if (auto* spin = qobject_cast<QDoubleSpinBox*>(editor))
+            {
+                connect(spin, &QDoubleSpinBox::valueChanged, this, &SignalMonitorWidget::scheduleRestart);
+            }
+            else if (auto* combo = qobject_cast<QComboBox*>(editor))
+            {
+                connect(combo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::scheduleRestart);
+            }
+            else if (auto* edit = qobject_cast<QLineEdit*>(editor))
+            {
+                connect(edit, &QLineEdit::editingFinished, this, &SignalMonitorWidget::scheduleRestart);
+            }
         }
         updateControls();
     }
@@ -528,7 +592,7 @@ namespace scopeone::ui
         m_view->setCursors(m_cursorsCheck->isChecked(), m_cursorChannelCombo->currentIndex());
     }
 
-    void SignalMonitorWidget::startAcquisition()
+    bool SignalMonitorWidget::startAcquisition()
     {
         QStringList sources;
         QHash<QString, int> firstChannel;
@@ -544,7 +608,7 @@ namespace scopeone::ui
         if (sources.isEmpty())
         {
             m_statusLabel->setText(tr("Turn on a channel that shows a source"));
-            return;
+            return false;
         }
         saveSettings();
 
@@ -560,7 +624,7 @@ namespace scopeone::ui
         {
             scopeone::core::SignalAcquisitionConfig config;
             config.sourceId = sourceId;
-            config.sampleIntervalSeconds = m_sampleIntervalSpin->value() / 1000.0;
+            config.sampleIntervalSeconds = 1.0 / sampleRate();
             config.scanImage.enabled = sourceId == m_scanSourceId;
             config.scanImage.width = m_scanWidthSpin->value();
             config.scanImage.height = m_scanHeightSpin->value();
@@ -583,22 +647,124 @@ namespace scopeone::ui
                 qWarning().noquote() << errorMessage;
                 stopAcquisition();
                 m_statusLabel->setText(errorMessage);
-                return;
+                return false;
             }
             if (!m_activeSources.contains(sourceId))
             {
                 m_activeSources.append(sourceId);
             }
         }
+        return true;
+    }
+
+    // Stops what was started and what the channels show, since during a restart the states of
+    // the stopped run can still be on their way
+    void SignalMonitorWidget::stopAcquisition()
+    {
+        QStringList sources = m_activeSources;
+        for (int index = 0; index < OscilloscopeView::kChannelCount; ++index)
+        {
+            const QString sourceId = channelSource(index);
+            if (!sourceId.isEmpty() && !sources.contains(sourceId))
+            {
+                sources.append(sourceId);
+            }
+        }
+        for (const QString& sourceId : sources)
+        {
+            if (m_core->signalSourceState(sourceId) != scopeone::core::SignalSourceState::Idle
+                || m_activeSources.contains(sourceId))
+            {
+                m_core->stopSignalTrace(sourceId);
+            }
+        }
+    }
+
+    void SignalMonitorWidget::run()
+    {
+        m_restartTimer->stop();
+        m_acquiring = startAcquisition();
+        m_view->setRunning(m_acquiring);
         updateControls();
     }
 
-    void SignalMonitorWidget::stopAcquisition()
+    void SignalMonitorWidget::stop()
     {
-        for (const QString& sourceId : QStringList(m_activeSources))
+        m_restartTimer->stop();
+        m_acquiring = false;
+        stopAcquisition();
+        // The screen keeps the last frame, as a stopped scope does
+        m_view->setRunning(false);
+        updateControls();
+    }
+
+    void SignalMonitorWidget::single()
+    {
+        if (!m_acquiring)
         {
-            m_core->stopSignalTrace(sourceId);
+            run();
         }
+        if (m_acquiring)
+        {
+            m_view->armSingle();
+        }
+    }
+
+    // A change that reaches the sources takes effect at once while running, the way a scope
+    // re-arms when a knob turns; the delay gathers the steps of a turned wheel into one restart
+    void SignalMonitorWidget::scheduleRestart()
+    {
+        if (m_acquiring)
+        {
+            m_restartTimer->start();
+        }
+    }
+
+    void SignalMonitorWidget::restartAcquisition()
+    {
+        if (!m_acquiring)
+        {
+            return;
+        }
+        const bool singleArmed = m_view->isSingleArmed();
+        stopAcquisition();
+        m_acquiring = startAcquisition();
+        m_view->setRunning(m_acquiring);
+        if (m_acquiring && singleArmed)
+        {
+            m_view->armSingle();
+        }
+        updateControls();
+    }
+
+    // Auto puts about kAutoSamplesPerScreen samples on the screen, on the 1, 2, 5 steps, so the
+    // timebase alone sets the acquisition
+    double SignalMonitorWidget::sampleRate() const
+    {
+        const double fixed = m_sampleRateCombo->currentData().toDouble();
+        return fixed > 0.0 ? fixed : autoSampleRate();
+    }
+
+    double SignalMonitorWidget::autoSampleRate() const
+    {
+        const double screen = OscilloscopeView::kHorizontalDivisions * m_timebaseCombo->currentData().toDouble();
+        const double wanted = std::clamp(kAutoSamplesPerScreen / screen, 1.0, kMaximumSampleRate);
+        double rate = 1.0;
+        for (int index = 1; index < m_sampleRateCombo->count(); ++index)
+        {
+            const double step = m_sampleRateCombo->itemData(index).toDouble();
+            if (step <= wanted * 1.0001)
+            {
+                rate = step;
+            }
+        }
+        return rate;
+    }
+
+    void SignalMonitorWidget::updateSampleRateText()
+    {
+        m_sampleRateCombo->setItemText(0, tr("Auto (%1)").arg(
+            OscilloscopeView::formatValue(autoSampleRate(), QStringLiteral("S/s"))));
     }
 
     // Fits each shown channel into six of the eight divisions around the centre and puts the
@@ -660,6 +826,10 @@ namespace scopeone::ui
             return;
         }
         m_sourceMessages.insert(sourceId, message);
+        if (state == scopeone::core::SignalSourceState::Error && m_acquiring)
+        {
+            stop();
+        }
         const bool active = state == scopeone::core::SignalSourceState::Starting
             || state == scopeone::core::SignalSourceState::Running
             || state == scopeone::core::SignalSourceState::Stopping;
@@ -675,26 +845,18 @@ namespace scopeone::ui
         updateStatus();
     }
 
-    // The sources and their settings are fixed while they run; the screen stays adjustable
+    // Nothing is locked while running: a change to the sources restarts them
     void SignalMonitorWidget::updateControls()
     {
-        const bool running = !m_activeSources.isEmpty();
         bool startable = false;
         for (const ChannelControls& channel : m_channels)
         {
-            channel.source->setEnabled(!running);
-            for (QWidget* editor : channel.editors)
-            {
-                // A file parameter sits in a row with its browse button
-                QWidget* const row = editor->parentWidget();
-                (row && row != channel.box ? row : editor)->setEnabled(!running);
-            }
             startable = startable || (channel.box->isChecked() && channel.source->currentIndex() >= 0);
         }
-        m_sampleIntervalSpin->setEnabled(!running);
-        m_scanGroup->setEnabled(!running);
-        m_startButton->setEnabled(!running && startable);
-        m_stopButton->setEnabled(running);
+        m_runButton->setText(m_acquiring ? tr("Stop") : tr("Run"));
+        m_runButton->setIcon(style()->standardIcon(m_acquiring ? QStyle::SP_MediaStop : QStyle::SP_MediaPlay));
+        m_runButton->setEnabled(m_acquiring || startable);
+        m_singleButton->setEnabled(startable);
     }
 
     void SignalMonitorWidget::updateStatus()
@@ -717,8 +879,10 @@ namespace scopeone::ui
     void SignalMonitorWidget::loadSettings()
     {
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        m_sampleIntervalSpin->setValue(settings.value(monitorKey(QStringLiteral("intervalMs")), 1.0).toDouble());
         selectNearest(m_timebaseCombo, settings.value(monitorKey(QStringLiteral("timebase")), 1e-3).toDouble());
+        m_sampleRateCombo->setCurrentIndex(std::max(0, m_sampleRateCombo->findData(
+            settings.value(monitorKey(QStringLiteral("sampleRate")), 0.0).toDouble())));
+        updateSampleRateText();
         m_triggerPositionSpin->setValue(settings.value(monitorKey(QStringLiteral("triggerPosition")), 50.0).toDouble());
         m_triggerModeCombo->setCurrentIndex(std::max(0, m_triggerModeCombo->findData(
             settings.value(monitorKey(QStringLiteral("triggerMode")), static_cast<int>(ScopeTriggerMode::Auto)))));
@@ -743,7 +907,7 @@ namespace scopeone::ui
     void SignalMonitorWidget::saveSettings() const
     {
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        settings.setValue(monitorKey(QStringLiteral("intervalMs")), m_sampleIntervalSpin->value());
+        settings.setValue(monitorKey(QStringLiteral("sampleRate")), m_sampleRateCombo->currentData());
         settings.setValue(monitorKey(QStringLiteral("timebase")), m_timebaseCombo->currentData());
         settings.setValue(monitorKey(QStringLiteral("triggerPosition")), m_triggerPositionSpin->value());
         settings.setValue(monitorKey(QStringLiteral("triggerMode")), m_triggerModeCombo->currentData());
