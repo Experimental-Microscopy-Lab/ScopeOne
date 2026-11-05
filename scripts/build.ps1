@@ -10,6 +10,7 @@ $clean = $false
 $run = $false
 $package = $false
 $skipCoreInstall = $false
+$assumeYes = $false
 
 function Read-OptionValue {
     param(
@@ -68,6 +69,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         }
         { $_ -in @("--skipCoreInstall", "-skipCoreInstall") } {
             $skipCoreInstall = $true
+            continue
+        }
+        { $_ -in @("--yes", "-yes", "-y") } {
+            $assumeYes = $true
             continue
         }
         default {
@@ -178,7 +183,7 @@ function Import-MsvcEnvironment {
 
     $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
-        throw "Visual Studio Installer was not found."
+        throw "Visual Studio 2022 with the C++ tools was not found.`n$visualStudioInstallHint"
     }
     $installationPath = & $vsWhere `
         -latest `
@@ -186,7 +191,7 @@ function Import-MsvcEnvironment {
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         -property installationPath
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
-        throw "A Visual Studio installation with the C++ toolchain was not found."
+        throw "Visual Studio is installed without the C++ tools.`n$visualStudioInstallHint"
     }
 
     $devShellModule = Join-Path $installationPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
@@ -217,10 +222,178 @@ function Import-MsvcEnvironment {
     $env:CXX = "cl.exe"
 }
 
-$scopeOneVcpkgRoot = $env:VCPKG_ROOT
-Import-MsvcEnvironment
+# The Build Tools bring MSVC, MSBuild, the Windows SDK and CMake, which is all the build needs
+# besides Git
+$visualStudioInstallHint = @"
+Install the Visual Studio 2022 Build Tools with the C++ workload and run this script again:
 
-$cmake = (Get-Command cmake -ErrorAction Stop).Source
+  winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+
+An existing Visual Studio 2022 works too once "Desktop development with C++" is added in the Visual Studio Installer.
+"@
+
+# Clones vcpkg into the user's folder when VCPKG_ROOT does not name one, after asking, and
+# bootstraps it. vcpkg builds Qt, OpenCV and the other libraries inside the repository.
+function Resolve-Vcpkg {
+    $root = $env:VCPKG_ROOT
+    if (-not $root -or -not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+        $root = Join-Path $env:USERPROFILE "vcpkg"
+        if (-not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+            if (-not $assumeYes) {
+                if ([Console]::IsInputRedirected) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout, or pass --yes to download vcpkg into $root."
+                }
+                Write-Host "vcpkg is a C++ package manager. ScopeOne uses it to download and build Qt, OpenCV and its other libraries, and nothing is installed system wide."
+                $answer = Read-Host "vcpkg was not found. Download it into $root? Press Enter to accept, type another folder, or n to cancel"
+                if ($answer -in @("n", "N", "no", "No")) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout and run this script again."
+                }
+                if ($answer) {
+                    $root = $answer
+                }
+            }
+            if (-not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+                Invoke-Step `
+                    -Label "Downloading vcpkg" `
+                    -FilePath $git `
+                    -Arguments @("clone", "https://github.com/microsoft/vcpkg.git", $root) `
+                    -WorkingDirectory $env:USERPROFILE
+            }
+        }
+        $env:VCPKG_ROOT = $root
+        [Environment]::SetEnvironmentVariable("VCPKG_ROOT", $root, "User")
+        Write-Host "Using vcpkg in $root, saved as VCPKG_ROOT for your user account."
+    }
+    if (-not (Test-Path (Join-Path $root "vcpkg.exe"))) {
+        Invoke-Step `
+            -Label "Bootstrapping vcpkg" `
+            -FilePath (Join-Path $root "bootstrap-vcpkg.bat") `
+            -Arguments @("-disableMetrics") `
+            -WorkingDirectory $root
+    }
+    return $root
+}
+
+# Clones the latest mmCoreAndDevices and builds MMCore and the two adapters the demo
+# configurations use. Core links MMCore.lib and copies the adapters next to
+# ScopeOne. An existing checkout is used as it is, and nothing is rebuilt once its outputs exist.
+function Ensure-MMCore {
+    $mm = Join-Path $coreSourceDir "external\mmCoreAndDevices"
+    $binDir = Join-Path $mm "build\Release\x64"
+    $missing = @(@("MMCore.lib", "mmgr_dal_DemoCamera.dll", "mmgr_dal_Utilities.dll") |
+        Where-Object { -not (Test-Path (Join-Path $binDir $_)) })
+    if ($missing.Count -eq 0) {
+        return
+    }
+    if (-not (Test-Path (Join-Path $mm "MMCore\MMCore.vcxproj"))) {
+        Invoke-Step -Label "Downloading mmCoreAndDevices" -FilePath $git `
+            -Arguments @("clone", "--depth", "1",
+                "https://github.com/micro-manager/mmCoreAndDevices.git", $mm) `
+            -WorkingDirectory $repoRoot
+    }
+    $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
+    foreach ($project in @(
+            "MMCore\MMCore.vcxproj",
+            "DeviceAdapters\DemoCamera\DemoCamera.vcxproj",
+            "DeviceAdapters\Utilities\Utilities.vcxproj")) {
+        Invoke-Step `
+            -Label "Building $project" `
+            -FilePath $msbuild `
+            -Arguments @(
+                (Join-Path $mm $project),
+                "/p:Configuration=Release",
+                "/p:Platform=x64",
+                "/p:SolutionDir=$mm\",
+                "/m",
+                "/nologo",
+                "/v:minimal"
+            ) `
+            -WorkingDirectory $mm
+    }
+}
+
+# Prints one line per tool, a check mark or a cross with what it is for, and stops after the list
+# with the install commands of everything missing. The marks are built from code points, as
+# Windows PowerShell reads a script without a byte order mark in the legacy code page.
+$checkMark = [string][char]0x2713
+$crossMark = [string][char]0x2717
+$missingTools = @()
+function Write-ToolLine {
+    param([bool]$Found, [string]$Label, [string]$Detail)
+
+    Write-Host "  " -NoNewline
+    if ($Found) {
+        Write-Host $checkMark -ForegroundColor Green -NoNewline
+    }
+    else {
+        Write-Host $crossMark -ForegroundColor Red -NoNewline
+    }
+    Write-Host (" {0,-14} {1}" -f $Label, $Detail)
+}
+
+Write-Step "Checking build tools"
+$gitCommand = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCommand) {
+    $git = $gitCommand.Source
+    Write-ToolLine $true "Git" ((& $git --version) -join " ")
+}
+else {
+    Write-ToolLine $false "Git" "fetches the ScopeWriter submodule, vcpkg and Micro-Manager"
+    $missingTools += "Git"
+}
+
+$msvcError = $null
+try {
+    Import-MsvcEnvironment
+    Write-ToolLine $true "Visual Studio" ("MSVC $env:VCToolsVersion, Windows SDK $env:WindowsSDKVersion".TrimEnd("\"))
+}
+catch {
+    $msvcError = $_.Exception.Message
+    Write-ToolLine $false "Visual Studio" "compiles everything with MSVC"
+    $missingTools += "Visual Studio"
+}
+
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+$msbuildCommand = Get-Command msbuild -ErrorAction SilentlyContinue
+if ($cmakeCommand) {
+    $cmake = $cmakeCommand.Source
+    Write-ToolLine $true "CMake" ((& $cmake --version) | Select-Object -First 1)
+}
+else {
+    Write-ToolLine $false "CMake" "configures ScopeOne, part of the C++ tools of Visual Studio"
+    $missingTools += "CMake"
+}
+if ($msbuildCommand) {
+    Write-ToolLine $true "MSBuild" "builds Micro-Manager's core and adapters"
+}
+else {
+    Write-ToolLine $false "MSBuild" "builds Micro-Manager's core and adapters, part of Visual Studio"
+    $missingTools += "MSBuild"
+}
+
+if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT "scripts\buildsystems\vcpkg.cmake"))) {
+    Write-ToolLine $true "vcpkg" $env:VCPKG_ROOT
+}
+else {
+    Write-Host "  - " -ForegroundColor Yellow -NoNewline
+    Write-Host ("{0,-14} {1}" -f "vcpkg", "not set up yet, offered below")
+}
+
+if ($missingTools.Count -gt 0) {
+    $hints = @()
+    if ("Git" -in $missingTools) {
+        $hints += "Install Git:`n`n  winget install Git.Git`n"
+    }
+    if ($missingTools | Where-Object { $_ -ne "Git" }) {
+        if ($msvcError) {
+            $hints += $msvcError
+        }
+        else {
+            $hints += $visualStudioInstallHint
+        }
+    }
+    throw "Missing build tools: $($missingTools -join ', ')`n`n$($hints -join "`n")`nOpen a new terminal after installing, so the tools are on the path."
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
@@ -249,13 +422,7 @@ $driverCachePath = Join-Path $driverBuildDir "CMakeCache.txt"
 $vcpkgConfigureArgs = @()
 $writerVcpkgArgs = @()
 if ($env:OS -eq "Windows_NT") {
-    if (-not $scopeOneVcpkgRoot) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
-    $vcpkgToolchain = Join-Path $scopeOneVcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-    if (-not (Test-Path $vcpkgToolchain)) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
+    $vcpkgToolchain = Join-Path (Resolve-Vcpkg) "scripts\buildsystems\vcpkg.cmake"
 }
 if ($env:OS -eq "Windows_NT" -and $target -eq "scopewriter") {
     # Standalone ScopeWriter installs its own vcpkg.json dependencies and ships their DLLs
@@ -410,6 +577,14 @@ if (-not $needCoreConfigure -and $target -in @("all", "core")) {
 }
 
 if ($target -in @("all", "core")) {
+    if ($env:OS -eq "Windows_NT") {
+        Ensure-MMCore
+    }
+    if (-not (Test-Path (Join-Path $repoRoot "vcpkg_installed\x64-windows"))) {
+        Write-Host ""
+        Write-Host "The first build compiles Qt and OpenCV with vcpkg, which takes about an hour. Later builds reuse the result." -ForegroundColor Yellow
+    }
+
     # Core builds the CUDA processing modules, which need the CUDA toolset. A generator keeps the
     # toolset it was first configured with, so a build directory made without it is configured
     # again from scratch.

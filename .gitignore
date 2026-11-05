@@ -28,6 +28,7 @@
 !/config/MMConfig_demo_dual.cfg
 
 !/CMakeLists.txt
+!/build.cmd
 !/README.md
 !/CONTRIBUTING.md
 !/LICENSE

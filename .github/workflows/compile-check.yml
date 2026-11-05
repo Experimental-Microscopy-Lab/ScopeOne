@@ -107,10 +107,6 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 180
 
-    env:
-      # Keep in sync with windows-release.yml
-      MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
-
     steps:
       - name: Check out ScopeOne
         uses: actions/checkout@v7
@@ -147,18 +143,8 @@ jobs:
           key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-x64-windows-
 
-      - name: Build MMCore
-        shell: pwsh
-        run: |
-          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
-          git init $mm
-          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
-          git -C $mm checkout FETCH_HEAD
-          msbuild "$mm\MMCore\MMCore.vcxproj" /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$mm\" /m /nologo /v:minimal
-          if ($LASTEXITCODE -ne 0) { throw "Building MMCore failed." }
-          if (-not (Test-Path "$mm\build\Release\x64\MMCore.lib")) { throw "MMCore.lib was not produced." }
-
-      - name: Compile Core, drivers and GUI
+      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore
+      - name: Compile MMCore, Core, drivers and GUI
         shell: pwsh
         run: |
           .\scripts\build.ps1 --configure `

@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
   BOOST_VERSION: 1.86.0
   CUDA_VERSION: 12.8.1
   ONNXRUNTIME_PACKAGE: onnxruntime-win-x64-gpu_cuda12-1.30.0
@@ -125,9 +124,7 @@ jobs:
         shell: pwsh
         run: |
           $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
-          git init $mm
-          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
-          git -C $mm checkout FETCH_HEAD
+          git clone --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $mm
           $boostRoot = "$env:RUNNER_TEMP\boost"
           $properties = @(
             "/p:Configuration=Release",

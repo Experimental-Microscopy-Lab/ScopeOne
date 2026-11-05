@@ -55,11 +55,12 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
 
 **Prerequisites:**
 
-- [CMake](https://cmake.org/download/) 3.23 or newer
-- A C++20 compiler: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (MSVC v143 toolset) on Windows, GCC or Clang on Linux and macOS (experimental)
-- [vcpkg](https://github.com/microsoft/vcpkg) for Qt 6.11.2, OpenCV 4.14.0, and ScopeWriter's libtiff, zlib, zstd and crc32c
-- Git, for the submodules (including mmCoreAndDevices)
+- Git, for the ScopeWriter submodule and Micro-Manager
+- A C++20 compiler: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) or its Build Tools (MSVC v143 toolset) on Windows, GCC or Clang on Linux and macOS (experimental)
+- [CMake](https://cmake.org/download/) 3.23 or newer, which comes with the C++ tools of Visual Studio on Windows
 - Python 3.14, only for the Python package and Python processing modules
+
+The build scripts set up the rest. They download [vcpkg](https://github.com/microsoft/vcpkg) when `VCPKG_ROOT` does not name a checkout, and vcpkg builds Qt 6.11.2, OpenCV 4.14.0 and ScopeWriter's libtiff, zlib, zstd and crc32c inside the repository. They also fetch and build Micro-Manager's core with the DemoCamera and Utilities adapters.
 
 Clone ScopeOne with its submodules, or initialize them in an existing checkout:
 
@@ -75,8 +76,8 @@ ScopeOne/
   ScopeOneCore/
     include/scopeone/      Core API and the contracts of the application
     external/
-      mmCoreAndDevices/
-      ScopeWriter/
+      mmCoreAndDevices/    fetched by the build scripts
+      ScopeWriter/         submodule
 ```
 
 ### Drivers and processing modules
@@ -85,23 +86,28 @@ ScopeOne has two public extension points, drivers and Python processing modules,
 
 **Windows Build Steps:**
 
-Set up vcpkg once outside the ScopeOne repository:
+On a new Windows machine, install Git and the Visual Studio 2022 Build Tools with the C++ workload, which bring MSVC, MSBuild, the Windows SDK and CMake. An existing Visual Studio 2022 with "Desktop development with C++" works as well.
 
 ```powershell
-git clone https://github.com/microsoft/vcpkg.git C:/dev/vcpkg
-C:/dev/vcpkg/bootstrap-vcpkg.bat
-$env:VCPKG_ROOT = "C:/dev/vcpkg"
+winget install Git.Git
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
 ```
 
-Build Core, drivers, and GUI with the repository script:
+`winget` is the package manager included in Windows 10 and 11. The Build Tools are Visual Studio without the IDE, free to use. `--override` passes its options to the Visual Studio installer: `--add ...VCTools` selects the C++ build tools, `--includeRecommended` adds the Windows SDK and CMake, `--passive` shows only a progress bar, and `--wait` returns once the installation has finished. The installer asks for administrator rights, downloads a few gigabytes and takes 10 to 20 minutes.
+
+Then clone ScopeOne and build and start it with one command, in a new terminal so Git is on the path:
 
 ```powershell
-.\scripts\build.ps1 --configure
+git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+cd ScopeOne
+.\build.cmd --run
 ```
 
-Later builds only need `.\scripts\build.ps1`. Core, drivers, and GUI share `vcpkg_installed/`, and CMake installs the dependencies on the first configure.
+`build.cmd` runs `scripts\build.ps1` without changing the PowerShell execution policy, which blocks `.ps1` files on a new Windows installation. The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt and OpenCV with vcpkg and takes about an hour. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
 
-For a direct Core CMake configure:
+Later builds need only `.\build.cmd`. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The last lines of the build show whether Core was built with the CUDA and ONNX modules, which it does when the CUDA Toolkit is installed and ONNX Runtime is unpacked in `ScopeOneCore\external`.
+
+For a direct Core CMake configure, after the script has built MMCore once (`.\build.cmd --target core`):
 
 ```powershell
 cmake -S ScopeOneCore -B ScopeOneCore/build `
@@ -111,11 +117,7 @@ cmake -S ScopeOneCore -B ScopeOneCore/build `
   -DVCPKG_TARGET_TRIPLET=x64-windows
 ```
 
-Run the built application:
-
-```powershell
-.\build\Release\ScopeOne.exe
-```
+The built application is `build\Release\ScopeOne.exe`.
 
 **Linux and macOS Build Steps:**
 
