@@ -3,7 +3,6 @@
 #include <QFontMetricsF>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPolygonF>
 #include <QTimer>
 
@@ -23,10 +22,17 @@ namespace scopeone::ui
         const QColor kStoppedColor(235, 80, 70);
         const QColor kRunningColor(95, 227, 95);
 
-        // About two thousand screens of a fast timebase or a few minutes of a slow one per channel
-        constexpr qsizetype kMaximumSamples = 4'000'000;
+        // The raw samples kept per channel, a second at 1 MHz
+        constexpr qsizetype kMaximumRawSamples = 1 << 20;
+        // A screen is cut into this many buckets, about one per pixel column of a wide screen
+        constexpr int kBucketsPerScreen = 2048;
+        // Above this many samples on the screen a channel is drawn and measured from its buckets
+        constexpr qsizetype kRawFrameSamples = 16384;
+        // The newest raw samples the frequency is counted on, so it stays exact on a long timebase
+        constexpr qsizetype kFrequencySamples = 65536;
         constexpr int kRefreshMilliseconds = 33;
         constexpr qint64 kAutoTriggerMilliseconds = 200;
+        constexpr qint64 kFrequencyMilliseconds = 250;
     }
 
     bool OscilloscopeView::Trace::empty() const
@@ -49,20 +55,58 @@ namespace scopeone::ui
         return std::lower_bound(times.cbegin() + begin, times.cend(), time) - times.cbegin();
     }
 
-    void OscilloscopeView::Trace::append(const scopeone::core::TimeSeriesChunk& chunk)
+    double OscilloscopeView::Trace::earliest(double bucketSeconds) const
+    {
+        double time = empty() ? std::numeric_limits<double>::infinity() : first();
+        if (!buckets.empty())
+        {
+            time = std::min(time, static_cast<double>(buckets.front().index) * bucketSeconds);
+        }
+        return time;
+    }
+
+    void OscilloscopeView::Trace::append(const scopeone::core::TimeSeriesChunk& chunk, double bucketSeconds)
     {
         const qsizetype count = chunk.values.size();
         times.reserve(times.size() + count);
         values.reserve(values.size() + count);
         for (qsizetype index = 0; index < count; ++index)
         {
-            times.append(chunk.startTimeSeconds + static_cast<double>(index) * chunk.sampleIntervalSeconds);
-            values.append(chunk.values[index]);
+            const double time = chunk.startTimeSeconds + static_cast<double>(index) * chunk.sampleIntervalSeconds;
+            const double value = chunk.values[index];
+            times.append(time);
+            values.append(value);
+            addToBucket(time, value, bucketSeconds);
         }
     }
 
-    void OscilloscopeView::Trace::trim(double cutoff, qsizetype maximumSamples)
+    // Samples arrive in time order, so a sample never belongs to a bucket before the last one
+    void OscilloscopeView::Trace::addToBucket(double time, double value, double bucketSeconds)
     {
+        const auto index = static_cast<qint64>(std::floor(time / bucketSeconds));
+        if (buckets.empty() || index > buckets.back().index)
+        {
+            buckets.push_back({index, value, value, value, value * value, 1});
+            return;
+        }
+        Bucket& bucket = buckets.back();
+        bucket.minimum = std::min(bucket.minimum, value);
+        bucket.maximum = std::max(bucket.maximum, value);
+        bucket.sum += value;
+        bucket.squares += value * value;
+        ++bucket.count;
+    }
+
+    void OscilloscopeView::Trace::trim(double cutoff, qsizetype maximumSamples, qint64 retainedBuckets)
+    {
+        if (!buckets.empty())
+        {
+            const qint64 oldest = buckets.back().index - retainedBuckets;
+            while (buckets.front().index < oldest)
+            {
+                buckets.pop_front();
+            }
+        }
         if (empty())
         {
             return;
@@ -76,10 +120,22 @@ namespace scopeone::ui
         }
     }
 
+    // A new timebase cuts the buckets anew from the raw samples, so the part of the history that
+    // only the old buckets held is gone
+    void OscilloscopeView::Trace::rebuildBuckets(double bucketSeconds)
+    {
+        buckets.clear();
+        for (qsizetype index = begin; index < times.size(); ++index)
+        {
+            addToBucket(times[index], values[index], bucketSeconds);
+        }
+    }
+
     void OscilloscopeView::Trace::clear()
     {
         times.clear();
         values.clear();
+        buckets.clear();
         begin = 0;
     }
 
@@ -92,6 +148,8 @@ namespace scopeone::ui
         connect(timer, &QTimer::timeout, this, &OscilloscopeView::refresh);
         timer->start(kRefreshMilliseconds);
         m_sinceTrigger.start();
+        m_sinceFrequency.start();
+        m_frequencies.fill(std::numeric_limits<double>::quiet_NaN());
     }
 
     void OscilloscopeView::setChannel(int index, const ScopeChannel& channel)
@@ -100,8 +158,10 @@ namespace scopeone::ui
         {
             m_traces[index].clear();
             m_frame.times[index].clear();
-            m_frame.values[index].clear();
+            m_frame.minima[index].clear();
+            m_frame.maxima[index].clear();
             m_frame.measurements[index] = {};
+            m_frequencies[index] = std::numeric_limits<double>::quiet_NaN();
         }
         m_channels[index] = channel;
         m_dirty = true;
@@ -115,6 +175,10 @@ namespace scopeone::ui
             return;
         }
         m_timebase = secondsPerDivision;
+        for (Trace& trace : m_traces)
+        {
+            trace.rebuildBuckets(bucketSeconds());
+        }
         m_dirty = true;
         update();
     }
@@ -205,8 +269,8 @@ namespace scopeone::ui
                     resetTriggerSearch();
                 }
             }
-            trace.append(chunk);
-            trace.trim(trace.last() - retained, kMaximumSamples);
+            trace.append(chunk, bucketSeconds());
+            trace.trim(trace.last() - retained, kMaximumRawSamples, 2 * kBucketsPerScreen + 1);
             m_dirty = true;
         }
     }
@@ -218,6 +282,7 @@ namespace scopeone::ui
             trace.clear();
         }
         m_frame = {};
+        m_frequencies.fill(std::numeric_limits<double>::quiet_NaN());
         m_singleArmed = false;
         m_state = m_mode == ScopeTriggerMode::Roll ? DisplayState::Roll : DisplayState::Ready;
         resetTriggerSearch();
@@ -268,6 +333,11 @@ namespace scopeone::ui
         return kHorizontalDivisions * m_timebase;
     }
 
+    double OscilloscopeView::bucketSeconds() const
+    {
+        return screenSeconds() / kBucketsPerScreen;
+    }
+
     // The newest time every shown channel has reached, so a frame ends where all of them have data
     double OscilloscopeView::newestTime() const
     {
@@ -291,7 +361,8 @@ namespace scopeone::ui
 
     void OscilloscopeView::refresh()
     {
-        if (!m_dirty || !m_running)
+        // A hidden or minimized screen waits; the samples keep arriving and it catches up when shown
+        if (!m_dirty || !m_running || !isVisible() || window()->isMinimized())
         {
             return;
         }
@@ -334,7 +405,9 @@ namespace scopeone::ui
             const double limit = newest - after;
             const double hysteresis = 0.1 * m_channels[m_triggerChannel].scale;
             const bool rising = m_slope == ScopeTriggerSlope::Rising;
-            qsizetype index = trace.indexAtOrAfter(std::max(m_scanTime, trace.first() + before));
+            // The time before the edge may be held only by the buckets
+            qsizetype index = trace.indexAtOrAfter(
+                std::max(m_scanTime, trace.earliest(bucketSeconds()) + before));
             if (index < trace.times.size() && trace.times[index] == m_scanTime)
             {
                 ++index;
@@ -387,81 +460,179 @@ namespace scopeone::ui
         }
     }
 
+    // Takes the screen from the raw samples when they reach back over it and are few enough to
+    // draw one by one, and from the buckets otherwise, so a frame holds at most a few thousand
+    // points per channel whatever the sample rate and the timebase
     void OscilloscopeView::buildFrame(double start, double end, double triggerTime)
     {
         m_frame.valid = true;
         m_frame.start = start;
         m_frame.end = end;
         m_frame.triggerTime = triggerTime;
+        const double width = bucketSeconds();
+        const bool updateFrequency = m_singleArmed || m_sinceFrequency.elapsed() >= kFrequencyMilliseconds;
+        if (updateFrequency)
+        {
+            m_sinceFrequency.restart();
+        }
         for (int channel = 0; channel < kChannelCount; ++channel)
         {
             QVector<double>& times = m_frame.times[channel];
-            QVector<double>& values = m_frame.values[channel];
+            QVector<double>& minima = m_frame.minima[channel];
+            QVector<double>& maxima = m_frame.maxima[channel];
             Measurement& measurement = m_frame.measurements[channel];
             times.clear();
-            values.clear();
+            minima.clear();
+            maxima.clear();
             measurement = {};
             const Trace& trace = m_traces[channel];
-            if (!m_channels[channel].enabled || trace.empty())
+            if (!m_channels[channel].enabled || (trace.empty() && trace.buckets.empty()))
             {
                 continue;
             }
-            const qsizetype first = trace.indexAtOrAfter(start);
-            const qsizetype last = std::upper_bound(trace.times.cbegin() + first, trace.times.cend(), end)
-                - trace.times.cbegin();
-            if (first >= last)
-            {
-                continue;
-            }
-            times = trace.times.mid(first, last - first);
-            values = trace.values.mid(first, last - first);
 
-            double minimum = values.constFirst();
-            double maximum = minimum;
+            double minimum = std::numeric_limits<double>::infinity();
+            double maximum = -std::numeric_limits<double>::infinity();
             double sum = 0.0;
             double squares = 0.0;
-            for (const double value : values)
+            double count = 0.0;
+            qsizetype first = 0;
+            qsizetype last = 0;
+            if (!trace.empty())
             {
-                minimum = std::min(minimum, value);
-                maximum = std::max(maximum, value);
-                sum += value;
-                squares += value * value;
+                first = trace.indexAtOrAfter(start);
+                last = std::upper_bound(trace.times.cbegin() + first, trace.times.cend(), end)
+                    - trace.times.cbegin();
             }
-            const double count = static_cast<double>(values.size());
+            const bool raw = !trace.empty()
+                && trace.first() <= std::max(start, trace.earliest(width))
+                && last - first <= kRawFrameSamples;
+            m_frame.bucketed[channel] = !raw;
+            if (raw)
+            {
+                times = trace.times.mid(first, last - first);
+                minima = trace.values.mid(first, last - first);
+                maxima = minima;
+                for (const double value : minima)
+                {
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                    sum += value;
+                    squares += value * value;
+                }
+                count = static_cast<double>(minima.size());
+            }
+            else
+            {
+                const auto firstIndex = static_cast<qint64>(std::floor(start / width));
+                const auto lastIndex = static_cast<qint64>(std::floor(end / width));
+                auto bucket = std::lower_bound(trace.buckets.cbegin(), trace.buckets.cend(), firstIndex,
+                                               [](const Bucket& item, qint64 index) { return item.index < index; });
+                for (; bucket != trace.buckets.cend() && bucket->index <= lastIndex; ++bucket)
+                {
+                    times.append((static_cast<double>(bucket->index) + 0.5) * width);
+                    minima.append(bucket->minimum);
+                    maxima.append(bucket->maximum);
+                    minimum = std::min(minimum, bucket->minimum);
+                    maximum = std::max(maximum, bucket->maximum);
+                    sum += bucket->sum;
+                    squares += bucket->squares;
+                    count += static_cast<double>(bucket->count);
+                }
+            }
+            if (count <= 0.0)
+            {
+                continue;
+            }
             measurement.valid = true;
             measurement.minimum = minimum;
             measurement.maximum = maximum;
             measurement.mean = sum / count;
             measurement.rms = std::sqrt(squares / count);
+            // The frequency is the one costly measurement and a number read by eye, so it follows a
+            // few times a second; a held screen always gets its own
+            measurement.frequency = updateFrequency
+                                        ? frequencyOf(channel, start, end, measurement)
+                                        : m_frequencies[channel];
+            m_frequencies[channel] = measurement.frequency;
+        }
+    }
 
-            // Rising crossings of the mean, re-armed a tenth of the peak to peak below it
-            const double hysteresis = 0.1 * (maximum - minimum);
-            bool armed = false;
-            int crossings = 0;
-            double firstCrossing = 0.0;
-            double lastCrossing = 0.0;
-            for (qsizetype index = 0; index < values.size() && hysteresis > 0.0; ++index)
+    // Counts rising crossings of the mean, re-armed a tenth of the peak to peak below it. The
+    // newest raw samples on the screen give the exact frequency of a fast signal; a signal too
+    // slow for them to hold three crossings is counted on the means of the buckets.
+    double OscilloscopeView::frequencyOf(int channel,
+                                         double start,
+                                         double end,
+                                         const Measurement& measurement) const
+    {
+        const double hysteresis = 0.1 * (measurement.maximum - measurement.minimum);
+        if (hysteresis <= 0.0)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        struct Counter
+        {
+            double mean;
+            double hysteresis;
+            bool armed{false};
+            int crossings{0};
+            double first{0.0};
+            double last{0.0};
+
+            void add(double time, double value)
             {
-                if (values[index] < measurement.mean - hysteresis)
+                if (value < mean - hysteresis)
                 {
                     armed = true;
                 }
-                else if (armed && values[index] >= measurement.mean)
+                else if (armed && value >= mean)
                 {
                     armed = false;
                     if (crossings == 0)
                     {
-                        firstCrossing = times[index];
+                        first = time;
                     }
-                    lastCrossing = times[index];
+                    last = time;
                     ++crossings;
                 }
             }
-            if (crossings >= 2 && lastCrossing > firstCrossing)
+
+            double frequency() const
             {
-                measurement.frequency = (crossings - 1) / (lastCrossing - firstCrossing);
+                return last > first ? (crossings - 1) / (last - first) : std::numeric_limits<double>::quiet_NaN();
+            }
+        };
+
+        const Trace& trace = m_traces[channel];
+        if (!trace.empty())
+        {
+            const qsizetype last = std::upper_bound(trace.times.cbegin() + trace.begin, trace.times.cend(), end)
+                - trace.times.cbegin();
+            const qsizetype first = std::max(trace.indexAtOrAfter(start), last - kFrequencySamples);
+            Counter counter{measurement.mean, hysteresis};
+            for (qsizetype index = first; index < last; ++index)
+            {
+                counter.add(trace.times[index], trace.values[index]);
+            }
+            if (counter.crossings >= 3 || !m_frame.bucketed[channel])
+            {
+                return counter.crossings >= 2 ? counter.frequency() : std::numeric_limits<double>::quiet_NaN();
             }
         }
+
+        const double width = bucketSeconds();
+        const auto firstIndex = static_cast<qint64>(std::floor(start / width));
+        const auto lastIndex = static_cast<qint64>(std::floor(end / width));
+        auto bucket = std::lower_bound(trace.buckets.cbegin(), trace.buckets.cend(), firstIndex,
+                                       [](const Bucket& item, qint64 index) { return item.index < index; });
+        Counter counter{measurement.mean, hysteresis};
+        for (; bucket != trace.buckets.cend() && bucket->index <= lastIndex; ++bucket)
+        {
+            counter.add((static_cast<double>(bucket->index) + 0.5) * width,
+                        bucket->sum / static_cast<double>(bucket->count));
+        }
+        return counter.crossings >= 2 ? counter.frequency() : std::numeric_limits<double>::quiet_NaN();
     }
 
     void OscilloscopeView::resetTriggerSearch()
@@ -484,7 +655,6 @@ namespace scopeone::ui
     void OscilloscopeView::paintEvent(QPaintEvent*)
     {
         QPainter painter(this);
-        painter.fillRect(rect(), kBackground);
         painter.setFont(font());
         const QFontMetricsF metrics(font());
         const double lineHeight = metrics.height() + 2.0;
@@ -497,10 +667,23 @@ namespace scopeone::ui
         m_screen = QRectF(rect()).adjusted(32.0, 18.0, -32.0, -(readoutLines * lineHeight + 12.0));
         if (m_screen.width() < 40.0 || m_screen.height() < 40.0)
         {
+            painter.fillRect(rect(), kBackground);
             return;
         }
 
-        drawGrid(painter);
+        // The background and the grid change only with the size, and the dotted grid is slow to
+        // draw, so they are drawn once into a pixmap
+        const qreal ratio = devicePixelRatioF();
+        if (m_gridCache.size() != size() * ratio || m_gridScreen != m_screen)
+        {
+            m_gridCache = QPixmap(size() * ratio);
+            m_gridCache.setDevicePixelRatio(ratio);
+            m_gridCache.fill(kBackground);
+            QPainter gridPainter(&m_gridCache);
+            drawGrid(gridPainter);
+            m_gridScreen = m_screen;
+        }
+        painter.drawPixmap(0, 0, m_gridCache);
         drawTraces(painter);
         drawMarkers(painter);
         if (m_cursorsVisible)
@@ -588,8 +771,9 @@ namespace scopeone::ui
         for (int channel = kChannelCount - 1; channel >= 0; --channel)
         {
             const QVector<double>& times = m_frame.times[channel];
-            const QVector<double>& values = m_frame.values[channel];
-            if (!m_channels[channel].enabled || values.isEmpty())
+            const QVector<double>& lows = m_frame.minima[channel];
+            const QVector<double>& highs = m_frame.maxima[channel];
+            if (!m_channels[channel].enabled || times.isEmpty())
             {
                 continue;
             }
@@ -601,31 +785,36 @@ namespace scopeone::ui
             {
                 return centreY - divisionsOf(channel, value) * divisionHeight;
             };
-            painter.setPen(QPen(channelColor(channel), 1.2));
-            if (values.size() <= 2 * columns)
+            if (!m_frame.bucketed[channel] && times.size() <= 2 * columns)
             {
-                painter.setRenderHint(QPainter::Antialiasing, true);
-                QPainterPath path;
-                path.moveTo(mapX(times.constFirst()), mapY(values.constFirst()));
-                for (qsizetype index = 1; index < values.size(); ++index)
+                // Smoothing pays only while the samples are farther apart than the pixels
+                const bool smooth = times.size() <= columns;
+                painter.setRenderHint(QPainter::Antialiasing, smooth);
+                painter.setPen(QPen(channelColor(channel), smooth ? 1.2 : 0.0));
+                QVector<QPointF> points(times.size());
+                for (qsizetype index = 0; index < times.size(); ++index)
                 {
-                    path.lineTo(mapX(times[index]), mapY(values[index]));
+                    points[index] = QPointF(mapX(times[index]), mapY(lows[index]));
                 }
-                painter.drawPath(path);
+                painter.drawPolyline(points.constData(), static_cast<int>(points.size()));
                 painter.setRenderHint(QPainter::Antialiasing, false);
                 continue;
             }
+            // A cosmetic pen of one pixel is the fastest the raster engine draws
+            painter.setPen(QPen(channelColor(channel), 0.0));
 
-            // Keep the extremes of each pixel column when samples outnumber the pixels
+            // Keep the extremes of each pixel column when samples or buckets outnumber the pixels
             QVector<double> minima(columns, std::numeric_limits<double>::infinity());
             QVector<double> maxima(columns, -std::numeric_limits<double>::infinity());
-            for (qsizetype index = 0; index < values.size(); ++index)
+            for (qsizetype index = 0; index < times.size(); ++index)
             {
                 const int column = std::clamp(
                     static_cast<int>((times[index] - m_frame.start) / span * columns), 0, columns - 1);
-                minima[column] = std::min(minima[column], values[index]);
-                maxima[column] = std::max(maxima[column], values[index]);
+                minima[column] = std::min(minima[column], lows[index]);
+                maxima[column] = std::max(maxima[column], highs[index]);
             }
+            QVector<QLineF> lines;
+            lines.reserve(columns);
             double previousLow = std::numeric_limits<double>::quiet_NaN();
             double previousHigh = previousLow;
             for (int column = 0; column < columns; ++column)
@@ -644,10 +833,11 @@ namespace scopeone::ui
                     low = std::max(low, previousHigh);
                     high = std::min(high, previousLow);
                 }
-                painter.drawLine(QPointF(x, low), QPointF(x, high));
+                lines.append(QLineF(x, low, x, high));
                 previousLow = mapY(minima[column]);
                 previousHigh = mapY(maxima[column]);
             }
+            painter.drawLines(lines);
         }
         painter.restore();
     }
