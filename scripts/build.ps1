@@ -81,10 +81,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($target -notin @("all", "core", "gui", "plugins", "scopewriter")) {
-    throw "Invalid target '$target'. Expected one of: all, core, gui, plugins, scopewriter."
+if ($target -notin @("all", "core", "gui", "plugins", "drivers", "scopewriter")) {
+    throw "Invalid target '$target'. Expected one of: all, core, gui, plugins, drivers, scopewriter."
 }
-if ($package -and $target -in @("core", "plugins", "scopewriter")) {
+if ($package -and $target -in @("core", "plugins", "drivers", "scopewriter")) {
     throw "--package requires --target gui or --target all."
 }
 if ($run -and $target -eq "scopewriter") {
@@ -245,10 +245,14 @@ $writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
 $pluginSourceDir = Join-Path $repoRoot "plugins"
 $pluginBuildDir = Join-Path $repoRoot "build\plugins"
 $pluginInstallDir = Join-Path $coreInstallDir "bin"
+# Inside drivers rather than build, whose drivers folder is where the GUI build puts the drivers it runs
+$driverSourceDir = Join-Path $repoRoot "drivers"
+$driverBuildDir = Join-Path $driverSourceDir "build"
 $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
 $pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
+$driverCachePath = Join-Path $driverBuildDir "CMakeCache.txt"
 
 $vcpkgConfigureArgs = @()
 $writerVcpkgArgs = @()
@@ -301,6 +305,10 @@ if ($clean) {
         Write-Step "Removing plugin build directory"
         Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
     }
+    if ($target -in @("all", "drivers") -and (Test-Path $driverBuildDir)) {
+        Write-Step "Removing driver build directory"
+        Remove-Item -LiteralPath $driverBuildDir -Recurse -Force
+    }
     if ($target -in @("all", "core") -and (Test-Path $coreBuildDir)) {
         Write-Step "Removing ScopeOneCore build directory"
         Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
@@ -334,6 +342,17 @@ if ($pluginCachedSourceDir -and
 if ($pluginCachedInstallPrefix -and
     $pluginCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
     $needPluginConfigure = $true
+}
+
+$driverBuildFilesExist = (Test-Path (Join-Path $driverBuildDir "ALL_BUILD.vcxproj")) -or
+    (Test-Path (Join-Path $driverBuildDir "build.ninja")) -or
+    (Test-Path (Join-Path $driverBuildDir "Makefile"))
+$needDriverConfigure = $configure -or -not (Test-Path $driverCachePath) -or -not $driverBuildFilesExist
+$driverCachedInstallPrefix = Normalize-CMakePath (
+    Get-CMakeCacheValue -CachePath $driverCachePath -Key "CMAKE_INSTALL_PREFIX")
+if ($driverCachedInstallPrefix -and
+    $driverCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
+    $needDriverConfigure = $true
 }
 
 $installPrefixOverride = Find-ConfigureOverride -Options $coreConfigureOption -Prefix "-DCMAKE_INSTALL_PREFIX="
@@ -517,6 +536,52 @@ if ($target -in @("all", "plugins")) {
     }
 }
 
+if ($target -in @("all", "drivers")) {
+    $coreConfigFile = Join-Path $coreInstallDir "lib\cmake\ScopeOneCore\ScopeOneCoreConfig.cmake"
+    if (-not (Test-Path $coreConfigFile)) {
+        throw "ScopeOneCore is not installed at $coreInstallDir. Build the core first."
+    }
+
+    if ($needDriverConfigure) {
+        Invoke-Step `
+            -Label "Configuring ScopeOne drivers" `
+            -FilePath $cmake `
+            -Arguments (@(
+                "-S", $driverSourceDir,
+                "-B", $driverBuildDir,
+                "-DScopeOneCore_ROOT=$coreInstallDir",
+                "-DCMAKE_PREFIX_PATH=$coreInstallDir",
+                "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
+            ) + $vcpkgConfigureArgs) `
+            -WorkingDirectory $repoRoot
+    }
+
+    Invoke-Step `
+        -Label "Building ScopeOne drivers ($config)" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--build", $driverBuildDir,
+            "--config", $config,
+            "--parallel"
+        ) `
+        -WorkingDirectory $repoRoot
+
+    Invoke-Step `
+        -Label "Installing ScopeOne drivers" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--install", $driverBuildDir,
+            "--config", $config
+        ) `
+        -WorkingDirectory $repoRoot
+
+    # The GUI decides at configure time whether there is a drivers folder to copy, so it is
+    # configured again once the drivers are installed
+    if ($target -eq "all") {
+        $needGuiConfigure = $true
+    }
+}
+
 if ($target -in @("all", "gui")) {
     if ($env:OS -eq "Windows_NT") {
         $guiBuildPrefix = [System.IO.Path]::GetFullPath($guiBuildDir).TrimEnd(
@@ -590,6 +655,9 @@ else {
     Write-Host "ScopeOneCore install: $coreInstallDir"
     if ($target -in @("all", "plugins")) {
         Write-Host "Plugins: $pluginBuildDir"
+    }
+    if ($target -in @("all", "drivers")) {
+        Write-Host "Drivers: $driverBuildDir"
     }
 }
 if ($target -ne "scopewriter") {

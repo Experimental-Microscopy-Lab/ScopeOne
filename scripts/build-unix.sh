@@ -228,6 +228,13 @@ run cmake -S "$ROOT_DIR/plugins" -B "$ROOT_DIR/build/plugins" -DCMAKE_BUILD_TYPE
 run cmake --build "$ROOT_DIR/build/plugins" --parallel "$JOBS"
 run cmake --install "$ROOT_DIR/build/plugins"
 
+step "Building and installing ScopeOne drivers"
+run cmake -S "$ROOT_DIR/drivers" -B "$ROOT_DIR/drivers/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+  -DScopeOneCore_ROOT="$CORE_DIR/install" -DCMAKE_PREFIX_PATH="$CORE_DIR/install" \
+  -DCMAKE_INSTALL_PREFIX="$CORE_DIR/install/bin" "${VCPKG_ARGS[@]}"
+run cmake --build "$ROOT_DIR/drivers/build" --parallel "$JOBS"
+run cmake --install "$ROOT_DIR/drivers/build"
+
 step "Building ScopeOne GUI"
 run cmake -S "$ROOT_DIR" -B "$ROOT_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "${VCPKG_ARGS[@]}"
 run cmake --build "$ROOT_DIR/build" --parallel "$JOBS"

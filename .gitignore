@@ -13,6 +13,7 @@
 !/ScopeOneInference/**
 /ScopeOneCore/install/
 /ScopeOneCore/build/
+/drivers/build/
 /ScopeOneCore/external/*
 !/ScopeOneCore/external/ScopeWriter/
 !/ScopeOneCore/external/ScopeWriter/**

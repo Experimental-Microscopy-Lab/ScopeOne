@@ -21,7 +21,6 @@ else ()
     unset(SCOPEONE_CUDA_NVCC_EXECUTABLE CACHE)
 endif ()
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../drivers drivers)
 if (SCOPEONE_ENABLE_INFERENCE)
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../ScopeOneInference ScopeOneInference)
 endif ()

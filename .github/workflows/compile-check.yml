@@ -158,7 +158,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Building MMCore failed." }
           if (-not (Test-Path "$mm\build\Release\x64\MMCore.lib")) { throw "MMCore.lib was not produced." }
 
-      - name: Compile Core, plugins and GUI
+      - name: Compile Core, plugins, drivers and GUI
         shell: pwsh
         run: |
           .\scripts\build.ps1 --configure `

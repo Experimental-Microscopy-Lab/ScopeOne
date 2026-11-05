@@ -50,6 +50,11 @@ scopeone_add_driver(MyCamera)
 Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that ScopeOne uses
 (`vcpkg_installed/<triplet>`).
 
+The drivers in this folder are built the same way, as a project of their own that finds only Qt
+Core and the installed ScopeOneCore. The build scripts build it into `drivers/build` and install
+the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build copies them
+(`scripts\build.ps1 --target drivers` builds only them).
+
 `driver.json` sits beside `CMakeLists.txt`:
 
 ```json

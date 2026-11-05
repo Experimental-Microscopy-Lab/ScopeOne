@@ -8,8 +8,8 @@ extension does not take ScopeOne down.
 | Driver | a `Driver` in C++ against `scopeone::DriverSDK` | `ScopeOne_DriverHost`, one process per device | `drivers/ExampleCamera`, `drivers/ExamplePmt` |
 | Python processing module | a decorated Python function | its own Python process | `ScopeOneCore/python/scopeone/examples/processing_offset.py` |
 
-Drivers have their own folder and guide, [drivers/README.md](../drivers/README.md). This folder
-builds the drivers together with the CUDA and ONNX processing modules in `ScopeOneCuda` and
+Drivers have their own folder, CMake project and guide, [drivers/README.md](../drivers/README.md).
+This folder builds the CUDA and ONNX processing modules in `ScopeOneCuda` and
 `ScopeOneInference`. Those two are built-in plugins, built and released with ScopeOne, because
 they link CUDA and ONNX Runtime. Their interface, `scopeone/ProcessingPlugin.h`, changes with
 ScopeOne and is not meant for code outside this repository, and ScopeOne loads native
