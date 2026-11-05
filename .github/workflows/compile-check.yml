@@ -63,7 +63,7 @@ jobs:
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
-        run: ./scripts/build-unix.sh
+        run: ./scripts/build.sh
 
   compile-macos:
     name: Compile (macOS)
@@ -100,7 +100,7 @@ jobs:
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
-        run: ./scripts/build-unix.sh
+        run: ./scripts/build.sh
 
   compile-windows:
     name: Compile (Windows)

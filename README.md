@@ -143,7 +143,7 @@ brew install \
 2. Build from the ScopeOne repository root:
 
 ```bash
-./scripts/build-unix.sh
+./scripts/build.sh
 ```
 
 If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. It then builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`). Pass `--clean` to discard the previous build directories.

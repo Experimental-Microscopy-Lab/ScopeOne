@@ -30,7 +30,7 @@ The `scopeone::DriverSDK` target gives a driver the SDK headers (`scopeone/Drive
 them all) and the small SDK library, and nothing else of Core, so a driver that includes or calls
 any other part of Core fails to build.
 
-Build and install ScopeOneCore first (`scripts/build-unix.sh` or `scripts\build.ps1`). A driver
+Build and install ScopeOneCore first (`scripts/build.sh` or `scripts\build.ps1`). A driver
 is then a separate CMake project:
 
 ```cmake
