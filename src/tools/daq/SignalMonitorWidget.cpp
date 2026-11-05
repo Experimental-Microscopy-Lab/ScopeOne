@@ -161,8 +161,10 @@ namespace scopeone::ui
             }
         }
         m_sampleRateCombo->setToolTip(
-            tr("Auto follows the timebase with about %1 samples on the screen; a fixed rate is the "
-               "sample clock of a DAQ input and the counting bin of a photon counter")
+            tr("Auto takes the rate that puts about %1 samples on the screen when Run starts and keeps "
+               "it while the timebase gets slower; a fixed rate is the sample clock of a DAQ input "
+               "and the counting bin of a photon counter. A DAQ device samples at most as fast as it "
+               "can with the channels that are on")
                 .arg(kAutoSamplesPerScreen));
         horizontalForm->addRow(tr("Sample rate"), m_sampleRateCombo);
         m_triggerPositionSpin = new QDoubleSpinBox(horizontalBox);
@@ -289,11 +291,13 @@ namespace scopeone::ui
             m_timebaseCombo->setCurrentIndex(
                 std::clamp(m_timebaseCombo->currentIndex() + steps, 0, m_timebaseCombo->count() - 1));
         });
+        // Restarting on every timebase step emptied the screen and rebuilt the NI task each time,
+        // so turning the timebase left the screen without a signal; now it only changes the view
         connect(m_timebaseCombo, &QComboBox::currentIndexChanged, this, [this]()
         {
             applyView();
             updateSampleRateText();
-            scheduleRestart();
+            followTimebase();
         });
         connect(m_sampleRateCombo, &QComboBox::currentIndexChanged, this, &SignalMonitorWidget::scheduleRestart);
         for (QWidget* widget : m_scanGroup->findChildren<QWidget*>())
@@ -618,13 +622,14 @@ namespace scopeone::ui
         m_sourceMessages.clear();
         m_view->clear();
         m_view->setRunning(true);
+        m_acquisitionRate = sampleRate();
 
         QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
         for (const QString& sourceId : sources)
         {
             scopeone::core::SignalAcquisitionConfig config;
             config.sourceId = sourceId;
-            config.sampleIntervalSeconds = 1.0 / sampleRate();
+            config.sampleIntervalSeconds = 1.0 / m_acquisitionRate;
             config.scanImage.enabled = sourceId == m_scanSourceId;
             config.scanImage.width = m_scanWidthSpin->value();
             config.scanImage.height = m_scanHeightSpin->value();
@@ -717,6 +722,21 @@ namespace scopeone::ui
         if (m_acquiring)
         {
             m_restartTimer->start();
+        }
+    }
+
+    // Auto keeps the rate it started with on a slower timebase, which the history still shows, and
+    // restarts only when the timebase got too fast for the rate to draw the screen
+    void SignalMonitorWidget::followTimebase()
+    {
+        if (!m_acquiring || m_sampleRateCombo->currentData().toDouble() > 0.0)
+        {
+            return;
+        }
+        const double screen = OscilloscopeView::kHorizontalDivisions * m_timebaseCombo->currentData().toDouble();
+        if (m_acquisitionRate * screen < kAutoSamplesPerScreen / 10.0 && autoSampleRate() > m_acquisitionRate)
+        {
+            scheduleRestart();
         }
     }
 

@@ -66,6 +66,7 @@ namespace scopeone::ui
         void stop();
         void single();
         void scheduleRestart();
+        void followTimebase();
         void restartAcquisition();
         double sampleRate() const;
         double autoSampleRate() const;
@@ -93,6 +94,7 @@ namespace scopeone::ui
         QComboBox* m_sampleRateCombo{nullptr};
         QTimer* m_restartTimer{nullptr};
         bool m_acquiring{false};
+        double m_acquisitionRate{0.0};
 
         QComboBox* m_timebaseCombo{nullptr};
         QDoubleSpinBox* m_triggerPositionSpin{nullptr};
