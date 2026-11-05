@@ -772,7 +772,7 @@ namespace scopeone::ui
 {
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.dhm_reconstruction"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "DHM Reconstruction")),
-         QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Reconstruction")), ToolWindowMode::ModelessSingleton},
+         {}, ToolWindowMode::ModelessSingleton},
         [](ScopeOneToolContext& context, QWidget* parent)
         {
             return new DhmTool(context, parent);
