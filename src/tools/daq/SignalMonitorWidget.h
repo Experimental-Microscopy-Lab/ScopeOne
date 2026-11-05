@@ -38,6 +38,9 @@ namespace scopeone::ui
                                      QWidget* parent = nullptr);
         ~SignalMonitorWidget() override;
 
+    protected:
+        void closeEvent(QCloseEvent* event) override;
+
     private:
         struct ChannelControls
         {

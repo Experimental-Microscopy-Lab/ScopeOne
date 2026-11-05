@@ -4,6 +4,7 @@
 #include "scopeone/ScopeOneCore.h"
 
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDebug>
 #include <QDir>
@@ -311,6 +312,14 @@ namespace scopeone::ui
     SignalMonitorWidget::~SignalMonitorWidget()
     {
         saveSettings();
+    }
+
+    // The window is deleted on close, and the sources it started used to keep acquiring in their
+    // drivers with nothing left to show or stop them
+    void SignalMonitorWidget::closeEvent(QCloseEvent* event)
+    {
+        stopAcquisition();
+        QWidget::closeEvent(event);
     }
 
     QWidget* SignalMonitorWidget::createChannelBox(int index)
