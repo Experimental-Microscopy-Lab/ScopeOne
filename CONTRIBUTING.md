@@ -1,8 +1,9 @@
 # Development guidelines
 
 These rules apply to everyone who changes ScopeOne. The README explains how to build: on Windows,
-`.\build.cmd --run` after installing Git and the Visual Studio Build Tools, and on Linux and
-macOS `./scripts/build-unix.sh`. This file explains how the code is meant to be written. Each rule says why. When a rule and its reason
+`powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run` after installing Git and the
+Visual Studio Build Tools, and on Linux and macOS `./scripts/build-unix.sh`. This file explains
+how the code is meant to be written. Each rule says why. When a rule and its reason
 disagree in a specific case, follow the reason and say so in the review.
 
 ## Boundaries

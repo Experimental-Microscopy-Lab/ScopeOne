@@ -69,17 +69,6 @@ git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/Sc
 git submodule update --init --recursive
 ```
 
-The expected layout is:
-
-```text
-ScopeOne/
-  ScopeOneCore/
-    include/scopeone/      Core API and the contracts of the application
-    external/
-      mmCoreAndDevices/    fetched by the build scripts
-      ScopeWriter/         submodule
-```
-
 ### Drivers and processing modules
 
 ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core, which builds them when nvcc and ONNX Runtime are found. `-DSCOPEONE_ENABLE_CUDA=OFF` and `-DSCOPEONE_ENABLE_INFERENCE=OFF` build the standard Core without them. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module.
@@ -100,14 +89,16 @@ Then clone ScopeOne and build and start it with one command, in a new terminal s
 ```powershell
 git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
 cd ScopeOne
-.\build.cmd --run
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run
 ```
 
-`build.cmd` runs `scripts\build.ps1` without changing the PowerShell execution policy, which blocks `.ps1` files on a new Windows installation. The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt and OpenCV with vcpkg and takes about an hour. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
+Windows does not run `.ps1` files by default. Its execution policy only guards against starting a script by accident, and `-ExecutionPolicy Bypass` lifts it for this one run without changing any setting of the machine. Use the same command for every build, or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, which needs no administrator rights, and then start the script as `.\scripts\build.ps1`. 
 
-Later builds need only `.\build.cmd`. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The last lines of the build show whether Core was built with the CUDA and ONNX modules, which it does when the CUDA Toolkit is installed and ONNX Runtime is unpacked in `ScopeOneCore\external`.
+The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt and OpenCV with vcpkg and takes about an hour. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
 
-For a direct Core CMake configure, after the script has built MMCore once (`.\build.cmd --target core`):
+Later builds run the same command without `--run`, or with it to start ScopeOne afterwards. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The last lines of the build show whether Core was built with the CUDA and ONNX modules, which it does when the CUDA Toolkit is installed and ONNX Runtime is unpacked in `ScopeOneCore\external`.
+
+For a direct Core CMake configure, after the script has built MMCore once (`--target core`):
 
 ```powershell
 cmake -S ScopeOneCore -B ScopeOneCore/build `
