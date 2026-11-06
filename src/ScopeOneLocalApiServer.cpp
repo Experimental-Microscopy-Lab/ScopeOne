@@ -1197,7 +1197,10 @@ namespace scopeone::ui
 #else
         const size_t mappingSize = static_cast<size_t>(
             scopeone::core::kSharedFrameHeaderSize + scopeone::core::kSharedFrameMaxBytes);
-        m_frameShmFd = ::shm_open(kPosixFrameShmName, O_CREAT | O_RDWR, 0600);
+        // A ScopeOne that crashed left its frame memory behind, and macOS sizes a POSIX shared
+        // memory object only once, so resizing the old one failed. A new one is made instead.
+        ::shm_unlink(kPosixFrameShmName);
+        m_frameShmFd = ::shm_open(kPosixFrameShmName, O_CREAT | O_EXCL | O_RDWR, 0600);
         if (m_frameShmFd < 0)
         {
             qWarning().noquote() << QStringLiteral("ScopeOne API frame shm create failed");
