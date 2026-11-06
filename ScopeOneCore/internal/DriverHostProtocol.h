@@ -181,25 +181,30 @@ namespace scopeone::core::internal::driverhost
     inline const QString kExecutableFileName = QStringLiteral("ScopeOne_DriverHost");
 #endif
 
-    // A unix socket path holds at most 104 characters on macOS, where the temporary folder takes
-    // about half of them, and a name with the 36 character host key made the server fail to
-    // listen. The key is hashed to a name of fixed length.
+    // The names of a host on macOS have to be short: a unix socket path holds at most 104
+    // characters, with the temporary folder taking about half, and Qt cuts a POSIX shared memory
+    // name to 30, which gave two cameras of one host the same name. The host key is hashed to 16
+    // characters for them.
+    inline QString hostHash(const QString& hostKey)
+    {
+        return QString::fromLatin1(
+            QCryptographicHash::hash(hostKey.toUtf8(), QCryptographicHash::Sha1).toHex().left(16));
+    }
+
     inline QString controlServerName(const QString& hostKey)
     {
-        const QByteArray hash =
-            QCryptographicHash::hash(hostKey.toUtf8(), QCryptographicHash::Sha1).toHex().left(16);
-        return QStringLiteral("ScopeOne.%1.ctrl").arg(QString::fromLatin1(hash));
+        return QStringLiteral("ScopeOne.%1.ctrl").arg(hostHash(hostKey));
     }
 
     inline QString sharedMemoryKey(const QString& hostKey, int cameraIndex)
     {
-        return QStringLiteral("ScopeOne.%1.%2").arg(hostKey).arg(cameraIndex);
+        return QStringLiteral("so.%1.c%2").arg(hostHash(hostKey)).arg(cameraIndex);
     }
 
     // Each start of a stream gets a ring of its own, sized for what that acquisition delivers
     inline QString streamSharedMemoryKey(const QString& hostKey, quint64 streamIndex)
     {
-        return QStringLiteral("ScopeOne.%1.stream%2").arg(hostKey).arg(streamIndex);
+        return QStringLiteral("so.%1.s%2").arg(hostHash(hostKey)).arg(streamIndex);
     }
 
     // POSIX shared memory on Linux and macOS. The System V memory that Qt uses by default holds
