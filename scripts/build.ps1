@@ -468,6 +468,12 @@ if ($clean) {
         Write-Step "Removing ScopeOneCore build directory"
         Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
     }
+    # The GUI build copies the drivers and libraries of the Core install, and a removed driver or
+    # the CUDA provider of an earlier ONNX Runtime stayed there and kept being copied
+    if ($target -in @("all", "core") -and (Test-Path $coreInstallDir)) {
+        Write-Step "Removing ScopeOneCore install directory"
+        Remove-Item -LiteralPath $coreInstallDir -Recurse -Force
+    }
 }
 
 Ensure-Directory $repoRoot

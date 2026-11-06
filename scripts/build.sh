@@ -176,8 +176,11 @@ JOBS="${JOBS:-$DEFAULT_JOBS}"
 DEMO_ADAPTER="$MMCORE_LINK/DeviceAdapters/DemoCamera/.libs/$DEMO_ADAPTER_NAME"
 UTILITIES_ADAPTER="$MMCORE_LINK/DeviceAdapters/Utilities/.libs/$UTILITIES_ADAPTER_NAME"
 
+# The drivers build moved out of build/ into drivers/build, and --clean had kept it. The Core
+# install goes too, since the GUI build copies its drivers and libraries, and a removed driver or
+# the CUDA provider of an earlier ONNX Runtime stayed there and kept being copied.
 if [[ "$CLEAN" == true ]]; then
-  rm -rf "$CORE_DIR/build" "$ROOT_DIR/build"
+  rm -rf "$CORE_DIR/build" "$CORE_DIR/install" "$ROOT_DIR/drivers/build" "$ROOT_DIR/build"
 fi
 
 step "Initializing ScopeOne submodules"
