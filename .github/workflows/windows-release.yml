@@ -18,8 +18,6 @@ concurrency:
 env:
   BOOST_VERSION: 1.86.0
   CUDA_VERSION: 12.8.1
-  ONNXRUNTIME_PACKAGE: onnxruntime-win-x64-gpu_cuda12-1.30.0
-  ONNXRUNTIME_VERSION: 1.30.0
 
 jobs:
   package:
@@ -171,14 +169,6 @@ jobs:
           "CUDA_PATH_V$($short -replace '\.', '_')=$cudaPath" >> $env:GITHUB_ENV
           "$cudaPath\bin" >> $env:GITHUB_PATH
 
-      - name: Download ONNX Runtime
-        if: matrix.gpu
-        shell: pwsh
-        run: |
-          $archive = "$env:RUNNER_TEMP\$env:ONNXRUNTIME_PACKAGE.zip"
-          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ONNXRUNTIME_VERSION/$env:ONNXRUNTIME_PACKAGE.zip" -OutFile $archive
-          Expand-Archive $archive -DestinationPath "$env:GITHUB_WORKSPACE\ScopeOneCore\external"
-
       - name: Set up NSIS
         shell: pwsh
         run: |
@@ -195,10 +185,7 @@ jobs:
             $options += @("--guiConfigureOption", "-DSCOPEONE_PACKAGE_VARIANT=gpu")
           }
           else {
-            $options += @(
-              "--coreConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF",
-              "--coreConfigureOption", "-DSCOPEONE_ENABLE_INFERENCE=OFF"
-            )
+            $options += @("--coreConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF")
           }
           .\scripts\build.ps1 --configure --package @options
 
@@ -211,9 +198,11 @@ jobs:
             Get-Item $file | Select-Object Name, Length
           }
           $listing = 7z l "build\$name.zip"
-          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime")
-          if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA or ONNX Runtime files." }
-          if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA or ONNX Runtime files." }
+          # Both packages carry ONNX Runtime, and only the GPU one its CUDA provider and cuFFT
+          if (-not ($listing | Select-String -Pattern "onnxruntime\.dll")) { throw "The package has no ONNX Runtime." }
+          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime_providers_cuda")
+          if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA files." }
+          if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA files." }
 
       - name: Upload packages
         uses: actions/upload-artifact@v7
@@ -254,8 +243,8 @@ jobs:
         run: |
           ls -l packages
           cat > notes.md <<'NOTES'
-          - **Standard** (`win-x64`): live imaging, recording and image processing on CPU.
-          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference. Needs an NVIDIA GPU.
+          - **Standard** (`win-x64`): live imaging, recording, image processing and inference on CPU.
+          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference on CUDA. Needs an NVIDIA GPU.
           NOTES
           gh release create "v${{ steps.version.outputs.version }}" packages/* \
             --target "$GITHUB_SHA" \

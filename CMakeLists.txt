@@ -243,6 +243,8 @@ else ()
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore*.dylib"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK*.dylib"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter*.dylib"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.dylib"
     )
 endif ()
 
@@ -250,12 +252,25 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
     # A target of its own that runs on every build. As a post-build step of ScopeOne it ran only
     # when the application itself was relinked, so a rebuilt core library was left behind next
     # to an older copy that the application kept loading.
-    add_custom_target(ScopeOneCoreRuntime ALL
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${SCOPEONE_CORE_RUNTIME_FILES}
-            "$<TARGET_FILE_DIR:ScopeOne>"
-            COMMAND_EXPAND_LISTS
-    )
+    if (WIN32)
+        add_custom_target(ScopeOneCoreRuntime ALL
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${SCOPEONE_CORE_RUNTIME_FILES}
+                "$<TARGET_FILE_DIR:ScopeOne>"
+                COMMAND_EXPAND_LISTS
+        )
+    else ()
+        # A library comes as a file and its links, libonnxruntime.so, .so.1 and .so.1.30.0, and
+        # copying them as files put three full copies of ONNX Runtime beside ScopeOne
+        string(REPLACE ";" "|" _core_runtime_files "${SCOPEONE_CORE_RUNTIME_FILES}")
+        add_custom_target(ScopeOneCoreRuntime ALL
+                COMMAND ${CMAKE_COMMAND}
+                "-DFILES=${_core_runtime_files}"
+                "-DDEST=$<TARGET_FILE_DIR:ScopeOne>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/CopyRuntimeFiles.cmake"
+                VERBATIM
+        )
+    endif ()
     add_dependencies(ScopeOneCoreRuntime ScopeOne)
 endif ()
 
@@ -265,6 +280,7 @@ if (UNIX AND NOT APPLE)
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.so*"
     )
     install(FILES
             ${SCOPEONE_CORE_SHARED_LIBRARIES}

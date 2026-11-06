@@ -32,8 +32,6 @@ Deep learning is becoming an increasingly powerful tool for microscopy image res
 Despite the deep learning, traditional image processing methods remain essential. GPU-accelerated image processing pipeline can be applied to live camera streams or recorded images, including filtering, background subtraction, FFT, and more. Users can customize image processing algorithms and parameters to suit their specific needs with Python processing modules.
 ## 🚀 Quick Start
 
-### For Users
-
 Download the latest release installer from the [Releases](https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases) page.
 
 **System Requirements:**
@@ -49,7 +47,7 @@ ScopeOne loads Micro-Manager configuration files (.cfg) directly and includes th
 
 There is an example dual-camera .cfg file in the config folder, just change the camera labels in Devices section to match your camera models.
 
-### For Developers
+## 🛠️ For Developers
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
 
@@ -71,7 +69,7 @@ git submodule update --init --recursive
 
 ### Drivers and processing modules
 
-ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core, which builds them when nvcc and ONNX Runtime are found. `-DSCOPEONE_ENABLE_CUDA=OFF` and `-DSCOPEONE_ENABLE_INFERENCE=OFF` build the standard Core without them. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module.
+ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core. Core builds the CUDA modules when it finds nvcc, and ONNX inference always, with the GPU package of ONNX Runtime when CUDA is built and the CPU package otherwise. `-DSCOPEONE_ENABLE_CUDA=OFF` builds the standard Core and `-DSCOPEONE_ENABLE_INFERENCE=OFF` leaves ONNX out. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module.
 
 **Windows Build Steps:**
 
@@ -94,9 +92,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run
 
 Windows does not run `.ps1` files by default. Its execution policy only guards against starting a script by accident, and `-ExecutionPolicy Bypass` lifts it for this one run without changing any setting of the machine. Use the same command for every build, or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, which needs no administrator rights, and then start the script as `.\scripts\build.ps1`. 
 
-The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt and OpenCV with vcpkg and takes about an hour. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
+The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt, OpenCV and their dependencies with vcpkg, which takes about an hour on a four core machine, four fifths of it for Qt. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
 
-Later builds run the same command without `--run`, or with it to start ScopeOne afterwards. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The last lines of the build show whether Core was built with the CUDA and ONNX modules, which it does when the CUDA Toolkit is installed and ONNX Runtime is unpacked in `ScopeOneCore\external`.
+Later builds run the same command without `--run`, or with it to start ScopeOne afterwards. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The first build downloads ONNX Runtime into `ScopeOneCore\external`, the GPU package when the CUDA Toolkit is installed. The last lines of the build show whether Core was built with the CUDA and ONNX modules.
 
 For a direct Core CMake configure, after the script has built MMCore once (`--target core`):
 
@@ -146,7 +144,19 @@ brew install \
 ./scripts/build.sh
 ```
 
-If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. It then builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`). Pass `--clean` to discard the previous build directories.
+If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. The first build compiles Qt, OpenCV and their dependencies with vcpkg, about 160 CPU minutes, 11 minutes on a 48 core Linux machine and about 40 on four cores, and later builds reuse them from the binary cache. It then builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`). Pass `--clean` to discard the previous build directories. The first build downloads ONNX Runtime into `ScopeOneCore/external`.
+
+The vcpkg packages of a first build without the binary cache, measured on a 48 core Linux machine:
+
+| Package | Time |
+|---|---|
+| qtbase | 5.2 min |
+| opencv4 | 2.2 min |
+| qtsvg | 59 s |
+| harfbuzz | 46 s |
+| gperf, libb2, zstd, pcre2 | 10 to 22 s each |
+| 29 others | under 10 s each |
+| All 37 packages | 11 min 23 s |
 
 The executable is `build/ScopeOne`, and `config/MMConfig_demo.cfg` runs with the copied demo adapters. It loads Qt and OpenCV from `vcpkg_installed/<triplet>/lib`, so run it from the build tree.
 

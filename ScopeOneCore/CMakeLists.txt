@@ -311,11 +311,86 @@ if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND TARGET CUDA::cufft)
     endif ()
 endif ()
 
+# ONNX Runtime is the official prebuilt package from the ONNX Runtime releases on GitHub,
+# downloaded into external on the first configure. Core built with CUDA takes the GPU package and
+# Core without it the CPU package, so CUDA alone decides between the GPU and the standard build.
+# ONNXRUNTIME_ROOT names another SDK instead.
+set(SCOPEONE_ONNXRUNTIME_VERSION 1.30.0)
+set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime SDK root; empty selects the official package in external")
+# Earlier configures cached the Windows GPU package as the default root, which then counted as a
+# root set by hand and kept every other platform and the CPU package from being selected
+if (ONNXRUNTIME_ROOT STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu_cuda12-1.30.0")
+    set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime SDK root; empty selects the official package in external" FORCE)
+endif ()
 if (SCOPEONE_ENABLE_INFERENCE)
-    set(ONNXRUNTIME_ROOT
-            "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu_cuda12-1.30.0"
-            CACHE PATH "ONNX Runtime SDK root"
-    )
+    set(_ort_package "")
+    if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+        if (_with_cuda)
+            set(_ort_package "onnxruntime-win-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
+            set(_ort_sha256 d4667ea48eb0a10bc9b96b838f7b8975a6bf18de3bc5edd403a22e15c1458b23)
+        else ()
+            set(_ort_package "onnxruntime-win-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
+            set(_ort_sha256 c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949)
+        endif ()
+    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if (_with_cuda)
+            set(_ort_package "onnxruntime-linux-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+            set(_ort_sha256 f9886932ee7bb0b4d3fcab736a392d4ff5efaa0672b47f19f0cec03437cf64f1)
+        else ()
+            set(_ort_package "onnxruntime-linux-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+            set(_ort_sha256 a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd)
+        endif ()
+    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(_ort_package "onnxruntime-linux-aarch64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+        set(_ort_sha256 e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da)
+    elseif (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+        # The macOS package has only the CPU provider
+        set(_ort_package "onnxruntime-osx-arm64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+        set(_ort_sha256 6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012)
+    endif ()
+
+    set(_ort_download_error "")
+    if (ONNXRUNTIME_ROOT)
+        set(_ort_root "${ONNXRUNTIME_ROOT}")
+    elseif (_ort_package)
+        string(REGEX REPLACE "\\.(zip|tgz)$" "" _ort_name "${_ort_package}")
+        set(_ort_root "${CMAKE_CURRENT_SOURCE_DIR}/external/${_ort_name}")
+        set(_ort_url "https://github.com/microsoft/onnxruntime/releases/download/v${SCOPEONE_ONNXRUNTIME_VERSION}/${_ort_package}")
+        if (NOT EXISTS "${_ort_root}/include")
+            message(STATUS "Downloading ${_ort_url}")
+            set(_ort_archive "${CMAKE_CURRENT_BINARY_DIR}/${_ort_package}")
+            # EXPECTED_HASH turned a failed download into a configure error, so the hash is
+            # checked after it. Without the network Core is built without ONNX inference, and the
+            # next configure tries again.
+            file(DOWNLOAD "${_ort_url}" "${_ort_archive}"
+                    SHOW_PROGRESS
+                    STATUS _ort_download
+            )
+            list(GET _ort_download 0 _ort_download_code)
+            list(GET _ort_download 1 _ort_download_error)
+            if (_ort_download_code EQUAL 0)
+                file(SHA256 "${_ort_archive}" _ort_actual_sha256)
+                if (_ort_actual_sha256 STREQUAL _ort_sha256)
+                    set(_ort_download_error "")
+                    file(ARCHIVE_EXTRACT INPUT "${_ort_archive}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/external")
+                else ()
+                    set(_ort_download_error "SHA256 mismatch")
+                endif ()
+            endif ()
+            file(REMOVE "${_ort_archive}")
+        endif ()
+    else ()
+        set(_ort_root "")
+    endif ()
+
+    # The found paths are cached, so a root that changed, such as the GPU package taking over
+    # once CUDA is found, kept linking the package of the earlier configure
+    if (NOT "${SCOPEONE_ONNXRUNTIME_ROOT_USED}" STREQUAL "${_ort_root}")
+        unset(ONNXRUNTIME_INCLUDE_DIR CACHE)
+        unset(ONNXRUNTIME_LIBRARY CACHE)
+    endif ()
+    set(SCOPEONE_ONNXRUNTIME_ROOT_USED "${_ort_root}" CACHE INTERNAL "")
+    set(ONNXRUNTIME_ROOT "${_ort_root}")
     find_path(ONNXRUNTIME_INCLUDE_DIR
             NAMES onnxruntime_cxx_api.h
             PATHS "${ONNXRUNTIME_ROOT}/include"
@@ -354,7 +429,21 @@ if (SCOPEONE_ENABLE_INFERENCE AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRAR
             message(FATAL_ERROR "No ONNX Runtime DLLs found under ${ONNXRUNTIME_ROOT}")
         endif ()
         list(APPEND SCOPEONE_RUNTIME_DLLS ${_onnxruntime_dlls})
+    else ()
+        # The installed Core resolves its libraries beside itself. Left in external, ONNX Runtime
+        # was not on its runpath and the GUI failed to link against the installed Core.
+        file(GLOB _onnxruntime_libs
+                "${ONNXRUNTIME_ROOT}/lib/libonnxruntime*.so*"
+                "${ONNXRUNTIME_ROOT}/lib/libonnxruntime*.dylib"
+        )
+        install(FILES ${_onnxruntime_libs} DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     endif ()
+elseif (SCOPEONE_ENABLE_INFERENCE AND NOT ONNXRUNTIME_ROOT)
+    set(_inference_reason "no official ONNX Runtime package for ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}; set ONNXRUNTIME_ROOT")
+    message(STATUS "${_inference_reason}; building Core without ONNX inference")
+elseif (SCOPEONE_ENABLE_INFERENCE AND _ort_download_error)
+    set(_inference_reason "downloading ${_ort_url} failed (${_ort_download_error}); extract it into ${CMAKE_CURRENT_SOURCE_DIR}/external")
+    message(STATUS "${_inference_reason}; building Core without ONNX inference")
 elseif (SCOPEONE_ENABLE_INFERENCE)
     set(_inference_reason "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}")
     message(STATUS "${_inference_reason}; building Core without ONNX inference")
