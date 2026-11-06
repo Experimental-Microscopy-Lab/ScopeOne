@@ -1,5 +1,8 @@
 #include "internal/MaskModule.h"
 
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
+
 #include "internal/FrameBufferUtils.h"
 
 #include <cmath>
@@ -285,4 +288,22 @@ namespace scopeone::core::internal
             invalidateMask();
         }
     }
+}
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        MaskModule,
+        QStringLiteral("mask"),
+        QStringLiteral("Mask"),
+        1,
+        {choiceParameter("shape", "Shape", 0, {"Ellipse", "Rectangle", "Annulus"}),
+         realParameter("center_x", "Center X", 0.0, -0.5, 0.5, 0.001, 3),
+         realParameter("center_y", "Center Y", 0.0, -0.5, 0.5, 0.001, 3),
+         realParameter("size_x", "Size X", 0.1, 0.001, 1.0, 0.001, 3),
+         realParameter("size_y", "Size Y", 0.1, 0.001, 1.0, 0.001, 3),
+         realParameter("inner_size", "Inner size", 0.0, 0.0, 1.0, 0.001, 3),
+         realParameter("rotation", "Rotation", 0.0, -180.0, 180.0, 0.1, 1),
+         realParameter("edge_width", "Edge width", 0.0, 0.0, 0.5, 0.001, 3),
+         booleanParameter("invert", "Invert", false)})
 }

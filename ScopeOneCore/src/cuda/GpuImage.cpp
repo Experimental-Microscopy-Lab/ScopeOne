@@ -1,4 +1,4 @@
-#include "internal/cuda/GpuRealFrame.h"
+#include "internal/cuda/GpuImage.h"
 
 #include "internal/cuda/CudaKernelLaunch.h"
 
@@ -8,17 +8,17 @@
 
 namespace scopeone::core::internal::cuda
 {
-    GpuRealFrame::GpuRealFrame(int width, int height, GpuMemoryLayout layout)
+    GpuImage::GpuImage(int width, int height, GpuMemoryLayout layout)
     {
         allocate(width, height, layout);
     }
 
-    GpuRealFrame::~GpuRealFrame()
+    GpuImage::~GpuImage()
     {
         release();
     }
 
-    GpuRealFrame::GpuRealFrame(GpuRealFrame&& other) noexcept
+    GpuImage::GpuImage(GpuImage&& other) noexcept
         : m_data(std::exchange(other.m_data, nullptr))
         , m_pitchBytes(std::exchange(other.m_pitchBytes, 0))
         , m_width(std::exchange(other.m_width, 0))
@@ -31,7 +31,7 @@ namespace scopeone::core::internal::cuda
     {
     }
 
-    GpuRealFrame& GpuRealFrame::operator=(GpuRealFrame&& other) noexcept
+    GpuImage& GpuImage::operator=(GpuImage&& other) noexcept
     {
         if (this != &other)
         {
@@ -49,7 +49,7 @@ namespace scopeone::core::internal::cuda
         return *this;
     }
 
-    bool GpuRealFrame::allocate(int width, int height, GpuMemoryLayout layout)
+    bool GpuImage::allocate(int width, int height, GpuMemoryLayout layout)
     {
         if (isValid() && m_width == width && m_height == height && m_layout == layout)
         {
@@ -84,7 +84,7 @@ namespace scopeone::core::internal::cuda
         return true;
     }
 
-    void GpuRealFrame::release()
+    void GpuImage::release()
     {
         if (m_data)
         {
@@ -108,37 +108,37 @@ namespace scopeone::core::internal::cuda
         m_downloadCapacity = 0;
     }
 
-    bool GpuRealFrame::isValid() const
+    bool GpuImage::isValid() const
     {
         return m_data != nullptr && m_width > 0 && m_height > 0 && m_pitchBytes > 0;
     }
 
-    void* GpuRealFrame::data() const
+    void* GpuImage::data() const
     {
         return m_data;
     }
 
-    std::size_t GpuRealFrame::pitchBytes() const
+    std::size_t GpuImage::pitchBytes() const
     {
         return m_pitchBytes;
     }
 
-    int GpuRealFrame::width() const
+    int GpuImage::width() const
     {
         return m_width;
     }
 
-    int GpuRealFrame::height() const
+    int GpuImage::height() const
     {
         return m_height;
     }
 
-    GpuMemoryLayout GpuRealFrame::layout() const
+    GpuMemoryLayout GpuImage::layout() const
     {
         return m_layout;
     }
 
-    bool GpuRealFrame::ensureUploadBuffer(std::size_t bytes)
+    bool GpuImage::ensureUploadBuffer(std::size_t bytes)
     {
         if (m_uploadCapacity >= bytes)
         {
@@ -158,7 +158,7 @@ namespace scopeone::core::internal::cuda
         return true;
     }
 
-    bool GpuRealFrame::ensureDownloadBuffer(std::size_t bytes) const
+    bool GpuImage::ensureDownloadBuffer(std::size_t bytes) const
     {
         if (m_downloadCapacity >= bytes)
         {
@@ -178,7 +178,7 @@ namespace scopeone::core::internal::cuda
         return true;
     }
 
-    bool GpuRealFrame::upload(const scopeone::core::ImageFrame& frame)
+    bool GpuImage::upload(const scopeone::core::ImageFrame& frame)
     {
         if (!frame.isValid())
         {
@@ -216,7 +216,7 @@ namespace scopeone::core::internal::cuda
                                       m_pitchBytes);
     }
 
-    bool GpuRealFrame::download(scopeone::core::ImageFrame& frame) const
+    bool GpuImage::download(scopeone::core::ImageFrame& frame, float scale, float offset) const
     {
         if (!isValid()
             || frame.width != m_width
@@ -236,7 +236,9 @@ namespace scopeone::core::internal::cuda
                                       frame.stride,
                                       frame.width,
                                       frame.height,
-                                      frame.bytesPerPixel()))
+                                      frame.bytesPerPixel(),
+                                      scale,
+                                      offset))
         {
             return false;
         }

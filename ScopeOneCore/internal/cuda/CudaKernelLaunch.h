@@ -19,28 +19,10 @@ namespace scopeone::core::internal::cuda::detail
                                                int destinationStride,
                                                int width,
                                                int height,
-                                               int destinationBytesPerPixel);
+                                               int destinationBytesPerPixel,
+                                               float scale,
+                                               float offset);
 
-    bool launchGaussian(const void* input,
-                                             std::size_t inputPitchBytes,
-                                             void* output,
-                                             std::size_t outputPitchBytes,
-                                             int width,
-                                             int height,
-                                             int kernelSize,
-                                             float sigma);
-
-    bool launchFrequencyFilter(const void* input,
-                                                    void* output,
-                                                    void* spectrum,
-                                                    int width,
-                                                    int height,
-                                                    float minFeatureSize,
-                                                    float maxFeatureSize,
-                                                    int filterKind,
-                                                    int outputMode,
-                                                    int forwardPlan,
-                                                    int inversePlan,
-                                                    void* minMaxScratch,
-                                                    float maxValue);
+    // Checks the last launch and waits for the device, so a failed kernel is reported at once
+    bool synchronizeKernel();
 }

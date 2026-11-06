@@ -1,5 +1,8 @@
 #include "internal/FFTModule.h"
 
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
+
 #include "internal/FrameBufferUtils.h"
 
 #include <opencv2/core.hpp>
@@ -132,3 +135,10 @@ namespace scopeone::core::internal
     {
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        FFTModule,
+        QStringLiteral("fft"), QStringLiteral("FFT"), 1, {})
+}

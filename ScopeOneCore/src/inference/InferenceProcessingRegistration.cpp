@@ -1,4 +1,3 @@
-#include "internal/inference/InferenceProcessingRegistration.h"
 #include "internal/inference/OnnxInferenceModule.h"
 
 #include "internal/ProcessingModuleRegistry.h"
@@ -97,14 +96,19 @@ namespace scopeone::core::internal::inference
             }
             return {};
         }
-    }
 
-    void registerInferenceProcessingModules(core::internal::ProcessingModuleRegistry& registry)
-    {
-        for (const core::ProcessingModuleDescriptor& descriptor : descriptors())
+        // The descriptor asks ONNX Runtime for its providers, so it is made when a registry is
+        // built and not while Core is loaded
+        void registerInferenceProcessingModules(core::internal::ProcessingModuleRegistry& registry)
         {
-            const QString id = descriptor.id;
-            registry.registerModule(descriptor, [id]() { return create(id); });
+            for (const core::ProcessingModuleDescriptor& descriptor : descriptors())
+            {
+                const QString id = descriptor.id;
+                registry.registerBuiltIn(descriptor, [id]() { return create(id); });
+            }
         }
+
+        [[maybe_unused]] const bool registered =
+            core::internal::addProcessingModuleRegistration(registerInferenceProcessingModules);
     }
 }

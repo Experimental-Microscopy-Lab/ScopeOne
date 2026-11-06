@@ -12,17 +12,17 @@ namespace scopeone::core::internal::cuda
         Contiguous
     };
 
-    class GpuRealFrame
+    class GpuImage
     {
     public:
-        GpuRealFrame() = default;
-        GpuRealFrame(int width, int height, GpuMemoryLayout layout);
-        ~GpuRealFrame();
+        GpuImage() = default;
+        GpuImage(int width, int height, GpuMemoryLayout layout);
+        ~GpuImage();
 
-        GpuRealFrame(const GpuRealFrame&) = delete;
-        GpuRealFrame& operator=(const GpuRealFrame&) = delete;
-        GpuRealFrame(GpuRealFrame&& other) noexcept;
-        GpuRealFrame& operator=(GpuRealFrame&& other) noexcept;
+        GpuImage(const GpuImage&) = delete;
+        GpuImage& operator=(const GpuImage&) = delete;
+        GpuImage(GpuImage&& other) noexcept;
+        GpuImage& operator=(GpuImage&& other) noexcept;
 
         bool allocate(int width, int height, GpuMemoryLayout layout);
         void release();
@@ -35,7 +35,8 @@ namespace scopeone::core::internal::cuda
         GpuMemoryLayout layout() const;
 
         bool upload(const scopeone::core::ImageFrame& frame);
-        bool download(scopeone::core::ImageFrame& frame) const;
+        // Writes value * scale + offset, clamped to the frame's bit depth
+        bool download(scopeone::core::ImageFrame& frame, float scale, float offset) const;
 
     private:
         bool ensureUploadBuffer(std::size_t bytes);

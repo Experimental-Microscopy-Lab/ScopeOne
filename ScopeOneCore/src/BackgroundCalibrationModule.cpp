@@ -1,4 +1,7 @@
 #include "internal/BackgroundCalibrationModule.h"
+
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
 #include "internal/FrameBufferUtils.h"
 #include <algorithm>
 #include <utility>
@@ -475,3 +478,19 @@ namespace scopeone::core::internal
         }
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        BackgroundCalibrationModule,
+        QStringLiteral("background_calibration"),
+        QStringLiteral("Background Calibration"),
+        1,
+        {integerParameter("calibration_frames", "Frames", 101, 3, 1001, 2),
+         choiceParameter("mode", "Mode", 0, {"Snapshot", "Running"}),
+         choiceParameter("method", "Method", 0,
+                         {"Median", "Mean", "Maximum", "Minimum"}),
+         choiceParameter("operation", "Operation", 0,
+                         {"Subtract", "Add", "Multiply", "Divide"})},
+        true)
+}

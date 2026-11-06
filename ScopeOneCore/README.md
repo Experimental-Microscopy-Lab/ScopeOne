@@ -126,6 +126,135 @@ Providers use ScopeOne logical device IDs and publish `ImageFrame` objects throu
 
 Drivers outside this repository consume the exported `scopeone::DriverSDK` CMake target. Every driver manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`, and incompatible manifests are rejected before the library instance is created.
 
+## Processing Modules
+
+Every processing method of Core is a `ProcessingModule` that registers itself at the end of its own source file:
+
+```cpp
+SCOPEONE_REGISTER_PROCESSING_MODULE(
+    GaussianBlurModule,
+    QStringLiteral("gaussian_blur"),
+    QStringLiteral("Gaussian Blur"),
+    1,
+    {integerParameter("kernel_size", "Kernel size", 3, 1, 99, 2),
+     realParameter("sigma", "Sigma", 0.0, 0.0, 100.0, 0.1, 2)})
+```
+
+The arguments after the class are its `ProcessingModuleDescriptor`: the id that recipes store, the name shown in the processing list, the schema version and the parameters, built with `integerParameter`, `realParameter`, `booleanParameter` and `choiceParameter` from `internal/ProcessingParameters.h`. A file that builds several modules from one table, or a descriptor that depends on the machine such as the ONNX providers, passes a function to `addProcessingModuleRegistration` instead, as `ImageOperationModules.cpp` does. Each file registers once. The registry and the processing list need no change, and the list is sorted by name.
+
+## CUDA Modules
+
+A CUDA module is the GPU version of a processing method. It is built into Core when CUDA is built, works on one frame at a time like any other module, and is named after the CPU method with "(CUDA)", so the two stand together in the list. Its id starts with `cuda.` and it uses the parameter keys of the CPU method.
+
+`CudaModule` does the frame handling. It uploads the frame into a float image in GPU memory, calls `processDevice`, and converts the result back to an 8 or 16 bit frame. A module writes `processDevice` and its kernels:
+
+```cpp
+// internal/cuda/CudaInvertModule.h
+#pragma once
+
+#include "internal/cuda/CudaModule.h"
+
+namespace scopeone::core::internal::cuda
+{
+    class CudaInvertModule : public CudaModule
+    {
+    public:
+        QString id() const override { return QStringLiteral("cuda.invert"); }
+        QString name() const override { return QStringLiteral("Invert (CUDA)"); }
+        QVariantMap parameters() const override { return {}; }
+        void setParameters(const QVariantMap&) override {}
+        std::unique_ptr<ProcessingModule> createRuntime() const override
+        {
+            return std::make_unique<CudaInvertModule>();
+        }
+
+    protected:
+        bool processDevice(const GpuImage& input, GpuImage& output, int bitDepth) override;
+    };
+}
+```
+
+```cpp
+// src/cuda/CudaInvertModule.cpp
+#include "internal/cuda/CudaInvertModule.h"
+
+#include "internal/cuda/CudaInvertKernels.h"
+#include "internal/ProcessingModuleRegistry.h"
+
+namespace scopeone::core::internal::cuda
+{
+    bool CudaInvertModule::processDevice(const GpuImage& input, GpuImage& output, int bitDepth)
+    {
+        return detail::launchInvert(input.data(), input.pitchBytes(), output.data(), output.pitchBytes(),
+                                    input.width(), input.height(), bitDepth >= 16 ? 65535.0f : 255.0f);
+    }
+}
+
+SCOPEONE_REGISTER_PROCESSING_MODULE(scopeone::core::internal::cuda::CudaInvertModule,
+                                    QStringLiteral("cuda.invert"), QStringLiteral("Invert (CUDA)"), 1, {})
+```
+
+```cpp
+// internal/cuda/CudaInvertKernels.h
+#pragma once
+
+#include <cstddef>
+
+namespace scopeone::core::internal::cuda::detail
+{
+    bool launchInvert(const void* input, std::size_t inputPitch, void* output, std::size_t outputPitch,
+                      int width, int height, float maxValue);
+}
+```
+
+```cpp
+// src/cuda/CudaInvertKernels.cu
+#include "internal/cuda/CudaInvertKernels.h"
+#include "internal/cuda/CudaKernelLaunch.h"
+
+#include <cuda_runtime.h>
+
+namespace
+{
+    __global__ void invertKernel(const float* input, std::size_t inputPitch, float* output,
+                                 std::size_t outputPitch, int width, int height, float maxValue)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height)
+        {
+            return;
+        }
+        const auto* in = reinterpret_cast<const float*>(reinterpret_cast<const char*>(input) + y * inputPitch);
+        auto* out = reinterpret_cast<float*>(reinterpret_cast<char*>(output) + y * outputPitch);
+        out[x] = maxValue - in[x];
+    }
+}
+
+namespace scopeone::core::internal::cuda::detail
+{
+    bool launchInvert(const void* input, std::size_t inputPitch, void* output, std::size_t outputPitch,
+                      int width, int height, float maxValue)
+    {
+        const dim3 block(16, 16);
+        const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+        invertKernel<<<grid, block>>>(static_cast<const float*>(input), inputPitch,
+                                      static_cast<float*>(output), outputPitch, width, height, maxValue);
+        return synchronizeKernel();
+    }
+}
+```
+
+The four files are the whole change, as CMake builds every file in `src/cuda` and `internal/cuda`.
+
+- The kernels are launched through plain functions declared in the module's own kernels header, which has no Qt and no CUDA types, so the module sources compile without nvcc and no shared file changes. `CudaKernelLaunch.h` holds what the kernel files share, such as `synchronizeKernel`.
+- The frames are pitched 2D float images by default. `GpuMemoryLayout::Contiguous` in the constructor gives a contiguous buffer for libraries that need one, such as cuFFT.
+- The output has the size of the input. A method that bins, crops or scales overrides `outputSize` and gets an output image of that size.
+- The output pixel is `value * scale + offset`, clamped to the processing bit depth, with a scale of 1 and an offset of 0 by default. A method with a signed result, such as a difference of Gaussians or a background subtraction, overrides `outputMapping` and returns an offset of half the maximum value, so zero lands in the middle of the range.
+- cuFFT is linked. `CudaFrequencyFilterModule` shows how a module keeps its FFT plans and scratch buffers and recreates them when the frame size changes.
+- NPP comes with the CUDA Toolkit. A module that uses it adds the library it needs, such as `CUDA::nppif` for filters, to `target_link_libraries` beside `CUDA::cufft`, and its DLL to the `_cuda_runtime_dlls` glob for the Windows package. NPP takes the frame's pointer, pitch and size directly.
+- A failing CUDA call returns `false` from `processDevice`, and the module reports "CUDA processing failed" for that frame.
+
 ## Processing Data Flow
 
 `ImageFrame` is the frame model used by preview, processing, recording, gallery and the local API. Processing recipes persist stable module IDs rather than registry positions. Available modules and their parameter descriptors come from the processing registry. Use `processFrameThrough(...)` to stop at one pipeline stage and `processFrameFrom(...)` to continue from a later module after an edited frame is written back. Saved OME-TIFF, OME-Zarr, TIFF and binary recording outputs are read back asynchronously through `ScopeOneCore::requestRecordingSessionFrame(...)`.

@@ -1,5 +1,8 @@
 #include "internal/FrequencyDomainFilterModule.h"
 
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
+
 #include "internal/FrameBufferUtils.h"
 
 #include <cmath>
@@ -235,3 +238,20 @@ namespace scopeone::core::internal
         }
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        FrequencyDomainFilterModule,
+        QStringLiteral("frequency_domain_filter"),
+        QStringLiteral("Frequency Domain Filter"),
+        1,
+        {choiceParameter("output_mode", "Output", 2,
+                         {"Spectrum", "Filtered spectrum", "Filtered image"}),
+         realParameter("min_feature_size", "Min feature size", 2.0,
+                       0.0, 1000.0, 0.1, 2),
+         realParameter("max_feature_size", "Max feature size", 10.0,
+                       0.0, 1000.0, 0.1, 2),
+         choiceParameter("filter_kind", "Filter kind", 0,
+                         {"Smooth", "Hard"})})
+}

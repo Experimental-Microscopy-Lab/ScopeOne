@@ -1,6 +1,8 @@
 #include "internal/cuda/CudaFrequencyFilterModule.h"
 
-#include "internal/cuda/CudaKernelLaunch.h"
+#include "internal/cuda/CudaFrequencyFilterKernels.h"
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
 
 #include <algorithm>
 #include <cuda_runtime.h>
@@ -8,7 +10,7 @@
 namespace scopeone::core::internal::cuda
 {
     CudaFrequencyFilterModule::CudaFrequencyFilterModule()
-        : CudaRealImageModule(scopeone::core::internal::cuda::GpuMemoryLayout::Contiguous)
+        : CudaModule(scopeone::core::internal::cuda::GpuMemoryLayout::Contiguous)
     {
     }
 
@@ -25,7 +27,7 @@ namespace scopeone::core::internal::cuda
 
     QString CudaFrequencyFilterModule::name() const
     {
-        return QStringLiteral("CUDA Frequency Filter");
+        return QStringLiteral("Frequency Domain Filter (CUDA)");
     }
 
     QVariantMap CudaFrequencyFilterModule::parameters() const
@@ -67,7 +69,6 @@ namespace scopeone::core::internal::cuda
     bool CudaFrequencyFilterModule::resetState()
     {
         destroyPlans();
-        m_spectrum.release();
         releaseScratch();
         return true;
     }
@@ -90,6 +91,11 @@ namespace scopeone::core::internal::cuda
 
     void CudaFrequencyFilterModule::releaseScratch()
     {
+        if (m_spectrum)
+        {
+            cudaFree(m_spectrum);
+            m_spectrum = nullptr;
+        }
         if (m_minMaxScratch)
         {
             cudaFree(m_minMaxScratch);
@@ -98,14 +104,22 @@ namespace scopeone::core::internal::cuda
     }
 
     bool CudaFrequencyFilterModule::processDevice(
-        const scopeone::core::internal::cuda::GpuRealFrame& input,
-        scopeone::core::internal::cuda::GpuRealFrame& output,
+        const scopeone::core::internal::cuda::GpuImage& input,
+        scopeone::core::internal::cuda::GpuImage& output,
         int bitDepth)
     {
         if (m_planWidth != input.width() || m_planHeight != input.height())
         {
             destroyPlans();
-            if (!m_spectrum.allocateForRealImage(input.width(), input.height())
+            if (m_spectrum)
+            {
+                cudaFree(m_spectrum);
+                m_spectrum = nullptr;
+            }
+            // The R2C spectrum of a width x height image holds (width / 2 + 1) x height values
+            const std::size_t spectrumBytes = static_cast<std::size_t>(input.width() / 2 + 1)
+                * static_cast<std::size_t>(input.height()) * sizeof(cufftComplex);
+            if (cudaMalloc(&m_spectrum, spectrumBytes) != cudaSuccess
                 || cufftPlan2d(&m_forwardPlan,
                                input.height(),
                                input.width(),
@@ -131,7 +145,7 @@ namespace scopeone::core::internal::cuda
         }
         return scopeone::core::internal::cuda::detail::launchFrequencyFilter(input.data(),
                                                             output.data(),
-                                                            m_spectrum.data(),
+                                                            m_spectrum,
                                                             input.width(),
                                                             input.height(),
                                                             m_minFeatureSize,
@@ -144,3 +158,16 @@ namespace scopeone::core::internal::cuda
                                                             bitDepth >= 16 ? 65535.0f : 255.0f);
     }
 }
+
+SCOPEONE_REGISTER_PROCESSING_MODULE(
+    scopeone::core::internal::cuda::CudaFrequencyFilterModule,
+    QStringLiteral("cuda.frequency_filter"),
+    QStringLiteral("Frequency Domain Filter (CUDA)"),
+    1,
+    {scopeone::core::internal::choiceParameter(
+         "output_mode", "Output", 2, {"Spectrum", "Filtered spectrum", "Filtered image"}),
+     scopeone::core::internal::realParameter(
+         "min_feature_size", "Min feature size", 2.0, 0.0, 1000.0, 0.1, 2),
+     scopeone::core::internal::realParameter(
+         "max_feature_size", "Max feature size", 10.0, 0.0, 1000.0, 0.1, 2),
+     scopeone::core::internal::choiceParameter("filter_kind", "Filter kind", 0, {"Smooth", "Hard"})})

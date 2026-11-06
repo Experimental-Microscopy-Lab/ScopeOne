@@ -1,5 +1,8 @@
 #include "internal/IFFTModule.h"
 
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
+
 #include "internal/FrameBufferUtils.h"
 
 #include <opencv2/core.hpp>
@@ -78,4 +81,11 @@ namespace scopeone::core::internal
             return ProcessingResult(ImageFrame{}, QString("IFFT failed: %1").arg(e.what()));
         }
     }
+}
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        IFFTModule,
+        QStringLiteral("ifft"), QStringLiteral("IFFT"), 1, {})
 }

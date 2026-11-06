@@ -1,11 +1,13 @@
 #include "internal/cuda/CudaGaussianBlurModule.h"
 
-#include "internal/cuda/CudaKernelLaunch.h"
+#include "internal/cuda/CudaGaussianBlurKernels.h"
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
 
 namespace scopeone::core::internal::cuda
 {
     CudaGaussianBlurModule::CudaGaussianBlurModule()
-        : CudaRealImageModule(scopeone::core::internal::cuda::GpuMemoryLayout::Pitched2D)
+        : CudaModule(scopeone::core::internal::cuda::GpuMemoryLayout::Pitched2D)
     {
     }
 
@@ -16,7 +18,7 @@ namespace scopeone::core::internal::cuda
 
     QString CudaGaussianBlurModule::name() const
     {
-        return QStringLiteral("CUDA Gaussian Blur");
+        return QStringLiteral("Gaussian Blur (CUDA)");
     }
 
     QVariantMap CudaGaussianBlurModule::parameters() const
@@ -50,8 +52,8 @@ namespace scopeone::core::internal::cuda
     }
 
     bool CudaGaussianBlurModule::processDevice(
-        const scopeone::core::internal::cuda::GpuRealFrame& input,
-        scopeone::core::internal::cuda::GpuRealFrame& output,
+        const scopeone::core::internal::cuda::GpuImage& input,
+        scopeone::core::internal::cuda::GpuImage& output,
         int)
     {
         return scopeone::core::internal::cuda::detail::launchGaussian(input.data(),
@@ -64,3 +66,11 @@ namespace scopeone::core::internal::cuda
                                                      m_sigma);
     }
 }
+
+SCOPEONE_REGISTER_PROCESSING_MODULE(
+    scopeone::core::internal::cuda::CudaGaussianBlurModule,
+    QStringLiteral("cuda.gaussian_blur"),
+    QStringLiteral("Gaussian Blur (CUDA)"),
+    1,
+    {scopeone::core::internal::integerParameter("kernel_size", "Kernel size", 3, 1, 99, 2),
+     scopeone::core::internal::realParameter("sigma", "Sigma", 0.0, 0.0, 100.0, 0.1, 2)})

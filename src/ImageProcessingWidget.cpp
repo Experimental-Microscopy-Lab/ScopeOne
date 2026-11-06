@@ -799,39 +799,10 @@ namespace scopeone::ui
         listRow->addWidget(m_moduleList, 1);
         auto* controls = new QVBoxLayout;
         m_moduleTypeCombo = new QComboBox(group);
-        // The steps are listed by group, and the box finds them by any part of the group or the name
-        static const QList<QPair<QString, QStringList>> groups{
-            {QStringLiteral("Filters"), {QStringLiteral("gaussian_blur"), QStringLiteral("filter"), QStringLiteral("sharpen"),
-                                         QStringLiteral("find_edges"), QStringLiteral("unsharp_mask"), QStringLiteral("top_hat")}},
-            {QStringLiteral("Intensity"), {QStringLiteral("math"), QStringLiteral("invert"), QStringLiteral("threshold"),
-                                           QStringLiteral("clahe"), QStringLiteral("equalize"),
-                                           QStringLiteral("background_calibration")}},
-            {QStringLiteral("Binary"), {QStringLiteral("binary"), QStringLiteral("distance_map"), QStringLiteral("watershed"),
-                                         QStringLiteral("mask")}},
-            {QStringLiteral("Geometry"), {QStringLiteral("flip"), QStringLiteral("rotate_90"),
-                                          QStringLiteral("spatiotemporal_binning")}},
-            {QStringLiteral("Stack"), {QStringLiteral("rolling_projection"), QStringLiteral("differential_rolling")}},
-            {QStringLiteral("Fourier"), {QStringLiteral("fft"), QStringLiteral("frequency_domain_filter"),
-                                         QStringLiteral("ifft")}}};
-        QList<ProcessingModuleDescriptor> remaining = m_scopeonecore->availableProcessingModules();
-        for (const auto& group : groups)
+        // The steps are listed by name as Core sorts them, and the box finds them by any part of the name
+        for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
         {
-            for (const QString& id : group.second)
-            {
-                for (qsizetype index = 0; index < remaining.size(); ++index)
-                {
-                    if (remaining.at(index).id == id)
-                    {
-                        m_moduleTypeCombo->addItem(tr("%1 / %2").arg(group.first, remaining.at(index).name), id);
-                        remaining.removeAt(index);
-                        break;
-                    }
-                }
-            }
-        }
-        for (const ProcessingModuleDescriptor& descriptor : remaining)
-        {
-            m_moduleTypeCombo->addItem(tr("Other / %1").arg(descriptor.name), descriptor.id);
+            m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
         }
         m_moduleTypeCombo->setEditable(true);
         m_moduleTypeCombo->setInsertPolicy(QComboBox::NoInsert);

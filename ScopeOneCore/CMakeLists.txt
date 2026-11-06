@@ -132,6 +132,7 @@ set(CORE_HEADERS
         internal/ImageProcessingFramework.h
         internal/ProcessingModule.h
         internal/ProcessingModuleRegistry.h
+        internal/ProcessingParameters.h
         include/scopeone/ProcessingPipeline.h
         internal/DriverHostProtocol.h
         internal/SharedFrameRing.h
@@ -277,31 +278,16 @@ if (SCOPEONE_CUDA_NVCC_EXECUTABLE)
 endif ()
 if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND TARGET CUDA::cufft)
     set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING "Target CUDA architectures")
-    target_sources(ScopeOneCore PRIVATE
-            src/cuda/CudaKernels.cu
-            src/cuda/CudaDevice.cpp
-            src/cuda/CudaFrequencyFilterModule.cpp
-            src/cuda/CudaGaussianBlurModule.cpp
-            src/cuda/CudaProcessingRegistration.cpp
-            src/cuda/CudaRealImageModule.cpp
-            src/cuda/GpuComplexFrame.cpp
-            src/cuda/GpuRealFrame.cpp
-            internal/cuda/CudaDevice.h
-            internal/cuda/CudaFrequencyFilterModule.h
-            internal/cuda/CudaGaussianBlurModule.h
-            internal/cuda/CudaKernelLaunch.h
-            internal/cuda/CudaProcessingRegistration.h
-            internal/cuda/CudaRealImageModule.h
-            internal/cuda/GpuComplexFrame.h
-            internal/cuda/GpuRealFrame.h
-    )
-    set_source_files_properties(src/cuda/CudaKernels.cu PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # A new CUDA module is a new file in src/cuda and internal/cuda, picked up without editing this list
+    file(GLOB _cuda_sources CONFIGURE_DEPENDS src/cuda/*.cpp internal/cuda/*.h)
+    file(GLOB _cuda_kernels CONFIGURE_DEPENDS src/cuda/*.cu)
+    target_sources(ScopeOneCore PRIVATE ${_cuda_sources} ${_cuda_kernels})
+    set_source_files_properties(${_cuda_kernels} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     set_target_properties(ScopeOneCore PROPERTIES
             CUDA_ARCHITECTURES "${SCOPEONE_CUDA_ARCHITECTURES}"
             CUDA_SEPARABLE_COMPILATION OFF
     )
     target_link_libraries(ScopeOneCore PRIVATE CUDA::cudart CUDA::cufft)
-    target_compile_definitions(ScopeOneCore PRIVATE SCOPEONE_WITH_CUDA)
     set(_with_cuda ON)
     if (WIN32)
         file(GLOB _cuda_runtime_dlls
@@ -403,7 +389,6 @@ if (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
             src/inference/OnnxRuntime.cpp
             src/inference/OnnxSession.cpp
             internal/inference/ExecutionProvider.h
-            internal/inference/InferenceProcessingRegistration.h
             internal/inference/OnnxInferenceModule.h
             internal/inference/OnnxInternal.h
             internal/inference/OnnxRuntime.h
@@ -412,7 +397,6 @@ if (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
     )
     target_include_directories(ScopeOneCore PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
     target_link_libraries(ScopeOneCore PRIVATE "${ONNXRUNTIME_LIBRARY}")
-    target_compile_definitions(ScopeOneCore PRIVATE SCOPEONE_WITH_INFERENCE)
     set(_with_inference ON)
     if (WIN32)
         file(GLOB _onnxruntime_dlls
