@@ -3,6 +3,10 @@
 
 #include "internal/ProcessingModuleRegistry.h"
 
+#include <onnxruntime_cxx_api.h>
+
+#include <algorithm>
+
 namespace scopeone::core::internal::inference
 {
     namespace
@@ -16,6 +20,15 @@ namespace scopeone::core::internal::inference
                 QString{}};
             modelPath.fileFilter = QStringLiteral("ONNX models (*.onnx)");
 
+            // The CPU package of ONNX Runtime has no CUDA provider, and offering CUDA there only
+            // failed when the model was loaded
+            QList<core::ProcessingParameterChoice> providers{{QStringLiteral("CPU"), 0}};
+            const std::vector<std::string> available = Ort::GetAvailableProviders();
+            if (std::find(available.begin(), available.end(), "CUDAExecutionProvider") != available.end())
+            {
+                providers.append({QStringLiteral("CUDA"), 1});
+            }
+
             return {{QStringLiteral("onnx_inference"),
          QStringLiteral("ONNX Inference"),
          2,
@@ -28,7 +41,7 @@ namespace scopeone::core::internal::inference
            {},
            {},
            0,
-           {{QStringLiteral("CPU"), 0}, {QStringLiteral("CUDA"), 1}}},
+           providers},
           {QStringLiteral("layout"),
            QStringLiteral("Layout"),
            scopeone::core::ProcessingParameterType::Choice,
