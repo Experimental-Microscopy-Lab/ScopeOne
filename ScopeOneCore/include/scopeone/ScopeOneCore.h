@@ -32,7 +32,6 @@
 #include "scopeone/SignalSource.h"
 #include "scopeone/scopeone_core_export.h"
 
-class CMMCore;
 class QThreadPool;
 class QTimer;
 
@@ -505,7 +504,6 @@ namespace scopeone::core
         void daqError(const QString& deviceId,
                       const QString& errorMessage);
         void daqInputDataReady(const DaqInputChunk& chunk);
-        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
         void previewProcessedFrameReady(const ImageFrame& frame);
         void staticFramePublished(const QString& sourceId,
                                   const QString& displayName,
@@ -639,7 +637,10 @@ namespace scopeone::core
         void synchronizeCameraIdsFromRegistry();
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
-        void clearConfigurationRuntime(bool notify, bool shutdownCameraBackend);
+        void clearConfigurationRuntime(bool notify, bool stopCameras);
+        // Stops the Micro-Manager cameras on the hardware thread, as their DriverHosts can take a
+        // second to exit, and then calls next
+        void stopMicroManagerCameras(std::function<void()> next);
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                const QString& errorMessage);
@@ -653,7 +654,6 @@ namespace scopeone::core
         quint64 queueStageMove(
             const QString& deviceLabel,
             std::function<bool(QString*)> command);
-        std::shared_ptr<CMMCore> core() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void ensureSceneLayer(const QString& layerKey,
                               const QString& sourceId,

@@ -3,7 +3,7 @@
 #include "scopeone/HardwareTypes.h"
 
 #include <QByteArray>
-#include <QDir>
+#include <QCryptographicHash>
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -17,7 +17,7 @@
 
 namespace scopeone::core::internal::driverhost
 {
-    inline constexpr quint32 kProtocolVersion = 6;
+    inline constexpr quint32 kProtocolVersion = 7;
 
     // The names of the device kinds as the protocol sends them
     inline constexpr std::pair<HardwareDeviceKind, const char*> kDeviceKindNames[]{
@@ -83,6 +83,11 @@ namespace scopeone::core::internal::driverhost
     inline const QString kSharedMemoryKeyField = QStringLiteral("sharedMemoryKey");
     inline const QString kDefaultXYStageField = QStringLiteral("defaultXYStage");
     inline const QString kDefaultZStageField = QStringLiteral("defaultZStage");
+    inline const QString kDefaultShutterField = QStringLiteral("defaultShutter");
+    inline const QString kDefaultAutofocusField = QStringLiteral("defaultAutofocus");
+    // Whether a camera takes a series of images in one sequence acquisition
+    inline const QString kEventSequenceField = QStringLiteral("eventSequence");
+    inline const QString kPixelSizeField = QStringLiteral("pixelSizeUm");
     inline const QString kSignalSourcesField = QStringLiteral("signalSources");
     inline const QString kDaqDevicesField = QStringLiteral("daqDevices");
     inline const QString kSourceIdField = QStringLiteral("sourceId");
@@ -100,12 +105,18 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandStartPreview = QStringLiteral("StartPreview");
     inline const QString kCommandStopPreview = QStringLiteral("StopPreview");
     inline const QString kCommandSetFrameDeliveryMode = QStringLiteral("SetFrameDeliveryMode");
+    inline const QString kCommandSetFrameDeliveryPaused = QStringLiteral("SetFrameDeliveryPaused");
     inline const QString kCommandGetExposure = QStringLiteral("GetExposure");
     inline const QString kCommandSetExposure = QStringLiteral("SetExposure");
     inline const QString kCommandListProperties = QStringLiteral("ListProperties");
     inline const QString kCommandGetProperty = QStringLiteral("GetProperty");
     inline const QString kCommandSetProperty = QStringLiteral("SetProperty");
     inline const QString kCommandCaptureEvent = QStringLiteral("CaptureEvent");
+    // The images of a sequence wait in DriverHost, and SendEventFrames writes them to the frame
+    // ring a part at a time, as the ring holds fewer images than a sequence can have
+    inline const QString kCommandCaptureEventSequence = QStringLiteral("CaptureEventSequence");
+    inline const QString kCommandSendEventFrames = QStringLiteral("SendEventFrames");
+    inline const QString kCommandGetPixelSize = QStringLiteral("GetPixelSize");
     inline const QString kCommandSetRoi = QStringLiteral("SetROI");
     inline const QString kCommandClearRoi = QStringLiteral("ClearROI");
     inline const QString kCommandGetRoi = QStringLiteral("GetROI");
@@ -115,6 +126,15 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandSetRelativeZPosition = QStringLiteral("SetRelativeZPosition");
     inline const QString kCommandSetXYPosition = QStringLiteral("SetXYPosition");
     inline const QString kCommandSetZPosition = QStringLiteral("SetZPosition");
+    inline const QString kCommandGetStageSequenceCapacity = QStringLiteral("GetStageSequenceCapacity");
+    inline const QString kCommandStartStageSequence = QStringLiteral("StartStageSequence");
+    inline const QString kCommandStopStageSequence = QStringLiteral("StopStageSequence");
+    inline const QString kCommandGetPropertySequenceCapacity = QStringLiteral("GetPropertySequenceCapacity");
+    inline const QString kCommandStartPropertySequence = QStringLiteral("StartPropertySequence");
+    inline const QString kCommandStopPropertySequence = QStringLiteral("StopPropertySequence");
+    inline const QString kCommandGetAutoShutter = QStringLiteral("GetAutoShutter");
+    inline const QString kCommandSetAutoShutter = QStringLiteral("SetAutoShutter");
+    inline const QString kCommandRunAutofocus = QStringLiteral("RunAutofocus");
     inline const QString kCommandGetShutterOpen = QStringLiteral("GetShutterOpen");
     inline const QString kCommandSetShutterOpen = QStringLiteral("SetShutterOpen");
     inline const QString kCommandGetState = QStringLiteral("GetState");
@@ -124,6 +144,7 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandListConfigs = QStringLiteral("ListConfigs");
     inline const QString kCommandGetCurrentConfig = QStringLiteral("GetCurrentConfig");
     inline const QString kCommandSetConfig = QStringLiteral("SetConfig");
+    inline const QString kCommandGetConfigSettings = QStringLiteral("GetConfigSettings");
     inline const QString kCommandStartSignal = QStringLiteral("StartSignal");
     inline const QString kCommandStopSignal = QStringLiteral("StopSignal");
     inline const QString kCommandStartDaq = QStringLiteral("StartDaq");
@@ -135,6 +156,7 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCapabilityShutter = QStringLiteral("Shutter");
     inline const QString kCapabilityState = QStringLiteral("State");
     inline const QString kCapabilityConfiguration = QStringLiteral("Configuration");
+    inline const QString kCapabilityAutofocus = QStringLiteral("Autofocus");
 
     inline const QString kFrameDeliveryModePreviewLatest = QStringLiteral("PreviewLatest");
     inline const QString kFrameDeliveryModeLatestOnly = QStringLiteral("LatestOnly");
@@ -155,9 +177,14 @@ namespace scopeone::core::internal::driverhost
     inline const QString kExecutableFileName = QStringLiteral("ScopeOne_DriverHost");
 #endif
 
-    inline QString controlServerName(const QString& deviceId)
+    // A unix socket path holds at most 104 characters on macOS, where the temporary folder takes
+    // about half of them, and a name with the 36 character host key made the server fail to
+    // listen. The key is hashed to a name of fixed length.
+    inline QString controlServerName(const QString& hostKey)
     {
-        return QStringLiteral("ScopeOne.DriverHost.%1.ctrl").arg(deviceId);
+        const QByteArray hash =
+            QCryptographicHash::hash(hostKey.toUtf8(), QCryptographicHash::Sha1).toHex().left(16);
+        return QStringLiteral("ScopeOne.%1.ctrl").arg(QString::fromLatin1(hash));
     }
 
     // On Unix the System V key is a file that ftok reads, so keep it in the
@@ -170,11 +197,6 @@ namespace scopeone::core::internal::driverhost
         return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation)
                + QLatin1Char('/') + name;
 #endif
-    }
-
-    inline QString sharedMemoryKey(const QString& deviceId)
-    {
-        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.shm").arg(deviceId));
     }
 
     inline QString sharedMemoryKey(const QString& hostKey, int cameraIndex)

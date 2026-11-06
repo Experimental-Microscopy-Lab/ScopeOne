@@ -308,26 +308,6 @@ namespace example_camera
             m_previewStateSink = std::move(sink);
         }
 
-        bool startPreview() override
-        {
-            for (auto& camera : m_cameras)
-            {
-                camera->start();
-            }
-            reportPreviewState();
-            return true;
-        }
-
-        bool stopPreview() override
-        {
-            for (auto& camera : m_cameras)
-            {
-                camera->stop();
-            }
-            reportPreviewState();
-            return true;
-        }
-
         bool startPreviewFor(const QString& cameraId) override
         {
             Camera* camera = find(cameraId);
@@ -358,14 +338,9 @@ namespace example_camera
             return camera && camera->isRunning();
         }
 
-        // An id that is not a camera, such as "All", reads the first camera
-        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const override
+        bool getExposure(const QString& cameraId, double& exposureMs) const override
         {
-            const Camera* camera = find(cameraIdOrAll);
-            if (!camera && !m_cameras.empty())
-            {
-                camera = m_cameras.front().get();
-            }
+            const Camera* camera = find(cameraId);
             if (!camera)
             {
                 return false;
@@ -374,19 +349,10 @@ namespace example_camera
             return true;
         }
 
-        // An id that is not a camera sets the exposure of every camera
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs) override
+        bool setExposure(const QString& cameraId, double exposureMs) override
         {
-            if (Camera* camera = find(cameraIdOrAll))
-            {
-                return camera->setExposureMs(exposureMs);
-            }
-            bool all = !m_cameras.empty();
-            for (auto& camera : m_cameras)
-            {
-                all = camera->setExposureMs(exposureMs) && all;
-            }
-            return all;
+            Camera* camera = find(cameraId);
+            return camera && camera->setExposureMs(exposureMs);
         }
 
         bool setROI(const QString& cameraId, int x, int y, int width, int height) override

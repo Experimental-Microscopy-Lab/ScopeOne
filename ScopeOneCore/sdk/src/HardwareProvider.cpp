@@ -10,6 +10,7 @@ namespace scopeone::core
     DevicePropertyProvider::~DevicePropertyProvider() = default;
     StageProvider::~StageProvider() = default;
     ShutterProvider::~ShutterProvider() = default;
+    AutofocusProvider::~AutofocusProvider() = default;
     StateProvider::~StateProvider() = default;
     ConfigurationProvider::~ConfigurationProvider() = default;
     CameraProvider::~CameraProvider() = default;

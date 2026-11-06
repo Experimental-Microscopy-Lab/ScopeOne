@@ -30,6 +30,33 @@ namespace scopeone::core
         virtual bool hasPropertyLimits(const QString& deviceId, const QString& name) = 0;
         virtual double getPropertyLowerLimit(const QString& deviceId, const QString& name) = 0;
         virtual double getPropertyUpperLimit(const QString& deviceId, const QString& name) = 0;
+
+        // A property sequence steps a property through a list of values, one value on each
+        // trigger of the camera, without a call per value. The capacity is the longest list the
+        // device takes, 0 when the property cannot be sequenced.
+        virtual long propertySequenceCapacity(const QString& deviceId, const QString& name)
+        {
+            (void)deviceId;
+            (void)name;
+            return 0;
+        }
+        // Loads the values and arms the property for the next triggers
+        virtual bool startPropertySequence(const QString& deviceId,
+                                           const QString& name,
+                                           const QStringList& values,
+                                           QString* errorMessage = nullptr)
+        {
+            (void)deviceId;
+            (void)name;
+            (void)values;
+            if (errorMessage) *errorMessage = QStringLiteral("The property cannot be sequenced");
+            return false;
+        }
+        virtual void stopPropertySequence(const QString& deviceId, const QString& name)
+        {
+            (void)deviceId;
+            (void)name;
+        }
     };
 
     class SCOPEONE_SDK_EXPORT StageProvider
@@ -60,6 +87,29 @@ namespace scopeone::core
         virtual bool setZPosition(const QString& deviceId,
                                   double z,
                                   QString* errorMessage = nullptr) = 0;
+
+        // A stage sequence steps a Z stage through a list of positions, one position on each
+        // trigger of the camera. The capacity is the longest list the stage takes, 0 when it
+        // cannot be sequenced.
+        virtual long stageSequenceCapacity(const QString& deviceId) const
+        {
+            (void)deviceId;
+            return 0;
+        }
+        // Loads the positions and arms the stage for the next triggers
+        virtual bool startStageSequence(const QString& deviceId,
+                                        const std::vector<double>& positions,
+                                        QString* errorMessage = nullptr)
+        {
+            (void)deviceId;
+            (void)positions;
+            if (errorMessage) *errorMessage = QStringLiteral("The stage cannot be sequenced");
+            return false;
+        }
+        virtual void stopStageSequence(const QString& deviceId)
+        {
+            (void)deviceId;
+        }
     };
 
     class SCOPEONE_SDK_EXPORT ShutterProvider
@@ -73,6 +123,32 @@ namespace scopeone::core
         virtual bool setShutterOpen(const QString& deviceId,
                                     bool open,
                                     QString* errorMessage = nullptr) = 0;
+
+        // The shutter that lights the sample while a camera of the provider takes an image
+        virtual QString defaultShutter() const
+        {
+            return {};
+        }
+        // Whether the provider opens the default shutter around each image by itself
+        virtual bool autoShutter() const
+        {
+            return false;
+        }
+        virtual bool setAutoShutter(bool enabled, QString* errorMessage = nullptr)
+        {
+            if (errorMessage && enabled) *errorMessage = QStringLiteral("The provider has no automatic shutter");
+            return !enabled;
+        }
+    };
+
+    class SCOPEONE_SDK_EXPORT AutofocusProvider
+    {
+    public:
+        virtual ~AutofocusProvider();
+
+        virtual QString defaultAutofocus() const = 0;
+        // Focuses with the autofocus device and returns once the focus has settled
+        virtual bool runAutofocus(const QString& deviceId, QString* errorMessage = nullptr) = 0;
     };
 
     class SCOPEONE_SDK_EXPORT StateProvider

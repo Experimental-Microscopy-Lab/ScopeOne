@@ -10,10 +10,8 @@
 #include <atomic>
 #include <functional>
 #include <vector>
-#include "internal/AcquisitionHardware.h"
+#include "internal/HardwareRuntime.h"
 #include "scopeone/ExperimentDocument.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/HardwareCapabilities.h"
 
 namespace scopeone::core::internal
 {
@@ -37,10 +35,7 @@ namespace scopeone::core::internal
 
         bool isRunning() const { return m_running.load(); }
 
-        void setCameraProvider(CameraProvider* cameraProvider);
-        void setStageProvider(StageProvider* stageProvider);
-        void setConfigurationProvider(ConfigurationProvider* configurationProvider);
-        void setAcquisitionHardware(AcquisitionHardware* hardware);
+        void setHardwareRuntime(HardwareRuntime* hardwareRuntime);
         bool start(const QList<AcquisitionEvent>& events);
         void requestCancel();
         void cancelAndWait();
@@ -141,10 +136,7 @@ namespace scopeone::core::internal
         bool moveZ(double z, QString* errorMessage);
         void runSequence(QList<AcquisitionEvent> events);
 
-        CameraProvider* m_cameraProvider{nullptr};
-        StageProvider* m_stageProvider{nullptr};
-        ConfigurationProvider* m_configurationProvider{nullptr};
-        AcquisitionHardware* m_acquisitionHardware{nullptr};
+        HardwareRuntime* m_hardwareRuntime{nullptr};
         QThreadPool m_threadPool;
         std::atomic<bool> m_running{false};
         std::atomic<bool> m_cancelRequested{false};

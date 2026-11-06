@@ -11,23 +11,39 @@
 
 namespace scopeone::core
 {
+    // A provider whose devices include cameras. Every provider implements this interface, the
+    // drivers as well as Micro-Manager inside ScopeOne, and every call names one camera by its id.
+    //
+    // Threads: DriverHost calls the methods of a driver one at a time, from one thread, so they
+    // need no locks against each other. The frame sink may be called from any thread, such as a
+    // callback thread of the camera SDK, while a method runs.
+    //
+    // Frames: Mono8 or Mono16, at most 16 MB each; a larger frame is not delivered. frameIndex
+    // counts the images the camera took, from 1, including those the provider did not hand on,
+    // so ScopeOne can tell the frame rate and see frames that were lost. timestampNs is the time
+    // the image was taken, in nanoseconds since the Unix epoch, or 0 to let ScopeOne stamp it.
     class SCOPEONE_SDK_EXPORT CameraProvider : public DevicePropertyProvider
     {
     public:
+        // ScopeOne copies the frame before the sink returns, so the bytes of a frame may point
+        // into a buffer of the camera, for example through QByteArray::fromRawData, and need to
+        // stay valid only during the call. The copy takes about a millisecond for 8 MB.
         using FrameSink = std::function<void(const ImageFrame&)>;
+        // Called with whether any camera of the provider is running, whenever that may change
         using PreviewStateSink = std::function<void(bool)>;
 
         ~CameraProvider() override;
 
+        // Once a new sink is set, the old one is no longer called from any thread
         virtual void setFrameSink(FrameSink sink) = 0;
         virtual void setPreviewStateSink(PreviewStateSink sink) = 0;
-        virtual bool startPreview() = 0;
-        virtual bool stopPreview() = 0;
+        // Starts the continuous acquisition of a camera. Starting a running camera succeeds.
         virtual bool startPreviewFor(const QString& cameraId) = 0;
+        // Once it returns, the camera hands no further frame to the sink
         virtual bool stopPreviewFor(const QString& cameraId) = 0;
         virtual bool isPreviewRunning(const QString& cameraId) const = 0;
-        virtual bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const = 0;
-        virtual bool setExposure(const QString& cameraIdOrAll, double exposureMs) = 0;
+        virtual bool getExposure(const QString& cameraId, double& exposureMs) const = 0;
+        virtual bool setExposure(const QString& cameraId, double exposureMs) = 0;
         virtual bool setROI(const QString& cameraId, int x, int y, int width, int height) = 0;
         virtual bool clearROI(const QString& cameraId) = 0;
         virtual bool getROI(const QString& cameraId,
@@ -35,9 +51,20 @@ namespace scopeone::core
                             int& y,
                             int& width,
                             int& height) = 0;
+        // Takes one new image with the current settings, started after the call, and returns it
+        // instead of handing it to the sink. A running acquisition may be stopped for it.
+        // timeoutMs is how long ScopeOne waits for the image; a provider that waits for the camera
+        // itself should give up after it.
         virtual bool captureEventFrame(const QString& cameraId,
                                        ImageFrame& frame,
                                        int timeoutMs = 1500) = 0;
+        // The size of a pixel in the sample in micrometers, with the current objective and
+        // binning, or 0 when the provider does not know it
+        virtual double pixelSizeUm(const QString& cameraId) const
+        {
+            (void)cameraId;
+            return 0.0;
+        }
         // Whether the camera can take a series of images in one sequence acquisition, which
         // lets the hardware time the images, for example while a stage steps through a
         // sequence of positions

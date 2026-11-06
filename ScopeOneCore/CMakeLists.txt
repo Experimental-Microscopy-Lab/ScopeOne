@@ -391,6 +391,7 @@ add_executable(ScopeOne_DriverHost
         src/DriverHostMain.cpp
         src/HardwareStreamCodec.cpp
         src/DriverManifest.cpp
+        src/MicroManagerCamera.cpp
         src/StreamRing.cpp
 )
 if (UNIX)

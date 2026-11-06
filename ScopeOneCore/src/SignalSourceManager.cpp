@@ -1,9 +1,9 @@
 #include "internal/SignalSourceManager.h"
 
 #include "internal/HardwareRuntime.h"
-#include "internal/PtuFile.h"
 
 #include <QDebug>
+#include <QPointer>
 
 #include <algorithm>
 #include <cmath>
@@ -11,18 +11,10 @@
 
 namespace scopeone::core::internal
 {
-    SignalSource::SignalSource(QObject* parent)
-        : QObject(parent)
-    {
-    }
-
-    SignalSource::~SignalSource() = default;
-
     SignalSourceManager::SignalSourceManager(DeviceRegistry* registry, QObject* parent)
         : QObject(parent)
           , m_registry(registry)
     {
-        registerBuiltInSources();
         connect(m_registry, &DeviceRegistry::changed, this, &SignalSourceManager::refreshProviderSources);
         refreshProviderSources();
     }
@@ -33,12 +25,6 @@ namespace scopeone::core::internal
         {
             detachProvider(provider);
         }
-        for (const QPointer<SignalSource>& source : std::as_const(m_sources))
-        {
-            delete source.data();
-        }
-        m_sources.clear();
-        m_factories.clear();
     }
 
     QList<SignalSourceDescriptor> SignalSourceManager::sources() const
@@ -65,14 +51,10 @@ namespace scopeone::core::internal
             }
             return false;
         }
-        if (const HardwareProviderPtr provider = m_providerBySource.value(sourceId))
-        {
-            SignalAcquisitionConfig normalized = config;
-            normalized.sourceId = sourceId;
-            return dynamic_cast<SignalSourceProvider*>(provider.get())->startSignal(normalized, errorMessage);
-        }
-        SignalSource* source = sourceInstance(sourceId, errorMessage);
-        return source && source->start(config, errorMessage);
+        SignalAcquisitionConfig normalized = config;
+        normalized.sourceId = sourceId;
+        const HardwareProviderPtr provider = m_providerBySource.value(sourceId);
+        return dynamic_cast<SignalSourceProvider*>(provider.get())->startSignal(normalized, errorMessage);
     }
 
     void SignalSourceManager::stopTrace(const QString& sourceId)
@@ -81,47 +63,17 @@ namespace scopeone::core::internal
         if (const HardwareProviderPtr provider = m_providerBySource.value(id))
         {
             dynamic_cast<SignalSourceProvider*>(provider.get())->stopSignal(id);
-            return;
-        }
-        if (SignalSource* source = m_sources.value(id))
-        {
-            source->stop();
         }
     }
 
     SignalSourceState SignalSourceManager::state(const QString& sourceId) const
     {
-        const QString id = sourceId.trimmed();
-        const QPointer<SignalSource> source = m_sources.value(id);
-        return source ? source->state() : m_states.value(id, SignalSourceState::Idle);
+        return m_states.value(sourceId.trimmed(), SignalSourceState::Idle);
     }
 
     QString SignalSourceManager::stateMessage(const QString& sourceId) const
     {
-        const QString id = sourceId.trimmed();
-        const QPointer<SignalSource> source = m_sources.value(id);
-        return source ? source->stateMessage()
-                      : m_messages.value(id, QStringLiteral("Signal source is idle"));
-    }
-
-    void SignalSourceManager::registerBuiltInSources()
-    {
-        m_factories.push_back(std::make_unique<PtuFileSourceFactory>());
-        for (const std::unique_ptr<SignalSourceFactory>& factory : m_factories)
-        {
-            for (const SignalSourceDescriptor& descriptor : factory->signalSources())
-            {
-                const QString sourceId = descriptor.id.trimmed();
-                if (sourceId.isEmpty() || m_descriptors.contains(sourceId))
-                {
-                    continue;
-                }
-                m_descriptors.insert(sourceId, descriptor);
-                m_factoryBySource.insert(sourceId, factory.get());
-                m_states.insert(sourceId, SignalSourceState::Idle);
-                m_messages.insert(sourceId, QStringLiteral("Signal source is idle"));
-            }
-        }
+        return m_messages.value(sourceId.trimmed(), QStringLiteral("Signal source is idle"));
     }
 
     // Follows the drivers as they are registered and removed: the sources of each
@@ -230,52 +182,5 @@ namespace scopeone::core::internal
         {
             emit sourceError(sourceId, message);
         }
-    }
-
-    SignalSource* SignalSourceManager::sourceInstance(const QString& sourceId,
-                                                       QString* errorMessage)
-    {
-        const QString id = sourceId.trimmed();
-        if (SignalSource* existing = m_sources.value(id))
-        {
-            return existing;
-        }
-        SignalSourceFactory* factory = m_factoryBySource.value(id);
-        if (!factory)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Unknown signal source: %1").arg(id);
-            }
-            return nullptr;
-        }
-        SignalSource* source = factory->createSignalSource(id, this);
-        if (!source)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Failed to create signal source: %1").arg(id);
-            }
-            return nullptr;
-        }
-
-        connect(source, &SignalSource::timeSeriesReady,
-                this, &SignalSourceManager::timeSeriesReady);
-        connect(source, &SignalSource::timestampedEventsReady,
-                this, &SignalSourceManager::timestampedEventsReady);
-        connect(source, &SignalSource::stateChanged,
-                this, [this, id](SignalSourceState state, const QString& message)
-                {
-                    m_states.insert(id, state);
-                    m_messages.insert(id, message);
-                    emit sourceStateChanged(id, state, message);
-                });
-        connect(source, &SignalSource::sourceError,
-                this, [this, id](const QString& message)
-                {
-                    emit sourceError(id, message);
-                });
-        m_sources.insert(id, source);
-        return source;
     }
 }

@@ -2,7 +2,7 @@
   "id": "example.camera",
   "name": "Example Camera",
   "version": "1.0.0",
-  "scopeOneApi": 1,
+  "scopeOneApi": 2,
   "kind": "driver",
   "providerId": "example.camera",
   "autoLoad": false

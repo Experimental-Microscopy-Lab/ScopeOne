@@ -1,7 +1,13 @@
 #include "internal/MicroManagerProvider.h"
 
-#include "MMCore.h"
+#include "internal/DriverHostClient.h"
 
+#include "internal/MicroManagerCalls.h"
+
+#include <QDebug>
+#include <QFuture>
+#include <QJsonDocument>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QHash>
 #include <QSet>
 
@@ -11,79 +17,26 @@
 
 namespace scopeone::core::internal
 {
-    namespace
+    using namespace micromanager;
+
+    MicroManagerProvider::MicroManagerProvider()
+        : m_core(std::make_shared<CMMCore>())
     {
-        QStringList toQStringList(const std::vector<std::string>& values)
-        {
-            QStringList result;
-            result.reserve(static_cast<qsizetype>(values.size()));
-            for (const std::string& value : values)
-            {
-                result.append(QString::fromStdString(value));
-            }
-            return result;
-        }
-
-        // MMCore takes device and property names as trimmed narrow strings
-        std::string name8(const QString& name)
-        {
-            return name.trimmed().toStdString();
-        }
-
-        // Runs an MMCore query and returns the fallback when the core reports an error
-        template <class T, class Call>
-        T orElse(T fallback, Call&& call)
-        {
-            try
-            {
-                return call();
-            }
-            catch (const CMMError&)
-            {
-                return fallback;
-            }
-        }
-
-        // Runs an MMCore command and reports a core error through errorMessage
-        template <class Call>
-        bool succeeds(QString* errorMessage, Call&& call)
-        {
-            if (errorMessage)
-            {
-                errorMessage->clear();
-            }
-            try
-            {
-                call();
-                return true;
-            }
-            catch (const CMMError& error)
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QString::fromStdString(error.getMsg());
-                }
-                return false;
-            }
-        }
     }
 
-    MicroManagerProvider::MicroManagerProvider(std::shared_ptr<CMMCore> core,
-                                               CameraProvider* cameraProvider,
-                                               CameraRuntimeControl* cameraRuntimeControl)
-        : m_core(std::move(core))
-          , m_cameraProvider(cameraProvider)
-          , m_cameraRuntimeControl(cameraRuntimeControl)
+    MicroManagerProvider::~MicroManagerProvider() = default;
+
+    QString MicroManagerProvider::coreVersion()
     {
+        return QStringLiteral("%1.%2.%3")
+            .arg(CMMCore::getMMCoreVersionMajor())
+            .arg(CMMCore::getMMCoreVersionMinor())
+            .arg(CMMCore::getMMCoreVersionPatch());
     }
 
     HardwareProviderDescriptor MicroManagerProvider::descriptor() const
     {
-        return {
-            QStringLiteral("micro-manager"),
-            QStringLiteral("Micro-Manager"),
-            QStringLiteral("MMCore")
-        };
+        return micromanager::descriptor();
     }
 
     QList<HardwareDeviceDescriptor> MicroManagerProvider::devices() const
@@ -96,67 +49,225 @@ namespace scopeone::core::internal
         m_devices = devices;
     }
 
-    bool MicroManagerProvider::isCamera(const QString& deviceId) const
+    QStringList MicroManagerProvider::startCameras(const QList<MicroManagerCameraSetup>& cameras)
     {
-        const QString normalizedId = deviceId.trimmed();
-        return std::any_of(m_devices.cbegin(), m_devices.cend(),
-                           [&normalizedId](const HardwareDeviceDescriptor& device)
-                           {
-                               return device.logicalId == normalizedId
-                                   && device.kind == HardwareDeviceKind::Camera;
-                           });
+        if (cameras.size() == 1)
+        {
+            return startLocalCamera(cameras.first().cameraId) ? QStringList{} : QStringList{cameras.first().cameraId};
+        }
+        // Each DriverHost loads its camera on its own, which can take seconds, so they start
+        // together
+        QList<QFuture<HardwareProviderPtr>> hosts;
+        for (const MicroManagerCameraSetup& setup : cameras)
+        {
+            hosts.append(QtConcurrent::run([setup]()
+            {
+                QString error;
+                const QStringList arguments{
+                    QStringLiteral("--micromanagerCamera"),
+                    QString::fromUtf8(QJsonDocument(setup.toJson()).toJson(QJsonDocument::Compact))};
+                HardwareProviderPtr host = startDriverHost(micromanager::descriptor().id, arguments, &error);
+                if (!host)
+                {
+                    qWarning().noquote() << QStringLiteral("Failed to start the DriverHost of camera '%1': %2")
+                                                .arg(setup.cameraId, error);
+                }
+                return host;
+            }));
+        }
+        QStringList failed;
+        for (qsizetype index = 0; index < cameras.size(); ++index)
+        {
+            const HardwareProviderPtr host = hosts[index].result();
+            if (!host)
+            {
+                failed.append(cameras[index].cameraId);
+                continue;
+            }
+            Camera entry;
+            entry.provider = host;
+            entry.camera = dynamic_cast<CameraProvider*>(host.get());
+            entry.frameSource = dynamic_cast<CameraFrameSource*>(host.get());
+            entry.camera->setPreviewStateSink(m_previewStateSink);
+            entry.frameSource->setFrameDelivery(m_delivery);
+            {
+                QWriteLocker locker(&m_camerasLock);
+                m_cameras.insert(cameras[index].cameraId, entry);
+            }
+            readBinning(cameras[index].cameraId);
+        }
+        return failed;
     }
 
-    void MicroManagerProvider::setFrameSink(FrameSink sink)
+    bool MicroManagerProvider::startLocalCamera(const QString& cameraId)
     {
-        m_cameraProvider->setFrameSink(std::move(sink));
+        auto camera = std::make_shared<MicroManagerCamera>(m_core, cameraId, false);
+        auto lastFrameIndex = std::make_shared<std::atomic<quint64>>(0);
+        camera->setFrameSink([this, lastFrameIndex](const ImageFrame& frame)
+        {
+            CameraFrameDelivery* const delivery = m_delivery;
+            if (!delivery)
+            {
+                return;
+            }
+            // The camera skips frames outside AllFrames mode, and their indices tell how many
+            const quint64 previous = lastFrameIndex->exchange(frame.frameIndex);
+            const quint64 acquired = previous == 0 || frame.frameIndex <= previous ? 1 : frame.frameIndex - previous;
+            delivery->deliverFrames({frame}, acquired);
+        });
+        camera->setFrameFilter([this, cameraId]()
+        {
+            CameraFrameDelivery* const delivery = m_delivery;
+            return !delivery || delivery->wantsLatestFrame(cameraId);
+        });
+        camera->setErrorSink([this](const QString& error)
+        {
+            if (CameraFrameDelivery* const delivery = m_delivery)
+            {
+                delivery->fail(error);
+            }
+        });
+        camera->setPreviewStateSink(m_previewStateSink);
+        Camera entry;
+        entry.provider = camera;
+        entry.camera = camera.get();
+        entry.local = camera;
+        entry.lastFrameIndex = lastFrameIndex;
+        QWriteLocker locker(&m_camerasLock);
+        m_cameras.insert(cameraId, entry);
+        return true;
+    }
+
+    QList<HardwareProviderPtr> MicroManagerProvider::takeCameras()
+    {
+        QMap<QString, Camera> taken;
+        {
+            QWriteLocker locker(&m_camerasLock);
+            taken.swap(m_cameras);
+            m_binnings.clear();
+        }
+        QList<HardwareProviderPtr> providers;
+        for (const Camera& entry : std::as_const(taken))
+        {
+            entry.camera->setPreviewStateSink({});
+            providers.append(entry.provider);
+        }
+        return providers;
+    }
+
+    MicroManagerProvider::CameraRef MicroManagerProvider::camera(const QString& cameraId) const
+    {
+        const Camera entry = cameraEntry(cameraId);
+        return {entry.provider, entry.camera};
+    }
+
+    MicroManagerProvider::Camera MicroManagerProvider::cameraEntry(const QString& cameraId) const
+    {
+        QReadLocker locker(&m_camerasLock);
+        return m_cameras.value(cameraId.trimmed());
+    }
+
+    QList<MicroManagerProvider::Camera> MicroManagerProvider::cameras() const
+    {
+        QReadLocker locker(&m_camerasLock);
+        return m_cameras.values();
+    }
+
+    void MicroManagerProvider::setFrameDelivery(CameraFrameDelivery* delivery)
+    {
+        m_delivery = delivery;
+        for (const Camera& entry : cameras())
+        {
+            if (entry.frameSource)
+            {
+                entry.frameSource->setFrameDelivery(delivery);
+            }
+        }
+    }
+
+    bool MicroManagerProvider::setFrameDeliveryMode(const QStringList& cameraIds, FrameDeliveryMode mode)
+    {
+        for (const QString& cameraId : cameraIds)
+        {
+            const Camera entry = cameraEntry(cameraId);
+            if (entry.local)
+            {
+                entry.local->setFrameDeliveryMode(mode);
+                entry.lastFrameIndex->store(0);
+            }
+            else if (entry.frameSource && !entry.frameSource->setFrameDeliveryMode({cameraId}, mode))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void MicroManagerProvider::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
+    {
+        for (const QString& cameraId : cameraIds)
+        {
+            const Camera entry = cameraEntry(cameraId);
+            if (entry.local)
+            {
+                entry.local->setFrameDeliveryPaused(paused);
+            }
+            else if (entry.frameSource)
+            {
+                entry.frameSource->setFrameDeliveryPaused({cameraId}, paused);
+            }
+        }
+    }
+
+    // The frames go to the CameraFrameDelivery instead
+    void MicroManagerProvider::setFrameSink(FrameSink)
+    {
     }
 
     void MicroManagerProvider::setPreviewStateSink(PreviewStateSink sink)
     {
-        m_cameraProvider->setPreviewStateSink(std::move(sink));
-    }
-
-    bool MicroManagerProvider::startPreview()
-    {
-        return m_cameraProvider->startPreview();
-    }
-
-    bool MicroManagerProvider::stopPreview()
-    {
-        return m_cameraProvider->stopPreview();
+        m_previewStateSink = std::move(sink);
+        for (const Camera& entry : cameras())
+        {
+            entry.camera->setPreviewStateSink(m_previewStateSink);
+        }
     }
 
     bool MicroManagerProvider::startPreviewFor(const QString& cameraId)
     {
-        return m_cameraProvider->startPreviewFor(cameraId);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->startPreviewFor(cameraId.trimmed());
     }
 
     bool MicroManagerProvider::stopPreviewFor(const QString& cameraId)
     {
-        return m_cameraProvider->stopPreviewFor(cameraId);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->stopPreviewFor(cameraId.trimmed());
     }
 
     bool MicroManagerProvider::isPreviewRunning(const QString& cameraId) const
     {
-        return m_cameraProvider->isPreviewRunning(cameraId);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->isPreviewRunning(cameraId.trimmed());
     }
 
-    bool MicroManagerProvider::getExposure(const QString& cameraIdOrAll, double& exposureMs) const
+    bool MicroManagerProvider::getExposure(const QString& cameraId, double& exposureMs) const
     {
-        return m_cameraProvider->getExposure(cameraIdOrAll, exposureMs);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->getExposure(cameraId.trimmed(), exposureMs);
     }
 
-    bool MicroManagerProvider::setExposure(const QString& cameraIdOrAll, double exposureMs)
+    bool MicroManagerProvider::setExposure(const QString& cameraId, double exposureMs)
     {
-        return m_cameraProvider->setExposure(cameraIdOrAll, exposureMs);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->setExposure(cameraId.trimmed(), exposureMs);
     }
 
     QStringList MicroManagerProvider::listProperties(const QString& cameraId)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->listProperties(cameraId);
+            return provider->listProperties(cameraId.trimmed());
         }
         return orElse(QStringList{}, [&]
         {
@@ -168,9 +279,9 @@ namespace scopeone::core::internal
                                               const QString& name,
                                               bool fromCache)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->getProperty(cameraId, name, fromCache);
+            return provider->getProperty(cameraId.trimmed(), name, fromCache);
         }
         return orElse(QString{}, [&]
         {
@@ -188,9 +299,14 @@ namespace scopeone::core::internal
                                            const QString& value,
                                            QString* errorMessage)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->setProperty(cameraId, name, value, errorMessage);
+            const bool ok = provider->setProperty(cameraId.trimmed(), name, value, errorMessage);
+            if (ok && name.trimmed() == QLatin1String(MM::g_Keyword_Binning))
+            {
+                readBinning(cameraId.trimmed());
+            }
+            return ok;
         }
         return succeeds(errorMessage, [&]
         {
@@ -203,27 +319,18 @@ namespace scopeone::core::internal
 
     QString MicroManagerProvider::getPropertyType(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->getPropertyType(cameraId, name);
+            return provider->getPropertyType(cameraId.trimmed(), name);
         }
-        return orElse(QStringLiteral("Unknown"), [&]
-        {
-            switch (m_core->getPropertyType(name8(cameraId).c_str(), name8(name).c_str()))
-            {
-            case MM::String: return QStringLiteral("String");
-            case MM::Float: return QStringLiteral("Float");
-            case MM::Integer: return QStringLiteral("Integer");
-            default: return QStringLiteral("Unknown");
-            }
-        });
+        return micromanager::propertyType(*m_core, cameraId, name);
     }
 
     bool MicroManagerProvider::isPropertyReadOnly(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->isPropertyReadOnly(cameraId, name);
+            return provider->isPropertyReadOnly(cameraId.trimmed(), name);
         }
         return orElse(true, [&]
         {
@@ -233,9 +340,9 @@ namespace scopeone::core::internal
 
     bool MicroManagerProvider::isPropertyPreInit(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->isPropertyPreInit(cameraId, name);
+            return provider->isPropertyPreInit(cameraId.trimmed(), name);
         }
         return orElse(false, [&]
         {
@@ -246,9 +353,9 @@ namespace scopeone::core::internal
     QStringList MicroManagerProvider::getAllowedPropertyValues(const QString& cameraId,
                                                                const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->getAllowedPropertyValues(cameraId, name);
+            return provider->getAllowedPropertyValues(cameraId.trimmed(), name);
         }
         return orElse(QStringList{}, [&]
         {
@@ -259,9 +366,9 @@ namespace scopeone::core::internal
 
     bool MicroManagerProvider::hasPropertyLimits(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->hasPropertyLimits(cameraId, name);
+            return provider->hasPropertyLimits(cameraId.trimmed(), name);
         }
         return orElse(false, [&]
         {
@@ -271,9 +378,9 @@ namespace scopeone::core::internal
 
     double MicroManagerProvider::getPropertyLowerLimit(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->getPropertyLowerLimit(cameraId, name);
+            return provider->getPropertyLowerLimit(cameraId.trimmed(), name);
         }
         return orElse(0.0, [&]
         {
@@ -283,9 +390,9 @@ namespace scopeone::core::internal
 
     double MicroManagerProvider::getPropertyUpperLimit(const QString& cameraId, const QString& name)
     {
-        if (isCamera(cameraId))
+        if (const CameraRef provider = camera(cameraId))
         {
-            return m_cameraProvider->getPropertyUpperLimit(cameraId, name);
+            return provider->getPropertyUpperLimit(cameraId.trimmed(), name);
         }
         return orElse(0.0, [&]
         {
@@ -299,12 +406,14 @@ namespace scopeone::core::internal
                                       int width,
                                       int height)
     {
-        return m_cameraProvider->setROI(cameraId, x, y, width, height);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->setROI(cameraId.trimmed(), x, y, width, height);
     }
 
     bool MicroManagerProvider::clearROI(const QString& cameraId)
     {
-        return m_cameraProvider->clearROI(cameraId);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->clearROI(cameraId.trimmed());
     }
 
     bool MicroManagerProvider::getROI(const QString& cameraId,
@@ -313,19 +422,22 @@ namespace scopeone::core::internal
                                       int& width,
                                       int& height)
     {
-        return m_cameraProvider->getROI(cameraId, x, y, width, height);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->getROI(cameraId.trimmed(), x, y, width, height);
     }
 
     bool MicroManagerProvider::captureEventFrame(const QString& cameraId,
                                                  scopeone::core::ImageFrame& frame,
                                                  int timeoutMs)
     {
-        return m_cameraProvider->captureEventFrame(cameraId, frame, timeoutMs);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->captureEventFrame(cameraId.trimmed(), frame, timeoutMs);
     }
 
     bool MicroManagerProvider::supportsEventSequence(const QString& cameraId) const
     {
-        return m_cameraProvider->supportsEventSequence(cameraId);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->supportsEventSequence(cameraId.trimmed());
     }
 
     bool MicroManagerProvider::captureEventSequence(const QString& cameraId,
@@ -333,35 +445,8 @@ namespace scopeone::core::internal
                                                     std::vector<scopeone::core::ImageFrame>& frames,
                                                     int timeoutMs)
     {
-        return m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs);
-    }
-
-    void MicroManagerProvider::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
-    {
-        m_cameraRuntimeControl->setFrameDeliveryPaused(cameraIds, paused);
-    }
-
-    bool MicroManagerProvider::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
-                                                                 bool enabled)
-    {
-        return m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(cameraIds, enabled);
-    }
-
-    bool MicroManagerProvider::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
-                                                                bool enabled)
-    {
-        return m_cameraRuntimeControl->setHighRateFrameDeliveryEnabled(cameraIds, enabled);
-    }
-
-    bool MicroManagerProvider::isProcessingFrameTokenCurrent(const QString& cameraId,
-                                                              quint64 token)
-    {
-        return m_cameraRuntimeControl->isProcessingFrameTokenCurrent(cameraId, token);
-    }
-
-    void MicroManagerProvider::finishProcessingFrame(const QString& cameraId, quint64 token)
-    {
-        m_cameraRuntimeControl->finishProcessingFrame(cameraId, token);
+        const CameraRef provider = camera(cameraId);
+        return provider && provider->captureEventSequence(cameraId.trimmed(), count, frames, timeoutMs);
     }
 
     QString MicroManagerProvider::defaultXYStage() const
@@ -635,9 +720,14 @@ namespace scopeone::core::internal
         return ok;
     }
 
-    bool MicroManagerProvider::autoShutter(bool& enabled, QString* errorMessage) const
+    QString MicroManagerProvider::defaultShutter() const
     {
-        return succeeds(errorMessage, [&] { enabled = m_core->getAutoShutter(); });
+        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getShutterDevice()); });
+    }
+
+    bool MicroManagerProvider::autoShutter() const
+    {
+        return orElse(false, [&] { return m_core->getAutoShutter(); });
     }
 
     bool MicroManagerProvider::setAutoShutter(bool enabled, QString* errorMessage)
@@ -645,110 +735,108 @@ namespace scopeone::core::internal
         return succeeds(errorMessage, [&] { m_core->setAutoShutter(enabled); });
     }
 
-    bool MicroManagerProvider::setCoreShutterOpen(bool open, QString* errorMessage)
+    QString MicroManagerProvider::defaultAutofocus() const
     {
-        return succeeds(errorMessage, [&] { m_core->setShutterOpen(open); });
+        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getAutoFocusDevice()); });
     }
 
-    bool MicroManagerProvider::hasAutofocus() const
+    // The core focuses with the autofocus device it currently uses
+    bool MicroManagerProvider::runAutofocus(const QString& deviceId, QString* errorMessage)
     {
-        return orElse(false, [&] { return !m_core->getAutoFocusDevice().empty(); });
-    }
-
-    long MicroManagerProvider::propertySequenceCapacity(const QString& device, const QString& property) const
-    {
-        if (device.isEmpty() || property.isEmpty())
+        return succeeds(errorMessage, [&]
         {
-            return 0;
-        }
-        return orElse(0L, [&]
-        {
-            const std::string label = device.toStdString();
-            const std::string name = property.toStdString();
-            return m_core->isPropertySequenceable(label.c_str(), name.c_str())
-                ? m_core->getPropertySequenceMaxLength(label.c_str(), name.c_str())
-                : 0;
-        });
-    }
-
-    bool MicroManagerProvider::startPropertySequences(const std::vector<PropertySequence>& sequences,
-                                                      QString* errorMessage)
-    {
-        std::size_t started = 0;
-        const bool ok = succeeds(errorMessage, [&]
-        {
-            for (const PropertySequence& sequence : sequences)
+            const std::string device = name8(deviceId);
+            if (m_core->getAutoFocusDevice() != device)
             {
-                const std::string label = sequence.device.toStdString();
-                const std::string name = sequence.property.toStdString();
-                std::vector<std::string> values;
-                values.reserve(sequence.values.size());
-                for (const QString& value : sequence.values)
-                {
-                    values.push_back(value.toStdString());
-                }
-                m_core->loadPropertySequence(label.c_str(), name.c_str(), values);
-                m_core->startPropertySequence(label.c_str(), name.c_str());
-                ++started;
+                m_core->setAutoFocusDevice(device.c_str());
             }
+            m_core->fullFocus();
         });
-        if (!ok)
-        {
-            // Do not leave the properties that were armed running
-            stopPropertySequences({sequences.begin(), sequences.begin() + started});
-        }
-        return ok;
     }
 
-    void MicroManagerProvider::stopPropertySequences(const std::vector<PropertySequence>& sequences)
+    long MicroManagerProvider::stageSequenceCapacity(const QString& deviceId) const
     {
-        for (const PropertySequence& sequence : sequences)
-        {
-            succeeds(nullptr, [&]
-            {
-                m_core->stopPropertySequence(sequence.device.toStdString().c_str(),
-                                             sequence.property.toStdString().c_str());
-            });
-        }
-    }
-
-    long MicroManagerProvider::focusSequenceCapacity(const QString& focusDevice) const
-    {
-        if (focusDevice.isEmpty())
-        {
-            return 0;
-        }
         return orElse(0L, [&]
         {
-            const std::string label = focusDevice.toStdString();
-            return m_core->isStageSequenceable(label.c_str())
-                ? m_core->getStageSequenceMaxLength(label.c_str())
-                : 0;
+            const std::string device = name8(deviceId);
+            return m_core->isStageSequenceable(device.c_str()) ? m_core->getStageSequenceMaxLength(device.c_str()) : 0;
         });
     }
 
-    bool MicroManagerProvider::startFocusSequence(const QString& focusDevice,
+    bool MicroManagerProvider::startStageSequence(const QString& deviceId,
                                                   const std::vector<double>& positions,
                                                   QString* errorMessage)
     {
         return succeeds(errorMessage, [&]
         {
-            const std::string label = focusDevice.toStdString();
-            m_core->loadStageSequence(label.c_str(), positions);
-            m_core->startStageSequence(label.c_str());
+            const std::string device = name8(deviceId);
+            m_core->loadStageSequence(device.c_str(), positions);
+            m_core->startStageSequence(device.c_str());
         });
     }
 
-    void MicroManagerProvider::stopFocusSequence(const QString& focusDevice)
+    void MicroManagerProvider::stopStageSequence(const QString& deviceId)
     {
-        if (!focusDevice.isEmpty())
-        {
-            succeeds(nullptr, [&] { m_core->stopStageSequence(focusDevice.toStdString().c_str()); });
-        }
+        succeeds(nullptr, [&] { m_core->stopStageSequence(name8(deviceId).c_str()); });
     }
 
-    bool MicroManagerProvider::runAutofocus(QString* errorMessage)
+    long MicroManagerProvider::propertySequenceCapacity(const QString& deviceId, const QString& name)
     {
-        return succeeds(errorMessage, [&] { m_core->fullFocus(); });
+        if (const CameraRef provider = camera(deviceId))
+        {
+            return provider->propertySequenceCapacity(deviceId.trimmed(), name);
+        }
+        return micromanager::propertySequenceCapacity(*m_core, deviceId, name);
+    }
+
+    bool MicroManagerProvider::startPropertySequence(const QString& deviceId,
+                                                     const QString& name,
+                                                     const QStringList& values,
+                                                     QString* errorMessage)
+    {
+        if (const CameraRef provider = camera(deviceId))
+        {
+            return provider->startPropertySequence(deviceId.trimmed(), name, values, errorMessage);
+        }
+        return micromanager::startPropertySequence(*m_core, deviceId, name, values, errorMessage);
+    }
+
+    void MicroManagerProvider::stopPropertySequence(const QString& deviceId, const QString& name)
+    {
+        if (const CameraRef provider = camera(deviceId))
+        {
+            provider->stopPropertySequence(deviceId.trimmed(), name);
+            return;
+        }
+        micromanager::stopPropertySequence(*m_core, deviceId, name);
+    }
+
+    // The pixel size configurations are on the core of ScopeOne, also for a camera in a DriverHost.
+    // The core scales them by the binning of the camera it holds, as MMCore does, so a camera in
+    // a DriverHost is scaled by its own binning here.
+    double MicroManagerProvider::pixelSizeUm(const QString& cameraId) const
+    {
+        const Camera entry = cameraEntry(cameraId);
+        if (!entry.camera)
+        {
+            return 0.0;
+        }
+        const double pixelSizeUm = orElse(0.0, [&] { return m_core->getPixelSizeUm(); });
+        if (entry.local)
+        {
+            return pixelSizeUm;
+        }
+        QReadLocker locker(&m_camerasLock);
+        return pixelSizeUm * m_binnings.value(cameraId.trimmed(), 1);
+    }
+
+    void MicroManagerProvider::readBinning(const QString& cameraId)
+    {
+        const CameraRef provider = camera(cameraId);
+        // Cameras name their binning "2" or "2x2"
+        const QString value = provider->getProperty(cameraId, QLatin1String(MM::g_Keyword_Binning), false);
+        const int binning = (std::max)(1, value.section(QLatin1Char('x'), 0, 0).toInt());
+        QWriteLocker locker(&m_camerasLock);
+        m_binnings.insert(cameraId, binning);
     }
 }

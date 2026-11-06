@@ -2,20 +2,32 @@
 
 #include <QObject>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QReadWriteLock>
 #include <QString>
 
 #include <memory>
 
-#include "internal/AcquisitionHardware.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
 #include "internal/AcquisitionEngine.h"
-#include "internal/CameraRuntimeControl.h"
+#include "internal/CameraFrameDelivery.h"
+#include "internal/MicroManagerProvider.h"
 
 namespace scopeone::core::internal
 {
+    class DaqDeviceManager;
+    class SignalSourceManager;
+
+    // The values that one device property takes on successive triggers of the camera
+    struct PropertySequence
+    {
+        QString device;
+        QString property;
+        std::vector<QString> values;
+    };
+
     class DeviceRegistry : public QObject
     {
         Q_OBJECT
@@ -49,134 +61,159 @@ namespace scopeone::core::internal
         QHash<QString, ProviderEntry> m_providers;
     };
 
-    class HardwareRuntime : public QObject,
-                            public CameraProvider,
-                            public StageProvider,
-                            public ShutterProvider,
-                            public StateProvider,
-                            public ConfigurationProvider,
-                            public AcquisitionHardware,
-                            public CameraRuntimeControl
+    // The hardware of every provider, for the parts of ScopeOne above the providers, which reach
+    // the hardware only through it. It routes each call to the provider of the device, and the
+    // calls that span providers, such as "All" cameras or the default stages, it answers itself.
+    // Every provider reaches it through the same interfaces, those of the driver SDK.
+    class HardwareRuntime : public QObject
     {
         Q_OBJECT
 
     public:
         explicit HardwareRuntime(QObject* parent = nullptr);
 
-        void setFrameSink(FrameSink sink) override;
-        void setPreviewStateSink(PreviewStateSink sink) override;
-        bool startPreview() override;
-        bool stopPreview() override;
-        bool startPreviewFor(const QString& cameraId) override;
-        bool stopPreviewFor(const QString& cameraId) override;
-        bool isPreviewRunning(const QString& cameraId) const override;
-        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const override;
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs) override;
-        QStringList listProperties(const QString& cameraId) override;
+        bool startPreview();
+        bool stopPreview();
+        bool startPreviewFor(const QString& cameraId);
+        bool stopPreviewFor(const QString& cameraId);
+        bool isPreviewRunning(const QString& cameraId) const;
+        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;
+        bool setExposure(const QString& cameraIdOrAll, double exposureMs);
+        QStringList listProperties(const QString& cameraId);
         QString getProperty(const QString& cameraId,
                             const QString& name,
-                            bool fromCache) override;
+                            bool fromCache = false);
         bool setProperty(const QString& cameraId,
                          const QString& name,
                          const QString& value,
-                         QString* errorMessage) override;
-        QString getPropertyType(const QString& cameraId, const QString& name) override;
-        bool isPropertyReadOnly(const QString& cameraId, const QString& name) override;
-        bool isPropertyPreInit(const QString& cameraId, const QString& name) override;
+                         QString* errorMessage = nullptr);
+        QString getPropertyType(const QString& cameraId, const QString& name);
+        bool isPropertyReadOnly(const QString& cameraId, const QString& name);
+        bool isPropertyPreInit(const QString& cameraId, const QString& name);
         QStringList getAllowedPropertyValues(const QString& cameraId,
-                                             const QString& name) override;
-        bool hasPropertyLimits(const QString& cameraId, const QString& name) override;
-        double getPropertyLowerLimit(const QString& cameraId, const QString& name) override;
-        double getPropertyUpperLimit(const QString& cameraId, const QString& name) override;
-        bool setROI(const QString& cameraId, int x, int y, int width, int height) override;
-        bool clearROI(const QString& cameraId) override;
+                                             const QString& name);
+        bool hasPropertyLimits(const QString& cameraId, const QString& name);
+        double getPropertyLowerLimit(const QString& cameraId, const QString& name);
+        double getPropertyUpperLimit(const QString& cameraId, const QString& name);
+        bool setROI(const QString& cameraId, int x, int y, int width, int height);
+        bool clearROI(const QString& cameraId);
         bool getROI(const QString& cameraId,
                     int& x,
                     int& y,
                     int& width,
-                    int& height) override;
+                    int& height);
         bool captureEventFrame(const QString& cameraId,
                                ImageFrame& frame,
-                               int timeoutMs) override;
-        bool supportsEventSequence(const QString& cameraId) const override;
+                               int timeoutMs = 1500);
+        bool supportsEventSequence(const QString& cameraId) const;
         bool captureEventSequence(const QString& cameraId,
                                   int count,
                                   std::vector<ImageFrame>& frames,
-                                  int timeoutMs) override;
-        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+                                  int timeoutMs = 10000);
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused);
         bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
-                                              bool enabled) override;
+                                              bool enabled);
         bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
-                                             bool enabled) override;
-        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
-        void finishProcessingFrame(const QString& cameraId, quint64 token) override;
-        QString defaultXYStage() const override;
-        QString defaultZStage() const override;
+                                             bool enabled);
+        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token);
+        void finishProcessingFrame(const QString& cameraId, quint64 token);
+        QString defaultXYStage() const;
+        QString defaultZStage() const;
         bool getXYPosition(const QString& deviceId,
                            double& x,
                            double& y,
-                           QString* errorMessage) const override;
+                           QString* errorMessage = nullptr) const;
         bool getZPosition(const QString& deviceId,
                           double& z,
-                          QString* errorMessage) const override;
+                          QString* errorMessage = nullptr) const;
         bool setRelativeXYPosition(const QString& deviceId,
                                    double dx,
                                    double dy,
-                                   QString* errorMessage) override;
+                                   QString* errorMessage = nullptr);
         bool setRelativeZPosition(const QString& deviceId,
                                   double dz,
-                                  QString* errorMessage) override;
+                                  QString* errorMessage = nullptr);
         bool setXYPosition(const QString& deviceId,
                            double x,
                            double y,
-                           QString* errorMessage) override;
+                           QString* errorMessage = nullptr);
         bool setZPosition(const QString& deviceId,
                           double z,
-                          QString* errorMessage) override;
+                          QString* errorMessage = nullptr);
         bool isShutterOpen(const QString& deviceId,
                            bool& open,
-                           QString* errorMessage) const override;
+                           QString* errorMessage = nullptr) const;
         bool setShutterOpen(const QString& deviceId,
                             bool open,
-                            QString* errorMessage) override;
+                            QString* errorMessage = nullptr);
         bool getState(const QString& deviceId,
                       long& state,
-                      QString* errorMessage) const override;
+                      QString* errorMessage = nullptr) const;
         bool setState(const QString& deviceId,
                       long state,
-                      QString* errorMessage) override;
-        QString stateLabel(const QString& deviceId, long state) const override;
-        QStringList availableConfigGroups() const override;
-        QStringList availableConfigs(const QString& groupName) const override;
-        QString currentConfig(const QString& groupName) const override;
+                      QString* errorMessage = nullptr);
+        QString stateLabel(const QString& deviceId, long state) const;
+        QStringList availableConfigGroups() const;
+        QStringList availableConfigs(const QString& groupName) const;
+        QString currentConfig(const QString& groupName) const;
         std::vector<scopeone::core::ConfigSetting> configSettings(
-            const QString& groupName, const QString& configName) const override;
+            const QString& groupName, const QString& configName) const;
         bool setConfig(const QString& groupName,
                        const QString& configName,
-                       QString* errorMessage) override;
+                       QString* errorMessage = nullptr);
 
-        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const override;
-        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr) override;
-        bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
-        bool hasAutofocus() const override;
-        bool runAutofocus(QString* errorMessage = nullptr) override;
-        long focusSequenceCapacity(const QString& focusDevice) const override;
+        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const;
+        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr);
+        // Opens or closes the shutter that lights the sample for the cameras
+        bool setDefaultShutterOpen(bool open, QString* errorMessage = nullptr);
+        bool hasAutofocus() const;
+        bool runAutofocus(QString* errorMessage = nullptr);
+        long focusSequenceCapacity(const QString& focusDevice) const;
         bool startFocusSequence(const QString& focusDevice,
                                 const std::vector<double>& positions,
-                                QString* errorMessage = nullptr) override;
-        void stopFocusSequence(const QString& focusDevice) override;
-        long propertySequenceCapacity(const QString& device, const QString& property) const override;
+                                QString* errorMessage = nullptr);
+        void stopFocusSequence(const QString& focusDevice);
+        long propertySequenceCapacity(const QString& device, const QString& property) const;
         bool startPropertySequences(const std::vector<PropertySequence>& sequences,
-                                    QString* errorMessage = nullptr) override;
-        void stopPropertySequences(const std::vector<PropertySequence>& sequences) override;
+                                    QString* errorMessage = nullptr);
+        void stopPropertySequences(const std::vector<PropertySequence>& sequences);
 
-        DeviceRegistry* deviceRegistry() { return &m_registry; }
-        const DeviceRegistry* deviceRegistry() const { return &m_registry; }
+        // Where the frames of every camera arrive
+        CameraFrameDelivery* frameDelivery() { return &m_frameDelivery; }
+        SignalSourceManager* signalSourceManager() const { return m_signalSourceManager; }
+        DaqDeviceManager* daqDeviceManager() const { return m_daqDeviceManager; }
+        double pixelSizeUm(const QString& cameraId) const;
+
+        // A driver in a DriverHost of its own. Safe to call from any thread, and the provider is
+        // registered afterwards on the thread of the runtime.
+        static HardwareProviderPtr startScopeOneProvider(const QString& providerId,
+                                                         const QString& driverPath,
+                                                         const QJsonObject& options,
+                                                         QString* errorMessage);
+
+        // The Micro-Manager configuration. Loading and unloading block, so they run on a worker
+        // thread, while the cameras are started and stopped on the thread of the runtime.
+        QStringList microManagerAdapterSearchPaths() const;
+        void setMicroManagerAdapterSearchPaths(const QStringList& paths);
+        bool loadMicroManagerConfiguration(const QString& configPath,
+                                           MicroManagerProvider::LoadResult& result,
+                                           QString& errorMessage);
+        QStringList startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras);
+        // The cameras, to be destroyed on a worker thread, as their DriverHosts take time to exit
+        QList<HardwareProviderPtr> takeMicroManagerCameras();
+        // Registers the devices again, false when one conflicts with the devices of a driver
+        bool setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices);
+        void stopMicroManagerPreview();
+        bool unloadMicroManagerDevices(QString* errorMessage = nullptr);
+        void applyMicroManagerShutdownPreset();
+        QList<HardwareDeviceDescriptor> devices() const { return m_registry.devices(); }
+        bool hasProvider(const QString& providerId) const { return m_registry.provider(providerId) != nullptr; }
+        static QString microManagerVersion();
         void clear();
         bool registerProvider(const HardwareProviderPtr& provider);
         void unregisterProvider(const QString& providerId);
         bool refreshProvider(const QString& providerId);
-        bool stopPreviewForProvider(const QString& providerId);
+        void stopPreviewForProvider(const QString& providerId);
 
     signals:
         void frameReady(const ImageFrame& frame);
@@ -190,15 +227,16 @@ namespace scopeone::core::internal
         ShutterProvider* shutterProviderForDevice(const QString& logicalId) const;
         StateProvider* stateProviderForDevice(const QString& logicalId) const;
         ConfigurationProvider* configurationProviderForGroup(const QString& groupName) const;
-        QList<CameraProvider*> cameraProviders() const;
-        QList<QPair<CameraRuntimeControl*, QStringList>> runtimeControlsFor(
-            const QStringList& cameraIds) const;
+        QList<QPair<CameraFrameSource*, QStringList>> frameSourcesFor(const QStringList& cameraIds) const;
+        bool applyFrameDeliveryModes(const QHash<QString, FrameDeliveryMode>& modes);
+
 
         DeviceRegistry m_registry;
-        AcquisitionHardware* acquisitionHardware() const;
+        std::shared_ptr<MicroManagerProvider> m_microManager;
+        SignalSourceManager* m_signalSourceManager{nullptr};
+        DaqDeviceManager* m_daqDeviceManager{nullptr};
 
         AcquisitionEngine m_acquisitionEngine;
-        FrameSink m_frameSink;
-        PreviewStateSink m_previewStateSink;
+        CameraFrameDelivery m_frameDelivery;
     };
 }

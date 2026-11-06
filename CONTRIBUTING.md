@@ -6,6 +6,22 @@ Visual Studio Build Tools, and on Linux and macOS `./scripts/build.sh`. This fil
 how the code is meant to be written. Each rule says why. When a rule and its reason
 disagree in a specific case, follow the reason and say so in the review.
 
+## Philosophy
+
+**C++ and Python.** The parts that drive the hardware and handle every frame are written in C++:
+acquisition, recording, display, and processing that has to keep up with the camera. They have to be
+fast and predictable, and Qt lets the same code run on Windows, Linux and macOS. Python is for the
+methods researchers write themselves: a processing step, an analysis of recorded data, or a script
+that runs an experiment through the Local API. Each Python module runs in its own process, so a slow
+or broken script cannot hold up the microscope. When a Python method turns out to be needed at the
+full frame rate, it is rewritten in C++.
+
+**One place for processing.** Frames from every camera end up in the same pipeline, whatever the
+platform and whatever the hardware. A processing step can be a C++ module on the CPU, a CUDA module
+on an NVIDIA GPU, an ONNX model, or a Python function, and it plugs in the same way. Whoever adds a
+method gets the live view, recording and the Local API with it, and the person at the microscope
+just picks the method.
+
 ## Boundaries
 
 **Layers.** Dependencies point one way:

@@ -1,9 +1,13 @@
 #include "internal/HardwareRuntime.h"
 
+#include "internal/DaqDeviceManager.h"
+#include "internal/DriverHostClient.h"
+#include "internal/SignalSourceManager.h"
 #include "scopeone/CameraProvider.h"
 
 #include <algorithm>
 #include <QMetaObject>
+#include <functional>
 #include <QSet>
 #include <QThread>
 #include <utility>
@@ -27,62 +31,74 @@ namespace scopeone::core::internal
             return call(*provider);
         }
 
-        // The stage that exactly one provider names as its default, or none when they disagree
-        QString uniqueDefaultStage(const DeviceRegistry& registry,
-                                   QString (StageProvider::*defaultStage)() const,
-                                   HardwareDeviceKind kind)
+        // The device of the given kind that exactly one provider names as its default, such as
+        // the focus stage or the shutter, and that provider. None when two providers disagree.
+        template <class Provider>
+        Provider* uniqueDefault(const DeviceRegistry& registry,
+                                QString (Provider::*defaultDevice)() const,
+                                HardwareDeviceKind kind,
+                                QString* deviceId)
         {
-            QString match;
+            Provider* match = nullptr;
+            QString matchId;
             for (const HardwareProviderDescriptor& descriptor : registry.providers())
             {
-                const HardwareProviderPtr provider = registry.provider(descriptor.id);
-                auto* stageProvider = dynamic_cast<StageProvider*>(provider.get());
-                if (!stageProvider)
+                auto* provider = dynamic_cast<Provider*>(registry.provider(descriptor.id).get());
+                const QString id = provider ? (provider->*defaultDevice)().trimmed() : QString{};
+                const HardwareDeviceDescriptor device = registry.device(id);
+                if (id.isEmpty() || device.providerId != descriptor.id || device.kind != kind)
                 {
                     continue;
                 }
-                const QString deviceId = (stageProvider->*defaultStage)().trimmed();
-                const HardwareDeviceDescriptor device = registry.device(deviceId);
-                if (device.providerId == descriptor.id && device.kind == kind)
+                if (match)
                 {
-                    if (!match.isEmpty() && match != deviceId)
-                    {
-                        return {};
-                    }
-                    match = deviceId;
+                    return nullptr;
                 }
+                match = provider;
+                matchId = id;
             }
+            *deviceId = matchId;
             return match;
         }
 
-        // Applies one delivery switch to every provider, and undoes it when one provider refuses
-        bool setDeliveryEnabled(const QList<QPair<CameraRuntimeControl*, QStringList>>& controls,
-                                bool (CameraRuntimeControl::*setter)(const QStringList&, bool),
-                                bool enabled)
+        ShutterProvider* defaultShutter(const DeviceRegistry& registry, QString* shutter)
         {
-            QList<QPair<CameraRuntimeControl*, QStringList>> changed;
-            for (const auto& entry : controls)
-            {
-                if (!(entry.first->*setter)(entry.second, enabled))
-                {
-                    for (const auto& previous : changed)
-                    {
-                        (previous.first->*setter)(previous.second, !enabled);
-                    }
-                    return false;
-                }
-                changed.append(entry);
-            }
-            return true;
+            return uniqueDefault(registry, &ShutterProvider::defaultShutter, HardwareDeviceKind::Shutter, shutter);
         }
 
-        void detachCameraProvider(const HardwareProviderPtr& provider)
+        AutofocusProvider* defaultAutofocus(const DeviceRegistry& registry, QString* device)
         {
+            return uniqueDefault(registry, &AutofocusProvider::defaultAutofocus, HardwareDeviceKind::AutoFocus, device);
+        }
+
+        void stopCameras(const DeviceRegistry& registry, const QString& providerId)
+        {
+            const HardwareProviderPtr provider = registry.provider(providerId);
+            auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+            if (!cameraProvider)
+            {
+                return;
+            }
+            for (const HardwareDeviceDescriptor& device : registry.devices())
+            {
+                if (device.providerId == providerId && device.kind == HardwareDeviceKind::Camera)
+                {
+                    cameraProvider->stopPreviewFor(device.logicalId);
+                }
+            }
+        }
+
+        void detachCameraProvider(const DeviceRegistry& registry, const QString& providerId)
+        {
+            stopCameras(registry, providerId);
+            const HardwareProviderPtr provider = registry.provider(providerId);
             if (auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get()))
             {
-                cameraProvider->stopPreview();
-                cameraProvider->setFrameSink({});
                 cameraProvider->setPreviewStateSink({});
+            }
+            if (auto* frameSource = dynamic_cast<CameraFrameSource*>(provider.get()))
+            {
+                frameSource->setFrameDelivery(nullptr);
             }
         }
     }
@@ -250,20 +266,16 @@ namespace scopeone::core::internal
     HardwareRuntime::HardwareRuntime(QObject* parent)
         : QObject(parent)
           , m_registry(this)
+          , m_microManager(std::make_shared<MicroManagerProvider>())
           , m_acquisitionEngine(m_registry)
     {
         connect(&m_registry, &DeviceRegistry::changed,
                 this, &HardwareRuntime::devicesChanged);
-    }
-
-    void HardwareRuntime::setFrameSink(FrameSink sink)
-    {
-        m_frameSink = std::move(sink);
-    }
-
-    void HardwareRuntime::setPreviewStateSink(PreviewStateSink sink)
-    {
-        m_previewStateSink = std::move(sink);
+        connect(&m_frameDelivery, &CameraFrameDelivery::frameReady,
+                this, &HardwareRuntime::frameReady);
+        m_signalSourceManager = new SignalSourceManager(&m_registry, this);
+        m_daqDeviceManager = new DaqDeviceManager(&m_registry, this);
+        registerProvider(m_microManager);
     }
 
     CameraProvider* HardwareRuntime::cameraProviderForDevice(const QString& logicalId) const
@@ -322,27 +334,6 @@ namespace scopeone::core::internal
             match = configurationProvider;
         }
         return match;
-    }
-
-    QList<CameraProvider*> HardwareRuntime::cameraProviders() const
-    {
-        QList<CameraProvider*> result;
-        QSet<CameraProvider*> visited;
-        for (const HardwareDeviceDescriptor& device : m_registry.devices())
-        {
-            if (device.kind != HardwareDeviceKind::Camera)
-            {
-                continue;
-            }
-            const HardwareProviderPtr provider = m_registry.provider(device.providerId);
-            auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-            if (cameraProvider && !visited.contains(cameraProvider))
-            {
-                visited.insert(cameraProvider);
-                result.append(cameraProvider);
-            }
-        }
-        return result;
     }
 
     bool HardwareRuntime::startPreview()
@@ -415,13 +406,19 @@ namespace scopeone::core::internal
             CameraProvider* provider = cameraProviderForDevice(target);
             return provider && provider->setExposure(target, exposureMs);
         }
-        const QList<CameraProvider*> providers = cameraProviders();
-        bool ok = !providers.isEmpty();
-        for (CameraProvider* provider : providers)
+        bool ok = false;
+        bool all = true;
+        for (const HardwareDeviceDescriptor& device : m_registry.devices())
         {
-            ok = provider->setExposure(QStringLiteral("All"), exposureMs) && ok;
+            if (device.kind != HardwareDeviceKind::Camera)
+            {
+                continue;
+            }
+            CameraProvider* provider = cameraProviderForDevice(device.logicalId);
+            ok = true;
+            all = provider && provider->setExposure(device.logicalId, exposureMs) && all;
         }
-        return ok;
+        return ok && all;
     }
 
     QStringList HardwareRuntime::listProperties(const QString& cameraId)
@@ -539,25 +536,24 @@ namespace scopeone::core::internal
         return provider && provider->captureEventSequence(cameraId, count, frames, timeoutMs);
     }
 
-    QList<QPair<CameraRuntimeControl*, QStringList>> HardwareRuntime::runtimeControlsFor(
+    QList<QPair<CameraFrameSource*, QStringList>> HardwareRuntime::frameSourcesFor(
         const QStringList& cameraIds) const
     {
-        QHash<CameraRuntimeControl*, QStringList> grouped;
+        QHash<CameraFrameSource*, QStringList> grouped;
         for (const QString& cameraId : cameraIds)
         {
             const QString normalizedId = cameraId.trimmed();
             const HardwareProviderPtr provider = m_registry.providerForDevice(normalizedId);
-            if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
+            if (auto* source = dynamic_cast<CameraFrameSource*>(provider.get()))
             {
-                QStringList& providerCameraIds = grouped[control];
+                QStringList& providerCameraIds = grouped[source];
                 if (!providerCameraIds.contains(normalizedId))
                 {
                     providerCameraIds.append(normalizedId);
                 }
             }
         }
-        QList<QPair<CameraRuntimeControl*, QStringList>> result;
-        result.reserve(grouped.size());
+        QList<QPair<CameraFrameSource*, QStringList>> result;
         for (auto it = grouped.cbegin(); it != grouped.cend(); ++it)
         {
             result.append({it.key(), it.value()});
@@ -565,56 +561,112 @@ namespace scopeone::core::internal
         return result;
     }
 
+    // Switches each camera to its mode, and every camera back when one provider refuses
+    bool HardwareRuntime::applyFrameDeliveryModes(const QHash<QString, FrameDeliveryMode>& modes)
+    {
+        const auto apply = [this](const QStringList& cameraIds,
+                                  const std::function<FrameDeliveryMode(const QString&)>& modeOf)
+        {
+            for (const auto& [source, providerCameraIds] : frameSourcesFor(cameraIds))
+            {
+                for (const FrameDeliveryMode mode : {FrameDeliveryMode::PreviewLatest,
+                                                     FrameDeliveryMode::LatestOnly,
+                                                     FrameDeliveryMode::AllFrames})
+                {
+                    QStringList ids;
+                    for (const QString& cameraId : providerCameraIds)
+                    {
+                        if (modeOf(cameraId) == mode) ids.append(cameraId);
+                    }
+                    if (!ids.isEmpty() && !source->setFrameDeliveryMode(ids, mode))
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+        if (apply(modes.keys(), [&modes](const QString& cameraId) { return modes.value(cameraId); }))
+        {
+            return true;
+        }
+        apply(modes.keys(), [this](const QString& cameraId) { return m_frameDelivery.mode(cameraId); });
+        return false;
+    }
+
     void HardwareRuntime::setFrameDeliveryPaused(const QStringList& cameraIds, bool paused)
     {
-        for (const auto& [control, providerCameraIds] : runtimeControlsFor(cameraIds))
+        for (const auto& [source, providerCameraIds] : frameSourcesFor(cameraIds))
         {
-            control->setFrameDeliveryPaused(providerCameraIds, paused);
+            source->setFrameDeliveryPaused(providerCameraIds, paused);
         }
     }
 
-    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
-                                                            bool enabled)
+    // The cameras deliver every frame before recording takes them, and recording lets go of
+    // them before the cameras skip frames again
+    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled)
     {
-        return setDeliveryEnabled(runtimeControlsFor(cameraIds),
-                                  &CameraRuntimeControl::setRecordingFrameDeliveryEnabled,
-                                  enabled);
+        QHash<QString, FrameDeliveryMode> modes;
+        for (const QString& cameraId : cameraIds)
+        {
+            modes.insert(cameraId, enabled ? FrameDeliveryMode::AllFrames
+                                           : m_frameDelivery.highRateEnabled(cameraId)
+                                                 ? FrameDeliveryMode::LatestOnly
+                                                 : FrameDeliveryMode::PreviewLatest);
+        }
+        if (enabled)
+        {
+            if (!applyFrameDeliveryModes(modes))
+            {
+                return false;
+            }
+            m_frameDelivery.setRecordingEnabled(cameraIds, true);
+            return true;
+        }
+        m_frameDelivery.setRecordingEnabled(cameraIds, false);
+        applyFrameDeliveryModes(modes);
+        return true;
     }
 
-    bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
-                                                           bool enabled)
+    bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled)
     {
-        return setDeliveryEnabled(runtimeControlsFor(cameraIds),
-                                  &CameraRuntimeControl::setHighRateFrameDeliveryEnabled,
-                                  enabled);
+        QHash<QString, FrameDeliveryMode> modes;
+        for (const QString& cameraId : cameraIds)
+        {
+            modes.insert(cameraId, m_frameDelivery.recordingEnabled(cameraId)
+                                       ? FrameDeliveryMode::AllFrames
+                                       : enabled ? FrameDeliveryMode::LatestOnly : FrameDeliveryMode::PreviewLatest);
+        }
+        if (!applyFrameDeliveryModes(modes))
+        {
+            return false;
+        }
+        m_frameDelivery.setHighRateEnabled(cameraIds, enabled);
+        return true;
     }
 
     bool HardwareRuntime::isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token)
     {
-        const HardwareProviderPtr provider = m_registry.providerForDevice(cameraId);
-        auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get());
-        return control && control->isProcessingFrameTokenCurrent(cameraId, token);
+        return m_frameDelivery.isProcessingFrameCurrent(cameraId, token);
     }
 
     void HardwareRuntime::finishProcessingFrame(const QString& cameraId, quint64 token)
     {
-        const HardwareProviderPtr provider = m_registry.providerForDevice(cameraId);
-        if (auto* control = dynamic_cast<CameraRuntimeControl*>(provider.get()))
-        {
-            control->finishProcessingFrame(cameraId, token);
-        }
+        m_frameDelivery.finishProcessingFrame(cameraId, token);
     }
 
     QString HardwareRuntime::defaultXYStage() const
     {
-        return uniqueDefaultStage(m_registry, &StageProvider::defaultXYStage,
-                                  HardwareDeviceKind::XYStage);
+        QString stage;
+        uniqueDefault(m_registry, &StageProvider::defaultXYStage, HardwareDeviceKind::XYStage, &stage);
+        return stage;
     }
 
     QString HardwareRuntime::defaultZStage() const
     {
-        return uniqueDefaultStage(m_registry, &StageProvider::defaultZStage,
-                                  HardwareDeviceKind::ZStage);
+        QString stage;
+        uniqueDefault(m_registry, &StageProvider::defaultZStage, HardwareDeviceKind::ZStage, &stage);
+        return stage;
     }
 
     bool HardwareRuntime::getXYPosition(const QString& deviceId,
@@ -803,118 +855,185 @@ namespace scopeone::core::internal
                        });
     }
 
-    // The provider that has the hardware functions of the Micro-Manager core, if there is one
-    AcquisitionHardware* HardwareRuntime::acquisitionHardware() const
-    {
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
-        {
-            const HardwareProviderPtr provider = m_registry.provider(descriptor.id);
-            if (auto* hardware = dynamic_cast<AcquisitionHardware*>(provider.get()))
-            {
-                return hardware;
-            }
-        }
-        return nullptr;
-    }
-
     bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
     {
-        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
-                       {
-                           return hardware.autoShutter(enabled, errorMessage);
-                       });
+        QString shutter;
+        ShutterProvider* const provider = defaultShutter(m_registry, &shutter);
+        enabled = provider && provider->autoShutter();
+        if (!provider && errorMessage)
+        {
+            *errorMessage = QStringLiteral("No shutter lights the cameras");
+        }
+        return provider != nullptr;
     }
 
     bool HardwareRuntime::setAutoShutter(bool enabled, QString* errorMessage)
     {
-        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
-                       {
-                           return hardware.setAutoShutter(enabled, errorMessage);
-                       });
+        QString shutter;
+        return forward(defaultShutter(m_registry, &shutter), "No shutter lights the cameras", errorMessage,
+                       [&](ShutterProvider& provider) { return provider.setAutoShutter(enabled, errorMessage); });
     }
 
-    bool HardwareRuntime::setCoreShutterOpen(bool open, QString* errorMessage)
+    bool HardwareRuntime::setDefaultShutterOpen(bool open, QString* errorMessage)
     {
-        return forward(acquisitionHardware(), "Shutter control is not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
-                       {
-                           return hardware.setCoreShutterOpen(open, errorMessage);
-                       });
+        QString shutter;
+        return forward(defaultShutter(m_registry, &shutter), "No shutter lights the cameras", errorMessage,
+                       [&](ShutterProvider& provider) { return provider.setShutterOpen(shutter, open, errorMessage); });
     }
 
     bool HardwareRuntime::hasAutofocus() const
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        return hardware && hardware->hasAutofocus();
+        QString device;
+        return defaultAutofocus(m_registry, &device) != nullptr;
     }
 
-    long HardwareRuntime::propertySequenceCapacity(const QString& device, const QString& property) const
+    bool HardwareRuntime::runAutofocus(QString* errorMessage)
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        return hardware ? hardware->propertySequenceCapacity(device, property) : 0;
-    }
-
-    bool HardwareRuntime::startPropertySequences(const std::vector<PropertySequence>& sequences,
-                                                 QString* errorMessage)
-    {
-        return forward(acquisitionHardware(), "Acquisition hardware not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
-                       {
-                           return hardware.startPropertySequences(sequences, errorMessage);
-                       });
-    }
-
-    void HardwareRuntime::stopPropertySequences(const std::vector<PropertySequence>& sequences)
-    {
-        if (AcquisitionHardware* hardware = acquisitionHardware())
-        {
-            hardware->stopPropertySequences(sequences);
-        }
+        QString device;
+        return forward(defaultAutofocus(m_registry, &device), "Autofocus is not available", errorMessage,
+                       [&](AutofocusProvider& provider) { return provider.runAutofocus(device, errorMessage); });
     }
 
     long HardwareRuntime::focusSequenceCapacity(const QString& focusDevice) const
     {
-        AcquisitionHardware* hardware = acquisitionHardware();
-        return hardware ? hardware->focusSequenceCapacity(focusDevice) : 0;
+        StageProvider* provider = stageProviderForDevice(focusDevice);
+        return provider ? provider->stageSequenceCapacity(focusDevice) : 0;
     }
 
     bool HardwareRuntime::startFocusSequence(const QString& focusDevice,
                                              const std::vector<double>& positions,
                                              QString* errorMessage)
     {
-        return forward(acquisitionHardware(), "Acquisition hardware not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
+        return forward(stageProviderForDevice(focusDevice), "Stage provider not available", errorMessage,
+                       [&](StageProvider& provider)
                        {
-                           return hardware.startFocusSequence(focusDevice, positions, errorMessage);
+                           return provider.startStageSequence(focusDevice, positions, errorMessage);
                        });
     }
 
     void HardwareRuntime::stopFocusSequence(const QString& focusDevice)
     {
-        if (AcquisitionHardware* hardware = acquisitionHardware())
+        if (StageProvider* provider = stageProviderForDevice(focusDevice))
         {
-            hardware->stopFocusSequence(focusDevice);
+            provider->stopStageSequence(focusDevice);
         }
     }
 
-    bool HardwareRuntime::runAutofocus(QString* errorMessage)
+    long HardwareRuntime::propertySequenceCapacity(const QString& device, const QString& property) const
     {
-        return forward(acquisitionHardware(), "Autofocus is not available", errorMessage,
-                       [&](AcquisitionHardware& hardware)
-                       {
-                           return hardware.runAutofocus(errorMessage);
-                       });
+        DevicePropertyProvider* provider = propertyProviderForDevice(device);
+        return provider ? provider->propertySequenceCapacity(device, property) : 0;
     }
 
+    // Nothing stays armed when one of the sequences fails
+    bool HardwareRuntime::startPropertySequences(const std::vector<PropertySequence>& sequences,
+                                                 QString* errorMessage)
+    {
+        for (std::size_t index = 0; index < sequences.size(); ++index)
+        {
+            const PropertySequence& sequence = sequences[index];
+            DevicePropertyProvider* provider = propertyProviderForDevice(sequence.device);
+            const QStringList values(sequence.values.begin(), sequence.values.end());
+            if (!provider || !provider->startPropertySequence(sequence.device, sequence.property, values, errorMessage))
+            {
+                stopPropertySequences({sequences.begin(), sequences.begin() + static_cast<std::ptrdiff_t>(index)});
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void HardwareRuntime::stopPropertySequences(const std::vector<PropertySequence>& sequences)
+    {
+        for (const PropertySequence& sequence : sequences)
+        {
+            if (DevicePropertyProvider* provider = propertyProviderForDevice(sequence.device))
+            {
+                provider->stopPropertySequence(sequence.device, sequence.property);
+            }
+        }
+    }
+
+    QString HardwareRuntime::microManagerVersion()
+    {
+        return MicroManagerProvider::coreVersion();
+    }
+
+    double HardwareRuntime::pixelSizeUm(const QString& cameraId) const
+    {
+        CameraProvider* provider = cameraProviderForDevice(cameraId);
+        return provider ? provider->pixelSizeUm(cameraId) : 0.0;
+    }
+
+    HardwareProviderPtr HardwareRuntime::startScopeOneProvider(const QString& providerId,
+                                                               const QString& driverPath,
+                                                               const QJsonObject& options,
+                                                               QString* errorMessage)
+    {
+        return createScopeOneProvider(providerId, driverPath, options, errorMessage);
+    }
+
+    QStringList HardwareRuntime::microManagerAdapterSearchPaths() const
+    {
+        return m_microManager->adapterSearchPaths();
+    }
+
+    void HardwareRuntime::setMicroManagerAdapterSearchPaths(const QStringList& paths)
+    {
+        m_microManager->setAdapterSearchPaths(paths);
+    }
+
+    bool HardwareRuntime::loadMicroManagerConfiguration(const QString& configPath,
+                                                        MicroManagerProvider::LoadResult& result,
+                                                        QString& errorMessage)
+    {
+        return m_microManager->loadConfiguration(configPath, result, errorMessage);
+    }
+
+    QStringList HardwareRuntime::startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras)
+    {
+        return m_microManager->startCameras(cameras);
+    }
+
+    QList<HardwareProviderPtr> HardwareRuntime::takeMicroManagerCameras()
+    {
+        return m_microManager->takeCameras();
+    }
+
+    bool HardwareRuntime::setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices)
+    {
+        m_microManager->setDevices(devices);
+        return registerProvider(m_microManager);
+    }
+
+    void HardwareRuntime::stopMicroManagerPreview()
+    {
+        stopPreviewForProvider(m_microManager->descriptor().id);
+    }
+
+    bool HardwareRuntime::unloadMicroManagerDevices(QString* errorMessage)
+    {
+        return m_microManager->unloadDevices(errorMessage);
+    }
+
+    void HardwareRuntime::applyMicroManagerShutdownPreset()
+    {
+        stopPreviewForProvider(m_microManager->descriptor().id);
+        m_microManager->applyShutdownPreset();
+    }
+
+    // Removes the drivers. Micro-Manager stays registered, as the runtime owns it for its lifetime.
     void HardwareRuntime::clear()
     {
         for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
         {
-            detachCameraProvider(m_registry.provider(descriptor.id));
+            if (descriptor.id == m_microManager->descriptor().id)
+            {
+                stopCameras(m_registry, descriptor.id);
+                continue;
+            }
+            unregisterProvider(descriptor.id);
         }
-        m_registry.clear();
     }
 
     bool HardwareRuntime::registerProvider(const HardwareProviderPtr& provider)
@@ -942,7 +1061,9 @@ namespace scopeone::core::internal
                      && device.kind != HardwareDeviceKind::ZStage)
                     || stageProvider)
                 && (device.kind != HardwareDeviceKind::Shutter || shutterProvider)
-                && (device.kind != HardwareDeviceKind::State || stateProvider);
+                && (device.kind != HardwareDeviceKind::State || stateProvider)
+                && (device.kind != HardwareDeviceKind::AutoFocus
+                    || dynamic_cast<AutofocusProvider*>(provider.get()));
             if (!supported)
             {
                 return false;
@@ -952,16 +1073,22 @@ namespace scopeone::core::internal
         {
             return false;
         }
+        if (auto* frameSource = dynamic_cast<CameraFrameSource*>(provider.get()))
+        {
+            // The cameras of a newly registered provider start in the live view mode
+            QStringList cameraIds;
+            for (const HardwareDeviceDescriptor& device : providerDevices)
+            {
+                if (device.kind == HardwareDeviceKind::Camera)
+                {
+                    cameraIds.append(device.logicalId);
+                }
+            }
+            m_frameDelivery.removeCameras(cameraIds);
+            frameSource->setFrameDelivery(&m_frameDelivery);
+        }
         if (cameraProvider)
         {
-            cameraProvider->setFrameSink([this](const ImageFrame& frame)
-            {
-                if (m_frameSink)
-                {
-                    m_frameSink(frame);
-                }
-                emit frameReady(frame);
-            });
             cameraProvider->setPreviewStateSink([this](bool)
             {
                 const auto publishState = [this]()
@@ -976,10 +1103,6 @@ namespace scopeone::core::internal
                             break;
                         }
                     }
-                    if (m_previewStateSink)
-                    {
-                        m_previewStateSink(running);
-                    }
                     emit previewStateChanged(running);
                 };
                 if (QThread::currentThread() == thread()) publishState();
@@ -991,7 +1114,7 @@ namespace scopeone::core::internal
 
     void HardwareRuntime::unregisterProvider(const QString& providerId)
     {
-        detachCameraProvider(m_registry.provider(providerId));
+        detachCameraProvider(m_registry, providerId);
         m_registry.unregisterProvider(providerId);
     }
 
@@ -1001,10 +1124,8 @@ namespace scopeone::core::internal
         return provider && registerProvider(provider);
     }
 
-    bool HardwareRuntime::stopPreviewForProvider(const QString& providerId)
+    void HardwareRuntime::stopPreviewForProvider(const QString& providerId)
     {
-        const HardwareProviderPtr provider = m_registry.provider(providerId);
-        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
-        return cameraProvider && cameraProvider->stopPreview();
+        stopCameras(m_registry, providerId);
     }
 }

@@ -62,7 +62,7 @@ the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build co
   "id": "my.camera",
   "name": "My Camera",
   "version": "1.0.0",
-  "scopeOneApi": 1,
+  "scopeOneApi": 2,
   "kind": "driver",
   "providerId": "my.camera",
   "autoLoad": false

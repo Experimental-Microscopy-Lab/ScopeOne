@@ -1,10 +1,13 @@
-#include "internal/MMCoreManager.h"
-#include "internal/CameraManager.h"
+// The loading of a Micro-Manager configuration by MicroManagerProvider
+#include "internal/MicroManagerProvider.h"
+
+#include "MMCore.h"
 #include <QFile>
 #include <QDebug>
 #include <QCoreApplication>
 #include <QDir>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
@@ -69,8 +72,8 @@ namespace scopeone::core::internal
 
         struct DevicePropertyState
         {
-            QStringList preInitProperties;
-            QStringList properties;
+            QJsonArray preInitProperties;
+            QJsonArray properties;
         };
 
         struct ConfigProperty
@@ -147,13 +150,9 @@ namespace scopeone::core::internal
             core.setDeviceAdapterSearchPaths(searchPaths);
         }
 
-        // Encodes one property replay entry as compact JSON
-        QString encodePropertyPayload(const QString& name, const QString& value)
+        QJsonObject propertySetting(const QString& name, const QString& value)
         {
-            QJsonObject property;
-            property.insert(QStringLiteral("name"), name);
-            property.insert(QStringLiteral("value"), value);
-            return QString::fromUtf8(QJsonDocument(property).toJson(QJsonDocument::Compact));
+            return QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("value"), value}};
         }
 
         // Splits one configuration line while preserving commas in the final field
@@ -279,7 +278,7 @@ namespace scopeone::core::internal
                         continue;
                     }
 
-                    const QString encodedProperty = encodePropertyPayload(propertyName, propertyValue);
+                    const QJsonObject encodedProperty = propertySetting(propertyName, propertyValue);
                     if (preInit)
                     {
                         state.preInitProperties.append(encodedProperty);
@@ -299,7 +298,6 @@ namespace scopeone::core::internal
 
             return state;
         }
-    } // namespace
 
     // Loads one config file into MMCore
     bool loadConfigurationFile(CMMCore& core,
@@ -356,12 +354,12 @@ namespace scopeone::core::internal
     }
 
     // Reads camera metadata before backend startup
-    QList<MMCoreManager::CameraLoadInfo> loadedCameraInfos(
+    QList<MicroManagerCameraSetup> loadedCameraInfos(
         CMMCore& core,
         const QStringList& loadedDevices,
         const ConfigPropertyReplay& replay)
     {
-        QList<MMCoreManager::CameraLoadInfo> cameras;
+        QList<MicroManagerCameraSetup> cameras;
         cameras.reserve(loadedDevices.size());
         for (const QString& deviceName : loadedDevices)
         {
@@ -373,8 +371,8 @@ namespace scopeone::core::internal
                     continue;
                 }
 
-                MMCoreManager::CameraLoadInfo info;
-                info.label = deviceName;
+                MicroManagerCameraSetup info;
+                info.cameraId = deviceName;
                 try
                 {
                     info.adapter = QString::fromStdString(core.getDeviceLibrary(deviceName.toStdString().c_str()));
@@ -409,7 +407,7 @@ namespace scopeone::core::internal
                 info.properties = propertyState.properties;
                 for (const ConfigProperty& property : replay.startupProperties.value(deviceName))
                 {
-                    info.properties.append(encodePropertyPayload(property.name, property.value));
+                    info.properties.append(propertySetting(property.name, property.value));
                 }
 
                 cameras.append(std::move(info));
@@ -420,36 +418,34 @@ namespace scopeone::core::internal
         }
         return cameras;
     }
+    } // namespace
 
-    // Creates the MMCore manager and backing core instance
-    MMCoreManager::MMCoreManager(QObject* parent)
-        : QObject(parent)
-          , m_mmcore(std::make_shared<CMMCore>())
-    {
-    }
-
-    // Loads and initializes devices without creating Qt camera backends
-    bool MMCoreManager::loadConfigurationDevices(const QString& configPath,
-                                                 LoadConfigResult& result,
+    // Loads and initializes the devices, but does not start the cameras. The devices of an
+    // earlier configuration are unloaded first.
+    bool MicroManagerProvider::loadConfiguration(const QString& configPath,
+                                                 LoadResult& result,
                                                  QString& errorMessage)
     {
-        result = LoadConfigResult{};
-        if (!loadConfigurationFile(
-                *m_mmcore, configPath, m_additionalDeviceAdapterSearchPaths, &errorMessage))
+        result = LoadResult{};
+        if (!unloadDevices(&errorMessage))
+        {
+            return false;
+        }
+        if (!loadConfigurationFile(*m_core, configPath, m_adapterSearchPaths, &errorMessage))
         {
             return false;
         }
 
         QString listError;
-        const QStringList loadedDevices = loadedDeviceLabels(*m_mmcore, &listError);
+        const QStringList loadedDevices = loadedDeviceLabels(*m_core, &listError);
         if (!listError.isEmpty())
         {
             errorMessage = QString("Failed to query loaded devices: %1").arg(listError);
             return false;
         }
         const ConfigPropertyReplay propertyReplay = configPropertyReplay(configPath);
-        const QList<CameraLoadInfo> cameraInfos =
-            loadedCameraInfos(*m_mmcore, loadedDevices, propertyReplay);
+        const QList<MicroManagerCameraSetup> cameraInfos =
+            loadedCameraInfos(*m_core, loadedDevices, propertyReplay);
         const bool useSingleCamera = cameraInfos.size() == 1;
 
         int successCount = 0;
@@ -460,7 +456,7 @@ namespace scopeone::core::internal
             try
             {
                 const std::string label = deviceName.toStdString();
-                const MM::DeviceType deviceType = m_mmcore->getDeviceType(label.c_str());
+                const MM::DeviceType deviceType = m_core->getDeviceType(label.c_str());
                 if (deviceType == MM::CoreDevice)
                 {
                     continue;
@@ -479,7 +475,7 @@ namespace scopeone::core::internal
                 try
                 {
                     descriptor.hardwareId = QString::fromStdString(
-                        m_mmcore->getDeviceName(label.c_str()));
+                        m_core->getDeviceName(label.c_str()));
                 }
                 catch (const CMMError&)
                 {
@@ -492,12 +488,12 @@ namespace scopeone::core::internal
                     continue;
                 }
 
-                const DeviceInitializationState state = m_mmcore->getDeviceInitializationState(label.c_str());
+                const DeviceInitializationState state = m_core->getDeviceInitializationState(label.c_str());
                 if (state != InitializedSuccessfully)
                 {
                     try
                     {
-                        m_mmcore->initializeDevice(label.c_str());
+                        m_core->initializeDevice(label.c_str());
                         descriptor.state = scopeone::core::HardwareDeviceState::Initialized;
                         successCount++;
                     }
@@ -534,12 +530,12 @@ namespace scopeone::core::internal
             {
                 try
                 {
-                    const std::vector<std::string> current = m_mmcore->getLoadedDevices();
+                    const std::vector<std::string> current = m_core->getLoadedDevices();
                     const bool stillLoaded =
-                        std::find(current.begin(), current.end(), ci.label.toStdString()) != current.end();
+                        std::find(current.begin(), current.end(), ci.cameraId.toStdString()) != current.end();
                     if (stillLoaded)
                     {
-                        m_mmcore->unloadDevice(ci.label.toStdString().c_str());
+                        m_core->unloadDevice(ci.cameraId.toStdString().c_str());
                     }
                 }
                 catch (const CMMError&)
@@ -557,49 +553,41 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Creates camera backends on the owning Qt thread
-    bool MMCoreManager::startCameraBackends(CameraManager& cameraManager,
-                                            LoadConfigResult& result)
+    bool MicroManagerProvider::unloadDevices(QString* errorMessage)
     {
-        result.cameraIds.clear();
-        for (const CameraLoadInfo& camera : result.cameras)
+        try
         {
-            const bool started = result.useSingleCamera
-                ? cameraManager.configureNativeCamera(m_mmcore, camera.label, camera.exposureMs)
-                : cameraManager.addDriverHostCamera(camera.label,
-                                               camera.adapter,
-                                               camera.device,
-                                               camera.preInitProperties,
-                                               camera.properties,
-                                               camera.exposureMs);
-            if (!started)
-            {
-                for (auto& device : result.devices)
-                {
-                    if (device.logicalId == camera.label)
-                    {
-                        device.state = scopeone::core::HardwareDeviceState::Faulted;
-                        break;
-                    }
-                }
-                ++result.failCount;
-                result.failedDevices.append(camera.label);
-                result.failedDevices.removeDuplicates();
-                result.cameraIds.clear();
-                return false;
-            }
-
-            for (auto& device : result.devices)
-            {
-                if (device.logicalId == camera.label)
-                {
-                    device.state = scopeone::core::HardwareDeviceState::Initialized;
-                    break;
-                }
-            }
-            result.cameraIds.append(camera.label);
+            m_core->unloadAllDevices();
+            return true;
         }
-        return true;
+        catch (const CMMError& error)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QString::fromStdString(error.getMsg());
+            }
+            return false;
+        }
+    }
+
+    // Applies the System/Shutdown preset of the configuration, which puts the hardware in a
+    // safe state before the devices are released
+    void MicroManagerProvider::applyShutdownPreset()
+    {
+        try
+        {
+            if (!m_core->isConfigDefined(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown))
+            {
+                return;
+            }
+        }
+        catch (const CMMError& error)
+        {
+            qWarning().noquote() << QStringLiteral("Failed to inspect System/Shutdown preset: %1")
+                                        .arg(QString::fromStdString(error.getMsg()));
+            return;
+        }
+        setConfig(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown, nullptr);
     }
 
 } // namespace scopeone::core::internal

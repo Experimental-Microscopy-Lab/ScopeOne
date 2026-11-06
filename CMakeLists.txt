@@ -282,11 +282,14 @@ endif ()
 
 set(_driver_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/drivers")
 if (EXISTS "${_driver_dir}")
-    add_custom_command(TARGET ScopeOne POST_BUILD
+    # Copied on every build. As a step after linking ScopeOne it ran only when ScopeOne itself was
+    # relinked, so rebuilt drivers stayed old beside the application and crashed a newer DriverHost.
+    add_custom_target(ScopeOneDrivers ALL
             COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${_driver_dir}"
             "$<TARGET_FILE_DIR:ScopeOne>/drivers"
     )
+    add_dependencies(ScopeOneDrivers ScopeOne)
     install(DIRECTORY "${_driver_dir}/" DESTINATION "drivers")
 endif ()
 

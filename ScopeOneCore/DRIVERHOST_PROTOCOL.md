@@ -1,24 +1,33 @@
 # DriverHost protocol
 
-ScopeOne talks to every driver through a `ScopeOne_DriverHost` process. This file
-describes what crosses that process boundary: control messages on a local socket, camera frames
+ScopeOne talks to every driver, and to each camera of a Micro-Manager configuration with more
+than one camera, through a `ScopeOne_DriverHost` process. This file describes what crosses that
+process boundary: control messages on a local socket, camera frames
 in shared memory, and the chunks of signal sources and DAQ devices in stream rings. Both ends are part of ScopeOne, so the protocol is internal and changes
 with it; drivers are written against `scopeone::DriverSDK` instead. It is version
-6, `kProtocolVersion` in `ScopeOneCore/internal/DriverHostProtocol.h`, which holds the names used
+7, `kProtocolVersion` in `ScopeOneCore/internal/DriverHostProtocol.h`, which holds the names used
 below.
 
 ## Process
 
-ScopeOne starts one host for each device:
+ScopeOne starts one host for each driver and for each camera of a Micro-Manager configuration
+with more than one camera:
 
 ```text
 ScopeOne_DriverHost --provider <providerId> --driver <driver library> --hostKey <key>
                     --launcherPid <pid> [--option <JSON object>]
+ScopeOne_DriverHost --provider micro-manager --micromanagerCamera <JSON object> --hostKey <key>
+                    --launcherPid <pid>
 ```
 
-`--option` carries the options from the Drivers dialog. The host loads the driver, creates the
-devices and listens on the local socket `ScopeOne.DriverHost.<hostKey>.ctrl` (a named pipe on
-Windows, a Unix domain socket elsewhere). ScopeOne connects to it, and the host exits when the
+`--option` carries the options from the Drivers dialog. `--micromanagerCamera` carries
+`cameraId`, `adapter`, `device`, `exposureMs`, and `preInitProperties` and `properties`, arrays of
+`{"name", "value"}` objects. The host loads the camera on a core of its own, as two cameras of the
+same model in one process would share the state of one vendor library. The host loads the
+driver or the camera, creates the devices and listens on the local socket
+`ScopeOne.<hash>.ctrl`, where `<hash>` is the first 16 hexadecimal digits of the SHA-1 of the host
+key, as a Unix socket path on macOS holds at most 104 characters (a named pipe on Windows, a Unix
+domain socket elsewhere). ScopeOne connects to it, and the host exits when the
 process `--launcherPid` is gone.
 
 ## Messages
@@ -42,7 +51,9 @@ and carry `providerId`.
 ## Describe and shutdown
 
 `Describe` returns `providerId`, `providerName`, `providerVersion`, `devices`, `signalSources`
-and `daqDevices`, and for a provider with stages `defaultXYStage` and `defaultZStage`.
+and `daqDevices`, for a provider with stages `defaultXYStage` and `defaultZStage`, for one with
+shutters `defaultShutter`, the shutter that lights the sample for its cameras, and for one with an
+autofocus `defaultAutofocus`.
 `signalSources` and `daqDevices` hold the JSON form of `SignalSourceDescriptor` and
 `DaqDeviceDescriptor`, written by `ScopeOneCore/src/HardwareStreamCodec.cpp`. Each device is an object with
 
@@ -55,32 +66,48 @@ and `daqDevices`, and for a provider with stages `defaultXYStage` and `defaultZS
 | `deviceProperties` | an object of fixed device information |
 | `capabilities` | the capability names below that the device supports |
 | `sharedMemoryKey` | cameras only, the key of the frame ring |
+| `eventSequence` | cameras only, whether the camera takes a series of images in one sequence acquisition |
+| `pixelSizeUm` | cameras only, the size of a pixel in the sample, 0 when unknown; `GetPixelSize` reads it again after a setting changed |
 
 `Shutdown` stops the devices, answers, and ends the host.
 
 ## Commands
 
-Every command except the configuration, signal and DAQ ones names its device with `deviceId`. A command for a
+Every command except the configuration, automatic shutter, signal and DAQ ones names its device
+with `deviceId`. A command for a
 capability the device lacks is answered with `ok` false.
 
 | Capability | Command | Request fields | Response fields |
 |---|---|---|---|
 | `Camera` | `StartPreview`, `StopPreview` | | |
 | | `SetFrameDeliveryMode` | `mode`: `PreviewLatest`, `LatestOnly` or `AllFrames` | `mode` |
+| | `SetFrameDeliveryPaused` | `paused`; the host writes no frames while paused, and a Micro-Manager camera starts again the live acquisition an event capture stopped | |
 | | `GetExposure` | | `exposureMs` |
 | | `SetExposure` | `value` in ms | `exposureMs`, the value the camera took |
 | | `SetROI` | `x`, `y`, `width`, `height` | `x`, `y`, `width`, `height` |
 | | `ClearROI`, `GetROI` | | `x`, `y`, `width`, `height` |
 | | `CaptureEvent` | `timeoutMs`, default 1500 | `frameIndex` |
+| | `CaptureEventSequence` | `count`, `timeoutMs`; the images wait in the host | |
+| | `SendEventFrames` | `first`, `count`; writes these images of the last sequence to the frame ring, as it holds fewer than a sequence can have | |
+| | `GetPixelSize` | | `pixelSizeUm`, 0 when unknown |
 | `Properties` | `ListProperties` | | `properties` |
 | | `GetProperty` | `name`, `fromCache` | `value`, `propertyType`, `readOnly`, `preInit`, `allowedValues`, `hasLimits`, `lowerLimit`, `upperLimit` |
 | | `SetProperty` | `name`, `value` | |
+| | `GetPropertySequenceCapacity` | `name` | `capacity`, 0 when it cannot be sequenced |
+| | `StartPropertySequence` | `name`, `values` | |
+| | `StopPropertySequence` | `name` | |
 | `Stage` | `GetXYPosition` | | `x`, `y` |
 | | `GetZPosition` | | `z` |
 | | `SetXYPosition`, `SetRelativeXYPosition` | `x`, `y` | |
 | | `SetZPosition`, `SetRelativeZPosition` | `z` | |
+| | `GetStageSequenceCapacity` | | `capacity`, 0 when it cannot be sequenced |
+| | `StartStageSequence` | `positions` | |
+| | `StopStageSequence` | | |
 | `Shutter` | `GetShutterOpen` | | `open` |
 | | `SetShutterOpen` | `open` | |
+| | `GetAutoShutter`, provider wide | | `enabled` |
+| | `SetAutoShutter`, provider wide | `enabled` | |
+| `Autofocus` | `RunAutofocus` | | |
 | `State` | `GetState` | | `state`, `label` |
 | | `SetState` | `state` | |
 | | `GetStateLabel` | `state` | `label` |
@@ -92,6 +119,7 @@ capability the device lacks is answered with `ok` false.
 | | `ListConfigs` | `group` | `configs` |
 | | `GetCurrentConfig` | `group` | `config` |
 | | `SetConfig` | `group`, `config` | |
+| | `GetConfigSettings` | `group`, `config` | `settings`, an array of `device`, `property`, `value` |
 
 ## Events
 
@@ -136,7 +164,10 @@ The pixels start at offset 64 of the slot, `stride * height` bytes.
 
 The writer takes a slot whose `state` is 0 or 2 by changing it to 1 with a compare-and-swap,
 fills the header and pixels, stores 2 with release order, then stores the slot index in
-`latestSlotIndex` with release order and sends `FrameAvailable`. The reader takes a slot by
+`latestSlotIndex` with release order and sends `FrameAvailable`. The host writes a frame while the
+frame sink of the driver is called, so a driver may hand over a frame that points into its own
+buffer. In `PreviewLatest` mode it writes every frame but sends `FrameAvailable` at most every
+16 ms, and a frame that came in between is announced when the 16 ms are up. The reader takes a slot by
 changing its `state` from 2 to 3, copies the frame, and stores 2 again. A slot being read is
 skipped by the writer, so the reader never sees a frame change under it.
 

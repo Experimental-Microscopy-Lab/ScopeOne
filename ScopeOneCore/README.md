@@ -48,7 +48,7 @@ Use this placement rule:
 |---|---|---|
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ExperimentDocument`, `ImageSceneModel` |
 | `scopeone::core` driver contract | Stable types of `DriverSDK.h` | `Driver`, `HardwareProvider`, `CameraProvider`, `SignalSourceProvider`, `DaqProvider`, `ImageFrame` |
-| `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `CameraManager`, `MMCoreManager`, `RecordingManager`, `IscatModule`, `SignalSourceManager` |
+| `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `HardwareRuntime`, `MicroManagerProvider`, `RecordingManager`, `IscatModule`, `SignalSourceManager` |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `DhmTool`, `ToolRegistry` |
 | `scopeone::core::internal::cuda`, `scopeone::core::internal::inference` | The CUDA and ONNX processing modules in `src/cuda` and `src/inference` | `core::internal::cuda` |
@@ -115,13 +115,16 @@ The installed headers in `include/scopeone` and `include/sdk/scopeone` are the s
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
-Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. Core loads a driver with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider, using the native camera path for one camera and isolated DriverHost camera processes for multiple cameras.
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. The sink copies a frame before it returns, so a frame can point into the buffer of the camera SDK through `QByteArray::fromRawData` instead of being copied by the driver first. Core loads a driver with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider. It runs the camera of a configuration with one camera in ScopeOne, and each camera of a configuration with more in a DriverHost of its own, so two cameras of the same model do not share one vendor library.
+
+Inside Core, the rest of Core reaches hardware only through `HardwareRuntime`. It routes each call to the provider of the device and answers the calls that span providers itself, such as all cameras, the default stages and shutter, and the frame delivery to the live view, live processing and recording. Every provider, `MicroManagerProvider` as well as each driver, offers its devices through the same interfaces of the driver SDK, so a driver can do what Micro-Manager does here, from hardware sequences to autofocus. How
+frames are delivered and paused is ScopeOne's own policy and stays out of the driver SDK.
 
 ## Driver and Processing Boundaries
 
 - `drivers` contains the drivers, among them NI-DAQmx and the example camera and PMT. Each provider runs in an isolated DriverHost process, so a vendor library such as NI-DAQmx is never loaded into ScopeOne. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne drivers.
 - Python processing modules are scripts in `processing/python`, beside the executable or in the application data directory. Core runs each module of a pipeline in its own Python process.
-- The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is always built, with the official ONNX Runtime package that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK. Every processing method, the PTU file signal source and the DHM reconstruction are part of Core.
+- The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is always built, with the official ONNX Runtime package that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK. Every processing method and the DHM reconstruction are part of Core.
 - The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ScopeOneToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
 
 Drivers outside this repository consume the exported `scopeone::DriverSDK` CMake target. Every driver manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`, and incompatible manifests are rejected before the library instance is created.

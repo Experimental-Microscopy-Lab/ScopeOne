@@ -1,10 +1,7 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/HardwareCapabilities.h"
 #include "internal/MDAManager.h"
-#include "internal/CameraRuntimeControl.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QStringList>
@@ -34,14 +31,7 @@ namespace scopeone::core::internal
         explicit RecordingManager(QObject* parent = nullptr);
         ~RecordingManager() override;
 
-        void setCameraProvider(CameraProvider* cameraProvider) { m_cameraProvider = cameraProvider; }
-        void setStageProvider(StageProvider* stageProvider) { m_stageProvider = stageProvider; }
-        void setConfigurationProvider(ConfigurationProvider* provider) { m_configurationProvider = provider; }
-        void setAcquisitionHardware(AcquisitionHardware* hardware) { m_acquisitionHardware = hardware; }
-        void setCameraRuntimeControl(CameraRuntimeControl* cameraRuntimeControl)
-        {
-            m_cameraRuntimeControl = cameraRuntimeControl;
-        }
+        void setHardwareRuntime(HardwareRuntime* hardwareRuntime) { m_hardwareRuntime = hardwareRuntime; }
         void setLatestFrameFetcher(std::function<bool(const QString&, ImageFrame&)> fetcher)
         {
             m_latestFrameFetcher = std::move(fetcher);
@@ -213,11 +203,7 @@ namespace scopeone::core::internal
         bool allCamerasReachedTarget() const;
         void advanceBurstStateIfNeeded();
 
-        CameraProvider* m_cameraProvider{nullptr};
-        StageProvider* m_stageProvider{nullptr};
-        ConfigurationProvider* m_configurationProvider{nullptr};
-        AcquisitionHardware* m_acquisitionHardware{nullptr};
-        CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
+        HardwareRuntime* m_hardwareRuntime{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;
 

@@ -4,42 +4,80 @@
 
 #include <memory>
 
-#include "internal/AcquisitionHardware.h"
+#include <QMap>
+#include <QReadWriteLock>
+
+#include <atomic>
+
+#include "internal/CameraFrameDelivery.h"
+#include "internal/MicroManagerCamera.h"
 #include "scopeone/HardwareProvider.h"
 #include "scopeone/CameraProvider.h"
-#include "internal/CameraRuntimeControl.h"
 
 class CMMCore;
 
 namespace scopeone::core::internal
 {
+    // The devices of the loaded Micro-Manager configuration. They run on the core of ScopeOne,
+    // except the cameras of a configuration with more than one camera: each of those runs in a
+    // DriverHost of its own, so two cameras of the same model do not share one vendor library.
     class MicroManagerProvider final : public HardwareProvider,
                                        public CameraProvider,
                                        public StageProvider,
                                        public ShutterProvider,
+                                       public AutofocusProvider,
                                        public StateProvider,
                                        public ConfigurationProvider,
-                                       public AcquisitionHardware,
-                                       public CameraRuntimeControl
+                                       public CameraFrameSource
     {
     public:
-        MicroManagerProvider(std::shared_ptr<CMMCore> core,
-                             CameraProvider* cameraProvider,
-                             CameraRuntimeControl* cameraRuntimeControl);
+        struct LoadResult
+        {
+            QStringList cameraIds;
+            QList<MicroManagerCameraSetup> cameras;
+            QStringList failedDevices;
+            int successCount{0};
+            int failCount{0};
+            int skippedCameraCount{0};
+            bool foundCamera{false};
+            bool useSingleCamera{false};
+            QList<HardwareDeviceDescriptor> devices;
+        };
+
+        MicroManagerProvider();
+        ~MicroManagerProvider() override;
+
+        static QString coreVersion();
+
+        QStringList adapterSearchPaths() const { return m_adapterSearchPaths; }
+        void setAdapterSearchPaths(const QStringList& paths) { m_adapterSearchPaths = paths; }
+        // Blocks while the devices initialize
+        bool loadConfiguration(const QString& configPath, LoadResult& result, QString& errorMessage);
+        bool unloadDevices(QString* errorMessage);
+        void applyShutdownPreset();
 
         HardwareProviderDescriptor descriptor() const override;
         QList<HardwareDeviceDescriptor> devices() const override;
         void setDevices(const QList<HardwareDeviceDescriptor>& devices);
 
+        // Starts the cameras of a loaded configuration and returns the ones that failed. A single
+        // camera has to be loaded on the core already, while more are loaded again in their
+        // DriverHosts.
+        QStringList startCameras(const QList<MicroManagerCameraSetup>& cameras);
+        // Hands over the cameras, so they can be stopped away from the calling thread
+        QList<HardwareProviderPtr> takeCameras();
+
+        void setFrameDelivery(CameraFrameDelivery* delivery) override;
+        bool setFrameDeliveryMode(const QStringList& cameraIds, FrameDeliveryMode mode) override;
+        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
+
         void setFrameSink(FrameSink sink) override;
         void setPreviewStateSink(PreviewStateSink sink) override;
-        bool startPreview() override;
-        bool stopPreview() override;
         bool startPreviewFor(const QString& cameraId) override;
         bool stopPreviewFor(const QString& cameraId) override;
         bool isPreviewRunning(const QString& cameraId) const override;
-        bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const override;
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs) override;
+        bool getExposure(const QString& cameraId, double& exposureMs) const override;
+        bool setExposure(const QString& cameraId, double exposureMs) override;
         QStringList listProperties(const QString& cameraId) override;
         QString getProperty(const QString& cameraId,
                             const QString& name,
@@ -71,13 +109,6 @@ namespace scopeone::core::internal
                                   int count,
                                   std::vector<scopeone::core::ImageFrame>& frames,
                                   int timeoutMs) override;
-        void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused) override;
-        bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
-                                              bool enabled) override;
-        bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
-                                             bool enabled) override;
-        bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token) override;
-        void finishProcessingFrame(const QString& cameraId, quint64 token) override;
         QString defaultXYStage() const override;
         QString defaultZStage() const override;
         bool getXYPosition(const QString& deviceId,
@@ -123,27 +154,62 @@ namespace scopeone::core::internal
                        const QString& configName,
                        QString* errorMessage) override;
 
-        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const override;
-        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr) override;
-        bool setCoreShutterOpen(bool open, QString* errorMessage = nullptr) override;
-        bool hasAutofocus() const override;
-        bool runAutofocus(QString* errorMessage = nullptr) override;
-        long focusSequenceCapacity(const QString& focusDevice) const override;
-        bool startFocusSequence(const QString& focusDevice,
+        QString defaultShutter() const override;
+        bool autoShutter() const override;
+        bool setAutoShutter(bool enabled, QString* errorMessage) override;
+        QString defaultAutofocus() const override;
+        bool runAutofocus(const QString& deviceId, QString* errorMessage) override;
+        long stageSequenceCapacity(const QString& deviceId) const override;
+        bool startStageSequence(const QString& deviceId,
                                 const std::vector<double>& positions,
-                                QString* errorMessage = nullptr) override;
-        void stopFocusSequence(const QString& focusDevice) override;
-        long propertySequenceCapacity(const QString& device, const QString& property) const override;
-        bool startPropertySequences(const std::vector<PropertySequence>& sequences,
-                                    QString* errorMessage = nullptr) override;
-        void stopPropertySequences(const std::vector<PropertySequence>& sequences) override;
+                                QString* errorMessage) override;
+        void stopStageSequence(const QString& deviceId) override;
+        long propertySequenceCapacity(const QString& deviceId, const QString& name) override;
+        bool startPropertySequence(const QString& deviceId,
+                                   const QString& name,
+                                   const QStringList& values,
+                                   QString* errorMessage) override;
+        void stopPropertySequence(const QString& deviceId, const QString& name) override;
+        double pixelSizeUm(const QString& cameraId) const override;
 
     private:
-        bool isCamera(const QString& deviceId) const;
+        struct Camera
+        {
+            // A MicroManagerCamera on the core of ScopeOne, or the DriverHost of the camera
+            HardwareProviderPtr provider;
+            CameraProvider* camera{nullptr};
+            CameraFrameSource* frameSource{nullptr};
+            std::shared_ptr<MicroManagerCamera> local;
+            // The index of the last frame the local camera delivered, 0 after a change of mode
+            std::shared_ptr<std::atomic<quint64>> lastFrameIndex;
+        };
+
+        // A camera held while a call uses it, so unloading the configuration on another thread
+        // cannot free it meanwhile
+        struct CameraRef
+        {
+            HardwareProviderPtr owner;
+            CameraProvider* camera{nullptr};
+            explicit operator bool() const { return camera != nullptr; }
+            CameraProvider* operator->() const { return camera; }
+        };
+
+        bool startLocalCamera(const QString& cameraId);
+        CameraRef camera(const QString& cameraId) const;
+        Camera cameraEntry(const QString& cameraId) const;
+        void readBinning(const QString& cameraId);
+        QList<Camera> cameras() const;
 
         std::shared_ptr<CMMCore> m_core;
-        CameraProvider* m_cameraProvider{nullptr};
-        CameraRuntimeControl* m_cameraRuntimeControl{nullptr};
+        QStringList m_adapterSearchPaths;
         QList<HardwareDeviceDescriptor> m_devices;
+        // Written when a configuration loads or unloads, read by calls on any thread
+        mutable QReadWriteLock m_camerasLock;
+        QMap<QString, Camera> m_cameras;
+        // The binning of each camera in a DriverHost, read when it changes, as the core of
+        // ScopeOne does not hold these cameras to apply it to the pixel size
+        QHash<QString, int> m_binnings;
+        std::atomic<CameraFrameDelivery*> m_delivery{nullptr};
+        PreviewStateSink m_previewStateSink;
     };
 }
