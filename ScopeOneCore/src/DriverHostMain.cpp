@@ -29,7 +29,13 @@
 #include <QSocketNotifier>
 #include <csignal>
 #include <fcntl.h>
+#ifdef Q_OS_MACOS
+// The file system of macOS ignores case, so <semaphore.h> found the Semaphore.h of MMCore on the
+// include path, and sem_unlink was undeclared. The system header declares it here.
+#include <sys/semaphore.h>
+#else
 #include <semaphore.h>
+#endif
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -38,6 +44,12 @@
 #else
 #include <sys/syscall.h>
 #endif
+#endif
+
+#ifndef Q_OS_WIN
+// The macOS SDK declares shm_unlink only outside strict POSIX mode, and the build of DriverHost
+// failed there on it. libc has it on every Unix, so it is declared here as the SDK does.
+extern "C" int shm_unlink(const char* name);
 #endif
 
 #include <algorithm>
