@@ -88,7 +88,7 @@ cd ScopeOne
 
 A coding agent such as Claude Code or Codex can also do this: ask it to set up and build ScopeOne by following this README.
 
-The sections below explain each step, the options and how to use a Qt that is already installed. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
 
 ### Qt
 
@@ -107,7 +107,7 @@ ScopeOne needs Qt 6.8 or later. There are three ways to get it.
 
 - **Install Qt yourself** with the [Qt Online Installer](https://www.qt.io/download-qt-installer-oss), then pass its directory as above. On Windows choose the MSVC 2022 64-bit build; MinGW does not work.
 
-- **Let the script build it.** Without `--qt`, vcpkg builds Qt on the first build. Qt is the largest part of that build, and vcpkg keeps the result, so it is built once (see [Build times](#build-times)).
+- **Let the script build it.** Without `--qt`, vcpkg builds Qt on the first build, see [Build times](#build-times).
 
 ### Windows, step by step
 
@@ -132,9 +132,9 @@ ScopeOne needs Qt 6.8 or later. There are three ways to get it.
    powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run
    ```
 
-   `-ExecutionPolicy Bypass` lets this command run a `.ps1` file. After `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, the script starts as `.\scripts\build.ps1`.
+   Windows blocks `.ps1` scripts by default, and `-ExecutionPolicy Bypass` lifts that for this one command. To lift it for good, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once; the script then starts as `.\scripts\build.ps1 --run`.
 
-   The script finds Visual Studio itself. It offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It then builds MMCore with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI, and downloads ONNX Runtime into `ScopeOneCore\external`, the GPU package when the CUDA Toolkit is installed.
+   The script finds Visual Studio itself. It offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It then builds MMCore with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI.
 
    The first build takes long, see [Build times](#build-times). The last lines of the build show whether Core was built with the CUDA and ONNX modules.
 
@@ -151,16 +151,6 @@ ScopeOne needs Qt 6.8 or later. There are three ways to get it.
    | `--package` | Build the installer and zip, named `-gpu` when Core was built with CUDA |
    | `--qt <dir>` | Use an installed Qt, see [Qt](#qt) |
    | `--yes` | Accept the vcpkg download without asking |
-
-**CMake without the script.** After the script has built MMCore once (`--target core`), Core configures directly. Add `-DSCOPEONE_QT_DIR=<Qt directory>` for an installed Qt:
-
-```powershell
-cmake -S ScopeOneCore -B ScopeOneCore/build `
-  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-  "-DVCPKG_MANIFEST_DIR=$PWD" `
-  "-DVCPKG_INSTALLED_DIR=$PWD/vcpkg_installed" `
-  -DVCPKG_TARGET_TRIPLET=x64-windows
-```
 
 ### Linux and macOS, step by step
 
@@ -181,7 +171,7 @@ macOS support is experimental.
      libxkbcommon-x11-dev
    ```
 
-   The second command installs the X11 and OpenGL development files that vcpkg's Qt needs, and `--no-upgrade` keeps the installed Mesa drivers. The script lists the package names for Fedora when a tool is missing.
+   The second command installs the X11 and OpenGL development files that vcpkg's Qt needs, and `--no-upgrade` keeps the installed Mesa drivers.
 
    macOS:
 
@@ -205,7 +195,7 @@ macOS support is experimental.
    ./scripts/build.sh --run
    ```
 
-   The script checks the build tools, offers to download vcpkg into `$HOME/vcpkg` or a folder you type (`--yes` takes the default), and builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. It downloads ONNX Runtime into `ScopeOneCore/external`.
+   The script checks the build tools, offers to download vcpkg into `$HOME/vcpkg` or a folder you type (`--yes` takes the default), and builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI.
 
    The first build takes long, see [Build times](#build-times).
 
@@ -229,8 +219,7 @@ The first build without the cache, per vcpkg package, on the 48 core Linux machi
 | opencv4 | 2.2 min |
 | qtsvg | 59 s |
 | harfbuzz | 46 s |
-| gperf, libb2, zstd, pcre2 | 10 to 22 s each |
-| 29 others | under 10 s each |
+| 33 others | under 25 s each |
 | All 37 packages | 11 min 23 s |
 
 A fresh clone with the binary cache filled, on the same machine, about 5 minutes in all:
