@@ -499,6 +499,13 @@ if (-not $needCoreConfigure -and $target -in @("all", "core")) {
 }
 
 if ($target -in @("all", "core")) {
+    # A clone without --recurse-submodules has an empty ScopeWriter folder and Core failed to
+    # configure. Only an empty checkout is filled, so commits made inside ScopeWriter are kept.
+    if (-not (Test-Path (Join-Path $coreSourceDir "external\ScopeWriter\CMakeLists.txt"))) {
+        Invoke-Step -Label "Fetching the ScopeWriter submodule" -FilePath $git `
+            -Arguments @("submodule", "update", "--init", "--recursive") `
+            -WorkingDirectory $repoRoot
+    }
     if ($env:OS -eq "Windows_NT") {
         Ensure-MMCore
     }
@@ -508,7 +515,7 @@ if ($target -in @("all", "core")) {
             Write-Host "The first build compiles OpenCV with vcpkg, which takes 10 to 15 minutes. Later builds reuse the result." -ForegroundColor Yellow
         }
         else {
-            Write-Host "The first build compiles Qt and OpenCV with vcpkg, which takes about an hour. Pass --qt with an installed MSVC Qt to skip Qt. Later builds reuse the result." -ForegroundColor Yellow
+            Write-Host "The first build compiles Qt and OpenCV with vcpkg, which takes a long time. Pass --qt with an installed MSVC Qt to skip Qt. Later builds reuse the result." -ForegroundColor Yellow
         }
     }
 
