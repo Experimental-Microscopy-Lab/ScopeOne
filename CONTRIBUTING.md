@@ -41,8 +41,7 @@ image menus.
 **Extension boundary.** Drivers and Python processing modules are the only public
 extension points, and both run outside the ScopeOne process. Every other processing method
 belongs in Core, with its window in `src`. The CUDA and ONNX modules are in Core too, under
-`src/cuda` and `src/inference`, and `SCOPEONE_ENABLE_CUDA` and `SCOPEONE_ENABLE_INFERENCE` build
-Core without them. The
+`src/cuda` and `src/inference`, and `SCOPEONE_ENABLE_CUDA` builds Core without CUDA. The
 messages between ScopeOne and `ScopeOne_DriverHost` are internal too and are described in
 `ScopeOneCore/DRIVERHOST_PROTOCOL.md`.
 
@@ -218,6 +217,9 @@ in only some of them is a bug.
 **New dependencies.** A new library needs a reason that the standard library, Qt, OpenCV and
 the existing dependencies cannot meet, a licence that allows redistribution with ScopeOne, and
 a pinned version in `vcpkg.json`.
+
+**Qt version.** ScopeOne supports Qt 6.8 and later, so code does not use Qt API added after 6.8.
+A newer API that is worth it is a reason to raise the minimum; open an issue to discuss it.
 
 ## Versions
 

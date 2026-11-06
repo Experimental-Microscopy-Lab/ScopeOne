@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScopeOneVersion.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScopeOneQt.cmake")
 scopeone_resolve_version(SCOPEONE_VERSION "${CMAKE_CURRENT_LIST_DIR}/..")
 project(ScopeOneCore VERSION "${SCOPEONE_VERSION}" LANGUAGES CXX)
 
@@ -16,7 +17,8 @@ set(MMCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/mmCoreAndDevices")
 set(MMCORE_INCLUDE_DIR "${MMCORE_DIR}/MMCore")
 set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
 
-find_package(Qt6 COMPONENTS Core Gui Network Concurrent REQUIRED)
+find_package(Qt6 ${SCOPEONE_QT_MINIMUM_VERSION} COMPONENTS Core Gui Network Concurrent REQUIRED)
+message(STATUS "Using Qt ${Qt6_VERSION} from ${Qt6_DIR}")
 find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
 
 set(SCOPEWRITER_BUILD_TESTS OFF)
@@ -225,15 +227,14 @@ target_compile_definitions(ScopeOneCore PRIVATE
         SCOPEONE_CORE_VERSION_STRING="${PROJECT_VERSION}"
 )
 
-# The CUDA and ONNX Runtime processing modules are part of Core when their toolkits are found.
-# Turning them off builds the plain CPU Core, which neither links nor ships CUDA or ONNX Runtime.
+# The CUDA processing modules are part of Core when nvcc is found, and turning them off builds the
+# standard Core. ONNX inference is always built, from the ONNX Runtime package that matches CUDA.
 set(_with_cuda OFF)
 set(_with_inference OFF)
 # Why a module that is turned on was left out, for the summary of the build scripts
 set(_cuda_reason "")
 set(_inference_reason "")
 option(SCOPEONE_ENABLE_CUDA "Build the CUDA processing modules into Core when nvcc is available" ON)
-option(SCOPEONE_ENABLE_INFERENCE "Build the ONNX Runtime processing module into Core when ONNX Runtime is available" ON)
 if (SCOPEONE_ENABLE_CUDA)
     # An nvcc that was uninstalled since the last configure is looked up again
     if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND NOT EXISTS "${SCOPEONE_CUDA_NVCC_EXECUTABLE}")
@@ -317,92 +318,85 @@ endif ()
 # ONNXRUNTIME_ROOT names another SDK instead.
 set(SCOPEONE_ONNXRUNTIME_VERSION 1.30.0)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime SDK root; empty selects the official package in external")
-# Earlier configures cached the Windows GPU package as the default root, which then counted as a
-# root set by hand and kept every other platform and the CPU package from being selected
-if (ONNXRUNTIME_ROOT STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu_cuda12-1.30.0")
-    set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime SDK root; empty selects the official package in external" FORCE)
-endif ()
-if (SCOPEONE_ENABLE_INFERENCE)
-    set(_ort_package "")
-    if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
-        if (_with_cuda)
-            set(_ort_package "onnxruntime-win-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
-            set(_ort_sha256 d4667ea48eb0a10bc9b96b838f7b8975a6bf18de3bc5edd403a22e15c1458b23)
-        else ()
-            set(_ort_package "onnxruntime-win-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
-            set(_ort_sha256 c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949)
-        endif ()
-    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-        if (_with_cuda)
-            set(_ort_package "onnxruntime-linux-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
-            set(_ort_sha256 f9886932ee7bb0b4d3fcab736a392d4ff5efaa0672b47f19f0cec03437cf64f1)
-        else ()
-            set(_ort_package "onnxruntime-linux-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
-            set(_ort_sha256 a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd)
-        endif ()
-    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        set(_ort_package "onnxruntime-linux-aarch64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
-        set(_ort_sha256 e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da)
-    elseif (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
-        # The macOS package has only the CPU provider
-        set(_ort_package "onnxruntime-osx-arm64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
-        set(_ort_sha256 6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012)
-    endif ()
-
-    set(_ort_download_error "")
-    if (ONNXRUNTIME_ROOT)
-        set(_ort_root "${ONNXRUNTIME_ROOT}")
-    elseif (_ort_package)
-        string(REGEX REPLACE "\\.(zip|tgz)$" "" _ort_name "${_ort_package}")
-        set(_ort_root "${CMAKE_CURRENT_SOURCE_DIR}/external/${_ort_name}")
-        set(_ort_url "https://github.com/microsoft/onnxruntime/releases/download/v${SCOPEONE_ONNXRUNTIME_VERSION}/${_ort_package}")
-        if (NOT EXISTS "${_ort_root}/include")
-            message(STATUS "Downloading ${_ort_url}")
-            set(_ort_archive "${CMAKE_CURRENT_BINARY_DIR}/${_ort_package}")
-            # EXPECTED_HASH turned a failed download into a configure error, so the hash is
-            # checked after it. Without the network Core is built without ONNX inference, and the
-            # next configure tries again.
-            file(DOWNLOAD "${_ort_url}" "${_ort_archive}"
-                    SHOW_PROGRESS
-                    STATUS _ort_download
-            )
-            list(GET _ort_download 0 _ort_download_code)
-            list(GET _ort_download 1 _ort_download_error)
-            if (_ort_download_code EQUAL 0)
-                file(SHA256 "${_ort_archive}" _ort_actual_sha256)
-                if (_ort_actual_sha256 STREQUAL _ort_sha256)
-                    set(_ort_download_error "")
-                    file(ARCHIVE_EXTRACT INPUT "${_ort_archive}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/external")
-                else ()
-                    set(_ort_download_error "SHA256 mismatch")
-                endif ()
-            endif ()
-            file(REMOVE "${_ort_archive}")
-        endif ()
+set(_ort_package "")
+if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if (_with_cuda)
+        set(_ort_package "onnxruntime-win-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
+        set(_ort_sha256 d4667ea48eb0a10bc9b96b838f7b8975a6bf18de3bc5edd403a22e15c1458b23)
     else ()
-        set(_ort_root "")
+        set(_ort_package "onnxruntime-win-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.zip")
+        set(_ort_sha256 c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949)
     endif ()
-
-    # The found paths are cached, so a root that changed, such as the GPU package taking over
-    # once CUDA is found, kept linking the package of the earlier configure
-    if (NOT "${SCOPEONE_ONNXRUNTIME_ROOT_USED}" STREQUAL "${_ort_root}")
-        unset(ONNXRUNTIME_INCLUDE_DIR CACHE)
-        unset(ONNXRUNTIME_LIBRARY CACHE)
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    if (_with_cuda)
+        set(_ort_package "onnxruntime-linux-x64-gpu_cuda12-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+        set(_ort_sha256 f9886932ee7bb0b4d3fcab736a392d4ff5efaa0672b47f19f0cec03437cf64f1)
+    else ()
+        set(_ort_package "onnxruntime-linux-x64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+        set(_ort_sha256 a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd)
     endif ()
-    set(SCOPEONE_ONNXRUNTIME_ROOT_USED "${_ort_root}" CACHE INTERNAL "")
-    set(ONNXRUNTIME_ROOT "${_ort_root}")
-    find_path(ONNXRUNTIME_INCLUDE_DIR
-            NAMES onnxruntime_cxx_api.h
-            PATHS "${ONNXRUNTIME_ROOT}/include"
-            NO_DEFAULT_PATH
-    )
-    find_library(ONNXRUNTIME_LIBRARY
-            NAMES onnxruntime
-            PATHS "${ONNXRUNTIME_ROOT}/lib"
-            NO_DEFAULT_PATH
-    )
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    set(_ort_package "onnxruntime-linux-aarch64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+    set(_ort_sha256 e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da)
+elseif (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    # The macOS package has only the CPU provider
+    set(_ort_package "onnxruntime-osx-arm64-${SCOPEONE_ONNXRUNTIME_VERSION}.tgz")
+    set(_ort_sha256 6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012)
 endif ()
-if (SCOPEONE_ENABLE_INFERENCE AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+
+set(_ort_download_error "")
+if (ONNXRUNTIME_ROOT)
+    set(_ort_root "${ONNXRUNTIME_ROOT}")
+elseif (_ort_package)
+    string(REGEX REPLACE "\\.(zip|tgz)$" "" _ort_name "${_ort_package}")
+    set(_ort_root "${CMAKE_CURRENT_SOURCE_DIR}/external/${_ort_name}")
+    set(_ort_url "https://github.com/microsoft/onnxruntime/releases/download/v${SCOPEONE_ONNXRUNTIME_VERSION}/${_ort_package}")
+    if (NOT EXISTS "${_ort_root}/include")
+        message(STATUS "Downloading ${_ort_url}")
+        set(_ort_archive "${CMAKE_CURRENT_BINARY_DIR}/${_ort_package}")
+        # EXPECTED_HASH turned a failed download into a configure error, so the hash is
+        # checked after it. Without the network Core is built without ONNX inference, and the
+        # next configure tries again.
+        file(DOWNLOAD "${_ort_url}" "${_ort_archive}"
+                SHOW_PROGRESS
+                STATUS _ort_download
+        )
+        list(GET _ort_download 0 _ort_download_code)
+        list(GET _ort_download 1 _ort_download_error)
+        if (_ort_download_code EQUAL 0)
+            file(SHA256 "${_ort_archive}" _ort_actual_sha256)
+            if (_ort_actual_sha256 STREQUAL _ort_sha256)
+                set(_ort_download_error "")
+                file(ARCHIVE_EXTRACT INPUT "${_ort_archive}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/external")
+            else ()
+                set(_ort_download_error "SHA256 mismatch")
+            endif ()
+        endif ()
+        file(REMOVE "${_ort_archive}")
+    endif ()
+else ()
+    set(_ort_root "")
+endif ()
+
+# The found paths are cached, so a root that changed, such as the GPU package taking over
+# once CUDA is found, kept linking the package of the earlier configure
+if (NOT "${SCOPEONE_ONNXRUNTIME_ROOT_USED}" STREQUAL "${_ort_root}")
+    unset(ONNXRUNTIME_INCLUDE_DIR CACHE)
+    unset(ONNXRUNTIME_LIBRARY CACHE)
+endif ()
+set(SCOPEONE_ONNXRUNTIME_ROOT_USED "${_ort_root}" CACHE INTERNAL "")
+set(ONNXRUNTIME_ROOT "${_ort_root}")
+find_path(ONNXRUNTIME_INCLUDE_DIR
+        NAMES onnxruntime_cxx_api.h
+        PATHS "${ONNXRUNTIME_ROOT}/include"
+        NO_DEFAULT_PATH
+)
+find_library(ONNXRUNTIME_LIBRARY
+        NAMES onnxruntime
+        PATHS "${ONNXRUNTIME_ROOT}/lib"
+        NO_DEFAULT_PATH
+)
+if (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
     target_sources(ScopeOneCore PRIVATE
             src/inference/InferenceProcessingRegistration.cpp
             src/inference/OnnxInferenceModule.cpp
@@ -438,17 +432,15 @@ if (SCOPEONE_ENABLE_INFERENCE AND ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRAR
         )
         install(FILES ${_onnxruntime_libs} DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     endif ()
-elseif (SCOPEONE_ENABLE_INFERENCE AND NOT ONNXRUNTIME_ROOT)
+elseif (NOT ONNXRUNTIME_ROOT)
     set(_inference_reason "no official ONNX Runtime package for ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}; set ONNXRUNTIME_ROOT")
     message(STATUS "${_inference_reason}; building Core without ONNX inference")
-elseif (SCOPEONE_ENABLE_INFERENCE AND _ort_download_error)
+elseif (_ort_download_error)
     set(_inference_reason "downloading ${_ort_url} failed (${_ort_download_error}); extract it into ${CMAKE_CURRENT_SOURCE_DIR}/external")
     message(STATUS "${_inference_reason}; building Core without ONNX inference")
-elseif (SCOPEONE_ENABLE_INFERENCE)
+else ()
     set(_inference_reason "ONNX Runtime was not found under ${ONNXRUNTIME_ROOT}")
     message(STATUS "${_inference_reason}; building Core without ONNX inference")
-else ()
-    set(_inference_reason "turned off with SCOPEONE_ENABLE_INFERENCE")
 endif ()
 # What this configure built in, for the build scripts to report
 set(SCOPEONE_BUILT_WITH_CUDA "${_with_cuda}" CACHE INTERNAL "")
@@ -543,31 +535,19 @@ target_link_directories(ScopeOne_DriverHost PRIVATE ${MMCORE_BIN_DIR})
 
 scopeone_add_runtime_copy_commands(ScopeOne_DriverHost $<TARGET_FILE_DIR:ScopeOne_DriverHost>)
 
-# The Visual Studio generator compiles the sources of one project one after another unless the
-# compiler runs them in parallel itself. Only for C++, nvcc does not take /MP.
+# /MP compiles the sources of one project in parallel, which the Visual Studio generator does not,
+# and Release builds use LTO. Only for C++, nvcc takes neither.
 if (MSVC)
-    target_compile_options(ScopeOneCore PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP>)
-    target_compile_options(ScopeOne_DriverHost PRIVATE /MP)
+    set(_cxx "$<COMPILE_LANGUAGE:CXX>")
+    set(_release_cxx "$<AND:$<CONFIG:Release>,${_cxx}>")
+    foreach (_target IN ITEMS ScopeOneCore ScopeOne_DriverHost)
+        target_compile_options(${_target} PRIVATE
+                "$<${_cxx}:/MP>"
+                "$<${_release_cxx}:/GL>" "$<${_release_cxx}:/fp:fast>" "$<${_release_cxx}:/arch:AVX2>"
+        )
+        target_link_options(${_target} PRIVATE $<$<CONFIG:Release>:/LTCG>)
+    endforeach ()
     target_compile_options(ScopeOneDriverSDK PRIVATE /MP)
-endif ()
-
-# LTO Release build
-if (MSVC)
-    # Only for C++, nvcc does not take these flags
-    set(_release_cxx "$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>")
-    target_compile_options(ScopeOneCore PRIVATE
-            "$<${_release_cxx}:/GL>" "$<${_release_cxx}:/fp:fast>" "$<${_release_cxx}:/arch:AVX2>"
-    )
-    target_link_options(ScopeOneCore PRIVATE
-            $<$<CONFIG:Release>:/LTCG>
-    )
-
-    target_compile_options(ScopeOne_DriverHost PRIVATE
-            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
-    )
-    target_link_options(ScopeOne_DriverHost PRIVATE
-            $<$<CONFIG:Release>:/LTCG>
-    )
 endif ()
 
 

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneCore/cmake/ScopeOneVersion.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneCore/cmake/ScopeOneQt.cmake")
 scopeone_resolve_version(SCOPEONE_VERSION "${CMAKE_CURRENT_LIST_DIR}")
 project(ScopeOne VERSION "${SCOPEONE_VERSION}" LANGUAGES CXX)
 
@@ -37,7 +38,7 @@ configure_file(
         @ONLY
 )
 
-find_package(Qt6 COMPONENTS
+find_package(Qt6 ${SCOPEONE_QT_MINIMUM_VERSION} COMPONENTS
         Core
         Gui
         Widgets
@@ -47,6 +48,7 @@ find_package(Qt6 COMPONENTS
         Concurrent
         REQUIRED
 )
+message(STATUS "Using Qt ${Qt6_VERSION} from ${Qt6_DIR}")
 
 find_package(ScopeOneCore CONFIG REQUIRED)
 
@@ -232,19 +234,17 @@ if (WIN32)
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_DriverHost.exe"
     )
 else ()
-    file(GLOB SCOPEONE_CORE_RUNTIME_FILES
+    # The lib folder of the Core install holds only Core's libraries and ONNX Runtime, and the
+    # copied DriverHost resolves them beside itself. Named one by one, the list had missed the
+    # macOS dylibs.
+    file(GLOB SCOPEONE_CORE_LIBRARIES
             LIST_DIRECTORIES false
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/*.so*"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/*.dylib"
+    )
+    set(SCOPEONE_CORE_RUNTIME_FILES
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/ScopeOne_DriverHost"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
-            # The copied DriverHost resolves its libraries beside itself, and the .so patterns
-            # alone left the macOS dylibs behind in the Core install
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore*.dylib"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK*.dylib"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter*.dylib"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.dylib"
+            ${SCOPEONE_CORE_LIBRARIES}
     )
 endif ()
 
@@ -274,18 +274,10 @@ if (SCOPEONE_CORE_RUNTIME_FILES)
     add_dependencies(ScopeOneCoreRuntime ScopeOne)
 endif ()
 
-if (UNIX AND NOT APPLE)
-    file(GLOB SCOPEONE_CORE_SHARED_LIBRARIES
-            LIST_DIRECTORIES false
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
-            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libonnxruntime*.so*"
-    )
-    install(FILES
-            ${SCOPEONE_CORE_SHARED_LIBRARIES}
-            DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    )
+if (WIN32)
+    install(FILES ${SCOPEONE_CORE_RUNTIME_FILES} DESTINATION .)
+elseif (NOT APPLE)
+    install(FILES ${SCOPEONE_CORE_LIBRARIES} DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 endif ()
 
 set(_driver_dir "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_BINDIR}/drivers")
@@ -314,37 +306,14 @@ if (WIN32)
     endif ()
 endif ()
 
-# The Visual Studio generator compiles the sources of one project one after another unless the
-# compiler runs them in parallel itself
+# /MP compiles the sources of one project in parallel, which the Visual Studio generator does not,
+# and Release builds use LTO
 if (MSVC)
-    target_compile_options(ScopeOne PRIVATE /MP)
+    target_compile_options(ScopeOne PRIVATE /MP $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>)
+    target_link_options(ScopeOne PRIVATE $<$<CONFIG:Release>:/LTCG>)
     target_compile_options(ScopeOneMcpServer PRIVATE /MP)
 endif ()
-
-# LTO Release build
-if (MSVC)
-    target_compile_options(ScopeOne PRIVATE
-            $<$<CONFIG:Release>:/GL /fp:fast /arch:AVX2>
-    )
-    target_link_options(ScopeOne PRIVATE
-            $<$<CONFIG:Release>:/LTCG>
-    )
-endif ()
 if (WIN32)
-    install(CODE "
-        file(GLOB _core_runtime_files
-            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/*.dll\"
-            \"$<TARGET_FILE_DIR:scopeone::ScopeOneCore>/ScopeOne_DriverHost.exe\"
-        )
-        if (_core_runtime_files)
-            file(INSTALL
-                DESTINATION \"\${CMAKE_INSTALL_PREFIX}\"
-                TYPE FILE
-                FILES \${_core_runtime_files}
-            )
-        endif()
-    ")
-
     install(CODE "
         set(_runtime_dir \"${CMAKE_BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}\")
         if (NOT EXISTS \"\${_runtime_dir}/$<TARGET_FILE_NAME:ScopeOne>\")
@@ -395,9 +364,9 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/Experimental-Microscopy-Lab/S
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
-set(SCOPEONE_PACKAGE_VARIANT "" CACHE STRING "Package variant suffix, for example gpu")
-if (SCOPEONE_PACKAGE_VARIANT)
-    set(CPACK_PACKAGE_FILE_NAME "ScopeOne-${PROJECT_VERSION}-win-x64-${SCOPEONE_PACKAGE_VARIANT}")
+# A Core built with CUDA makes the GPU package
+if (ScopeOneCore_WITH_CUDA)
+    set(CPACK_PACKAGE_FILE_NAME "ScopeOne-${PROJECT_VERSION}-win-x64-gpu")
 else ()
     set(CPACK_PACKAGE_FILE_NAME "ScopeOne-${PROJECT_VERSION}-win-x64")
 endif ()

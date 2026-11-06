@@ -181,10 +181,7 @@ jobs:
         shell: pwsh
         run: |
           $options = @()
-          if ("${{ matrix.gpu }}" -eq "true") {
-            $options += @("--guiConfigureOption", "-DSCOPEONE_PACKAGE_VARIANT=gpu")
-          }
-          else {
+          if ("${{ matrix.gpu }}" -ne "true") {
             $options += @("--coreConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF")
           }
           .\scripts\build.ps1 --configure --package @options

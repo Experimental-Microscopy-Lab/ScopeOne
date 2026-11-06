@@ -28,9 +28,7 @@ so a driver process holds only the host, the SDK library, Qt Core and Network, a
 
 The `scopeone::DriverSDK` target gives a driver the SDK headers (`scopeone/DriverSDK.h` includes
 them all) and the small SDK library, and nothing else of Core, so a driver that includes or calls
-any other part of Core fails to build. The SDK types are in `scopeone::core` because Core uses the
-same types; which of them a driver sees is decided by these headers and this target, not by the
-namespace.
+any other part of Core fails to build.
 
 Build and install ScopeOneCore first (`scripts/build.sh` or `scripts\build.ps1`). A driver
 is then a separate CMake project:
@@ -49,8 +47,8 @@ target_link_libraries(MyCamera PRIVATE scopeone::DriverSDK Qt6::Core)
 scopeone_add_driver(MyCamera)
 ```
 
-Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that ScopeOne uses
-(`vcpkg_installed/<triplet>`).
+Point `CMAKE_PREFIX_PATH` at `ScopeOneCore/install` and at the same Qt that ScopeOne uses,
+`vcpkg_installed/<triplet>` or the Qt passed to the build scripts with `--qt`.
 
 The drivers in this folder are built the same way, as a project of their own that finds only Qt
 Core and the installed ScopeOneCore. The build scripts build it into `drivers/build` and install

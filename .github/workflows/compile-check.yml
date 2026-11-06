@@ -65,6 +65,63 @@ jobs:
         shell: bash
         run: ./scripts/build.sh
 
+  compile-installed-qt:
+    name: Compile (Linux, installed Qt 6.8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            build-essential \
+            cmake \
+            autoconf \
+            automake \
+            libtool \
+            autoconf-archive \
+            pkg-config \
+            libboost-all-dev \
+            ninja-build curl zip unzip \
+            libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+            libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+            libxkbcommon-x11-dev
+
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
+          git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+          "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-scopeone-ubuntu-24.04-installed-qt-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-ubuntu-24.04-installed-qt-
+
+      # The oldest Qt that ScopeOne supports, so a newer Qt API used by mistake fails here
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.0
+          cache: true
+
+      - name: Compile mmCoreAndDevices and ScopeOne
+        shell: bash
+        run: ./scripts/build.sh --qt "$QT_ROOT_DIR"
+
   compile-macos:
     name: Compile (macOS)
     runs-on: macos-15

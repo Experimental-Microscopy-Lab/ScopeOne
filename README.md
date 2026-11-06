@@ -49,54 +49,110 @@ There is an example dual-camera .cfg file in the config folder, just change the 
 
 ## 🛠️ For Developers
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
+**TL;DR.** On a fresh machine, without spending time on setting up the C++ environment, run these commands. They install the tools, clone ScopeOne, and let the script build everything else, and start ScopeOne. The first build takes about an hour on four cores.
 
-**Prerequisites:**
-
-- Git, for the ScopeWriter submodule and Micro-Manager
-- A C++20 compiler: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) or its Build Tools (MSVC v143 toolset) on Windows, GCC or Clang on Linux and macOS (experimental)
-- [CMake](https://cmake.org/download/) 3.23 or newer, which comes with the C++ tools of Visual Studio on Windows
-- Python 3.14, only for the Python package and Python processing modules
-
-The build scripts set up the rest. They download [vcpkg](https://github.com/microsoft/vcpkg) when `VCPKG_ROOT` does not name a checkout, and vcpkg builds Qt 6.11.2, OpenCV 4.14.0 and ScopeWriter's libtiff, zlib, zstd and crc32c inside the repository. They also fetch and build Micro-Manager's core with the DemoCamera and Utilities adapters.
-
-Clone ScopeOne with its submodules, or initialize them in an existing checkout:
+Windows:
 
 ```powershell
-git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
-git submodule update --init --recursive
-```
-
-### Drivers and processing modules
-
-ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core. Core builds the CUDA modules when it finds nvcc, and ONNX inference always, with the GPU package of ONNX Runtime when CUDA is built and the CPU package otherwise. `-DSCOPEONE_ENABLE_CUDA=OFF` builds the standard Core and `-DSCOPEONE_ENABLE_INFERENCE=OFF` leaves ONNX out. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module.
-
-**Windows Build Steps:**
-
-On a new Windows machine, install Git and the Visual Studio 2022 Build Tools with the C++ workload, which bring MSVC, MSBuild, the Windows SDK and CMake. An existing Visual Studio 2022 with "Desktop development with C++" works as well.
-
-```powershell
-winget install Git.Git
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
-```
-
-`winget` is the package manager included in Windows 10 and 11. The Build Tools are Visual Studio without the IDE, free to use. `--override` passes its options to the Visual Studio installer: `--add ...VCTools` selects the C++ build tools, `--includeRecommended` adds the Windows SDK and CMake, `--passive` shows only a progress bar, and `--wait` returns once the installation has finished. The installer asks for administrator rights, downloads a few gigabytes and takes 10 to 20 minutes.
-
-Then clone ScopeOne and build and start it with one command, in a new terminal so Git is on the path:
-
-```powershell
 git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
 cd ScopeOne
 powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run
 ```
 
-Windows does not run `.ps1` files by default. Its execution policy only guards against starting a script by accident, and `-ExecutionPolicy Bypass` lifts it for this one run without changing any setting of the machine. Use the same command for every build, or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, which needs no administrator rights, and then start the script as `.\scripts\build.ps1`. 
+Linux (Debian, Ubuntu):
 
-The script finds Visual Studio itself, so any terminal works. If `VCPKG_ROOT` is not set, it offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It clones the latest mmCoreAndDevices and builds MMCore with the DemoCamera and Utilities adapters, then ScopeOneCore, the drivers and the GUI. The first build compiles Qt, OpenCV and their dependencies with vcpkg, which takes about an hour on a four core machine, four fifths of it for Qt. vcpkg keeps the result in `vcpkg_installed\` and in its binary cache, so later builds only compile ScopeOne.
+```bash
+sudo apt install \
+  build-essential cmake autoconf automake libtool autoconf-archive \
+  pkg-config ninja-build curl zip unzip libboost-all-dev
+sudo apt install --no-upgrade \
+  libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+  libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+  libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+  libxkbcommon-x11-dev
+git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+cd ScopeOne
+./scripts/build.sh --run
+```
 
-Later builds run the same command without `--run`, or with it to start ScopeOne afterwards. `--run` starts ScopeOne after the build, `--configure` configures again, `--clean` discards the build directories, and `--target core`, `gui` or `drivers` builds one part. Open `config\MMConfig_demo.cfg` in ScopeOne to try it without hardware. The first build downloads ONNX Runtime into `ScopeOneCore\external`, the GPU package when the CUDA Toolkit is installed. The last lines of the build show whether Core was built with the CUDA and ONNX modules.
+macOS:
 
-For a direct Core CMake configure, after the script has built MMCore once (`--target core`):
+```bash
+xcode-select --install
+brew install cmake autoconf automake libtool autoconf-archive pkg-config ninja boost
+git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+cd ScopeOne
+./scripts/build.sh --run
+```
+
+A coding agent such as Claude Code or Codex can also do this: ask it to set up and build ScopeOne by following this README.
+
+The sections below explain each step, the options and how to use a Qt that is already installed. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code.
+
+### Qt
+
+ScopeOne needs Qt 6.8 or later. There are three ways to get it.
+
+- **Qt is already installed.** Pass its directory once and the script uses it instead of building Qt:
+
+  ```powershell
+  # Windows
+  powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --qt C:\Qt\6.11.2\msvc2022_64
+  # Linux and macOS
+  ./scripts/build.sh --qt ~/Qt/6.11.2/gcc_64   # macOS: ~/Qt/6.11.2/macos
+  ```
+
+  On Windows the script saves the path as `SCOPEONE_QT_DIR` for your user account, and `--qt vcpkg` goes back to the Qt that vcpkg builds. On Linux and macOS, export `SCOPEONE_QT_DIR` with that path to keep it without `--qt`.
+
+- **Install Qt yourself** with the [Qt Online Installer](https://www.qt.io/download-qt-installer-oss), then pass its directory as above. On Windows choose the MSVC 2022 64-bit build; MinGW does not work.
+
+- **Let the script build it.** Without `--qt`, vcpkg builds Qt on the first build. Qt is about four fifths of that build, and vcpkg keeps the result, so it is built once.
+
+### Windows, step by step
+
+1. **Install the C++ build tools.** In a terminal:
+
+   ```powershell
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+   ```
+
+   `winget` comes with Windows 10 and 11. The command installs MSVC, the Windows SDK and CMake. It asks for administrator rights, downloads a few gigabytes and takes 10 to 20 minutes. An existing Visual Studio 2022 with "Desktop development with C++" works as well.
+
+2. **Clone ScopeOne.**
+
+   ```powershell
+   git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+   cd ScopeOne
+   ```
+
+3. **Build and start it.**
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run
+   ```
+
+   `-ExecutionPolicy Bypass` lets this command run a `.ps1` file. After `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, the script starts as `.\scripts\build.ps1`.
+
+   The script finds Visual Studio itself. It offers to download vcpkg into `%USERPROFILE%\vcpkg` and saves `VCPKG_ROOT` for your user account, and `--yes` accepts without asking. It then builds MMCore with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI, and downloads ONNX Runtime into `ScopeOneCore\external`, the GPU package when the CUDA Toolkit is installed.
+
+   Without an installed Qt, the first build compiles Qt, OpenCV and their dependencies with vcpkg, which takes about an hour on a four core machine, four fifths of it for Qt. vcpkg keeps the result, so later builds only compile ScopeOne. The last lines of the build show whether Core was built with the CUDA and ONNX modules.
+
+4. **Try it without hardware.** Open `config\MMConfig_demo.cfg` in ScopeOne. The application is `build\Release\ScopeOne.exe`.
+
+5. **Build again after a change** with the same command. The options are:
+
+   | Option | Effect |
+   |---|---|
+   | `--run` | Start ScopeOne after the build |
+   | `--target core`, `gui` or `drivers` | Build one part |
+   | `--configure` | Configure again, for new source files or a newly installed CUDA |
+   | `--clean` | Discard the build directories and the Core install and build from scratch |
+   | `--package` | Build the installer and zip, named `-gpu` when Core was built with CUDA |
+   | `--qt <dir>` | Use an installed Qt, see [Qt](#qt) |
+   | `--yes` | Accept the vcpkg download without asking |
+
+**CMake without the script.** After the script has built MMCore once (`--target core`), Core configures directly. Add `-DSCOPEONE_QT_DIR=<Qt directory>` for an installed Qt:
 
 ```powershell
 cmake -S ScopeOneCore -B ScopeOneCore/build `
@@ -106,69 +162,80 @@ cmake -S ScopeOneCore -B ScopeOneCore/build `
   -DVCPKG_TARGET_TRIPLET=x64-windows
 ```
 
-The built application is `build\Release\ScopeOne.exe`.
+### Linux and macOS, step by step
 
-**Linux and macOS Build Steps:**
+macOS support is experimental.
 
-Micro-Manager is built from its own checkout because its native core and device adapters are not vcpkg dependencies. Everything else comes from vcpkg with the dynamic triplet of the host, so Qt is shared between the GUI, ScopeOneCore and the drivers.
+1. **Install the build tools.**
 
-1. Install the system build tools.
+   Linux (Debian, Ubuntu):
 
-Linux:
+   ```bash
+   sudo apt install \
+     build-essential cmake autoconf automake libtool autoconf-archive \
+     pkg-config ninja-build curl zip unzip libboost-all-dev
+   sudo apt install --no-upgrade \
+     libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+     libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+     libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+     libxkbcommon-x11-dev
+   ```
 
-```bash
-sudo apt install \
-  git build-essential cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja-build curl zip unzip libboost-all-dev
-sudo apt install --no-upgrade \
-  libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
-  libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
-  libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
-  libxkbcommon-x11-dev
-```
+   The second command installs the X11 and OpenGL development files that vcpkg's Qt needs, and `--no-upgrade` keeps the installed Mesa drivers. The script lists the package names for Fedora when a tool is missing.
 
-The second command installs the X11 and OpenGL development files that vcpkg's `qtbase` port expects from the system. It is not a system Qt installation, and `--no-upgrade` keeps it from upgrading the installed Mesa drivers.
+   macOS:
 
-macOS:
+   ```bash
+   xcode-select --install
+   brew install \
+     cmake autoconf automake libtool autoconf-archive \
+     pkg-config ninja boost
+   ```
 
-```bash
-xcode-select --install
-brew install \
-  git cmake autoconf automake libtool autoconf-archive \
-  pkg-config ninja boost
-```
+2. **Clone ScopeOne.**
 
-2. Build from the ScopeOne repository root:
+   ```bash
+   git clone --recurse-submodules https://github.com/Experimental-Microscopy-Lab/ScopeOne.git
+   cd ScopeOne
+   ```
 
-```bash
-./scripts/build.sh
-```
+3. **Build and start it.**
 
-If vcpkg is missing, the script offers to download it into `$HOME/vcpkg` or a folder you type, and `--yes` takes the default folder without asking. The first build compiles Qt, OpenCV and their dependencies with vcpkg, about 160 CPU minutes, 11 minutes on a 48 core Linux machine and about 40 on four cores, and later builds reuse them from the binary cache. It then builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. Set `JOBS` to limit parallel jobs and `BUILD_TYPE` to change the CMake build type (default `Release`). Pass `--clean` to discard the previous build directories. The first build downloads ONNX Runtime into `ScopeOneCore/external`.
+   ```bash
+   ./scripts/build.sh --run
+   ```
 
-The vcpkg packages of a first build without the binary cache, measured on a 48 core Linux machine:
+   The script checks the build tools, offers to download vcpkg into `$HOME/vcpkg` or a folder you type (`--yes` takes the default), and builds Micro-Manager's core with the DemoCamera and Utilities adapters, ScopeOneCore, the drivers and the GUI. It downloads ONNX Runtime into `ScopeOneCore/external`.
 
-| Package | Time |
-|---|---|
-| qtbase | 5.2 min |
-| opencv4 | 2.2 min |
-| qtsvg | 59 s |
-| harfbuzz | 46 s |
-| gperf, libb2, zstd, pcre2 | 10 to 22 s each |
-| 29 others | under 10 s each |
-| All 37 packages | 11 min 23 s |
+   Without an installed Qt, the first build compiles Qt, OpenCV and their dependencies with vcpkg, about 160 CPU minutes, which is 11 minutes on a 48 core Linux machine and about 40 on four cores. Later builds reuse them from the binary cache. Measured without the cache on the 48 core machine:
 
-The executable is `build/ScopeOne`, and `config/MMConfig_demo.cfg` runs with the copied demo adapters. It loads Qt and OpenCV from `vcpkg_installed/<triplet>/lib`, so run it from the build tree.
+   | Package | Time |
+   |---|---|
+   | qtbase | 5.2 min |
+   | opencv4 | 2.2 min |
+   | qtsvg | 59 s |
+   | harfbuzz | 46 s |
+   | gperf, libb2, zstd, pcre2 | 10 to 22 s each |
+   | 29 others | under 10 s each |
+   | All 37 packages | 11 min 23 s |
+
+4. **Try it without hardware.** The application is `build/ScopeOne`. Run it from the build tree and open `config/MMConfig_demo.cfg`.
+
+5. **Build again after a change** with the same command. `--clean` discards the build directories and the Core install, `--run` starts ScopeOne afterwards, `JOBS` limits the parallel jobs and `BUILD_TYPE` sets the CMake build type (default `Release`).
+
+### Drivers and processing modules
+
+ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core. Core builds the CUDA modules when it finds nvcc, and ONNX inference always, with the GPU package of ONNX Runtime when CUDA is built and the CPU package otherwise. `-DSCOPEONE_ENABLE_CUDA=OFF` builds the standard Core. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module. Python 3.14 is needed only for the Python package and Python processing modules.
 
 ## 🤖 Automation and AI Agents
 
-The desktop app exposes a language-neutral local control API and shared-memory frame channel. An AI agent does not run inside ScopeOne or depend on Python. A tool adapter can discover supported operation groups with the `capabilities` request, read a structured observation with `state_snapshot`, and invoke the exposed camera, stage, mosaic, processing, image analysis, experiment, recording, layer, and markup operations. Requests may carry an ID that is echoed by the app for correlation. Recording save operations use `ome-tiff` by default and also accept `ome-zarr`, `tiff` and `binary`.
+The desktop app exposes a language-neutral local control API and shared-memory frame channel. A tool adapter can discover supported operation groups with the `capabilities` request, read a structured observation with `state_snapshot`, and invoke the exposed camera, stage, mosaic, processing, image analysis, experiment, recording, layer, and markup operations. Requests may carry an ID that is echoed by the app for correlation. Recording save operations use `ome-tiff` by default and also accept `ome-zarr`, `tiff` and `binary`.
 
 The API reports which operations mutate hardware, write files, remove state, or may run for a long time. An agent adapter should request user confirmation before those operations and verify the result with the returned read-back value, experiment status, or a new state snapshot. The Python package is one optional client implementation. See the [Python client and Local API protocol guide](ScopeOneCore/python/scopeone/README.md) for protocol details and runnable examples.
 
 ### MCP adapter
 
-`ScopeOneMcpServer` is a standalone C++ MCP server included with ScopeOne. It uses MCP protocol version `2025-06-18` over standard input and output and forwards validated tool calls to the running desktop app through the Local API. It does not embed a model, open a network port, or depend on Python.
+`ScopeOneMcpServer` is a standalone C++ MCP server included with ScopeOne. It uses MCP protocol version `2025-06-18` over standard input and output and forwards validated tool calls to the running desktop app through the Local API.
 
 #### Claude Code plugin
 
@@ -180,7 +247,7 @@ Install ScopeOne first, then run these commands inside Claude Code:
 /reload-plugins
 ```
 
-When prompted, select `ScopeOneMcpServer.exe` from the same directory as `ScopeOne.exe`. Start ScopeOne before asking Claude to inspect or control it. The plugin supplies the MCP configuration and agent operating guidance, so no Python installation or manual MCP server launch is required.
+When prompted, select `ScopeOneMcpServer.exe` from the same directory as `ScopeOne.exe`. Start ScopeOne before asking Claude to inspect or control it. The plugin supplies the MCP configuration and the agent guidance.
 
 #### Other MCP hosts
 
@@ -193,7 +260,7 @@ To use it:
 
 Use `scopeone` as the server name, `stdio` as the transport, the absolute path to `ScopeOneMcpServer.exe` as the command, and no command-line arguments. The exact configuration syntax depends on the agent host.
 
-The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, independent image windows, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can list, open, activate, process, save, and close independent image windows, read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. ScopeOne remains the authority for parameter validation and hardware read-back, and MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
+The MCP tool set mirrors the Local API operation catalog, including system state, configuration, preview layers, independent image windows, automatic display levels, source alignment, markups, device properties, exposure, ROI, stages, stage mosaics, processing, experiments, recording sessions, frame transfer, and analysis. Agents can list, open, activate, process, save, and close independent image windows, read the current frame of any image layer, monitor live acquisition and writer progress, and optionally export or display particle masks. MCP tool calls are visible in the desktop UI through the same application state used by manual controls.
 
 Configuration loading and unloading report an explicit lifecycle state through the Local API and MCP. A configuration with non-camera initialization warnings is reported as `partially_loaded` with failed device labels; camera backend startup failures are cleaned up and reported as errors. During `loading` or `unloading`, hardware mutations are rejected until the operation finishes.
 
@@ -203,7 +270,7 @@ Configuration loading and unloading report an explicit lifecycle state through t
 - Hamamatsu C13440
 - Andor 897D
 
-The current validation list is still short, but the codebase has been cleaned to remove early hard-coded device assumptions. In principle, ScopeOne should follow Micro-Manager device compatibility.
+Other devices work through the same Micro-Manager device adapters.
 
 ## 🖥️ Tested System Configurations
 
@@ -212,4 +279,5 @@ The current validation list is still short, but the codebase has been cleaned to
 - Fedora Linux 44 (Workstation Edition), Intel(R) Core(TM) i7-7700, 32 GB RAM
 - macOS 26.5.2, Apple M1 Pro, 16 GB RAM
 
-We build and test ScopeOne on the above machines, which are comparatively older and weaker than many typical optical lab computers. However, ScopeOne still provides smooth real-time preview and processing on them.
+
+ScopeOne is built and tested on the above machines, which are comparatively older and weaker than many typical optical lab computers. However, ScopeOne still provides smooth real-time preview and processing on them, as an example, with a Hamamatsu C11440 camera at 2048 × 2048 and 100 fps, the live preview shows the overshoot of a PI M-112.1DG stage move: the stage passes the target and moves back. We have not seen this in the live preview of other camera control software.

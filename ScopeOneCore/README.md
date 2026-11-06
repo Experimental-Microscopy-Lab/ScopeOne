@@ -30,7 +30,7 @@ ScopeOneCore/
 
 `internal` contains implementation contracts between Core managers, processing modules and DriverHost. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
 
-`src` contains implementations. A public class such as `ScopeOneCore`, `ImageSceneModel` or `ExperimentDocument` still has its `.cpp` file in `src`; being public is determined by its header location and exported API, not by the location of its implementation.
+`src` contains implementations. A public class such as `ScopeOneCore`, `ImageSceneModel` or `ExperimentDocument` has its `.cpp` file in `src` too.
 
 Use this placement rule:
 
@@ -121,7 +121,7 @@ Providers use ScopeOne logical device IDs and publish `ImageFrame` objects throu
 
 - `drivers` contains the drivers, among them NI-DAQmx and the example camera and PMT. Each provider runs in an isolated DriverHost process, so a vendor library such as NI-DAQmx is never loaded into ScopeOne. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne drivers.
 - Python processing modules are scripts in `processing/python`, beside the executable or in the application data directory. Core runs each module of a pipeline in its own Python process.
-- The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is built when `SCOPEONE_ENABLE_INFERENCE` is on, with the official ONNX Runtime package that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK, and with both switches off Core neither links nor ships CUDA or ONNX Runtime. Every processing method, the PTU file signal source and the DHM reconstruction are part of Core.
+- The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is always built, with the official ONNX Runtime package that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK. Every processing method, the PTU file signal source and the DHM reconstruction are part of Core.
 - The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ScopeOneToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
 
 Drivers outside this repository consume the exported `scopeone::DriverSDK` CMake target. Every driver manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`, and incompatible manifests are rejected before the library instance is created.

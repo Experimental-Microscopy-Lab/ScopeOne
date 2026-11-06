@@ -8,6 +8,7 @@ MM_REPO_DIR="$EXTERNAL_DIR/micro-manager"
 MMCORE_LINK="$EXTERNAL_DIR/mmCoreAndDevices"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 CLEAN=false
+RUN=false
 ASSUME_YES=false
 
 # Colors are used only on a terminal, and NO_COLOR turns them off
@@ -29,13 +30,29 @@ error() {
   printf '%s%s%s\n' "$RED" "$1" "$RESET" >&2
 }
 
-for argument in "$@"; do
-  case "$argument" in
+# An installed Qt comes from --qt or SCOPEONE_QT_DIR, and "vcpkg" selects the Qt that vcpkg builds
+QT_DIR="${SCOPEONE_QT_DIR:-}"
+while (( $# > 0 )); do
+  case "$1" in
     --clean) CLEAN=true ;;
+    --run) RUN=true ;;
     --yes|-y) ASSUME_YES=true ;;
-    *) error "Unknown option: $argument"; exit 1 ;;
+    --qt)
+      if (( $# < 2 )); then
+        error "--qt needs the Qt directory, such as ~/Qt/6.11.2/gcc_64, or vcpkg"
+        exit 1
+      fi
+      QT_DIR="$2"
+      shift
+      ;;
+    --qt=*) QT_DIR="${1#--qt=}" ;;
+    *) error "Unknown option: $1"; exit 1 ;;
   esac
+  shift
 done
+if [[ "$QT_DIR" == vcpkg ]]; then
+  QT_DIR=""
+fi
 
 case "$(uname -s)" in
   Linux*)
@@ -171,6 +188,16 @@ VCPKG_ARGS=(
   "-DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET"
   "-DVCPKG_HOST_TRIPLET=$VCPKG_TRIPLET"
 )
+if [[ -n "$QT_DIR" ]]; then
+  QT_DIR="$(cd "$QT_DIR" 2>/dev/null && pwd || echo "$QT_DIR")"
+  if [[ ! -d "$QT_DIR/lib/cmake/Qt6" ]]; then
+    error "No Qt 6 in $QT_DIR (lib/cmake/Qt6 is missing)."
+    error "Pass the directory that holds bin, lib and include, such as ~/Qt/6.11.2/gcc_64 or ~/Qt/6.11.2/macos."
+    exit 1
+  fi
+fi
+# Every project takes the Qt from SCOPEONE_QT_DIR, which leaves Qt out of vcpkg when it is set
+VCPKG_ARGS+=("-DSCOPEONE_QT_DIR=$QT_DIR")
 
 JOBS="${JOBS:-$DEFAULT_JOBS}"
 DEMO_ADAPTER="$MMCORE_LINK/DeviceAdapters/DemoCamera/.libs/$DEMO_ADAPTER_NAME"
@@ -217,7 +244,9 @@ step "Building required Micro-Manager components"
 )
 
 step "Building and installing ScopeOneCore"
-if [[ ! -d "$ROOT_DIR/vcpkg_installed/$VCPKG_TRIPLET" ]]; then
+if [[ -n "$QT_DIR" ]]; then
+  echo "Using the Qt in $QT_DIR. Export SCOPEONE_QT_DIR=$QT_DIR to keep it without --qt."
+elif [[ ! -d "$ROOT_DIR/vcpkg_installed/$VCPKG_TRIPLET" ]]; then
   echo "The first build compiles Qt and OpenCV with vcpkg and can take a long time. Later builds reuse the result."
 fi
 run cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "${VCPKG_ARGS[@]}"
@@ -266,3 +295,9 @@ echo "GUI executable: $ROOT_DIR/build/ScopeOne"
 echo "Demo configuration: $ROOT_DIR/config/MMConfig_demo.cfg"
 echo "CUDA: $(core_module CUDA)"
 echo "ONNX: $(core_module INFERENCE)"
+
+if [[ "$RUN" == true ]]; then
+  step "Starting ScopeOne"
+  cd "$ROOT_DIR/build"
+  exec ./ScopeOne
+fi
