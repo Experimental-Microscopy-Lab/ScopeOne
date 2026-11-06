@@ -140,7 +140,7 @@ SCOPEONE_REGISTER_PROCESSING_MODULE(
      realParameter("sigma", "Sigma", 0.0, 0.0, 100.0, 0.1, 2)})
 ```
 
-The arguments after the class are its `ProcessingModuleDescriptor`: the id that recipes store, the name shown in the processing list, the schema version and the parameters, built with `integerParameter`, `realParameter`, `booleanParameter` and `choiceParameter` from `internal/ProcessingParameters.h`. A file that builds several modules from one table, or a descriptor that depends on the machine such as the ONNX providers, passes a function to `addProcessingModuleRegistration` instead, as `ImageOperationModules.cpp` does. Each file registers once. The registry and the processing list need no change, and the list is sorted by name.
+The arguments after the class are its `ProcessingModuleDescriptor`: the id that recipes store, the name shown in the processing list, the schema version and the parameters, built with `integerParameter`, `realParameter`, `booleanParameter` and `choiceParameter` from `internal/ProcessingParameters.h`. A file that builds several modules from one table, or a descriptor that depends on the machine such as the ONNX providers, passes a function to `addProcessingModuleRegistration` instead, as `ImageOperationModules.cpp` does. Each file registers once. CMake picks up every source file of Core from its folder, so a new module is a new file and nothing else changes. The processing list is sorted by name.
 
 ## CUDA Modules
 
@@ -245,7 +245,7 @@ namespace scopeone::core::internal::cuda::detail
 }
 ```
 
-The four files are the whole change, as CMake builds every file in `src/cuda` and `internal/cuda`.
+The four files are the whole change.
 
 - The kernels are launched through plain functions declared in the module's own kernels header, which has no Qt and no CUDA types, so the module sources compile without nvcc and no shared file changes. `CudaKernelLaunch.h` holds what the kernel files share, such as `synchronizeKernel`.
 - The frames are pitched 2D float images by default. `GpuMemoryLayout::Contiguous` in the constructor gives a contiguous buffer for libraries that need one, such as cuFFT.

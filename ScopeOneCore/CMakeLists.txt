@@ -69,98 +69,11 @@ function(scopeone_add_runtime_copy_commands target destination)
     endforeach ()
 endfunction()
 
-set(CORE_SOURCES
-        src/ExperimentDocument.cpp
-        src/AcquisitionEngine.cpp
-        src/DriverHostProviderProxy.cpp
-        src/DaqDeviceManager.cpp
-        src/DriverManifest.cpp
-        src/HardwareRuntime.cpp
-        src/MicroManagerProvider.cpp
-        src/ImageOps.cpp
-        src/ImageSceneModel.cpp
-        src/MMCoreManager.cpp
-        src/FrameBufferUtils.cpp
-        src/ParticleAnalysis.cpp
-        src/StageMosaicManager.cpp
-        src/ImageProcessingFramework.cpp
-        src/ProcessingPipeline.cpp
-        src/DhmReconstruction.cpp
-        src/ProcessingModuleRegistry.cpp
-        src/SpatiotemporalBinningModule.cpp
-        src/GaussianBlurModule.cpp
-        src/ImageOperationModules.cpp
-        src/FFTModule.cpp
-        src/FrequencyDomainFilterModule.cpp
-        src/MaskModule.cpp
-        src/IFFTModule.cpp
-        src/BackgroundCalibrationModule.cpp
-        src/DifferentialRollingModule.cpp
-        src/IscatModule.cpp
-        src/PythonProcessingModule.cpp
-        src/PtuFile.cpp
-        src/HardwareStreamCodec.cpp
-        src/StreamRing.cpp
-        src/MDAManager.cpp
-        src/RecordingManager.cpp
-        src/CameraBackend.cpp
-        src/CameraManager.cpp
-        src/NativeCameraBackend.cpp
-        src/DriverHostCameraBackend.cpp
-        src/ScopeOneCore.cpp
-        src/ScanImageAssembler.cpp
-        src/SignalSourceManager.cpp
-)
-
-set(CORE_HEADERS
-        include/scopeone/ExperimentDocument.h
-        include/scopeone/DriverManifest.h
-        include/scopeone/ProcessingTypes.h
-        internal/ScanImageAssembler.h
-        include/scopeone/SharedFrame.h
-        include/scopeone/DhmReconstruction.h
-        internal/AcquisitionEngine.h
-        internal/CameraRuntimeControl.h
-        include/scopeone/ImageOps.h
-        include/scopeone/ImageSceneModel.h
-        internal/HardwareRuntime.h
-        internal/MicroManagerProvider.h
-        internal/MMCoreManager.h
-        internal/FrameBufferUtils.h
-        internal/ParticleAnalysis.h
-        internal/StageMosaicManager.h
-        internal/ImageProcessingFramework.h
-        internal/ProcessingModule.h
-        internal/ProcessingModuleRegistry.h
-        internal/ProcessingParameters.h
-        include/scopeone/ProcessingPipeline.h
-        internal/DriverHostProtocol.h
-        internal/SharedFrameRing.h
-        internal/HardwareStreamCodec.h
-        internal/StreamRing.h
-        internal/DriverHostProviderProxy.h
-        internal/DaqDeviceManager.h
-        internal/SignalSourceManager.h
-        internal/SpatiotemporalBinningModule.h
-        internal/GaussianBlurModule.h
-        internal/ImageOperationModules.h
-        internal/FFTModule.h
-        internal/FrequencyDomainFilterModule.h
-        internal/MaskModule.h
-        internal/IFFTModule.h
-        internal/BackgroundCalibrationModule.h
-        internal/DifferentialRollingModule.h
-        internal/IscatModule.h
-        internal/PythonProcessingModule.h
-        internal/PtuFile.h
-        internal/MDAManager.h
-        internal/RecordingManager.h
-        internal/CameraBackend.h
-        internal/CameraManager.h
-        include/scopeone/scopeone_core_export.h
-        include/scopeone/RecordingSession.h
-        include/scopeone/ScopeOneCore.h
-)
+# Every source of Core is picked up from its folder, so a new file, such as a processing module that
+# registers itself, needs no change here. DriverHostMain.cpp belongs to ScopeOne_DriverHost.
+file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+list(REMOVE_ITEM CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/DriverHostMain.cpp")
+file(GLOB CORE_HEADERS CONFIGURE_DEPENDS internal/*.h include/scopeone/*.h)
 
 # The driver SDK: the only headers and the only library a driver sees. It is a library of its
 # own so a driver that reaches for anything else of Core does not compile or link.
@@ -278,7 +191,6 @@ if (SCOPEONE_CUDA_NVCC_EXECUTABLE)
 endif ()
 if (SCOPEONE_CUDA_NVCC_EXECUTABLE AND TARGET CUDA::cufft)
     set(SCOPEONE_CUDA_ARCHITECTURES "50;75;80;86;89" CACHE STRING "Target CUDA architectures")
-    # A new CUDA module is a new file in src/cuda and internal/cuda, picked up without editing this list
     file(GLOB _cuda_sources CONFIGURE_DEPENDS src/cuda/*.cpp internal/cuda/*.h)
     file(GLOB _cuda_kernels CONFIGURE_DEPENDS src/cuda/*.cu)
     target_sources(ScopeOneCore PRIVATE ${_cuda_sources} ${_cuda_kernels})
@@ -383,18 +295,8 @@ find_library(ONNXRUNTIME_LIBRARY
         NO_DEFAULT_PATH
 )
 if (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
-    target_sources(ScopeOneCore PRIVATE
-            src/inference/InferenceProcessingRegistration.cpp
-            src/inference/OnnxInferenceModule.cpp
-            src/inference/OnnxRuntime.cpp
-            src/inference/OnnxSession.cpp
-            internal/inference/ExecutionProvider.h
-            internal/inference/OnnxInferenceModule.h
-            internal/inference/OnnxInternal.h
-            internal/inference/OnnxRuntime.h
-            internal/inference/OnnxSession.h
-            internal/inference/TensorInfo.h
-    )
+    file(GLOB _inference_sources CONFIGURE_DEPENDS src/inference/*.cpp internal/inference/*.h)
+    target_sources(ScopeOneCore PRIVATE ${_inference_sources})
     target_include_directories(ScopeOneCore PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
     target_link_libraries(ScopeOneCore PRIVATE "${ONNXRUNTIME_LIBRARY}")
     set(_with_inference ON)
