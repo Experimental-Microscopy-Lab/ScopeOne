@@ -191,10 +191,17 @@ target_include_directories(ScopeOneDriverSDK PUBLIC
 
 add_library(ScopeOneCore SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 add_library(scopeone::ScopeOneCore ALIAS ScopeOneCore)
-if (UNIX AND NOT APPLE)
+# macOS has no $ORIGIN. Without an @loader_path entry the installed libraries and DriverHost had
+# no LC_RPATH at all, so dyld could not resolve @rpath and the host died before loading a camera.
+if (APPLE)
+    set(SCOPEONE_RPATH_ORIGIN "@loader_path")
+elseif (UNIX)
+    set(SCOPEONE_RPATH_ORIGIN "$ORIGIN")
+endif ()
+if (UNIX)
     set_target_properties(ScopeWriter ScopeOneCore ScopeOneDriverSDK PROPERTIES
-            BUILD_RPATH "$ORIGIN"
-            INSTALL_RPATH "$ORIGIN"
+            BUILD_RPATH "${SCOPEONE_RPATH_ORIGIN}"
+            INSTALL_RPATH "${SCOPEONE_RPATH_ORIGIN}"
             INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()
@@ -419,10 +426,10 @@ add_executable(ScopeOne_DriverHost
         src/DriverManifest.cpp
         src/StreamRing.cpp
 )
-if (UNIX AND NOT APPLE)
+if (UNIX)
     set_target_properties(ScopeOne_DriverHost PROPERTIES
-            BUILD_RPATH "$ORIGIN"
-            INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN"
+            BUILD_RPATH "${SCOPEONE_RPATH_ORIGIN}"
+            INSTALL_RPATH "${SCOPEONE_RPATH_ORIGIN}/../lib;${SCOPEONE_RPATH_ORIGIN}"
             INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif ()

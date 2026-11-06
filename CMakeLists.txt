@@ -238,6 +238,11 @@ else ()
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK.so*"
             "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter.so*"
+            # The copied DriverHost resolves its libraries beside itself, and the .so patterns
+            # alone left the macOS dylibs behind in the Core install
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneCore*.dylib"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeOneDriverSDK*.dylib"
+            "${ScopeOneCore_ROOT}/${CMAKE_INSTALL_LIBDIR}/libScopeWriter*.dylib"
     )
 endif ()
 
