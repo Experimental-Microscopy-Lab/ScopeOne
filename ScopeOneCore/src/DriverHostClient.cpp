@@ -279,8 +279,7 @@ namespace scopeone::core::internal
                     auto reader = std::make_shared<Reader>();
                     reader->cameraId = device.logicalId;
                     reader->shmKey = shmKey;
-                    reader->shm = std::make_unique<QSharedMemory>();
-                    reader->shm->setNativeKey(shmKey);
+                    reader->shm = std::make_unique<QSharedMemory>(driverhost::sharedMemoryNativeKey(shmKey));
                     m_readers.insert(device.logicalId, std::move(reader));
                     m_cameraIds.append(device.logicalId);
                 }
@@ -293,9 +292,37 @@ namespace scopeone::core::internal
             {
                 daqDevices.append(hardwarestream::daqDeviceDescriptorFromJson(value.toObject()));
             }
+            // The camera rings are attached now, so DriverHost can remove their names
+            QStringList keys;
+            for (const auto& reader : std::as_const(m_readers))
+            {
+                if (!ensureSharedMemory(*reader))
+                {
+                    if (errorMessage)
+                    {
+                        *errorMessage = QStringLiteral("Cannot attach the frame ring of '%1'").arg(reader->cameraId);
+                    }
+                    cleanup();
+                    return false;
+                }
+                keys.append(reader->shmKey);
+            }
+            releaseSharedMemory(keys);
             description = response;
             if (errorMessage) errorMessage->clear();
             return true;
+        }
+
+        void releaseSharedMemory(const QStringList& keys)
+        {
+            if (keys.isEmpty())
+            {
+                return;
+            }
+            QJsonObject request{{driverhost::kMessageTypeField, driverhost::kCommandReleaseSharedMemory},
+                                {driverhost::kKeysField, QJsonArray::fromStringList(keys)}};
+            QJsonObject response;
+            sendRequest(request, response, kControlRequestTimeoutMs, nullptr);
         }
 
         // The images wait in DriverHost and come over a part at a time, as the frame ring holds
@@ -362,13 +389,13 @@ namespace scopeone::core::internal
                                       : config.value(QStringLiteral("deviceId")).toString();
             auto stream = std::make_shared<StreamReader>();
             stream->streamId = response.value(driverhost::kStreamIdField).toString();
-            if (!streamring::attachSharedRing(stream->shm,
-                                              response.value(driverhost::kSharedMemoryKeyField).toString(),
-                                              errorMessage))
+            const QString shmKey = response.value(driverhost::kSharedMemoryKeyField).toString();
+            if (!streamring::attachSharedRing(stream->shm, driverhost::sharedMemoryNativeKey(shmKey), errorMessage))
             {
                 stopStream(signal ? driverhost::kCommandStopSignal : driverhost::kCommandStopDaq, id, nullptr);
                 return false;
             }
+            releaseSharedMemory({shmKey});
             stream->reader = streamring::Reader(stream->shm.data());
             m_streams.insert(stream->streamId, stream);
             (signal ? m_activeSignals : m_activeDaqDevices).insert(id);

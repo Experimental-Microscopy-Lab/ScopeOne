@@ -29,6 +29,8 @@
 #include <QSocketNotifier>
 #include <csignal>
 #include <fcntl.h>
+#include <semaphore.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #ifdef Q_OS_MACOS
@@ -269,6 +271,7 @@ namespace scopeone::core::internal
         std::shared_ptr<CameraTransport> cameraTransport(const QString& deviceId) const;
         bool createSharedMemory(CameraTransport& transport);
         void writeCameraFrame(const ImageFrame& frame);
+        void releaseSharedMemoryName(const QString& key);
         void sendPendingNotice(const QString& deviceId);
         bool writeFrame(CameraTransport& transport,
                         const ImageFrame& frame,
@@ -561,7 +564,8 @@ namespace scopeone::core::internal
         auto stream = std::make_shared<StreamTransport>();
         stream->streamId = streamId;
         stream->shmKey = driverhost::streamSharedMemoryKey(m_hostKey, m_nextStreamIndex++);
-        if (!streamring::createSharedRing(stream->shm, stream->shmKey, capacity, errorMessage))
+        if (!streamring::createSharedRing(stream->shm, driverhost::sharedMemoryNativeKey(stream->shmKey),
+                                          capacity, errorMessage))
         {
             return {};
         }
@@ -837,8 +841,7 @@ namespace scopeone::core::internal
 
     bool DriverRuntime::createSharedMemory(CameraTransport& transport)
     {
-        transport.shm = std::make_unique<QSharedMemory>();
-        transport.shm->setNativeKey(transport.shmKey);
+        transport.shm = std::make_unique<QSharedMemory>(driverhost::sharedMemoryNativeKey(transport.shmKey));
         return sharedframe::createRing(*transport.shm, &m_lastError);
     }
 
@@ -890,6 +893,39 @@ namespace scopeone::core::internal
             QMetaObject::invokeMethod(timer, [timer, noticeDelayMs]() { timer->start(noticeDelayMs); },
                                       Qt::QueuedConnection);
         }
+    }
+
+    // Removes the name of a ring of this host. Qt never removes the name of POSIX shared memory,
+    // which then outlived a crash of both processes; removed once ScopeOne has attached, it goes
+    // away with the last mapping.
+    void DriverRuntime::releaseSharedMemoryName(const QString& key)
+    {
+#ifndef Q_OS_WIN
+        bool owned = false;
+        {
+            QReadLocker locker(&m_cameraTransportsLock);
+            for (const auto& transport : std::as_const(m_cameraTransports))
+            {
+                owned = owned || transport->shmKey == key;
+            }
+        }
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            for (const auto& stream : std::as_const(m_streams))
+            {
+                owned = owned || stream->shmKey == key;
+            }
+        }
+        if (owned)
+        {
+            // Qt guards the memory with a POSIX semaphore of the same name, whose name stays too
+            const QByteArray name = driverhost::sharedMemoryNativeKey(key).nativeKey().toLocal8Bit();
+            ::shm_unlink(name.constData());
+            ::sem_unlink(name.constData());
+        }
+#else
+        (void)key;
+#endif
     }
 
     void DriverRuntime::sendPendingNotice(const QString& deviceId)
@@ -1019,6 +1055,15 @@ namespace scopeone::core::internal
                 response.insert(driverhost::kDefaultAutofocusField, m_autofocus->defaultAutofocus());
             }
             reply(response);
+            return;
+        }
+        if (type == driverhost::kCommandReleaseSharedMemory)
+        {
+            for (const QJsonValue& value : message.value(driverhost::kKeysField).toArray())
+            {
+                releaseSharedMemoryName(value.toString());
+            }
+            reply(makeResponse(type, requestId, true));
             return;
         }
         if (type == driverhost::kCommandShutdown)

@@ -41,12 +41,12 @@ namespace scopeone::core::internal::streamring
     // Creates the shared memory of a ring of the given capacity under the native key, dropping
     // a ring of that key a crashed DriverHost left behind
     bool createSharedRing(QSharedMemory& shm,
-                          const QString& nativeKey,
+                          const QNativeIpcKey& nativeKey,
                           qsizetype capacity,
                           QString* errorMessage);
 
     // Attaches the shared memory of a ring another process created
-    bool attachSharedRing(QSharedMemory& shm, const QString& nativeKey, QString* errorMessage);
+    bool attachSharedRing(QSharedMemory& shm, const QNativeIpcKey& nativeKey, QString* errorMessage);
 
     class Writer
     {

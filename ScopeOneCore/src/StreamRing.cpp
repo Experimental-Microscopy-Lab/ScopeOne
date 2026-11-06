@@ -69,7 +69,7 @@ namespace scopeone::core::internal::streamring
     }
 
     bool createSharedRing(QSharedMemory& shm,
-                          const QString& nativeKey,
+                          const QNativeIpcKey& nativeKey,
                           qsizetype capacity,
                           QString* errorMessage)
     {
@@ -86,7 +86,7 @@ namespace scopeone::core::internal::streamring
                 if (errorMessage)
                 {
                     *errorMessage = QStringLiteral("Cannot create shared memory '%1': %2")
-                                        .arg(nativeKey, shm.errorString());
+                                        .arg(nativeKey.nativeKey(), shm.errorString());
                 }
                 return false;
             }
@@ -95,7 +95,7 @@ namespace scopeone::core::internal::streamring
         return true;
     }
 
-    bool attachSharedRing(QSharedMemory& shm, const QString& nativeKey, QString* errorMessage)
+    bool attachSharedRing(QSharedMemory& shm, const QNativeIpcKey& nativeKey, QString* errorMessage)
     {
         shm.setNativeKey(nativeKey);
         if (!shm.attach(QSharedMemory::ReadWrite))
@@ -103,7 +103,7 @@ namespace scopeone::core::internal::streamring
             if (errorMessage)
             {
                 *errorMessage = QStringLiteral("Cannot attach shared memory '%1': %2")
-                                    .arg(nativeKey, shm.errorString());
+                                    .arg(nativeKey.nativeKey(), shm.errorString());
             }
             return false;
         }
@@ -115,7 +115,7 @@ namespace scopeone::core::internal::streamring
             shm.detach();
             if (errorMessage)
             {
-                *errorMessage = QStringLiteral("Shared memory '%1' is not a stream ring").arg(nativeKey);
+                *errorMessage = QStringLiteral("Shared memory '%1' is not a stream ring").arg(nativeKey.nativeKey());
             }
             return false;
         }

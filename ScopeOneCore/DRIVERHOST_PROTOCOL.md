@@ -5,7 +5,7 @@ than one camera, through a `ScopeOne_DriverHost` process. This file describes wh
 process boundary: control messages on a local socket, camera frames
 in shared memory, and the chunks of signal sources and DAQ devices in stream rings. Both ends are part of ScopeOne, so the protocol is internal and changes
 with it; drivers are written against `scopeone::DriverSDK` instead. It is version
-7, `kProtocolVersion` in `ScopeOneCore/internal/DriverHostProtocol.h`, which holds the names used
+8, `kProtocolVersion` in `ScopeOneCore/internal/DriverHostProtocol.h`, which holds the names used
 below.
 
 ## Process
@@ -81,6 +81,7 @@ capability the device lacks is answered with `ok` false.
 |---|---|---|---|
 | `Camera` | `StartPreview`, `StopPreview` | | |
 | | `SetFrameDeliveryMode` | `mode`: `PreviewLatest`, `LatestOnly` or `AllFrames` | `mode` |
+| | `ReleaseSharedMemory`, provider wide | `keys`, the rings ScopeOne has attached; the host removes their names | |
 | | `SetFrameDeliveryPaused` | `paused`; the host writes no frames while paused, and a Micro-Manager camera starts again the live acquisition an event capture stopped | |
 | | `GetExposure` | | `exposureMs` |
 | | `SetExposure` | `value` in ms | `exposureMs`, the value the camera took |
@@ -135,9 +136,12 @@ capability the device lacks is answered with `ok` false.
 
 ## Camera frames
 
-Each camera has one ring in shared memory, created by the host under `sharedMemoryKey`. On Windows
-the key is the name of a file mapping. On Linux and macOS it is the path of a file in the user's
-runtime directory, which `QSharedMemory` turns into a System V key.
+Each camera has one ring in shared memory, created by the host under `sharedMemoryKey`. Both ends
+turn the key into a native name with `QSharedMemory::platformSafeKey`: a file mapping on Windows,
+and POSIX shared memory on Linux and macOS, as System V memory holds at most 4 MB in one block on
+macOS. ScopeOne attaches the camera rings right after `Describe` and a stream ring right after the
+response that names it, and then sends `ReleaseSharedMemory`. The host removes the names, so the
+memory goes away with the last process that maps it, also after a crash.
 
 The ring is a 64-byte control block followed by 32 slots. A slot is a 64-byte header and room for
 `4 * 2048 * 2048` bytes of pixels. All fields are little-endian.

@@ -4,7 +4,7 @@
 
 #include <QByteArray>
 #include <QCryptographicHash>
-#include <QStandardPaths>
+#include <QSharedMemory>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -17,7 +17,7 @@
 
 namespace scopeone::core::internal::driverhost
 {
-    inline constexpr quint32 kProtocolVersion = 7;
+    inline constexpr quint32 kProtocolVersion = 8;
 
     // The names of the device kinds as the protocol sends them
     inline constexpr std::pair<HardwareDeviceKind, const char*> kDeviceKindNames[]{
@@ -106,6 +106,10 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandStopPreview = QStringLiteral("StopPreview");
     inline const QString kCommandSetFrameDeliveryMode = QStringLiteral("SetFrameDeliveryMode");
     inline const QString kCommandSetFrameDeliveryPaused = QStringLiteral("SetFrameDeliveryPaused");
+    // ScopeOne has attached the rings named in "keys", so DriverHost removes their names. The
+    // memory stays mapped on both ends and goes away with the last of them, even after a crash.
+    inline const QString kCommandReleaseSharedMemory = QStringLiteral("ReleaseSharedMemory");
+    inline const QString kKeysField = QStringLiteral("keys");
     inline const QString kCommandGetExposure = QStringLiteral("GetExposure");
     inline const QString kCommandSetExposure = QStringLiteral("SetExposure");
     inline const QString kCommandListProperties = QStringLiteral("ListProperties");
@@ -187,31 +191,27 @@ namespace scopeone::core::internal::driverhost
         return QStringLiteral("ScopeOne.%1.ctrl").arg(QString::fromLatin1(hash));
     }
 
-    // On Unix the System V key is a file that ftok reads, so keep it in the
-    // per-user runtime directory where other users cannot collide with it
-    inline QString sharedMemoryKeyPath(const QString& name)
-    {
-#ifdef Q_OS_WIN
-        return name;
-#else
-        return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation)
-               + QLatin1Char('/') + name;
-#endif
-    }
-
     inline QString sharedMemoryKey(const QString& hostKey, int cameraIndex)
     {
-        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.%2.shm")
-                                       .arg(hostKey)
-                                       .arg(cameraIndex));
+        return QStringLiteral("ScopeOne.%1.%2").arg(hostKey).arg(cameraIndex);
     }
 
     // Each start of a stream gets a ring of its own, sized for what that acquisition delivers
     inline QString streamSharedMemoryKey(const QString& hostKey, quint64 streamIndex)
     {
-        return sharedMemoryKeyPath(QStringLiteral("ScopeOne.DriverHost.%1.stream%2.shm")
-                                       .arg(hostKey)
-                                       .arg(streamIndex));
+        return QStringLiteral("ScopeOne.%1.stream%2").arg(hostKey).arg(streamIndex);
+    }
+
+    // POSIX shared memory on Linux and macOS. The System V memory that Qt uses by default holds
+    // at most 4 MB in one block on macOS, too little for a frame ring. Qt makes the name fit the
+    // limits of the platform, 31 characters on macOS.
+    inline QNativeIpcKey sharedMemoryNativeKey(const QString& key)
+    {
+#ifdef Q_OS_WIN
+        return QSharedMemory::platformSafeKey(key, QNativeIpcKey::Type::Windows);
+#else
+        return QSharedMemory::platformSafeKey(key, QNativeIpcKey::Type::PosixRealtime);
+#endif
     }
 
     inline QString encodeUInt64(quint64 value)
