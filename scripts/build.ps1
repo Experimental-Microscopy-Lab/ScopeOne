@@ -335,6 +335,16 @@ catch {
     $missingTools += "Visual Studio"
 }
 
+# The Visual Studio developer environment sets VCPKG_ROOT to the vcpkg bundled with Visual Studio,
+# which replaced the user's vcpkg, so VCPKG_ROOT is read again from the user and system settings
+$savedVcpkgRoot = [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
+if (-not $savedVcpkgRoot) {
+    $savedVcpkgRoot = [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+}
+if ($savedVcpkgRoot) {
+    $env:VCPKG_ROOT = $savedVcpkgRoot
+}
+
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
 $msbuildCommand = Get-Command msbuild -ErrorAction SilentlyContinue
 if ($cmakeCommand) {
