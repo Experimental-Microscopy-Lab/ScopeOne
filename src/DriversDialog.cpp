@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <utility>
 
 namespace scopeone::ui
@@ -27,6 +28,31 @@ namespace scopeone::ui
 
         using scopeone::core::DiscoveredDriver;
         using scopeone::core::discoverDrivers;
+
+        QString userDriverDirectory()
+        {
+            return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("drivers"));
+        }
+
+        // A file already in the drivers folder is kept, as removing it would remove the source too
+        bool copyFiles(const QFileInfoList& files, const QString& driverDirectory)
+        {
+            for (const QFileInfo& source : files)
+            {
+                const QString destination = QDir(driverDirectory).filePath(source.fileName());
+                if (QFileInfo(destination).canonicalFilePath() == source.canonicalFilePath())
+                {
+                    continue;
+                }
+                QFile::remove(destination);
+                if (!QFile::copy(source.absoluteFilePath(), destination))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     DriversDialog::DriversDialog(QWidget* parent)
@@ -56,9 +82,12 @@ namespace scopeone::ui
 
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
         auto* installButton = buttons->addButton(tr("Install Driver..."), QDialogButtonBox::ActionRole);
+        auto* descriptionButton = buttons->addButton(tr("Install Device Description..."), QDialogButtonBox::ActionRole);
         layout->addWidget(buttons);
         connect(installButton, &QPushButton::clicked,
                 this, &DriversDialog::installDriver);
+        connect(descriptionButton, &QPushButton::clicked,
+                this, &DriversDialog::installDescription);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(m_table, &QTableWidget::itemSelectionChanged,
                 this, &DriversDialog::showSelectedDetails);
@@ -130,8 +159,7 @@ namespace scopeone::ui
             return;
         }
 
-        QDir userRoot(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
-        const QString driverDirectory = userRoot.filePath(QStringLiteral("drivers"));
+        const QString driverDirectory = userDriverDirectory();
         if (!QDir().mkpath(driverDirectory))
         {
             QMessageBox::warning(this, tr("Drivers"), tr("The install directory could not be created."));
@@ -143,19 +171,52 @@ namespace scopeone::ui
             QMessageBox::information(this, tr("Drivers"), tr("This is already installed."));
             return;
         }
-        for (const QFileInfo& source : QDir(sourceDirectory).entryInfoList(QDir::Files))
+        if (!copyFiles(QDir(sourceDirectory).entryInfoList(QDir::Files), driverDirectory))
         {
-            const QString destination = QDir(driverDirectory).filePath(source.fileName());
-            QFile::remove(destination);
-            if (!QFile::copy(source.absoluteFilePath(), destination))
-            {
-                QMessageBox::warning(this, tr("Drivers"),
-                                     tr("The files could not be installed."));
-                return;
-            }
+            QMessageBox::warning(this, tr("Drivers"),
+                                 tr("The files could not be installed."));
+            return;
         }
         refreshDrivers();
         QMessageBox::information(this, tr("Drivers"),
                                  tr("The driver is installed."));
+    }
+
+    void DriversDialog::installDescription()
+    {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Install Device Description"), QString(), tr("Device description (*.json)"));
+        if (path.isEmpty())
+        {
+            return;
+        }
+
+        const QFileInfo source(path);
+        const QList<DiscoveredDriver> found = discoverDrivers({source.absolutePath()});
+        const bool isDescription = std::any_of(found.cbegin(), found.cend(),
+            [&](const DiscoveredDriver& driver)
+            { return driver.description && driver.path == source.absoluteFilePath(); });
+        if (!isDescription)
+        {
+            QMessageBox::warning(this, tr("Drivers"),
+                                 tr("The file is not a device description."));
+            return;
+        }
+
+        const QString driverDirectory = userDriverDirectory();
+        if (!QDir().mkpath(driverDirectory))
+        {
+            QMessageBox::warning(this, tr("Drivers"), tr("The install directory could not be created."));
+            return;
+        }
+        if (!copyFiles({source}, driverDirectory))
+        {
+            QMessageBox::warning(this, tr("Drivers"),
+                                 tr("The files could not be installed."));
+            return;
+        }
+        refreshDrivers();
+        QMessageBox::information(this, tr("Drivers"),
+                                 tr("The device description is installed."));
     }
 }

@@ -69,6 +69,11 @@ autofocus `defaultAutofocus`.
 | `eventSequence` | cameras only, whether the camera takes a series of images in one sequence acquisition |
 | `pixelSizeUm` | cameras only, the size of a pixel in the sample, 0 when unknown; `GetPixelSize` reads it again after a setting changed |
 
+A driver without peripherals describes one device with an empty `deviceId`, and a request without a
+`deviceId` addresses that device. With several devices, ScopeOne names them in the order of `devices`:
+the label of the `ScopeOneDevice` line for one device, and `<label>.1`, `<label>.2`, ... for more.
+These `deviceId` values are the host's own, and ScopeOne maps them to its logical ids.
+
 `Shutdown` stops the devices, answers, and ends the host.
 
 ## Commands

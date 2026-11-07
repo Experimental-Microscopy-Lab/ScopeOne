@@ -17,6 +17,7 @@ namespace scopeone::ui
     private:
         void refreshDrivers();
         void installDriver();
+        void installDescription();
         void showSelectedDetails();
 
         QTableWidget* m_table{nullptr};
