@@ -26,7 +26,7 @@
 !/config/MMConfig_demo.cfg
 !/config/dual_hamamatsu_897D.cfg
 !/config/MMConfig_demo_dual.cfg
-!/config/MMConfig_ScopeOne_demo.cfg
+!/config/ScopeOne_MM_demo.cfg
 !/config/ScopeOne_demo.cfg
 
 !/CMakeLists.txt

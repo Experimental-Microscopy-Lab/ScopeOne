@@ -65,7 +65,7 @@ ScopeOneDevice,Example Camera,example.camera,Example Camera
 ScopeOneConfigGroup,Channel,FITC,Example Camera.1,Pattern,Gradient
 ```
 
-Only the devices in the file are loaded. `config/MMConfig_ScopeOne_demo.cfg` has Micro-Manager and ScopeOne devices in one file, and `config/ScopeOne_demo.cfg` has ScopeOne devices only.
+Only the devices in the file are loaded. `config/ScopeOne_MM_demo.cfg` has Micro-Manager and ScopeOne devices in one file, and `config/ScopeOne_demo.cfg` has ScopeOne devices only.
 
 ## Writing a C++ driver
 
