@@ -35,6 +35,20 @@ function(scopeone_add_driver target)
     if (UNIX AND NOT APPLE)
         target_link_options(${target} PRIVATE "LINKER:--no-undefined")
     endif ()
+    # DriverHost dlopens the module, so the RPATH of DriverHost does not reach the libraries the
+    # module needs. The module gets its own, with the link directories of its dependencies.
+    if (APPLE)
+        set(_origin "@loader_path")
+    elseif (UNIX)
+        set(_origin "$ORIGIN")
+    endif ()
+    if (UNIX)
+        set_target_properties(${target} PROPERTIES
+            BUILD_RPATH "${_origin}"
+            INSTALL_RPATH "${_origin}"
+            INSTALL_RPATH_USE_LINK_PATH TRUE
+        )
+    endif ()
     install(TARGETS ${target}
         RUNTIME DESTINATION "drivers"
         LIBRARY DESTINATION "drivers"

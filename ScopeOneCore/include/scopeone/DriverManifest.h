@@ -19,6 +19,8 @@ namespace scopeone::core
         QJsonObject metadata;
     };
 
+    // A driver library, or a description file of a serial device, which the Serial driver runs.
+    // For a description the path is the file itself.
     struct DiscoveredDriver
     {
         DriverManifest manifest;
@@ -26,6 +28,7 @@ namespace scopeone::core
         QString interfaceId;
         QJsonObject metadata;
         QString error;
+        bool description{false};
     };
 
     // Raised whenever an interface of the driver SDK changes its virtual functions. A driver built

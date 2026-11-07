@@ -119,6 +119,8 @@ ScopeOne needs Qt 6.8 or later. There are three ways to get it.
 
    `winget` comes with Windows 10 and 11. The command installs MSVC, the Windows SDK and CMake. It asks for administrator rights, downloads a few gigabytes and takes 10 to 20 minutes. An existing Visual Studio 2022 with "Desktop development with C++" works as well.
 
+   A Qt passed with `--qt` needs the Qt Serial Port module, which the serial driver links.
+
 2. **Clone ScopeOne.**
 
    ```powershell
@@ -173,6 +175,8 @@ macOS support is experimental.
 
    The second command installs the X11 and OpenGL development files that vcpkg's Qt needs, and `--no-upgrade` keeps the installed Mesa drivers.
 
+   A Qt passed with `--qt` needs the Qt Serial Port module, which the serial driver links.
+
    macOS:
 
    ```bash
@@ -181,6 +185,8 @@ macOS support is experimental.
      cmake autoconf automake libtool autoconf-archive \
      pkg-config ninja boost
    ```
+
+   A Qt passed with `--qt` needs the Qt Serial Port module, which the serial driver links.
 
 2. **Clone ScopeOne.**
 

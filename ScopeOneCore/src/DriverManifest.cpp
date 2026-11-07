@@ -4,7 +4,9 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QLibrary>
 #include <QPluginLoader>
 #include <QRegularExpression>
@@ -20,6 +22,33 @@ namespace scopeone::core
                 .filePath(QStringLiteral("drivers"))};
     }
 
+    namespace
+    {
+        // A description file has a properties object. The manifests of the libraries do not, so they
+        // are skipped here.
+        bool readDeviceDescription(const QString& path, DiscoveredDriver& driver)
+        {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly))
+            {
+                return false;
+            }
+            const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+            if (!object.value(QStringLiteral("properties")).isObject())
+            {
+                return false;
+            }
+            // The file name is the id, as the cfg names the description by it
+            driver.manifest.id = QFileInfo(path).completeBaseName();
+            driver.manifest.name = object.value(QStringLiteral("name")).toString();
+            driver.manifest.metadata = object;
+            driver.path = path;
+            driver.metadata = object;
+            driver.description = true;
+            return true;
+        }
+    }
+
     QList<DiscoveredDriver> discoverDrivers(const QStringList& directories)
     {
         QList<DiscoveredDriver> drivers;
@@ -29,6 +58,15 @@ namespace scopeone::core
             const QDir directory(directoryPath);
             for (const QFileInfo& file : directory.entryInfoList(QDir::Files, QDir::Name))
             {
+                if (file.suffix() == QStringLiteral("json"))
+                {
+                    DiscoveredDriver description;
+                    if (readDeviceDescription(file.absoluteFilePath(), description))
+                    {
+                        drivers.append(std::move(description));
+                    }
+                    continue;
+                }
                 if (!QLibrary::isLibrary(file.absoluteFilePath()))
                 {
                     continue;

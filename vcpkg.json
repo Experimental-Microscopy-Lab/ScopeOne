@@ -31,6 +31,10 @@
           "default-features": false
         },
         {
+          "name": "qtserialport",
+          "default-features": false
+        },
+        {
           "name": "qtbase",
           "default-features": false,
           "features": ["windeployqt"],

@@ -147,6 +147,7 @@ namespace scopeone::core::internal
                             m_process->readAllStandardOutput()).trimmed();
                         if (!output.isEmpty())
                         {
+                            m_lastHostLine = output.split(QLatin1Char('\n')).last();
                             qInfo().noquote()
                                 << QString("[DriverHost %1] %2").arg(m_providerId, output);
                         }
@@ -183,6 +184,8 @@ namespace scopeone::core::internal
             }
 
             const QString serverName = driverhost::controlServerName(m_hostKey);
+            // This runs on a worker thread without an event loop, so the exit is polled for here
+            bool exited = false;
             QElapsedTimer connectTimer;
             connectTimer.start();
             while (connectTimer.elapsed() < kControlReadyTimeoutMs)
@@ -193,8 +196,14 @@ namespace scopeone::core::internal
                 {
                     break;
                 }
-                if (m_process->state() == QProcess::NotRunning)
+                if (m_process->waitForFinished(0))
                 {
+                    exited = true;
+                    const QString rest = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
+                    if (!rest.isEmpty())
+                    {
+                        m_lastHostLine = rest.split(QLatin1Char('\n')).last();
+                    }
                     break;
                 }
             }
@@ -202,7 +211,12 @@ namespace scopeone::core::internal
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("DriverHost control server did not become ready");
+                    // A host that exits at start names its reason as its last line
+                    const QString reasonPrefix =
+                        QStringLiteral("DriverHost init failed for '%1': ").arg(m_hostKey);
+                    *errorMessage = exited && m_lastHostLine.startsWith(reasonPrefix)
+                                        ? m_lastHostLine.mid(reasonPrefix.size())
+                                        : QStringLiteral("DriverHost control server did not become ready");
                 }
                 cleanup();
                 return false;
@@ -289,18 +303,6 @@ namespace scopeone::core::internal
                     m_readers.insert(device.logicalId, std::move(reader));
                     m_cameraIds.append(device.logicalId);
                 }
-            }
-            // A driver that exposes no device is still a device of its label
-            if (m_rename && deviceArray.isEmpty())
-            {
-                HardwareDeviceDescriptor device;
-                device.logicalId = m_devices.add(QString{}, m_providerId);
-                device.providerId = descriptor.id;
-                device.name = m_providerId;
-                device.kind = HardwareDeviceKind::Generic;
-                device.state = HardwareDeviceState::Initialized;
-                device.endpoint = HardwareEndpointKind::DriverHost;
-                devices.append(device);
             }
             int sourceIndex = 0;
             for (const QJsonValue& value : sourceArray)
@@ -1073,6 +1075,8 @@ namespace scopeone::core::internal
         QEventLoop* m_waitingLoop{nullptr};
         QJsonObject m_waitingResponse;
         QString m_lastError;
+        // The last line the DriverHost printed, which is its reason when it exits at start
+        QString m_lastHostLine;
         quint64 m_nextRequestId{1};
         quint64 m_waitingRequestId{0};
         bool m_cleanedUp{false};

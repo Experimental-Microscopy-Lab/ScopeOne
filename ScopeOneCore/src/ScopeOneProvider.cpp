@@ -9,6 +9,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <utility>
 
 #include "internal/DriverHostClient.h"
 #include "internal/MicroManagerProvider.h"
@@ -20,19 +21,24 @@ namespace scopeone::core::internal
     {
         // Creates the device of one line in a DriverHost and applies the properties that are not
         // pre-init. The pre-init ones reach the driver as the arguments of createDevice.
+        // The driver with the id that loads, or nullptr
+        const DiscoveredDriver* findDriver(const QList<DiscoveredDriver>& drivers, const QString& id)
+        {
+            for (const DiscoveredDriver& candidate : drivers)
+            {
+                if (candidate.error.isEmpty() && candidate.manifest.id == id)
+                {
+                    return &candidate;
+                }
+            }
+            return nullptr;
+        }
+
         DevicePtr startDevice(const ScopeOneDeviceLine& line,
                               const QList<DiscoveredDriver>& drivers,
                               QString* errorMessage)
         {
-            const DiscoveredDriver* driver = nullptr;
-            for (const DiscoveredDriver& candidate : drivers)
-            {
-                if (candidate.error.isEmpty() && candidate.manifest.id == line.driverId)
-                {
-                    driver = &candidate;
-                    break;
-                }
-            }
+            const DiscoveredDriver* driver = findDriver(drivers, line.driverId);
             if (!driver)
             {
                 *errorMessage = QStringLiteral("No driver %1").arg(line.driverId);
@@ -44,8 +50,21 @@ namespace scopeone::core::internal
             {
                 preInitProperties.insert(property.first, property.second);
             }
+            // A description file is a device of the Serial driver, which gets the file as a pre-init property
+            QString libraryPath = driver->path;
+            if (driver->description)
+            {
+                const DiscoveredDriver* serial = findDriver(drivers, QStringLiteral("scopeone.serial"));
+                if (!serial)
+                {
+                    *errorMessage = QStringLiteral("No driver scopeone.serial for %1").arg(line.driverId);
+                    return {};
+                }
+                libraryPath = serial->path;
+                preInitProperties.insert(QStringLiteral("Description File"), driver->path);
+            }
             DevicePtr device = createScopeOneDevice(
-                line.label, driver->path, line.deviceName, preInitProperties, errorMessage);
+                line.label, libraryPath, line.deviceName, preInitProperties, errorMessage);
             if (!device)
             {
                 return {};
@@ -145,7 +164,7 @@ namespace scopeone::core::internal
 
         // Each DriverHost loads its device on its own, which can take seconds, so they start
         // together
-        QList<QFuture<DevicePtr>> hosts;
+        QList<QFuture<std::pair<DevicePtr, QString>>> hosts;
         for (const ScopeOneDeviceLine& line : std::as_const(m_configuration.devices))
         {
             hosts.append(QtConcurrent::run([line, &drivers]()
@@ -157,15 +176,16 @@ namespace scopeone::core::internal
                     qWarning().noquote() << QStringLiteral("Failed to start ScopeOne device '%1': %2")
                                                 .arg(line.label, error);
                 }
-                return device;
+                return std::make_pair(device, error);
             }));
         }
         for (qsizetype index = 0; index < hosts.size(); ++index)
         {
-            const DevicePtr device = hosts[index].result();
+            const auto [device, error] = hosts[index].result();
             if (!device)
             {
-                result.failedDevices.append(m_configuration.devices[index].label);
+                result.failedDevices.append(
+                    QStringLiteral("%1 (%2)").arg(m_configuration.devices[index].label, error));
                 continue;
             }
             m_devices.append(device);

@@ -401,7 +401,8 @@ namespace scopeone::core::internal
         const QString deviceName = m_deviceName.isEmpty() && !deviceNames.isEmpty()
                                        ? deviceNames.first()
                                        : m_deviceName;
-        if (!deviceNames.contains(deviceName))
+        // A driver that lists no names checks the name in createDevice itself
+        if (!deviceNames.isEmpty() && !deviceNames.contains(deviceName))
         {
             m_lastError = QStringLiteral("The driver has no device %1").arg(deviceName);
             return false;
@@ -438,6 +439,10 @@ namespace scopeone::core::internal
         m_state = dynamic_cast<StateDevice*>(provider);
         m_signals = dynamic_cast<SignalSource*>(provider);
         m_daq = dynamic_cast<Daq*>(provider);
+        // A device without peripherals is one device under its label, and its kind follows its capability
+        m_rootDevice.name = m_providerId;
+        m_rootDevice.kind = m_shutter ? HardwareDeviceKind::Shutter : HardwareDeviceKind::Generic;
+        m_rootDevice.state = HardwareDeviceState::Initialized;
 
         QSet<QString> logicalIds;
         int cameraIndex = 0;
@@ -1048,6 +1053,10 @@ namespace scopeone::core::internal
             for (const HardwareDeviceDescriptor& device : m_devices)
             {
                 devices.append(deviceDescription(device));
+            }
+            if (m_devices.isEmpty() && !m_microManagerCamera)
+            {
+                devices.append(deviceDescription(m_rootDevice));
             }
             response.insert(driverhost::kDevicesField, devices);
             QJsonArray signalSources;
