@@ -2,7 +2,7 @@
 
 #include <QString>
 
-#include "scopeone/CameraProvider.h"
+#include "scopeone/Camera.h"
 
 namespace scopeone::core::internal
 {

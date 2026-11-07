@@ -3,9 +3,9 @@
 #include <QHash>
 #include <QObject>
 
-#include "scopeone/HardwareProvider.h"
+#include "scopeone/Device.h"
 #include "scopeone/SignalSource.h"
-#include "scopeone/SignalSourceProvider.h"
+#include "scopeone/SignalSource.h"
 
 namespace scopeone::core::internal
 {
@@ -39,12 +39,12 @@ namespace scopeone::core::internal
 
     private:
         void refreshProviderSources();
-        void detachProvider(const HardwareProviderPtr& provider);
+        void detachProvider(const DevicePtr& provider);
         void updateState(const QString& sourceId, SignalSourceState state, const QString& message);
 
         DeviceRegistry* m_registry{nullptr};
-        QHash<QString, HardwareProviderPtr> m_providerBySource;
-        QHash<QString, HardwareProviderPtr> m_attachedProviders;
+        QHash<QString, DevicePtr> m_providerBySource;
+        QHash<QString, DevicePtr> m_attachedProviders;
         QHash<QString, SignalSourceDescriptor> m_descriptors;
         QHash<QString, SignalSourceState> m_states;
         QHash<QString, QString> m_messages;

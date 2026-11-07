@@ -1,6 +1,6 @@
 #include "internal/AcquisitionEngine.h"
 
-#include "scopeone/CameraProvider.h"
+#include "scopeone/Camera.h"
 #include "internal/HardwareRuntime.h"
 
 namespace scopeone::core::internal
@@ -21,7 +21,7 @@ namespace scopeone::core::internal
         {
             struct StartedCamera
             {
-                CameraProvider* provider;
+                Camera* provider;
                 QString cameraId;
             };
             QList<StartedCamera> startedCameras;
@@ -33,8 +33,8 @@ namespace scopeone::core::internal
                     continue;
                 }
                 found = true;
-                const HardwareProviderPtr provider = m_deviceRegistry.provider(device.providerId);
-                auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+                const DevicePtr provider = m_deviceRegistry.provider(device.providerId);
+                auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
                 if (!cameraProvider)
                 {
                     for (auto it = startedCameras.crbegin(); it != startedCameras.crend(); ++it)
@@ -59,8 +59,8 @@ namespace scopeone::core::internal
             }
             return found;
         }
-        const HardwareProviderPtr provider = m_deviceRegistry.providerForDevice(target);
-        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        const DevicePtr provider = m_deviceRegistry.providerForDevice(target);
+        auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
         return cameraProvider && cameraProvider->startPreviewFor(target);
     }
 
@@ -82,8 +82,8 @@ namespace scopeone::core::internal
                     continue;
                 }
                 found = true;
-                const HardwareProviderPtr provider = m_deviceRegistry.provider(device.providerId);
-                auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+                const DevicePtr provider = m_deviceRegistry.provider(device.providerId);
+                auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
                 if (!cameraProvider)
                 {
                     stopped = false;
@@ -96,8 +96,8 @@ namespace scopeone::core::internal
             }
             return found && stopped;
         }
-        const HardwareProviderPtr provider = m_deviceRegistry.providerForDevice(target);
-        auto* cameraProvider = dynamic_cast<CameraProvider*>(provider.get());
+        const DevicePtr provider = m_deviceRegistry.providerForDevice(target);
+        auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
         return cameraProvider && cameraProvider->stopPreviewFor(target);
     }
 }

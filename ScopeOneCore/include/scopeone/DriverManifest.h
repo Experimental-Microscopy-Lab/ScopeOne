@@ -31,7 +31,7 @@ namespace scopeone::core
 
     // Raised whenever an interface of the driver SDK changes its virtual functions. A driver built
     // against other ones calls the wrong functions and crashes DriverHost, so it is rejected.
-    inline constexpr int ScopeOneDriverApiVersion = 2;
+    inline constexpr int ScopeOneDriverApiVersion = 3;
 
     // The drivers directory beside the application and in the user data directory
     SCOPEONE_CORE_EXPORT QStringList driverDirectories();

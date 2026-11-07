@@ -1,7 +1,7 @@
 #include "internal/MDAManager.h"
 
 #include "internal/HardwareRuntime.h"
-#include "scopeone/HardwareCapabilities.h"
+#include "scopeone/ConfigSetting.h"
 
 #include <QDateTime>
 #include <QDebug>

@@ -11,8 +11,8 @@
 #include <memory>
 
 #include "internal/FrameDeliveryMode.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/HardwareProvider.h"
+#include "scopeone/Camera.h"
+#include "scopeone/Device.h"
 
 class CMMCore;
 
@@ -39,7 +39,7 @@ namespace scopeone::core::internal
     // ScopeOne. A configuration with more runs each camera in a DriverHost of its own, on a core that
     // holds only that camera, because a vendor library loaded twice in one process shares its state
     // and two cameras of the same model would stop each other.
-    class MicroManagerCamera final : public HardwareProvider, public CameraProvider
+    class MicroManagerCamera final : public Device, public Camera
     {
     public:
         // A camera that lends its frames hands out frames that point into the circular buffer of

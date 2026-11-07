@@ -144,11 +144,6 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandGetState = QStringLiteral("GetState");
     inline const QString kCommandSetState = QStringLiteral("SetState");
     inline const QString kCommandGetStateLabel = QStringLiteral("GetStateLabel");
-    inline const QString kCommandListConfigGroups = QStringLiteral("ListConfigGroups");
-    inline const QString kCommandListConfigs = QStringLiteral("ListConfigs");
-    inline const QString kCommandGetCurrentConfig = QStringLiteral("GetCurrentConfig");
-    inline const QString kCommandSetConfig = QStringLiteral("SetConfig");
-    inline const QString kCommandGetConfigSettings = QStringLiteral("GetConfigSettings");
     inline const QString kCommandStartSignal = QStringLiteral("StartSignal");
     inline const QString kCommandStopSignal = QStringLiteral("StopSignal");
     inline const QString kCommandStartDaq = QStringLiteral("StartDaq");
@@ -159,7 +154,6 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCapabilityStage = QStringLiteral("Stage");
     inline const QString kCapabilityShutter = QStringLiteral("Shutter");
     inline const QString kCapabilityState = QStringLiteral("State");
-    inline const QString kCapabilityConfiguration = QStringLiteral("Configuration");
     inline const QString kCapabilityAutofocus = QStringLiteral("Autofocus");
 
     inline const QString kFrameDeliveryModePreviewLatest = QStringLiteral("PreviewLatest");

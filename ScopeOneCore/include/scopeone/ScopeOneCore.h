@@ -24,7 +24,7 @@
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/DaqDevice.h"
 #include "scopeone/HardwareTypes.h"
-#include "scopeone/HardwareProvider.h"
+#include "scopeone/Device.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/ProcessingTypes.h"
 #include "scopeone/ProcessingPipeline.h"

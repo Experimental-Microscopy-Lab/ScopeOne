@@ -7,7 +7,7 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
-#include "scopeone/HardwareCapabilities.h"
+#include "scopeone/ConfigSetting.h"
 #include <QStringList>
 #include <QVariantMap>
 #include <QtGlobal>

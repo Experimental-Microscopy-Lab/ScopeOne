@@ -5,9 +5,9 @@
 #include "internal/HardwareStreamCodec.h"
 #include "internal/SharedFrameRing.h"
 #include "internal/StreamRing.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/DaqProvider.h"
-#include "scopeone/SignalSourceProvider.h"
+#include "scopeone/Camera.h"
+#include "scopeone/DaqDevice.h"
+#include "scopeone/SignalSource.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
 
@@ -85,11 +85,11 @@ namespace scopeone::core::internal
         // Where the chunks and states of the signal sources and DAQ devices go, on the transport thread
         struct StreamHandlers
         {
-            SignalSourceProvider::TimeSeriesSink timeSeries;
-            SignalSourceProvider::TimestampedEventSink timestampedEvents;
-            SignalSourceProvider::StateSink signalState;
-            DaqProvider::InputSink daqInput;
-            DaqProvider::StateSink daqState;
+            SignalSource::TimeSeriesSink timeSeries;
+            SignalSource::TimestampedEventSink timestampedEvents;
+            SignalSource::StateSink signalState;
+            Daq::InputSink daqInput;
+            Daq::StateSink daqState;
         };
 
         DriverHostTransport(QString providerId,
@@ -928,15 +928,14 @@ namespace scopeone::core::internal
     // Stands in ScopeOne for what one DriverHost runs. Every call goes to the DriverHost as a
     // request on the transport thread.
     class DriverHostClient final : public QObject,
-                                   public HardwareProvider,
-                                   public CameraProvider,
-                                   public StageProvider,
-                                   public ShutterProvider,
-                                   public AutofocusProvider,
-                                   public StateProvider,
-                                   public ConfigurationProvider,
-                                   public SignalSourceProvider,
-                                   public DaqProvider,
+                                   public Device,
+                                   public Camera,
+                                   public Stage,
+                                   public Shutter,
+                                   public Autofocus,
+                                   public StateDevice,
+                                   public SignalSource,
+                                   public Daq,
                                    public CameraFrameSource
     {
     public:
@@ -1046,7 +1045,7 @@ namespace scopeone::core::internal
 
         void setSignalSinks(TimeSeriesSink timeSeries,
                             TimestampedEventSink timestampedEvents,
-                            SignalSourceProvider::StateSink state) override
+                            SignalSource::StateSink state) override
         {
             QMutexLocker locker(&m_sinkMutex);
             m_timeSeriesSink = std::move(timeSeries);
@@ -1066,7 +1065,7 @@ namespace scopeone::core::internal
 
         QList<DaqDeviceDescriptor> daqDevices() const override { return m_daqDevices; }
 
-        void setDaqSinks(InputSink input, DaqProvider::StateSink state) override
+        void setDaqSinks(InputSink input, Daq::StateSink state) override
         {
             QMutexLocker locker(&m_sinkMutex);
             m_daqInputSink = std::move(input);
@@ -1445,27 +1444,6 @@ namespace scopeone::core::internal
                            kAutofocusTimeoutMs);
         }
 
-        std::vector<ConfigSetting> configSettings(const QString& groupName,
-                                                  const QString& configName) const override
-        {
-            QJsonObject response;
-            std::vector<ConfigSetting> settings;
-            if (!request(driverhost::kCommandGetConfigSettings, {},
-                         {{QStringLiteral("group"), groupName}, {QStringLiteral("config"), configName}},
-                         response, nullptr))
-            {
-                return settings;
-            }
-            for (const QJsonValue& value : response.value(QStringLiteral("settings")).toArray())
-            {
-                const QJsonObject setting = value.toObject();
-                settings.push_back({setting.value(QStringLiteral("device")).toString(),
-                                    setting.value(QStringLiteral("property")).toString(),
-                                    setting.value(QStringLiteral("value")).toString()});
-            }
-            return settings;
-        }
-
         bool getXYPosition(const QString& deviceId,
                            double& x,
                            double& y,
@@ -1631,65 +1609,6 @@ namespace scopeone::core::internal
                        : QString{};
         }
 
-        QStringList availableConfigGroups() const override
-        {
-            QJsonObject response;
-            if (!request(driverhost::kCommandListConfigGroups,
-                         {},
-                         {},
-                         response,
-                         nullptr))
-            {
-                return {};
-            }
-            return jsonStringList(response.value(QStringLiteral("groups")).toArray());
-        }
-
-        QStringList availableConfigs(const QString& groupName) const override
-        {
-            QJsonObject fields;
-            fields.insert(QStringLiteral("group"), groupName);
-            QJsonObject response;
-            return request(driverhost::kCommandListConfigs,
-                           {},
-                           fields,
-                           response,
-                           nullptr)
-                       ? jsonStringList(response.value(QStringLiteral("configs")).toArray())
-                       : QStringList{};
-        }
-
-        QString currentConfig(const QString& groupName) const override
-        {
-            QJsonObject fields;
-            fields.insert(QStringLiteral("group"), groupName);
-            QJsonObject response;
-            return request(driverhost::kCommandGetCurrentConfig,
-                           {},
-                           fields,
-                           response,
-                           nullptr)
-                       ? response.value(QStringLiteral("config")).toString()
-                       : QString{};
-        }
-
-        bool setConfig(const QString& groupName,
-                       const QString& configName,
-                       QString* errorMessage) override
-        {
-            QJsonObject fields;
-            fields.insert(QStringLiteral("group"), groupName);
-            fields.insert(QStringLiteral("config"), configName);
-            QJsonObject response;
-            clearPropertyDetails();
-            const bool ok = request(driverhost::kCommandSetConfig, {}, fields, response, errorMessage);
-            if (ok)
-            {
-                refreshPixelSizes(cameraIds());
-            }
-            return ok;
-        }
-
     private:
         bool isCamera(const QString& cameraId) const
         {
@@ -1846,7 +1765,7 @@ namespace scopeone::core::internal
             };
             handlers.signalState = [this](const QString& sourceId, SignalSourceState state, const QString& message)
             {
-                SignalSourceProvider::StateSink sink;
+                SignalSource::StateSink sink;
                 {
                     QMutexLocker locker(&m_sinkMutex);
                     sink = m_signalStateSink;
@@ -1864,7 +1783,7 @@ namespace scopeone::core::internal
             };
             handlers.daqState = [this](const QString& deviceId, DaqState state, const QString& message)
             {
-                DaqProvider::StateSink sink;
+                Daq::StateSink sink;
                 {
                     QMutexLocker locker(&m_sinkMutex);
                     sink = m_daqStateSink;
@@ -1887,13 +1806,6 @@ namespace scopeone::core::internal
             QMetaObject::invokeMethod(m_worker, std::forward<Function>(function), Qt::BlockingQueuedConnection);
         }
 
-        static QStringList jsonStringList(const QJsonArray& array)
-        {
-            QStringList result;
-            for (const QJsonValue& value : array) result.append(value.toString());
-            return result;
-        }
-
         QString m_expectedProviderId;
         QStringList m_arguments;
         HardwareProviderDescriptor m_descriptor;
@@ -1910,9 +1822,9 @@ namespace scopeone::core::internal
         PreviewStateSink m_previewStateSink;
         TimeSeriesSink m_timeSeriesSink;
         TimestampedEventSink m_timestampedEventSink;
-        SignalSourceProvider::StateSink m_signalStateSink;
+        SignalSource::StateSink m_signalStateSink;
         InputSink m_daqInputSink;
-        DaqProvider::StateSink m_daqStateSink;
+        Daq::StateSink m_daqStateSink;
         QList<SignalSourceDescriptor> m_signalSources;
         QList<DaqDeviceDescriptor> m_daqDevices;
         mutable QMutex m_stateMutex;
@@ -1921,9 +1833,10 @@ namespace scopeone::core::internal
         QHash<QString, double> m_pixelSizes;
     };
 
-    HardwareProviderPtr createScopeOneProvider(const QString& providerId,
+    DevicePtr createScopeOneProvider(const QString& providerId,
                                                const QString& driverPath,
-                                               const QJsonObject& options,
+                                               const QString& deviceName,
+                                               const QVariantMap& preInitProperties,
                                                QString* errorMessage)
     {
         const QString normalizedProviderId = providerId.trimmed();
@@ -1939,15 +1852,20 @@ namespace scopeone::core::internal
             return {};
         }
         QStringList arguments{QStringLiteral("--driver"), normalizedDriverPath};
-        if (!options.isEmpty())
+        if (!deviceName.isEmpty())
         {
-            arguments << QStringLiteral("--option")
-                      << QString::fromUtf8(QJsonDocument(options).toJson(QJsonDocument::Compact));
+            arguments << QStringLiteral("--device") << deviceName;
+        }
+        if (!preInitProperties.isEmpty())
+        {
+            arguments << QStringLiteral("--properties")
+                      << QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(preInitProperties))
+                                               .toJson(QJsonDocument::Compact));
         }
         return startDriverHost(normalizedProviderId, arguments, errorMessage);
     }
 
-    HardwareProviderPtr startDriverHost(const QString& providerId,
+    DevicePtr startDriverHost(const QString& providerId,
                                         const QStringList& arguments,
                                         QString* errorMessage)
     {

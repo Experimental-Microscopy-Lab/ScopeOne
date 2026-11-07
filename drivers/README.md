@@ -16,13 +16,14 @@ files. Those adapters are not ScopeOne drivers.
 ## Writing a driver
 
 A driver has one entry class, a `Driver`. ScopeOne_DriverHost loads the library, gets that object
-from Qt's plugin loader and calls `createProvider`, which returns a `HardwareProvider` with the
-capabilities its devices have (camera, stage, shutter, state, configuration, signal source, DAQ).
+from Qt's plugin loader and calls `createDevice` with one of its `deviceNames()`, which returns a
+`Device` with the capabilities it has (`Camera`, `Stage`, `Shutter`, `StateDevice`, `Autofocus`,
+`SignalSource`, `Daq`). A device with peripherals is also a `Hub`.
 A signal source, such as a PMT or a photon counter, puts out one value over time:
-`SignalSourceProvider` hands over its chunks of samples or photon events with the scan markers,
+`SignalSource` hands over its chunks of samples or photon events with the scan markers,
 and ScopeOne shows them on the oscilloscope screen of the Signal Monitor, up to four sources at
 once on one time axis, and assembles scan images from them. A
-`DaqProvider` runs the timed tasks of a DAQ session and hands over the inputs it reads. From then
+`Daq` runs the timed tasks of a DAQ session and hands over the inputs it reads. From then
 on ScopeOne only exchanges messages and data with the host. The host does not link ScopeOneCore,
 so a driver process holds only the host, the SDK library, Qt Core and Network, and the driver.
 
@@ -62,7 +63,7 @@ the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build co
   "id": "my.camera",
   "name": "My Camera",
   "version": "1.0.0",
-  "scopeOneApi": 2,
+  "scopeOneApi": 3,
   "kind": "driver",
   "providerId": "my.camera",
   "autoLoad": false
@@ -82,8 +83,10 @@ class MyCameraDriver final : public QObject, public scopeone::core::Driver
 
 public:
     QString providerId() const override;
-    scopeone::core::HardwareProviderPtr createProvider(const QJsonObject& options,
-                                                       QString* errorMessage) override;
+    QStringList deviceNames() const override;
+    scopeone::core::DevicePtr createDevice(const QString& name,
+                                           const QVariantMap& preInitProperties,
+                                           QString* errorMessage) override;
 };
 ```
 

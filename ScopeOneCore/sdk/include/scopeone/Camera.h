@@ -6,33 +6,33 @@
 #include <functional>
 #include <vector>
 
-#include "scopeone/HardwareCapabilities.h"
+#include "scopeone/scopeone_sdk_export.h"
 #include "scopeone/ImageFrame.h"
 
 namespace scopeone::core
 {
-    // A provider whose devices include cameras. Every provider implements this interface, the
-    // drivers as well as Micro-Manager inside ScopeOne, and every call names one camera by its id.
+    // A device that includes cameras. Every such device implements this interface, the drivers
+    // as well as Micro-Manager inside ScopeOne, and every call names one camera by its id.
     //
     // Threads: DriverHost calls the methods of a driver one at a time, from one thread, so they
     // need no locks against each other. The frame sink may be called from any thread, such as a
     // callback thread of the camera SDK, while a method runs.
     //
     // Frames: Mono8 or Mono16, at most 16 MB each; a larger frame is not delivered. frameIndex
-    // counts the images the camera took, from 1, including those the provider did not hand on,
+    // counts the images the camera took, from 1, including those the device did not hand on,
     // so ScopeOne can tell the frame rate and see frames that were lost. timestampNs is the time
     // the image was taken, in nanoseconds since the Unix epoch, or 0 to let ScopeOne stamp it.
-    class SCOPEONE_SDK_EXPORT CameraProvider : public DevicePropertyProvider
+    class SCOPEONE_SDK_EXPORT Camera
     {
     public:
         // ScopeOne copies the frame before the sink returns, so the bytes of a frame may point
         // into a buffer of the camera, for example through QByteArray::fromRawData, and need to
         // stay valid only during the call. The copy takes about a millisecond for 8 MB.
         using FrameSink = std::function<void(const ImageFrame&)>;
-        // Called with whether any camera of the provider is running, whenever that may change
+        // Called with whether any camera of the device is running, whenever that may change
         using PreviewStateSink = std::function<void(bool)>;
 
-        ~CameraProvider() override;
+        virtual ~Camera();
 
         // Once a new sink is set, the old one is no longer called from any thread
         virtual void setFrameSink(FrameSink sink) = 0;
@@ -53,13 +53,13 @@ namespace scopeone::core
                             int& height) = 0;
         // Takes one new image with the current settings, started after the call, and returns it
         // instead of handing it to the sink. A running acquisition may be stopped for it.
-        // timeoutMs is how long ScopeOne waits for the image; a provider that waits for the camera
+        // timeoutMs is how long ScopeOne waits for the image; a device that waits for the camera
         // itself should give up after it.
         virtual bool captureEventFrame(const QString& cameraId,
                                        ImageFrame& frame,
                                        int timeoutMs = 1500) = 0;
         // The size of a pixel in the sample in micrometers, with the current objective and
-        // binning, or 0 when the provider does not know it
+        // binning, or 0 when the device does not know it
         virtual double pixelSizeUm(const QString& cameraId) const
         {
             (void)cameraId;

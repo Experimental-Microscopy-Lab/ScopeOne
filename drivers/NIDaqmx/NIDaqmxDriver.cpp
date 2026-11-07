@@ -1305,10 +1305,10 @@ namespace ni_daqmx
     // its own. The sources of one device run in one analog input task. A device runs one such task
     // at a time, so its sources and a session that reads its analog inputs do not run together,
     // and NI-DAQmx says so when the later one starts.
-    class NIDaqmxProvider final : public HardwareProvider, public DaqProvider, public SignalSourceProvider
+    class NIDaqmxDevice final : public Device, public Hub, public Daq, public SignalSource
     {
     public:
-        explicit NIDaqmxProvider(QList<DaqDeviceDescriptor> devices)
+        explicit NIDaqmxDevice(QList<DaqDeviceDescriptor> devices)
             : m_devices(std::move(devices))
         {
             for (const DaqDeviceDescriptor& device : m_devices)
@@ -1339,8 +1339,9 @@ namespace ni_daqmx
             return {QStringLiteral("scopeone.nidaqmx"), QStringLiteral("NI-DAQmx"), QStringLiteral("1.0.0")};
         }
 
-        // The DAQ devices are listed as DAQ devices, not as devices with properties
-        QList<HardwareDeviceDescriptor> devices() const override
+        // The boards and their channels are listed by daqDevices() and signalSources(), not as
+        // devices with properties
+        QList<HardwareDeviceDescriptor> peripherals() const override
         {
             return {};
         }
@@ -1350,7 +1351,7 @@ namespace ni_daqmx
             return m_devices;
         }
 
-        void setDaqSinks(InputSink input, DaqProvider::StateSink state) override
+        void setDaqSinks(InputSink input, Daq::StateSink state) override
         {
             QMutexLocker locker(&m_sinkMutex);
             m_inputSink = std::move(input);
@@ -1386,7 +1387,7 @@ namespace ni_daqmx
 
         void setSignalSinks(TimeSeriesSink timeSeries,
                             TimestampedEventSink,
-                            SignalSourceProvider::StateSink state) override
+                            SignalSource::StateSink state) override
         {
             QMutexLocker locker(&m_sinkMutex);
             m_timeSeriesSink = std::move(timeSeries);
@@ -1480,9 +1481,9 @@ namespace ni_daqmx
         QHash<QString, QString> m_sourceDevices;
         QMutex m_sinkMutex;
         InputSink m_inputSink;
-        DaqProvider::StateSink m_stateSink;
+        Daq::StateSink m_stateSink;
         TimeSeriesSink m_timeSeriesSink;
-        SignalSourceProvider::StateSink m_signalStateSink;
+        SignalSource::StateSink m_signalStateSink;
         // Declared last so they are destroyed first: their readers call the sinks above until joined
         QHash<QString, std::shared_ptr<NIDaqmxController>> m_controllers;
         QHash<QString, std::shared_ptr<AiTaskGroup>> m_aiGroups;
@@ -1500,9 +1501,19 @@ namespace ni_daqmx
             return QStringLiteral("scopeone.nidaqmx");
         }
 
-        // Fails when the NI-DAQmx runtime is not installed, so the driver can be turned off under Tools > Drivers
-        HardwareProviderPtr createProvider(const QJsonObject&, QString* errorMessage) override
+        QStringList deviceNames() const override
         {
+            return {QStringLiteral("NI-DAQmx")};
+        }
+
+        // Fails when the NI-DAQmx runtime is not installed
+        DevicePtr createDevice(const QString& name, const QVariantMap&, QString* errorMessage) override
+        {
+            if (name != deviceNames().first())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Unknown device %1").arg(name);
+                return {};
+            }
             QString error;
             QList<DaqDeviceDescriptor> devices = findDevices(&error);
             if (!error.isEmpty())
@@ -1511,7 +1522,7 @@ namespace ni_daqmx
                 return {};
             }
             if (errorMessage) errorMessage->clear();
-            return std::make_shared<NIDaqmxProvider>(std::move(devices));
+            return std::make_shared<NIDaqmxDevice>(std::move(devices));
         }
     };
 }

@@ -15,12 +15,12 @@ with more than one camera:
 
 ```text
 ScopeOne_DriverHost --provider <providerId> --driver <driver library> --hostKey <key>
-                    --launcherPid <pid> [--option <JSON object>]
+                    --launcherPid <pid> [--device <name>] [--properties <JSON object>]
 ScopeOne_DriverHost --provider micro-manager --micromanagerCamera <JSON object> --hostKey <key>
                     --launcherPid <pid>
 ```
 
-`--option` carries the options from the Drivers dialog. `--micromanagerCamera` carries
+`--device` names the device to create in the driver, the first of its `deviceNames()` by default, and `--properties` carries its pre-init properties. `--micromanagerCamera` carries
 `cameraId`, `adapter`, `device`, `exposureMs`, and `preInitProperties` and `properties`, arrays of
 `{"name", "value"}` objects. The host loads the camera on a core of its own, as two cameras of the
 same model in one process would share the state of one vendor library. The host loads the
@@ -116,11 +116,6 @@ capability the device lacks is answered with `ok` false.
 | | `StopSignal` | `sourceId` | |
 | `Daq` | `StartDaq` | `config`, a `DaqSessionConfig` with its raster scans expanded | `streamId`, `sharedMemoryKey` |
 | | `StopDaq` | `deviceId` | |
-| `Configuration` | `ListConfigGroups` | | `groups` |
-| | `ListConfigs` | `group` | `configs` |
-| | `GetCurrentConfig` | `group` | `config` |
-| | `SetConfig` | `group`, `config` | |
-| | `GetConfigSettings` | `group`, `config` | `settings`, an array of `device`, `property`, `value` |
 
 ## Events
 

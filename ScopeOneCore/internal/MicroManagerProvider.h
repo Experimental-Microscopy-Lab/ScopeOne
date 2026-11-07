@@ -10,9 +10,11 @@
 #include <atomic>
 
 #include "internal/CameraFrameDelivery.h"
+#include "internal/ConfigurationProvider.h"
 #include "internal/MicroManagerCamera.h"
-#include "scopeone/HardwareProvider.h"
-#include "scopeone/CameraProvider.h"
+#include "scopeone/Device.h"
+#include "scopeone/HardwareCapabilities.h"
+#include "scopeone/Camera.h"
 
 class CMMCore;
 
@@ -21,12 +23,12 @@ namespace scopeone::core::internal
     // The devices of the loaded Micro-Manager configuration. They run on the core of ScopeOne,
     // except the cameras of a configuration with more than one camera: each of those runs in a
     // DriverHost of its own, so two cameras of the same model do not share one vendor library.
-    class MicroManagerProvider final : public HardwareProvider,
-                                       public CameraProvider,
-                                       public StageProvider,
-                                       public ShutterProvider,
-                                       public AutofocusProvider,
-                                       public StateProvider,
+    class MicroManagerProvider final : public Device,
+                                       public Camera,
+                                       public Stage,
+                                       public Shutter,
+                                       public Autofocus,
+                                       public StateDevice,
                                        public ConfigurationProvider,
                                        public CameraFrameSource
     {
@@ -65,7 +67,7 @@ namespace scopeone::core::internal
         // DriverHosts.
         QStringList startCameras(const QList<MicroManagerCameraSetup>& cameras);
         // Hands over the cameras, so they can be stopped away from the calling thread
-        QList<HardwareProviderPtr> takeCameras();
+        QList<DevicePtr> takeCameras();
 
         void setFrameDelivery(CameraFrameDelivery* delivery) override;
         bool setFrameDeliveryMode(const QStringList& cameraIds, FrameDeliveryMode mode) override;
@@ -173,11 +175,11 @@ namespace scopeone::core::internal
         double pixelSizeUm(const QString& cameraId) const override;
 
     private:
-        struct Camera
+        struct CameraEntry
         {
             // A MicroManagerCamera on the core of ScopeOne, or the DriverHost of the camera
-            HardwareProviderPtr provider;
-            CameraProvider* camera{nullptr};
+            DevicePtr provider;
+            Camera* camera{nullptr};
             CameraFrameSource* frameSource{nullptr};
             std::shared_ptr<MicroManagerCamera> local;
             // The index of the last frame the local camera delivered, 0 after a change of mode
@@ -188,24 +190,24 @@ namespace scopeone::core::internal
         // cannot free it meanwhile
         struct CameraRef
         {
-            HardwareProviderPtr owner;
-            CameraProvider* camera{nullptr};
+            DevicePtr owner;
+            Camera* camera{nullptr};
             explicit operator bool() const { return camera != nullptr; }
-            CameraProvider* operator->() const { return camera; }
+            Camera* operator->() const { return camera; }
         };
 
         bool startLocalCamera(const QString& cameraId);
         CameraRef camera(const QString& cameraId) const;
-        Camera cameraEntry(const QString& cameraId) const;
+        CameraEntry cameraEntry(const QString& cameraId) const;
         void readBinning(const QString& cameraId);
-        QList<Camera> cameras() const;
+        QList<CameraEntry> cameras() const;
 
         std::shared_ptr<CMMCore> m_core;
         QStringList m_adapterSearchPaths;
         QList<HardwareDeviceDescriptor> m_devices;
         // Written when a configuration loads or unloads, read by calls on any thread
         mutable QReadWriteLock m_camerasLock;
-        QMap<QString, Camera> m_cameras;
+        QMap<QString, CameraEntry> m_cameras;
         // The binning of each camera in a DriverHost, read when it changes, as the core of
         // ScopeOne does not hold these cameras to apply it to the pixel size
         QHash<QString, int> m_binnings;

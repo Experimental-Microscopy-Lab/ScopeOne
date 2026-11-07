@@ -68,13 +68,13 @@ extern "C" int shm_unlink(const char* name);
 #include "internal/HardwareStreamCodec.h"
 #include "internal/SharedFrameRing.h"
 #include "internal/StreamRing.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/DaqProvider.h"
+#include "scopeone/Camera.h"
+#include "scopeone/DaqDevice.h"
 #include "scopeone/Driver.h"
 #include "scopeone/DriverManifest.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
-#include "scopeone/SignalSourceProvider.h"
+#include "scopeone/SignalSource.h"
 
 namespace scopeone::core::internal
 {
@@ -197,7 +197,7 @@ namespace scopeone::core::internal
         QByteArray m_readBuffer;
     };
 
-    // Runs one provider, a driver or one Micro-Manager camera, and answers the requests of
+    // Runs one device of a driver or one Micro-Manager camera, and answers the requests of
     // ScopeOne on a thread of its own
     class DriverRuntime final : public QObject
     {
@@ -209,14 +209,16 @@ namespace scopeone::core::internal
                       std::optional<MicroManagerCameraSetup> cameraSetup,
                       QString providerId,
                       QString hostKey,
-                      QJsonObject options,
+                      QString deviceName,
+                      QVariantMap preInitProperties,
                       QObject* parent = nullptr)
             : QObject(parent)
               , m_driverPath(std::move(driverPath))
               , m_cameraSetup(std::move(cameraSetup))
               , m_providerId(std::move(providerId))
               , m_hostKey(std::move(hostKey))
-              , m_options(std::move(options))
+              , m_deviceName(std::move(deviceName))
+              , m_preInitProperties(std::move(preInitProperties))
         {
         }
 
@@ -254,7 +256,7 @@ namespace scopeone::core::internal
             return response;
         }
 
-        bool createProvider();
+        bool createDevice();
 
         struct CameraTransport
         {
@@ -322,7 +324,8 @@ namespace scopeone::core::internal
         std::optional<MicroManagerCameraSetup> m_cameraSetup;
         QString m_providerId;
         QString m_hostKey;
-        QJsonObject m_options;
+        QString m_deviceName;
+        QVariantMap m_preInitProperties;
         QString m_lastError;
         HardwareProviderDescriptor m_descriptor;
         QList<HardwareDeviceDescriptor> m_devices;
@@ -330,17 +333,16 @@ namespace scopeone::core::internal
         QHash<QString, std::shared_ptr<CameraTransport>> m_cameraTransports;
         mutable QReadWriteLock m_cameraTransportsLock;
         std::unique_ptr<QPluginLoader> m_driverLoader;
-        HardwareProviderPtr m_provider;
+        DevicePtr m_device;
         std::shared_ptr<MicroManagerCamera> m_microManagerCamera;
-        CameraProvider* m_camera{nullptr};
-        DevicePropertyProvider* m_properties{nullptr};
-        StageProvider* m_stage{nullptr};
-        ShutterProvider* m_shutter{nullptr};
-        AutofocusProvider* m_autofocus{nullptr};
-        StateProvider* m_state{nullptr};
-        ConfigurationProvider* m_configuration{nullptr};
-        SignalSourceProvider* m_signals{nullptr};
-        DaqProvider* m_daq{nullptr};
+        Camera* m_camera{nullptr};
+        Device* m_properties{nullptr};
+        Stage* m_stage{nullptr};
+        Shutter* m_shutter{nullptr};
+        Autofocus* m_autofocus{nullptr};
+        StateDevice* m_state{nullptr};
+        SignalSource* m_signals{nullptr};
+        Daq* m_daq{nullptr};
         QList<SignalSourceDescriptor> m_signalSources;
         QList<DaqDeviceDescriptor> m_daqDevices;
         QHash<QString, std::shared_ptr<StreamTransport>> m_streams;
@@ -352,14 +354,14 @@ namespace scopeone::core::internal
         std::atomic_bool m_acceptStreams{false};
     };
 
-    // A Micro-Manager camera is built into DriverHost, a driver comes from its library
-    bool DriverRuntime::createProvider()
+    // A Micro-Manager camera is built into DriverHost, a device of a driver comes from its library
+    bool DriverRuntime::createDevice()
     {
         if (m_cameraSetup)
         {
             m_microManagerCamera = MicroManagerCamera::load(*m_cameraSetup, true, &m_lastError);
-            m_provider = m_microManagerCamera;
-            return m_provider != nullptr;
+            m_device = m_microManagerCamera;
+            return m_device != nullptr;
         }
         m_driverLoader = std::make_unique<QPluginLoader>(m_driverPath);
         DriverManifest manifest;
@@ -396,13 +398,21 @@ namespace scopeone::core::internal
             return false;
         }
 
-        m_options.insert(QStringLiteral("providerId"), m_providerId);
-        m_provider = factory->createProvider(m_options, &m_lastError);
-        if (!m_provider)
+        const QStringList deviceNames = factory->deviceNames();
+        const QString deviceName = m_deviceName.isEmpty() && !deviceNames.isEmpty()
+                                       ? deviceNames.first()
+                                       : m_deviceName;
+        if (!deviceNames.contains(deviceName))
+        {
+            m_lastError = QStringLiteral("The driver has no device %1").arg(deviceName);
+            return false;
+        }
+        m_device = factory->createDevice(deviceName, m_preInitProperties, &m_lastError);
+        if (!m_device)
         {
             if (m_lastError.isEmpty())
             {
-                m_lastError = QStringLiteral("Provider module returned no provider");
+                m_lastError = QStringLiteral("The driver returned no device");
             }
             return false;
         }
@@ -412,11 +422,11 @@ namespace scopeone::core::internal
     bool DriverRuntime::initializeRuntime()
     {
         m_lastError.clear();
-        if (!createProvider())
+        if (!createDevice())
         {
             return false;
         }
-        m_descriptor = m_provider->descriptor();
+        m_descriptor = m_device->descriptor();
         if (m_descriptor.id != m_providerId
             || m_descriptor.id != m_descriptor.id.trimmed())
         {
@@ -424,20 +434,19 @@ namespace scopeone::core::internal
             return false;
         }
 
-        HardwareProvider* const provider = m_provider.get();
-        m_camera = dynamic_cast<CameraProvider*>(provider);
-        m_properties = dynamic_cast<DevicePropertyProvider*>(provider);
-        m_stage = dynamic_cast<StageProvider*>(provider);
-        m_shutter = dynamic_cast<ShutterProvider*>(provider);
-        m_autofocus = dynamic_cast<AutofocusProvider*>(provider);
-        m_state = dynamic_cast<StateProvider*>(provider);
-        m_configuration = dynamic_cast<ConfigurationProvider*>(provider);
-        m_signals = dynamic_cast<SignalSourceProvider*>(provider);
-        m_daq = dynamic_cast<DaqProvider*>(provider);
+        Device* const provider = m_device.get();
+        m_camera = dynamic_cast<Camera*>(provider);
+        m_properties = provider;
+        m_stage = dynamic_cast<Stage*>(provider);
+        m_shutter = dynamic_cast<Shutter*>(provider);
+        m_autofocus = dynamic_cast<Autofocus*>(provider);
+        m_state = dynamic_cast<StateDevice*>(provider);
+        m_signals = dynamic_cast<SignalSource*>(provider);
+        m_daq = dynamic_cast<Daq*>(provider);
 
         QSet<QString> logicalIds;
         int cameraIndex = 0;
-        for (HardwareDeviceDescriptor device : m_provider->devices())
+        for (HardwareDeviceDescriptor device : m_device->devices())
         {
             const QString logicalId = device.logicalId.trimmed();
             const bool capabilityAvailable =
@@ -797,7 +806,6 @@ namespace scopeone::core::internal
         {
             result.append(driverhost::kCapabilityAutofocus);
         }
-        if (m_configuration) result.append(driverhost::kCapabilityConfiguration);
         return result;
     }
 
@@ -1085,7 +1093,7 @@ namespace scopeone::core::internal
             QTimer::singleShot(50, this, [this]() { emit shutdownRequested(); });
             return;
         }
-        if (!m_provider)
+        if (!m_device)
         {
             reply(makeErrorResponse(type, requestId, QStringLiteral("Provider is not initialized")));
             return;
@@ -1115,15 +1123,8 @@ namespace scopeone::core::internal
             return;
         }
 
-        const bool configurationCommand =
-            type == driverhost::kCommandListConfigGroups
-            || type == driverhost::kCommandListConfigs
-            || type == driverhost::kCommandGetCurrentConfig
-            || type == driverhost::kCommandSetConfig
-            || type == driverhost::kCommandGetConfigSettings;
-        const HardwareDeviceDescriptor* const device =
-            configurationCommand ? nullptr : requestedDevice(message);
-        if (!configurationCommand && !device)
+        const HardwareDeviceDescriptor* const device = requestedDevice(message);
+        if (!device)
         {
             reply(makeErrorResponse(type, requestId, QStringLiteral("Unknown provider device")));
             return;
@@ -1707,67 +1708,6 @@ namespace scopeone::core::internal
             return;
         }
 
-        // The same list decides the commands that need no device, so a configuration command is
-        // never accepted there and then missed here
-        if (configurationCommand)
-        {
-            if (!m_configuration)
-            {
-                unsupported(driverhost::kCapabilityConfiguration);
-                return;
-            }
-            if (type == driverhost::kCommandListConfigGroups)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("groups"),
-                                QJsonArray::fromStringList(
-                                    m_configuration->availableConfigGroups()));
-                reply(response);
-                return;
-            }
-            const QString group = message.value(QStringLiteral("group")).toString();
-            if (type == driverhost::kCommandGetConfigSettings)
-            {
-                QJsonArray settings;
-                for (const ConfigSetting& setting :
-                     m_configuration->configSettings(group, message.value(QStringLiteral("config")).toString()))
-                {
-                    settings.append(QJsonObject{{QStringLiteral("device"), setting.device},
-                                                {QStringLiteral("property"), setting.property},
-                                                {QStringLiteral("value"), setting.value}});
-                }
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("settings"), settings);
-                reply(response);
-                return;
-            }
-            if (type == driverhost::kCommandListConfigs)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("configs"),
-                                QJsonArray::fromStringList(
-                                    m_configuration->availableConfigs(group)));
-                reply(response);
-                return;
-            }
-            if (type == driverhost::kCommandGetCurrentConfig)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("config"),
-                                m_configuration->currentConfig(group));
-                reply(response);
-                return;
-            }
-            QString error;
-            const bool ok = m_configuration->setConfig(
-                group,
-                message.value(QStringLiteral("config")).toString(),
-                &error);
-            reply(ok ? makeResponse(type, requestId, true)
-                     : makeErrorResponse(type, requestId, error));
-            return;
-        }
-
         reply(makeErrorResponse(type, requestId, QStringLiteral("Unknown control command")));
     }
 
@@ -1816,8 +1756,7 @@ namespace scopeone::core::internal
         m_shutter = nullptr;
         m_autofocus = nullptr;
         m_state = nullptr;
-        m_configuration = nullptr;
-        m_provider.reset();
+        m_device.reset();
         {
             QWriteLocker locker(&m_cameraTransportsLock);
             m_cameraTransports.clear();
@@ -2108,9 +2047,12 @@ int main(int argc, char* argv[])
     QCommandLineOption optHostKey(QStringLiteral("hostKey"),
                                   QStringLiteral("DriverHost instance key"),
                                   QStringLiteral("key"));
-    QCommandLineOption optProviderOption(QStringLiteral("option"),
-                                         QStringLiteral("JSON provider options"),
-                                         QStringLiteral("json"));
+    QCommandLineOption optDeviceName(QStringLiteral("device"),
+                                     QStringLiteral("Device name in the driver, the first one by default"),
+                                     QStringLiteral("name"));
+    QCommandLineOption optProperties(QStringLiteral("properties"),
+                                     QStringLiteral("JSON pre-init properties of the device"),
+                                     QStringLiteral("json"));
     QCommandLineOption optLauncherPid(QStringLiteral("launcherPid"),
                                       QStringLiteral("Process ID of the launching app"),
                                       QStringLiteral("pid"));
@@ -2119,7 +2061,8 @@ int main(int argc, char* argv[])
     parser.addOption(optDriver);
     parser.addOption(optCamera);
     parser.addOption(optHostKey);
-    parser.addOption(optProviderOption);
+    parser.addOption(optDeviceName);
+    parser.addOption(optProperties);
     parser.addOption(optLauncherPid);
     parser.process(app);
 
@@ -2162,8 +2105,8 @@ int main(int argc, char* argv[])
         }
         cameraSetup = scopeone::core::internal::MicroManagerCameraSetup::fromJson(object);
     }
-    QJsonObject providerOptions;
-    for (const QString& encodedOptions : parser.values(optProviderOption))
+    QJsonObject preInitProperties;
+    for (const QString& encodedOptions : parser.values(optProperties))
     {
         QJsonObject object;
         if (!parseObject(encodedOptions, object))
@@ -2172,12 +2115,13 @@ int main(int argc, char* argv[])
         }
         for (auto it = object.constBegin(); it != object.constEnd(); ++it)
         {
-            providerOptions.insert(it.key(), it.value());
+            preInitProperties.insert(it.key(), it.value());
         }
     }
 
     auto* runtime = new scopeone::core::internal::DriverRuntime(
-        driverPath, std::move(cameraSetup), providerId, hostKey, providerOptions);
+        driverPath, std::move(cameraSetup), providerId, hostKey,
+        parser.value(optDeviceName).trimmed(), preInitProperties.toVariantMap());
     scopeone::core::internal::DriverHost driverHost(hostKey, runtime);
     if (!driverHost.start())
     {

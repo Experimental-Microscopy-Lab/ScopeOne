@@ -348,7 +348,7 @@ namespace
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
     struct ProviderRegistrationResult
     {
-        scopeone::core::HardwareProviderPtr provider;
+        scopeone::core::DevicePtr provider;
         QString errorMessage;
     };
 
@@ -1209,14 +1209,13 @@ namespace scopeone::core
                     }
                     watcher->deleteLater();
                 });
-        const QJsonObject providerOptions = QJsonObject::fromVariantMap(options);
         watcher->setFuture(QtConcurrent::run(
             m_hardwareThreadPool.get(),
-            [normalizedId, modulePath, providerOptions]()
+            [normalizedId, modulePath, options]()
             {
                 ProviderRegistrationResult result;
                 result.provider = HardwareRuntime::startScopeOneProvider(
-                    normalizedId, modulePath, providerOptions, &result.errorMessage);
+                    normalizedId, modulePath, QString{}, options, &result.errorMessage);
                 return result;
             }));
         return true;

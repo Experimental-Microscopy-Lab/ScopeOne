@@ -82,7 +82,7 @@ namespace scopeone::core::internal
 
     DaqDeviceManager::~DaqDeviceManager()
     {
-        for (const HardwareProviderPtr& provider : std::as_const(m_attachedProviders))
+        for (const DevicePtr& provider : std::as_const(m_attachedProviders))
         {
             detachProvider(provider);
         }
@@ -104,7 +104,7 @@ namespace scopeone::core::internal
                                  QString* errorMessage)
     {
         const QString deviceId = config.deviceId.trimmed();
-        const HardwareProviderPtr provider = m_providerByDevice.value(deviceId);
+        const DevicePtr provider = m_providerByDevice.value(deviceId);
         if (!provider)
         {
             if (errorMessage)
@@ -120,15 +120,15 @@ namespace scopeone::core::internal
         {
             expandRasterScan(scan, expanded);
         }
-        return dynamic_cast<DaqProvider*>(provider.get())->startDaq(expanded, errorMessage);
+        return dynamic_cast<Daq*>(provider.get())->startDaq(expanded, errorMessage);
     }
 
     void DaqDeviceManager::stop(const QString& deviceId)
     {
         const QString id = deviceId.trimmed();
-        if (const HardwareProviderPtr provider = m_providerByDevice.value(id))
+        if (const DevicePtr provider = m_providerByDevice.value(id))
         {
-            dynamic_cast<DaqProvider*>(provider.get())->stopDaq(id);
+            dynamic_cast<Daq*>(provider.get())->stopDaq(id);
         }
     }
 
@@ -145,11 +145,11 @@ namespace scopeone::core::internal
     // Follows the drivers as they are registered and removed, like the signal sources
     void DaqDeviceManager::refreshProviderDevices()
     {
-        QHash<QString, HardwareProviderPtr> current;
+        QHash<QString, DevicePtr> current;
         for (const HardwareProviderDescriptor& descriptor : m_registry->providers())
         {
-            const HardwareProviderPtr provider = m_registry->provider(descriptor.id);
-            if (dynamic_cast<DaqProvider*>(provider.get()))
+            const DevicePtr provider = m_registry->provider(descriptor.id);
+            if (dynamic_cast<Daq*>(provider.get()))
             {
                 current.insert(descriptor.id, provider);
             }
@@ -172,7 +172,7 @@ namespace scopeone::core::internal
             {
                 continue;
             }
-            auto* const daqProvider = dynamic_cast<DaqProvider*>(it.value().get());
+            auto* const daqProvider = dynamic_cast<Daq*>(it.value().get());
             const QPointer<DaqDeviceManager> self(this);
             daqProvider->setDaqSinks(
                 [self](const DaqInputChunk& chunk)
@@ -210,9 +210,9 @@ namespace scopeone::core::internal
         }
     }
 
-    void DaqDeviceManager::detachProvider(const HardwareProviderPtr& provider)
+    void DaqDeviceManager::detachProvider(const DevicePtr& provider)
     {
-        dynamic_cast<DaqProvider*>(provider.get())->setDaqSinks({}, {});
+        dynamic_cast<Daq*>(provider.get())->setDaqSinks({}, {});
         for (auto it = m_providerByDevice.begin(); it != m_providerByDevice.end();)
         {
             if (it.value() != provider)

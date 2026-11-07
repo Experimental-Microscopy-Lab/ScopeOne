@@ -21,7 +21,7 @@ namespace scopeone::core::internal
 
     SignalSourceManager::~SignalSourceManager()
     {
-        for (const HardwareProviderPtr& provider : std::as_const(m_attachedProviders))
+        for (const DevicePtr& provider : std::as_const(m_attachedProviders))
         {
             detachProvider(provider);
         }
@@ -53,16 +53,16 @@ namespace scopeone::core::internal
         }
         SignalAcquisitionConfig normalized = config;
         normalized.sourceId = sourceId;
-        const HardwareProviderPtr provider = m_providerBySource.value(sourceId);
-        return dynamic_cast<SignalSourceProvider*>(provider.get())->startSignal(normalized, errorMessage);
+        const DevicePtr provider = m_providerBySource.value(sourceId);
+        return dynamic_cast<SignalSource*>(provider.get())->startSignal(normalized, errorMessage);
     }
 
     void SignalSourceManager::stopTrace(const QString& sourceId)
     {
         const QString id = sourceId.trimmed();
-        if (const HardwareProviderPtr provider = m_providerBySource.value(id))
+        if (const DevicePtr provider = m_providerBySource.value(id))
         {
-            dynamic_cast<SignalSourceProvider*>(provider.get())->stopSignal(id);
+            dynamic_cast<SignalSource*>(provider.get())->stopSignal(id);
         }
     }
 
@@ -80,11 +80,11 @@ namespace scopeone::core::internal
     // driver that provides signal sources join the list, and their chunks are passed on
     void SignalSourceManager::refreshProviderSources()
     {
-        QHash<QString, HardwareProviderPtr> current;
+        QHash<QString, DevicePtr> current;
         for (const HardwareProviderDescriptor& descriptor : m_registry->providers())
         {
-            const HardwareProviderPtr provider = m_registry->provider(descriptor.id);
-            if (dynamic_cast<SignalSourceProvider*>(provider.get()))
+            const DevicePtr provider = m_registry->provider(descriptor.id);
+            if (dynamic_cast<SignalSource*>(provider.get()))
             {
                 current.insert(descriptor.id, provider);
             }
@@ -107,7 +107,7 @@ namespace scopeone::core::internal
             {
                 continue;
             }
-            auto* const signalProvider = dynamic_cast<SignalSourceProvider*>(it.value().get());
+            auto* const signalProvider = dynamic_cast<SignalSource*>(it.value().get());
             const QPointer<SignalSourceManager> self(this);
             signalProvider->setSignalSinks(
                 [self](const TimeSeriesChunk& chunk)
@@ -150,9 +150,9 @@ namespace scopeone::core::internal
         }
     }
 
-    void SignalSourceManager::detachProvider(const HardwareProviderPtr& provider)
+    void SignalSourceManager::detachProvider(const DevicePtr& provider)
     {
-        dynamic_cast<SignalSourceProvider*>(provider.get())->setSignalSinks({}, {}, {});
+        dynamic_cast<SignalSource*>(provider.get())->setSignalSinks({}, {}, {});
         for (auto it = m_providerBySource.begin(); it != m_providerBySource.end();)
         {
             if (it.value() != provider)

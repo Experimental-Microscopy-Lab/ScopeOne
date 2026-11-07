@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 #include "scopeone/scopeone_sdk_export.h"
 
 namespace scopeone::core
@@ -150,6 +152,27 @@ namespace scopeone::core
         QList<DaqAnalogTaskConfig> analogTasks;
         QList<DaqDigitalTaskConfig> digitalTasks;
         QList<DaqTerminalRoute> routes;
+    };
+
+    // A data acquisition device. It runs timed analog, digital and counter
+    // tasks, puts out scan waveforms and clocks and reads its inputs continuously
+    class SCOPEONE_SDK_EXPORT Daq
+    {
+    public:
+        using InputSink = std::function<void(const DaqInputChunk&)>;
+        using StateSink = std::function<void(const QString& deviceId,
+                                             DaqState state,
+                                             const QString& message)>;
+
+        virtual ~Daq();
+
+        virtual QList<DaqDeviceDescriptor> daqDevices() const = 0;
+        // The sinks may be called from any thread, and the input sink in the order of the samples
+        virtual void setDaqSinks(InputSink input, StateSink state) = 0;
+        // Raster scans of the session are already expanded into its tasks
+        virtual bool startDaq(const DaqSessionConfig& config,
+                              QString* errorMessage = nullptr) = 0;
+        virtual void stopDaq(const QString& deviceId) = 0;
     };
 }
 

@@ -26,7 +26,7 @@ ScopeOneCore/
 #include <scopeone/ExperimentDocument.h>
 ```
 
-`sdk/include/scopeone` contains the driver contract and the types it carries, such as `Driver`, `HardwareProvider`, `CameraProvider`, `SignalSourceProvider`, `DaqProvider` and `ImageFrame`. These headers keep the `scopeone/` include prefix. They build the `ScopeOneDriverSDK` library (`scopeone::DriverSDK`), which Core links publicly. A driver links only that target, so it sees neither the other Core headers nor the Core library, and on Linux it is linked with `--no-undefined`. An SDK header includes only Qt and other SDK headers.
+`sdk/include/scopeone` contains the driver contract and the types it carries, such as `Driver`, `Device`, `Hub`, `Camera`, `SignalSource`, `Daq` and `ImageFrame`. These headers keep the `scopeone/` include prefix. They build the `ScopeOneDriverSDK` library (`scopeone::DriverSDK`), which Core links publicly. A driver links only that target, so it sees neither the other Core headers nor the Core library, and on Linux it is linked with `--no-undefined`. An SDK header includes only Qt and other SDK headers.
 
 `internal` contains implementation contracts between Core managers, processing modules and DriverHost. These headers are available to the `ScopeOneCore` target through a private include path, are not installed, and may change without preserving source compatibility. Code outside `ScopeOneCore` must not include them.
 
@@ -47,7 +47,7 @@ Use this placement rule:
 | Namespace | Purpose | Examples |
 |---|---|---|
 | `scopeone::core` | Stable Core-facing types and public facades | `ScopeOneCore`, `ExperimentDocument`, `ImageSceneModel` |
-| `scopeone::core` driver contract | Stable types of `DriverSDK.h` | `Driver`, `HardwareProvider`, `CameraProvider`, `SignalSourceProvider`, `DaqProvider`, `ImageFrame` |
+| `scopeone::core` driver contract | Stable types of `DriverSDK.h` | `Driver`, `Device`, `Hub`, `Camera`, `SignalSource`, `Daq`, `ImageFrame` |
 | `scopeone::core::internal` | Core-only managers, processing modules and built-in devices | `HardwareRuntime`, `MicroManagerProvider`, `RecordingManager`, `IscatModule`, `SignalSourceManager` |
 | `scopeone::core::internal::driverhost` | Shared DriverHost message framing | Versioned request, response and event envelopes |
 | `scopeone::ui` | Desktop application widgets and UI coordination outside this library | `MainWindow`, `PreviewWidget`, `DhmTool`, `ToolRegistry` |
@@ -108,14 +108,14 @@ The installed headers in `include/scopeone` and `include/sdk/scopeone` are the s
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.
 - `ProcessingPipeline.h`, `ExperimentDocument.h` and `ImageSceneModel.h` are Core-owned runtime models and services.
-- `DriverSDK.h` includes the headers of the public driver contract: `CameraProvider.h`, `DaqDevice.h`, `DaqProvider.h`, `Driver.h`, `HardwareCapabilities.h`, `HardwareProvider.h`, `HardwareTypes.h`, `ImageFrame.h`, `SignalSource.h` and `SignalSourceProvider.h`. The `scopeone::DriverSDK` CMake target provides them.
+- `DriverSDK.h` includes the headers of the public driver contract: `Camera.h`, `DaqDevice.h`, `Device.h`, `Driver.h`, `HardwareCapabilities.h`, `HardwareTypes.h`, `ImageFrame.h` and `SignalSource.h`. The `scopeone::DriverSDK` CMake target provides them.
 - `ProcessingTypes.h` holds the processing module base class and the descriptors of modules and their parameters.
 - `DriverManifest.h` is how ScopeOne discovers and enables drivers. `SharedFrame.h` and `DhmReconstruction.h` serve the application. None of them are driver contracts.
 - `scopeone_core_export.h` supplies DLL import and export declarations and is normally included indirectly.
 
 External code should enter through these headers and `scopeone::core::ScopeOneCore`. Internal managers are implementation details and must not become alternate access paths.
 
-Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `CameraProvider::FrameSink`. The sink copies a frame before it returns, so a frame can point into the buffer of the camera SDK through `QByteArray::fromRawData` instead of being copied by the driver first. Core loads a driver with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider. It runs the camera of a configuration with one camera in ScopeOne, and each camera of a configuration with more in a DriverHost of its own, so two cameras of the same model do not share one vendor library.
+Providers use ScopeOne logical device IDs and publish `ImageFrame` objects through `Camera::FrameSink`. The sink copies a frame before it returns, so a frame can point into the buffer of the camera SDK through `QByteArray::fromRawData` instead of being copied by the driver first. Core loads a driver with `ScopeOneCore::registerDriverHostProvider(providerId, modulePath, options)`, which returns false with an error message when the DriverHost cannot start it. One DriverHost process owns the complete Provider and registers all of its cameras and control devices together. Micro-Manager remains the built-in provider. It runs the camera of a configuration with one camera in ScopeOne, and each camera of a configuration with more in a DriverHost of its own, so two cameras of the same model do not share one vendor library.
 
 Inside Core, the rest of Core reaches hardware only through `HardwareRuntime`. It routes each call to the provider of the device and answers the calls that span providers itself, such as all cameras, the default stages and shutter, and the frame delivery to the live view, live processing and recording. Every provider, `MicroManagerProvider` as well as each driver, offers its devices through the same interfaces of the driver SDK, so a driver can do what Micro-Manager does here, from hardware sequences to autofocus. How
 frames are delivered and paused is ScopeOne's own policy and stays out of the driver SDK.

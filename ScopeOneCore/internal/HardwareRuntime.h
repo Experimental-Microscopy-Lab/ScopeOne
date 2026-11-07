@@ -9,8 +9,9 @@
 
 #include <memory>
 
-#include "scopeone/HardwareProvider.h"
-#include "scopeone/CameraProvider.h"
+#include "scopeone/Device.h"
+#include "scopeone/HardwareCapabilities.h"
+#include "scopeone/Camera.h"
 #include "internal/AcquisitionEngine.h"
 #include "internal/CameraFrameDelivery.h"
 #include "internal/MicroManagerProvider.h"
@@ -36,15 +37,15 @@ namespace scopeone::core::internal
         explicit DeviceRegistry(QObject* parent = nullptr);
 
         void clear();
-        bool registerProvider(const HardwareProviderPtr& provider,
+        bool registerProvider(const DevicePtr& provider,
                               const HardwareProviderDescriptor& descriptor,
                               const QList<HardwareDeviceDescriptor>& devices);
         void unregisterProvider(const QString& providerId);
         QList<HardwareProviderDescriptor> providers() const;
         QList<HardwareDeviceDescriptor> devices() const;
         HardwareDeviceDescriptor device(const QString& logicalId) const;
-        HardwareProviderPtr provider(const QString& providerId) const;
-        HardwareProviderPtr providerForDevice(const QString& logicalId) const;
+        DevicePtr provider(const QString& providerId) const;
+        DevicePtr providerForDevice(const QString& logicalId) const;
 
     signals:
         void changed();
@@ -52,7 +53,7 @@ namespace scopeone::core::internal
     private:
         struct ProviderEntry
         {
-            HardwareProviderPtr provider;
+            DevicePtr provider;
             HardwareProviderDescriptor descriptor;
             QList<HardwareDeviceDescriptor> devices;
         };
@@ -186,10 +187,11 @@ namespace scopeone::core::internal
 
         // A driver in a DriverHost of its own. Safe to call from any thread, and the provider is
         // registered afterwards on the thread of the runtime.
-        static HardwareProviderPtr startScopeOneProvider(const QString& providerId,
-                                                         const QString& driverPath,
-                                                         const QJsonObject& options,
-                                                         QString* errorMessage);
+        static DevicePtr startScopeOneProvider(const QString& providerId,
+                                               const QString& driverPath,
+                                               const QString& deviceName,
+                                               const QVariantMap& preInitProperties,
+                                               QString* errorMessage);
 
         // The Micro-Manager configuration. Loading and unloading block, so they run on a worker
         // thread, while the cameras are started and stopped on the thread of the runtime.
@@ -200,7 +202,7 @@ namespace scopeone::core::internal
                                            QString& errorMessage);
         QStringList startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras);
         // The cameras, to be destroyed on a worker thread, as their DriverHosts take time to exit
-        QList<HardwareProviderPtr> takeMicroManagerCameras();
+        QList<DevicePtr> takeMicroManagerCameras();
         // Registers the devices again, false when one conflicts with the devices of a driver
         bool setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices);
         void stopMicroManagerPreview();
@@ -210,7 +212,7 @@ namespace scopeone::core::internal
         bool hasProvider(const QString& providerId) const { return m_registry.provider(providerId) != nullptr; }
         static QString microManagerVersion();
         void clear();
-        bool registerProvider(const HardwareProviderPtr& provider);
+        bool registerProvider(const DevicePtr& provider);
         void unregisterProvider(const QString& providerId);
         bool refreshProvider(const QString& providerId);
         void stopPreviewForProvider(const QString& providerId);
@@ -221,11 +223,11 @@ namespace scopeone::core::internal
         void previewStateChanged(bool running);
 
     private:
-        CameraProvider* cameraProviderForDevice(const QString& logicalId) const;
-        DevicePropertyProvider* propertyProviderForDevice(const QString& logicalId) const;
-        StageProvider* stageProviderForDevice(const QString& logicalId) const;
-        ShutterProvider* shutterProviderForDevice(const QString& logicalId) const;
-        StateProvider* stateProviderForDevice(const QString& logicalId) const;
+        Camera* cameraForDevice(const QString& logicalId) const;
+        Device* propertyDeviceForDevice(const QString& logicalId) const;
+        Stage* stageForDevice(const QString& logicalId) const;
+        Shutter* shutterForDevice(const QString& logicalId) const;
+        StateDevice* stateDeviceForDevice(const QString& logicalId) const;
         ConfigurationProvider* configurationProviderForGroup(const QString& groupName) const;
         QList<QPair<CameraFrameSource*, QStringList>> frameSourcesFor(const QStringList& cameraIds) const;
         bool applyFrameDeliveryModes(const QHash<QString, FrameDeliveryMode>& modes);

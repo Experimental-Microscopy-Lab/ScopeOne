@@ -305,9 +305,9 @@ namespace example_pmt
             }
         }
 
-        void setSinks(SignalSourceProvider::TimeSeriesSink timeSeries,
-                      SignalSourceProvider::TimestampedEventSink timestampedEvents,
-                      SignalSourceProvider::StateSink state)
+        void setSinks(SignalSource::TimeSeriesSink timeSeries,
+                      SignalSource::TimestampedEventSink timestampedEvents,
+                      SignalSource::StateSink state)
         {
             QMutexLocker locker(&m_sinkMutex);
             m_timeSeriesSink = std::move(timeSeries);
@@ -400,9 +400,9 @@ namespace example_pmt
         }
 
         QMutex m_sinkMutex;
-        SignalSourceProvider::TimeSeriesSink m_timeSeriesSink;
-        SignalSourceProvider::TimestampedEventSink m_timestampedEventSink;
-        SignalSourceProvider::StateSink m_stateSink;
+        SignalSource::TimeSeriesSink m_timeSeriesSink;
+        SignalSource::TimestampedEventSink m_timestampedEventSink;
+        SignalSource::StateSink m_stateSink;
         std::atomic_bool m_running{false};
         std::jthread m_worker;
     };
@@ -590,18 +590,12 @@ namespace example_pmt
         }
     }
 
-    class PmtProvider final : public HardwareProvider, public SignalSourceProvider
+    class PmtDevice final : public Device, public SignalSource
     {
     public:
         HardwareProviderDescriptor descriptor() const override
         {
             return {QString::fromLatin1(kSourceId), QStringLiteral("Example PMT"), QStringLiteral("1.0.0")};
-        }
-
-        // The PMT is listed as a signal source, not as a device with properties
-        QList<HardwareDeviceDescriptor> devices() const override
-        {
-            return {};
         }
 
         QList<SignalSourceDescriptor> signalSources() const override
@@ -653,13 +647,23 @@ namespace example_pmt
             return QString::fromLatin1(kSourceId);
         }
 
-        HardwareProviderPtr createProvider(const QJsonObject&, QString* errorMessage) override
+        QStringList deviceNames() const override
+        {
+            return {QStringLiteral("Example PMT")};
+        }
+
+        DevicePtr createDevice(const QString& name, const QVariantMap&, QString* errorMessage) override
         {
             if (errorMessage)
             {
                 errorMessage->clear();
             }
-            return std::make_shared<PmtProvider>();
+            if (name != deviceNames().first())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Unknown device %1").arg(name);
+                return {};
+            }
+            return std::make_shared<PmtDevice>();
         }
     };
 }

@@ -22,11 +22,12 @@
 
 namespace example_camera
 {
-    using scopeone::core::CameraProvider;
+    using scopeone::core::Camera;
     using scopeone::core::HardwareDeviceDescriptor;
     using scopeone::core::HardwareDeviceKind;
     using scopeone::core::HardwareDeviceState;
-    using scopeone::core::HardwareProvider;
+    using scopeone::core::Device;
+    using scopeone::core::Hub;
     using scopeone::core::HardwareProviderDescriptor;
     using scopeone::core::ImageFrame;
     using scopeone::core::ImagePixelFormat;
@@ -36,10 +37,10 @@ namespace example_camera
     constexpr double kMaximumExposureMs = 1000.0;
 
     // One camera. It stands in for the handle a vendor SDK gives out for each camera it finds.
-    class Camera
+    class ExampleCamera
     {
     public:
-        Camera(QString id, std::shared_ptr<const TestPatterns> patterns, int sensorWidth, int sensorHeight)
+        ExampleCamera(QString id, std::shared_ptr<const TestPatterns> patterns, int sensorWidth, int sensorHeight)
             : m_id(std::move(id))
               , m_patterns(std::move(patterns))
               , m_sensorWidth(sensorWidth)
@@ -49,14 +50,14 @@ namespace example_camera
         {
         }
 
-        ~Camera()
+        ~ExampleCamera()
         {
             stop();
         }
 
         const QString& id() const { return m_id; }
 
-        void setFrameSink(CameraProvider::FrameSink sink)
+        void setFrameSink(Camera::FrameSink sink)
         {
             QMutexLocker locker(&m_mutex);
             m_sink = std::move(sink);
@@ -73,7 +74,7 @@ namespace example_camera
                 while (m_running.load())
                 {
                     const ImageFrame frame = expose();
-                    CameraProvider::FrameSink sink;
+                    Camera::FrameSink sink;
                     {
                         QMutexLocker locker(&m_mutex);
                         sink = m_sink;
@@ -237,7 +238,7 @@ namespace example_camera
         const int m_sensorHeight;
         mutable QMutex m_mutex;
         QMutex m_readoutMutex;
-        CameraProvider::FrameSink m_sink;
+        Camera::FrameSink m_sink;
         double m_exposureMs{10.0};
         int m_gain{1};
         TestPattern m_pattern{TestPattern::MovingSpot};
@@ -252,12 +253,12 @@ namespace example_camera
         std::thread m_thread;
     };
 
-    // One provider that offers several cameras, as the driver of a camera maker does when its SDK
-    // finds several. ScopeOne addresses each camera by its id.
-    class MultiCameraProvider final : public HardwareProvider, public CameraProvider
+    // One device that offers several cameras, as the driver of a camera maker does when its SDK
+    // finds several. It is a hub, and ScopeOne addresses each camera by its id.
+    class ExampleCameraDevice final : public Device, public Hub, public Camera
     {
     public:
-        MultiCameraProvider(const QString& providerId, int cameraCount, int width, int height)
+        ExampleCameraDevice(const QString& providerId, int cameraCount, int width, int height)
             : m_providerId(providerId)
         {
             const auto patterns = std::make_shared<const TestPatterns>(width, height);
@@ -266,7 +267,7 @@ namespace example_camera
                 const QString id = cameraCount == 1
                                        ? QStringLiteral("camera.example")
                                        : QStringLiteral("camera.example.%1").arg(index + 1);
-                m_cameras.push_back(std::make_unique<Camera>(id, patterns, width, height));
+                m_cameras.push_back(std::make_unique<ExampleCamera>(id, patterns, width, height));
             }
         }
 
@@ -275,7 +276,7 @@ namespace example_camera
             return {m_providerId, QStringLiteral("Example Camera"), QStringLiteral("1")};
         }
 
-        QList<HardwareDeviceDescriptor> devices() const override
+        QList<HardwareDeviceDescriptor> peripherals() const override
         {
             QList<HardwareDeviceDescriptor> result;
             for (size_t index = 0; index < m_cameras.size(); ++index)
@@ -310,7 +311,7 @@ namespace example_camera
 
         bool startPreviewFor(const QString& cameraId) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             if (!camera)
             {
                 return false;
@@ -322,7 +323,7 @@ namespace example_camera
 
         bool stopPreviewFor(const QString& cameraId) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             if (!camera)
             {
                 return false;
@@ -334,13 +335,13 @@ namespace example_camera
 
         bool isPreviewRunning(const QString& cameraId) const override
         {
-            const Camera* camera = find(cameraId);
+            const ExampleCamera* camera = find(cameraId);
             return camera && camera->isRunning();
         }
 
         bool getExposure(const QString& cameraId, double& exposureMs) const override
         {
-            const Camera* camera = find(cameraId);
+            const ExampleCamera* camera = find(cameraId);
             if (!camera)
             {
                 return false;
@@ -351,25 +352,25 @@ namespace example_camera
 
         bool setExposure(const QString& cameraId, double exposureMs) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             return camera && camera->setExposureMs(exposureMs);
         }
 
         bool setROI(const QString& cameraId, int x, int y, int width, int height) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             return camera && camera->setRoi(x, y, width, height);
         }
 
         bool clearROI(const QString& cameraId) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             return camera && camera->clearRoi();
         }
 
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             if (!camera)
             {
                 return false;
@@ -381,7 +382,7 @@ namespace example_camera
         // A software trigger: one exposure, read out while the caller waits
         bool captureEventFrame(const QString& cameraId, ImageFrame& frame, int timeoutMs) override
         {
-            Camera* camera = find(cameraId);
+            ExampleCamera* camera = find(cameraId);
             if (!camera || camera->isRunning() || camera->exposureMs() > timeoutMs)
             {
                 return false;
@@ -400,7 +401,7 @@ namespace example_camera
 
         QString getProperty(const QString& deviceId, const QString& name, bool) override
         {
-            Camera* camera = find(deviceId);
+            ExampleCamera* camera = find(deviceId);
             if (!camera)
             {
                 return {};
@@ -425,7 +426,7 @@ namespace example_camera
                          const QString& value,
                          QString* errorMessage) override
         {
-            Camera* camera = find(deviceId);
+            ExampleCamera* camera = find(deviceId);
             TestPattern pattern = TestPattern::MovingSpot;
             if (camera && name == QStringLiteral("Pattern") && testPatternFromName(value, pattern))
             {
@@ -490,7 +491,7 @@ namespace example_camera
         }
 
     private:
-        Camera* find(const QString& cameraId) const
+        ExampleCamera* find(const QString& cameraId) const
         {
             for (const auto& camera : m_cameras)
             {
@@ -524,7 +525,7 @@ namespace example_camera
         }
 
         QString m_providerId;
-        std::vector<std::unique_ptr<Camera>> m_cameras;
+        std::vector<std::unique_ptr<ExampleCamera>> m_cameras;
         QMutex m_mutex;
         PreviewStateSink m_previewStateSink;
         bool m_lastPreviewState{false};
@@ -543,18 +544,26 @@ namespace example_camera
             return QStringLiteral("example.camera");
         }
 
-        // Options: width and height of the sensor, and cameraCount, the number of cameras (2 by default)
-        scopeone::core::HardwareProviderPtr createProvider(const QJsonObject& options,
-                                                            QString* errorMessage) override
+        QStringList deviceNames() const override
+        {
+            return {QStringLiteral("Example Camera")};
+        }
+
+        // Pre-init properties: width and height of the sensor, and cameraCount, the number of
+        // cameras (2 by default)
+        scopeone::core::DevicePtr createDevice(const QString& name,
+                                               const QVariantMap& preInitProperties,
+                                               QString* errorMessage) override
         {
             if (errorMessage)
             {
                 errorMessage->clear();
             }
-            const int width = options.value(QStringLiteral("width")).toInt(512);
-            const int height = options.value(QStringLiteral("height")).toInt(512);
-            const int cameraCount = options.value(QStringLiteral("cameraCount")).toInt(2);
-            if (width <= 0 || height <= 0 || cameraCount < 1 || cameraCount > 8)
+            const int width = preInitProperties.value(QStringLiteral("width"), 512).toInt();
+            const int height = preInitProperties.value(QStringLiteral("height"), 512).toInt();
+            const int cameraCount = preInitProperties.value(QStringLiteral("cameraCount"), 2).toInt();
+            if (name != deviceNames().first()
+                || width <= 0 || height <= 0 || cameraCount < 1 || cameraCount > 8)
             {
                 if (errorMessage)
                 {
@@ -562,7 +571,7 @@ namespace example_camera
                 }
                 return {};
             }
-            return std::make_shared<MultiCameraProvider>(providerId(), cameraCount, width, height);
+            return std::make_shared<ExampleCameraDevice>(providerId(), cameraCount, width, height);
         }
     };
 }

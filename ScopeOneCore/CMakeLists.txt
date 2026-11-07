@@ -78,21 +78,19 @@ file(GLOB CORE_HEADERS CONFIGURE_DEPENDS internal/*.h include/scopeone/*.h)
 # The driver SDK: the only headers and the only library a driver sees. It is a library of its
 # own so a driver that reaches for anything else of Core does not compile or link.
 set(SDK_HEADERS
-        sdk/include/scopeone/CameraProvider.h
+        sdk/include/scopeone/Camera.h
         sdk/include/scopeone/DaqDevice.h
-        sdk/include/scopeone/DaqProvider.h
         sdk/include/scopeone/Driver.h
         sdk/include/scopeone/HardwareCapabilities.h
         sdk/include/scopeone/DriverSDK.h
-        sdk/include/scopeone/HardwareProvider.h
+        sdk/include/scopeone/Device.h
         sdk/include/scopeone/HardwareTypes.h
         sdk/include/scopeone/ImageFrame.h
         sdk/include/scopeone/scopeone_sdk_export.h
         sdk/include/scopeone/SignalSource.h
-        sdk/include/scopeone/SignalSourceProvider.h
 )
 add_library(ScopeOneDriverSDK SHARED
-        sdk/src/HardwareProvider.cpp
+        sdk/src/Device.cpp
         sdk/src/SignalSource.cpp
         ${SDK_HEADERS}
 )

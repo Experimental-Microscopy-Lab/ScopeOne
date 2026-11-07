@@ -4,8 +4,8 @@
 #include <QObject>
 
 #include "scopeone/DaqDevice.h"
-#include "scopeone/DaqProvider.h"
-#include "scopeone/HardwareProvider.h"
+#include "scopeone/DaqDevice.h"
+#include "scopeone/Device.h"
 
 namespace scopeone::core::internal
 {
@@ -38,12 +38,12 @@ namespace scopeone::core::internal
 
     private:
         void refreshProviderDevices();
-        void detachProvider(const HardwareProviderPtr& provider);
+        void detachProvider(const DevicePtr& provider);
         void updateState(const QString& deviceId, DaqState state, const QString& message);
 
         DeviceRegistry* m_registry{nullptr};
-        QHash<QString, HardwareProviderPtr> m_attachedProviders;
-        QHash<QString, HardwareProviderPtr> m_providerByDevice;
+        QHash<QString, DevicePtr> m_attachedProviders;
+        QHash<QString, DevicePtr> m_providerByDevice;
         QHash<QString, DaqDeviceDescriptor> m_descriptors;
         QHash<QString, DaqState> m_states;
         QHash<QString, QString> m_messages;
