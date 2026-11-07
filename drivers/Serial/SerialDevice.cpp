@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSerialPortInfo>
 
 #include <cmath>
 #include <utility>
@@ -179,8 +180,14 @@ namespace serial_driver
         m_port.setFlowControl(m_profile.flowControl);
         if (!m_port.open(QIODevice::ReadWrite))
         {
-            *errorMessage = QStringLiteral("Cannot open the serial port %1: %2")
-                                .arg(portName, m_port.errorString());
+            QStringList available;
+            for (const QSerialPortInfo& info : QSerialPortInfo::availablePorts())
+            {
+                available.append(info.portName());
+            }
+            *errorMessage = QStringLiteral("Cannot open the serial port %1: %2. Serial ports: %3")
+                                .arg(portName, m_port.errorString(),
+                                     available.isEmpty() ? QStringLiteral("none") : available.join(QStringLiteral(", ")));
             return false;
         }
 
