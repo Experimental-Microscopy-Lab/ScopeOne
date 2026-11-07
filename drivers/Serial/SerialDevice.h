@@ -109,6 +109,8 @@ namespace serial_driver
         mutable QSerialPort m_port;
         mutable QByteArray m_pending;
         mutable QHash<QString, QString> m_cache;
+        // Whether the last exchange failed on an error reply of the device, not on the port
+        mutable bool m_errorReply{false};
     };
 
     // The serial device of a description with a shutter, which adds the Shutter capability

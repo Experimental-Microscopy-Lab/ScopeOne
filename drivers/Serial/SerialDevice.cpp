@@ -212,6 +212,24 @@ namespace serial_driver
             }
             it->max = maximum;
         }
+
+        // Firmware versions of one series differ in the commands they know, and a property whose
+        // query the device answers with an error is left out instead of failing on every read
+        QStringList unsupported;
+        for (auto it = m_profile.properties.cbegin(); it != m_profile.properties.cend(); ++it)
+        {
+            QString value;
+            QString readError;
+            if (!it->get.isEmpty() && !readValue(it.key(), &value, &readError) && m_errorReply)
+            {
+                qInfo().noquote() << QStringLiteral("%1 is left out: %2").arg(it.key(), readError);
+                unsupported.append(it.key());
+            }
+        }
+        for (const QString& name : unsupported)
+        {
+            m_profile.properties.remove(name);
+        }
         return true;
     }
 
@@ -412,6 +430,7 @@ namespace serial_driver
     bool SerialDevice::exchange(const QString& command, QString* reply, QString* errorMessage) const
     {
         const QString portName = m_port.portName();
+        m_errorReply = false;
         m_port.clear(QSerialPort::Input);
         m_pending.clear();
         const QByteArray bytes = (command + m_profile.writeTerminator).toLatin1();
@@ -434,6 +453,7 @@ namespace serial_driver
         } while (*reply == command);
         if (isErrorLine(*reply))
         {
+            m_errorReply = true;
             *errorMessage = QStringLiteral("Error reply \"%1\" to \"%2\" from %3")
                                 .arg(*reply, command, portName);
             return false;
@@ -453,6 +473,7 @@ namespace serial_driver
             // was reported as a wrong ack instead of the device's error
             if (isErrorLine(ack))
             {
+                m_errorReply = true;
                 *errorMessage = QStringLiteral("Error reply \"%1\" to \"%2\" from %3")
                                     .arg(ack, command, portName);
                 return false;

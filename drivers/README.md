@@ -160,9 +160,9 @@ itself a driver, whose id is the file name without the extension, `cobolt-05-01`
                        "values": {"Off": "0", "Waiting for Temperatures": "1", "Waiting for Key": "2",
                                   "Warming Up": "3", "Completed": "4", "Fault": "5", "Aborted": "6",
                                   "Waiting for Remote": "7", "Standby": "8"}},
-    "Power Setpoint": {"type": "float", "get": "glp?", "set": "slp {value}",
+    "Power Setpoint [mW]": {"type": "float", "get": "glp?", "set": "slp {value}",
                        "min": 0, "max": {"get": "gmlp?"}},
-    "Power Reading": {"type": "float", "get": "pa?"},
+    "Power Reading [W]": {"type": "float", "get": "pa?"},
     "Fault": {"type": "enum", "get": "f?",
               "values": {"No Fault": "0", "TEC Fault": "1", "Interlock": "3", "Current Clamp": "4"}},
     "Clear Fault": {"type": "action", "set": "cf"},
@@ -215,6 +215,9 @@ without exponent and trailing zeros, and an `int` is rounded to a whole number. 
 has the one value `Run`, which sends its `set` command. The pre-init properties of a serial device are
 `Port`, `BaudRate` and `AnswerTimeout`, with the same names as the MM serial device adapters, and
 `Description File`, which ScopeOne sets to the path of the file.
+
+When the device opens, every property with a `get` is read once. A property whose query the device
+answers with an error is left out, so one file covers firmware versions that lack some commands.
 
 ## Installing a driver
 
