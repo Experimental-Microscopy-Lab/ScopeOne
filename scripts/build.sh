@@ -235,8 +235,12 @@ step "Building required Micro-Manager components"
 (
   cd "$MM_REPO_DIR"
   run git submodule update --init --recursive
-  run ./autogen.sh
-  run ./configure --without-java --enable-static
+  # autogen.sh and configure took most of an incremental build, so they run only on the first
+  # build and with --clean
+  if [[ "$CLEAN" == true || ! -f config.status ]]; then
+    run ./autogen.sh
+    run ./configure --without-java --enable-static
+  fi
   run make -C "$MMCORE_LINK/MMDevice" -j "$JOBS"
   run make -C "$MMCORE_LINK/MMCore" -j "$JOBS"
   run make -C "$MMCORE_LINK/DeviceAdapters/DemoCamera" -j "$JOBS"
