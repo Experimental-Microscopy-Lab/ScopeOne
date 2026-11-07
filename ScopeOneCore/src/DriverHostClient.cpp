@@ -174,6 +174,11 @@ namespace scopeone::core::internal
                       << QStringLiteral("--hostKey") << m_hostKey
                       << QStringLiteral("--launcherPid")
                       << QString::number(QCoreApplication::applicationPid());
+            // Qt sends the messages of a process without a console, as the host started by the
+            // Windows GUI is, to the debugger, so the host's reasons never reached the log there
+            QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+            environment.insert(QStringLiteral("QT_FORCE_STDERR_LOGGING"), QStringLiteral("1"));
+            m_process->setProcessEnvironment(environment);
             m_process->setProgram(driverHostPath);
             m_process->setArguments(arguments);
             m_process->start();
@@ -202,7 +207,10 @@ namespace scopeone::core::internal
                     const QString rest = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
                     if (!rest.isEmpty())
                     {
-                        m_lastHostLine = rest.split(QLatin1Char('\n')).last();
+                        // The last output was read here and not logged, so a host that exited
+                        // at start left nothing of its reason in the log
+                        m_lastHostLine = rest.split(QLatin1Char('\n')).last().trimmed();
+                        qInfo().noquote() << QString("[DriverHost %1] %2").arg(m_providerId, rest);
                     }
                     break;
                 }
@@ -214,9 +222,20 @@ namespace scopeone::core::internal
                     // A host that exits at start names its reason as its last line
                     const QString reasonPrefix =
                         QStringLiteral("DriverHost init failed for '%1': ").arg(m_hostKey);
-                    *errorMessage = exited && m_lastHostLine.startsWith(reasonPrefix)
-                                        ? m_lastHostLine.mid(reasonPrefix.size())
-                                        : QStringLiteral("DriverHost control server did not become ready");
+                    const qsizetype reasonStart = m_lastHostLine.indexOf(reasonPrefix);
+                    if (exited && reasonStart >= 0)
+                    {
+                        *errorMessage = m_lastHostLine.mid(reasonStart + reasonPrefix.size());
+                    }
+                    else if (exited)
+                    {
+                        *errorMessage = QStringLiteral("DriverHost exited with code 0x%1 before it was ready")
+                                            .arg(static_cast<quint32>(m_process->exitCode()), 8, 16, QLatin1Char('0'));
+                    }
+                    else
+                    {
+                        *errorMessage = QStringLiteral("DriverHost control server did not become ready");
+                    }
                 }
                 cleanup();
                 return false;
