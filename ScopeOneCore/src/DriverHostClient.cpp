@@ -1346,17 +1346,36 @@ namespace scopeone::core::internal
                             const QString& name,
                             bool fromCache) override
         {
+            // The values are kept here, so that reading from the cache never waits for the host.
+            // A property that was never read or set is asked of the host once.
+            const QString key = deviceId.trimmed() + QLatin1Char('\n') + name;
+            // Only for ScopeOne drivers. The cache of MMCore in a camera host also follows the
+            // property changes the device reports, which this one would hide.
+            const bool keepsValues = m_arguments.contains(QStringLiteral("--driver"));
+            if (fromCache && keepsValues)
+            {
+                QMutexLocker locker(&m_stateMutex);
+                const auto cached = m_propertyValues.constFind(key);
+                if (cached != m_propertyValues.cend())
+                {
+                    return cached.value();
+                }
+            }
             QJsonObject response;
             QJsonObject fields;
             fields.insert(QStringLiteral("name"), name);
             fields.insert(QStringLiteral("fromCache"), fromCache);
-            return request(driverhost::kCommandGetProperty,
-                           deviceId,
-                           fields,
-                           response,
-                           nullptr)
-                       ? response.value(QStringLiteral("value")).toString()
-                       : QString{};
+            if (!request(driverhost::kCommandGetProperty, deviceId, fields, response, nullptr))
+            {
+                return {};
+            }
+            const QString value = response.value(QStringLiteral("value")).toString();
+            if (keepsValues)
+            {
+                QMutexLocker locker(&m_stateMutex);
+                m_propertyValues.insert(key, value);
+            }
+            return value;
         }
 
         bool setProperty(const QString& deviceId,
@@ -1370,6 +1389,11 @@ namespace scopeone::core::internal
             QJsonObject response;
             clearPropertyDetails();
             const bool ok = request(driverhost::kCommandSetProperty, deviceId, fields, response, errorMessage);
+            if (ok && m_arguments.contains(QStringLiteral("--driver")))
+            {
+                QMutexLocker locker(&m_stateMutex);
+                m_propertyValues.insert(deviceId.trimmed() + QLatin1Char('\n') + name, value);
+            }
             if (ok && isCamera(deviceId))
             {
                 refreshPixelSizes({deviceId.trimmed()});
@@ -1983,6 +2007,7 @@ namespace scopeone::core::internal
         mutable QMutex m_stateMutex;
         QSet<QString> m_runningCameras;
         QHash<QString, QJsonObject> m_propertyDetails;
+        QHash<QString, QString> m_propertyValues;
         QHash<QString, double> m_pixelSizes;
     };
 

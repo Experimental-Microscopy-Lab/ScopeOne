@@ -5,6 +5,7 @@
 #include "scopeone/Camera.h"
 
 #include <algorithm>
+#include <QDebug>
 #include <QMetaObject>
 #include <functional>
 #include <QSet>
@@ -15,6 +16,24 @@ namespace scopeone::core::internal
 {
     namespace
     {
+        bool sameSettings(const std::vector<scopeone::core::ConfigSetting>& a,
+                          const std::vector<scopeone::core::ConfigSetting>& b)
+        {
+            return !a.empty() && a.size() == b.size()
+                && std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y)
+                              { return x.device == y.device && x.property == y.property && x.value == y.value; });
+        }
+
+        // Property values compare as numbers when both are, so 1 and 1.000 are the same setting
+        bool propertyValuesEqual(const QString& a, const QString& b)
+        {
+            bool aIsNumber = false;
+            bool bIsNumber = false;
+            const double x = a.toDouble(&aIsNumber);
+            const double y = b.toDouble(&bIsNumber);
+            return aIsNumber && bIsNumber ? x == y : a == b;
+        }
+
         // Calls through to a provider, or reports that nothing serves the request
         template <class Provider, class Call>
         bool forward(Provider* provider, const char* missing, QString* errorMessage, Call&& call)
@@ -306,33 +325,6 @@ namespace scopeone::core::internal
     {
         const DevicePtr provider = m_registry.providerForDevice(logicalId);
         return dynamic_cast<StateDevice*>(provider.get());
-    }
-
-    ConfigurationProvider* HardwareRuntime::configurationProviderForGroup(
-        const QString& groupName) const
-    {
-        const QString normalizedGroup = groupName.trimmed();
-        if (normalizedGroup.isEmpty())
-        {
-            return nullptr;
-        }
-        ConfigurationProvider* match = nullptr;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
-        {
-            const DevicePtr provider = m_registry.provider(descriptor.id);
-            auto* configurationProvider = dynamic_cast<ConfigurationProvider*>(provider.get());
-            if (!configurationProvider
-                || !configurationProvider->availableConfigGroups().contains(normalizedGroup))
-            {
-                continue;
-            }
-            if (match)
-            {
-                return nullptr;
-            }
-            match = configurationProvider;
-        }
-        return match;
     }
 
     bool HardwareRuntime::startPreview()
@@ -787,71 +779,161 @@ namespace scopeone::core::internal
         return provider ? provider->stateLabel(deviceId, state) : QString{};
     }
 
+    // The ScopeOne lines of the cfg file for the devices that are loaded. A device that failed to
+    // load or is unloaded takes its lines out of the presets.
+    std::vector<ScopeOneConfigGroupLine> HardwareRuntime::scopeOneConfigLines() const
+    {
+        std::vector<ScopeOneConfigGroupLine> lines;
+        for (const ScopeOneConfigGroupLine& line : m_scopeOne.configuration().configGroups)
+        {
+            if (m_registry.providerForDevice(line.label))
+            {
+                lines.push_back(line);
+            }
+        }
+        return lines;
+    }
+
+    // The preset names of the group in cfg order, which are the Micro-Manager ones first
+    QStringList HardwareRuntime::availableConfigs(const QString& groupName) const
+    {
+        const QString group = groupName.trimmed();
+        QStringList presets = m_microManager->availableConfigs(group);
+        for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
+        {
+            if (line.group == group && !presets.contains(line.preset))
+            {
+                presets.append(line.preset);
+            }
+        }
+        return presets;
+    }
+
+    // The groups of Micro-Manager, then the groups that only ScopeOne devices define
     QStringList HardwareRuntime::availableConfigGroups() const
     {
-        QHash<QString, int> groupCounts;
-        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        QStringList groups = m_microManager->availableConfigGroups();
+        for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
         {
-            const DevicePtr provider = m_registry.provider(descriptor.id);
-            if (auto* configurationProvider = dynamic_cast<ConfigurationProvider*>(provider.get()))
+            if (!groups.contains(line.group))
             {
-                QSet<QString> providerGroups;
-                for (const QString& group : configurationProvider->availableConfigGroups())
-                {
-                    const QString normalizedGroup = group.trimmed();
-                    if (!normalizedGroup.isEmpty())
-                    {
-                        providerGroups.insert(normalizedGroup);
-                    }
-                }
-                for (const QString& group : providerGroups)
-                {
-                    ++groupCounts[group];
-                }
+                groups.append(line.group);
             }
         }
-        QStringList groups;
-        for (auto it = groupCounts.cbegin(); it != groupCounts.cend(); ++it)
-        {
-            if (it.value() == 1)
-            {
-                groups.append(it.key());
-            }
-        }
-        std::sort(groups.begin(), groups.end());
         return groups;
     }
 
-    QStringList HardwareRuntime::availableConfigs(const QString& groupName) const
-    {
-        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
-        return provider ? provider->availableConfigs(groupName) : QStringList{};
-    }
-
+    // The Micro-Manager settings of the preset, then those of the ScopeOne devices
     std::vector<scopeone::core::ConfigSetting> HardwareRuntime::configSettings(
         const QString& groupName, const QString& configName) const
     {
-        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
-        return provider ? provider->configSettings(groupName, configName)
-                        : std::vector<scopeone::core::ConfigSetting>{};
+        std::vector<scopeone::core::ConfigSetting> settings =
+            m_microManager->configSettings(groupName.trimmed(), configName);
+        for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
+        {
+            if (line.group == groupName.trimmed() && line.preset == configName)
+            {
+                settings.push_back({line.label, line.property, line.value});
+            }
+        }
+        return settings;
     }
 
+    // The first preset of the group that both parts match. The ScopeOne values come from the cache
+    // of the DriverHost clients, so the refresh of the interface sends nothing to the devices.
     QString HardwareRuntime::currentConfig(const QString& groupName) const
     {
-        ConfigurationProvider* provider = configurationProviderForGroup(groupName);
-        return provider ? provider->currentConfig(groupName) : QString{};
+        const QString group = groupName.trimmed();
+        const QString microManagerCurrent = m_microManager->currentConfig(group);
+        const QStringList microManagerPresets = m_microManager->availableConfigs(group);
+        const std::vector<ScopeOneConfigGroupLine> lines = scopeOneConfigLines();
+        for (const QString& preset : availableConfigs(group))
+        {
+            // Presets that differ only in their ScopeOne part have the same Micro-Manager settings,
+            // and Micro-Manager reports just one of them, so the settings are compared.
+            if (microManagerPresets.contains(preset) && microManagerCurrent != preset
+                && !sameSettings(m_microManager->configSettings(group, preset),
+                                 m_microManager->configSettings(group, microManagerCurrent)))
+            {
+                continue;
+            }
+            bool matches = true;
+            for (const ScopeOneConfigGroupLine& line : lines)
+            {
+                if (line.group != group || line.preset != preset)
+                {
+                    continue;
+                }
+                Device* device = propertyDeviceForDevice(line.label);
+                if (!device || !propertyValuesEqual(device->getProperty(line.label, line.property, true),
+                                                    line.value))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches)
+            {
+                return preset;
+            }
+        }
+        return {};
     }
 
+    // Sets the ScopeOne part of a preset, stopping at the first property that cannot be set
+    bool HardwareRuntime::applyScopeOnePreset(const QString& groupName,
+                                              const QString& configName,
+                                              QString* errorMessage)
+    {
+        for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
+        {
+            if (line.group != groupName.trimmed() || line.preset != configName)
+            {
+                continue;
+            }
+            QString error;
+            if (!setProperty(line.label, line.property, line.value, &error))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("%1 %2: %3").arg(line.label, line.property, error);
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Applies the Micro-Manager part of the preset, if it has one, then the ScopeOne part
     bool HardwareRuntime::setConfig(const QString& groupName,
                                     const QString& configName,
                                     QString* errorMessage)
     {
-        return forward(configurationProviderForGroup(groupName), "Configuration provider not available",
-                       errorMessage,
-                       [&](ConfigurationProvider& provider)
-                       {
-                           return provider.setConfig(groupName, configName, errorMessage);
-                       });
+        // A preset that neither side defines is an error, so a misspelt name does not pass as set
+        if (!availableConfigs(groupName).contains(configName))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("No preset %1 in group %2").arg(configName, groupName);
+            }
+            return false;
+        }
+        if (m_microManager->availableConfigs(groupName.trimmed()).contains(configName)
+            && !m_microManager->setConfig(groupName.trimmed(), configName, errorMessage))
+        {
+            return false;
+        }
+        return applyScopeOnePreset(groupName, configName, errorMessage);
+    }
+
+    // System/Startup of the ScopeOne devices, after the load. MMCore has applied its own part.
+    void HardwareRuntime::applyScopeOneStartupPreset()
+    {
+        QString error;
+        if (!applyScopeOnePreset(QStringLiteral("System"), QStringLiteral("Startup"), &error))
+        {
+            qWarning().noquote() << QStringLiteral("System/Startup failed: %1").arg(error);
+        }
     }
 
     bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
@@ -1034,6 +1116,16 @@ namespace scopeone::core::internal
     {
         stopPreviewForProvider(m_microManager->descriptor().id);
         m_microManager->applyShutdownPreset();
+    }
+
+    // System/Shutdown of the ScopeOne devices, which the caller runs off the GUI thread
+    void HardwareRuntime::applyScopeOneShutdownPreset()
+    {
+        QString error;
+        if (!applyScopeOnePreset(QStringLiteral("System"), QStringLiteral("Shutdown"), &error))
+        {
+            qWarning().noquote() << QStringLiteral("System/Shutdown failed: %1").arg(error);
+        }
     }
 
     // Removes the drivers. Micro-Manager stays registered, as the runtime owns it for its lifetime.

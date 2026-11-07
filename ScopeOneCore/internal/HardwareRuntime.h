@@ -160,9 +160,11 @@ namespace scopeone::core::internal
         QString currentConfig(const QString& groupName) const;
         std::vector<scopeone::core::ConfigSetting> configSettings(
             const QString& groupName, const QString& configName) const;
+        // The presets are those of Micro-Manager and of the ScopeOneConfigGroup lines, merged by name
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage = nullptr);
+        void applyScopeOneStartupPreset();
 
         bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const;
         bool setAutoShutter(bool enabled, QString* errorMessage = nullptr);
@@ -207,6 +209,7 @@ namespace scopeone::core::internal
         void stopMicroManagerPreview();
         bool unloadMicroManagerDevices(QString* errorMessage = nullptr);
         void applyMicroManagerShutdownPreset();
+        void applyScopeOneShutdownPreset();
         QList<HardwareDeviceDescriptor> devices() const { return m_registry.devices(); }
         static QString microManagerVersion();
         void clear();
@@ -225,7 +228,8 @@ namespace scopeone::core::internal
         Stage* stageForDevice(const QString& logicalId) const;
         Shutter* shutterForDevice(const QString& logicalId) const;
         StateDevice* stateDeviceForDevice(const QString& logicalId) const;
-        ConfigurationProvider* configurationProviderForGroup(const QString& groupName) const;
+        std::vector<ScopeOneConfigGroupLine> scopeOneConfigLines() const;
+        bool applyScopeOnePreset(const QString& groupName, const QString& configName, QString* errorMessage);
         QList<QPair<CameraFrameSource*, QStringList>> frameSourcesFor(const QStringList& cameraIds) const;
         bool applyFrameDeliveryModes(const QHash<QString, FrameDeliveryMode>& modes);
 

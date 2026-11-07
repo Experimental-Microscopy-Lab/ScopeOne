@@ -53,6 +53,11 @@ namespace scopeone::core::internal
             for (const HardwareDeviceDescriptor& peripheral : device->devices())
             {
                 const QStringList names = device->listProperties(peripheral.logicalId);
+                // One read of every property fills the cache that the presets are matched against
+                for (const QString& name : names)
+                {
+                    device->getProperty(peripheral.logicalId, name, false);
+                }
                 for (const auto& property : line.properties)
                 {
                     if (names.contains(property.first)

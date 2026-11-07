@@ -1748,6 +1748,7 @@ namespace scopeone::core
     void ScopeOneCore::unloadConfigurationForShutdown()
     {
         applySystemShutdownPreset();
+        m_managers->hardwareRuntime->applyScopeOneShutdownPreset();
         clearConfigurationRuntime(false, true);
         m_managers->hardwareRuntime->unloadMicroManagerDevices();
         m_managers->hardwareRuntime->clear();
@@ -1846,7 +1847,7 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        stopDriverHosts([this, path]() { startConfigurationLoadTask(path); });
+        stopDriverHosts([this, path]() { startConfigurationLoadTask(path); }, true);
         return true;
     }
 
@@ -1910,9 +1911,19 @@ namespace scopeone::core
                         result.cameraIds.append(device.logicalId);
                     }
                 }
-                m_configurationOperationRunning = false;
-                emit hardwareConfigurationChanged();
-                emit configurationLoadFinished(true, result, {});
+                // System/Startup of the ScopeOne devices sets properties over the DriverHosts, which
+                // the hardware thread does while the load stays unfinished
+                auto* startup = new QFutureWatcher<void>(this);
+                connect(startup, &QFutureWatcher<void>::finished, this, [this, startup, result]()
+                {
+                    startup->deleteLater();
+                    m_configurationOperationRunning = false;
+                    emit hardwareConfigurationChanged();
+                    emit configurationLoadFinished(true, result, {});
+                });
+                HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+                startup->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                                     [runtime]() { runtime->applyScopeOneStartupPreset(); }));
             }
             else
             {
@@ -1943,19 +1954,38 @@ namespace scopeone::core
         watcher->setFuture(future);
     }
 
-    void ScopeOneCore::stopDriverHosts(std::function<void()> next)
+    // Stops the DriverHosts away from the GUI thread. With applyShutdown, System/Shutdown of the
+    // ScopeOne devices is applied first, as the hosts are taken only after it.
+    void ScopeOneCore::stopDriverHosts(std::function<void()> next, bool applyShutdown)
     {
-        auto* watcher = new QFutureWatcher<void>(this);
-        connect(watcher, &QFutureWatcher<void>::finished, this, [watcher, next = std::move(next)]()
+        auto stop = [this, next = std::move(next)]()
         {
-            watcher->deleteLater();
-            next();
+            auto* watcher = new QFutureWatcher<void>(this);
+            connect(watcher, &QFutureWatcher<void>::finished, this, [watcher, next]()
+            {
+                watcher->deleteLater();
+                next();
+            });
+            watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                                 [hosts = m_managers->hardwareRuntime->takeDriverHosts()]() mutable
+                                                 {
+                                                     hosts.clear();
+                                                 }));
+        };
+        if (!applyShutdown)
+        {
+            stop();
+            return;
+        }
+        auto* shutdown = new QFutureWatcher<void>(this);
+        connect(shutdown, &QFutureWatcher<void>::finished, this, [shutdown, stop]()
+        {
+            shutdown->deleteLater();
+            stop();
         });
-        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
-                                             [hosts = m_managers->hardwareRuntime->takeDriverHosts()]() mutable
-                                             {
-                                                 hosts.clear();
-                                             }));
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        shutdown->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                              [runtime]() { runtime->applyScopeOneShutdownPreset(); }));
     }
 
     // Stops the cameras and removes the devices after a failed configuration load
@@ -2009,7 +2039,7 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        stopDriverHosts([this]() { startConfigurationUnloadTask(); });
+        stopDriverHosts([this]() { startConfigurationUnloadTask(); }, true);
         return true;
     }
 

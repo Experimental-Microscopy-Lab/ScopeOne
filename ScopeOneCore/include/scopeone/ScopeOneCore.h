@@ -636,7 +636,7 @@ namespace scopeone::core
         void clearConfigurationRuntime(bool notify, bool stopCameras);
         // Stops the DriverHosts of the Micro-Manager cameras and ScopeOne devices on the hardware
         // thread, as they can take a second to exit, and then calls next
-        void stopDriverHosts(std::function<void()> next);
+        void stopDriverHosts(std::function<void()> next, bool applyShutdown = false);
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                const QString& errorMessage);

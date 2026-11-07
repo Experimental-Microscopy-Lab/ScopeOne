@@ -101,6 +101,11 @@ namespace scopeone::core::internal
             connect(m_socket, &QLocalSocket::errorOccurred, this,
                     [this](QLocalSocket::LocalSocketError socketError)
                     {
+                        // Core closing the connection at a normal unload is no error
+                        if (socketError == QLocalSocket::PeerClosedError)
+                        {
+                            return;
+                        }
                         qWarning().noquote()
                             << QString("DriverHost control socket error (%1) on connection %2")
                                .arg(static_cast<int>(socketError))
