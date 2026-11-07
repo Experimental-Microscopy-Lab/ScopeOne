@@ -263,10 +263,6 @@ namespace scopeone::core
 
         QStringList cameraIds() const { return m_cameraIds; }
         QList<HardwareDeviceDescriptor> hardwareDevices() const;
-        bool registerDriverHostProvider(const QString& providerId,
-                                        const QString& modulePath,
-                                        const QVariantMap& options = {},
-                                        QString* errorMessage = nullptr);
         QStringList runningPreviewCameraIds() const;
         double cameraPixelSizeUm(const QString& cameraId) const;
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
@@ -638,9 +634,9 @@ namespace scopeone::core
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool stopCameras);
-        // Stops the Micro-Manager cameras on the hardware thread, as their DriverHosts can take a
-        // second to exit, and then calls next
-        void stopMicroManagerCameras(std::function<void()> next);
+        // Stops the DriverHosts of the Micro-Manager cameras and ScopeOne devices on the hardware
+        // thread, as they can take a second to exit, and then calls next
+        void stopDriverHosts(std::function<void()> next);
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                const QString& errorMessage);
@@ -742,7 +738,6 @@ namespace scopeone::core
         QHash<QString, quint64> m_layerFrameCounts;
         QMap<QString, double> m_layerFrameRates;
         QSet<const RecordingSessionData*> m_sessionsSaving;
-        QSet<QString> m_pendingProviderRegistrations;
         enum class ConfigurationState
         {
             Unloaded,

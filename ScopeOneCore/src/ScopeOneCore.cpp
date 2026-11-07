@@ -10,6 +10,7 @@
 #include "internal/DriverHostClient.h"
 #include "internal/HardwareRuntime.h"
 #include "internal/MicroManagerProvider.h"
+#include "internal/ScopeOneProvider.h"
 #include "internal/CameraFrameDelivery.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
@@ -346,12 +347,6 @@ namespace
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
-    struct ProviderRegistrationResult
-    {
-        scopeone::core::DevicePtr provider;
-        QString errorMessage;
-    };
-
     struct OfflineProcessingResult
     {
         QList<scopeone::core::ImageFrame> frames;
@@ -651,6 +646,7 @@ namespace
         bool success{false};
         scopeone::core::internal::MicroManagerProvider::LoadResult loadResult;
         QStringList failedCameras;
+        scopeone::core::internal::ScopeOneProvider::LoadResult scopeOneResult;
         QString errorMessage;
     };
 
@@ -1166,59 +1162,6 @@ namespace scopeone::core
     QList<HardwareDeviceDescriptor> ScopeOneCore::hardwareDevices() const
     {
         return m_managers->hardwareRuntime->devices();
-    }
-
-    bool ScopeOneCore::registerDriverHostProvider(const QString& providerId,
-                                                  const QString& modulePath,
-                                                  const QVariantMap& options,
-                                                  QString* errorMessage)
-    {
-        if (errorMessage) errorMessage->clear();
-        const QString normalizedId = providerId.trimmed();
-        if (normalizedId.isEmpty()
-            || m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || !m_managers->activeExperimentId.isEmpty()
-            || isRecording()
-            || m_pendingProviderRegistrations.contains(normalizedId)
-            || m_managers->hardwareRuntime->hasProvider(normalizedId))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Provider cannot be registered in the current state");
-            }
-            return false;
-        }
-
-        m_pendingProviderRegistrations.insert(normalizedId);
-        auto* watcher = new QFutureWatcher<ProviderRegistrationResult>(this);
-        connect(watcher, &QFutureWatcher<ProviderRegistrationResult>::finished,
-                this, [this, watcher, normalizedId]()
-                {
-                    ProviderRegistrationResult result = watcher->result();
-                    m_pendingProviderRegistrations.remove(normalizedId);
-                    if (!result.provider)
-                    {
-                        qWarning().noquote() << QStringLiteral("Hardware provider %1: %2")
-                                                    .arg(normalizedId, result.errorMessage);
-                    }
-                    else if (!m_managers->hardwareRuntime->registerProvider(result.provider))
-                    {
-                        qWarning().noquote() << QStringLiteral(
-                            "Hardware provider %1 conflicts with registered hardware").arg(normalizedId);
-                    }
-                    watcher->deleteLater();
-                });
-        watcher->setFuture(QtConcurrent::run(
-            m_hardwareThreadPool.get(),
-            [normalizedId, modulePath, options]()
-            {
-                ProviderRegistrationResult result;
-                result.provider = HardwareRuntime::startScopeOneProvider(
-                    normalizedId, modulePath, QString{}, options, &result.errorMessage);
-                return result;
-            }));
-        return true;
     }
 
     // Return the linked MMCore version
@@ -1827,7 +1770,7 @@ namespace scopeone::core
         m_managers->hardwareRuntime->stopMicroManagerPreview();
         if (stopCameras)
         {
-            m_managers->hardwareRuntime->takeMicroManagerCameras();
+            m_managers->hardwareRuntime->takeDriverHosts();
         }
 
         for (const QString& cameraId : cameraIds)
@@ -1863,11 +1806,6 @@ namespace scopeone::core
         if (m_configurationOperationRunning)
         {
             m_configurationError = QStringLiteral("Another configuration operation is running");
-            return false;
-        }
-        if (!m_pendingProviderRegistrations.isEmpty())
-        {
-            m_configurationError = QStringLiteral("A hardware provider is still loading");
             return false;
         }
         if (m_pendingStageCommands > 0)
@@ -1908,11 +1846,11 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        stopMicroManagerCameras([this, path]() { startConfigurationLoadTask(path); });
+        stopDriverHosts([this, path]() { startConfigurationLoadTask(path); });
         return true;
     }
 
-    // Starts MMCore configuration loading after camera teardown
+    // Starts the loading of Micro-Manager and ScopeOne devices after the teardown of the DriverHosts
     void ScopeOneCore::startConfigurationLoadTask(const QString& path)
     {
         auto* watcher = new QFutureWatcher<ConfigurationTaskResult>(this);
@@ -1942,23 +1880,35 @@ namespace scopeone::core
                 task.loadResult.failCount += static_cast<int>(failedCameras.size());
                 task.loadResult.failedDevices.append(failedCameras);
                 result = toFacadeLoadConfigResult(task.loadResult);
+                // The ScopeOne devices that failed count with the failed devices of Micro-Manager.
+                // They were left out of the result when the cameras failed to start.
+                result.successCount += task.scopeOneResult.successCount;
+                result.failCount += static_cast<int>(task.scopeOneResult.failedDevices.size());
+                result.failedDevices.append(task.scopeOneResult.failedDevices);
                 if (!failedCameras.isEmpty())
                 {
-                    const QString errorMessage = result.failedDevices.isEmpty()
-                                                     ? QStringLiteral("Failed to start the cameras")
-                                                     : QStringLiteral("Failed to start the cameras: %1")
-                                                           .arg(result.failedDevices.join(QStringLiteral(", ")));
+                    const QString errorMessage = QStringLiteral("Failed to start the cameras: %1")
+                                                     .arg(failedCameras.join(QStringLiteral(", ")));
                     startConfigurationLoadCleanupTask(result, errorMessage);
                     watcher->deleteLater();
                     return;
                 }
-                if (!applyLoadedConfiguration(path, result))
+                if (!m_managers->hardwareRuntime->registerScopeOneDevices()
+                    || !applyLoadedConfiguration(path, result))
                 {
                     const QString errorMessage =
-                        QStringLiteral("Micro-Manager device catalog conflicts with registered hardware");
+                        QStringLiteral("Device catalog conflicts with registered hardware");
                     startConfigurationLoadCleanupTask(result, errorMessage);
                     watcher->deleteLater();
                     return;
+                }
+                for (const HardwareDeviceDescriptor& device : m_managers->hardwareRuntime->devices())
+                {
+                    if (device.kind == HardwareDeviceKind::Camera
+                        && !result.cameraIds.contains(device.logicalId))
+                    {
+                        result.cameraIds.append(device.logicalId);
+                    }
                 }
                 m_configurationOperationRunning = false;
                 emit hardwareConfigurationChanged();
@@ -1981,6 +1931,7 @@ namespace scopeone::core
             if (task.success)
             {
                 task.failedCameras = runtime->startMicroManagerCameras(task.loadResult.cameras);
+                task.scopeOneResult = runtime->loadScopeOneDevices(path);
             }
             QString cleanupError;
             if (!task.success && !runtime->unloadMicroManagerDevices(&cleanupError))
@@ -1992,7 +1943,7 @@ namespace scopeone::core
         watcher->setFuture(future);
     }
 
-    void ScopeOneCore::stopMicroManagerCameras(std::function<void()> next)
+    void ScopeOneCore::stopDriverHosts(std::function<void()> next)
     {
         auto* watcher = new QFutureWatcher<void>(this);
         connect(watcher, &QFutureWatcher<void>::finished, this, [watcher, next = std::move(next)]()
@@ -2001,9 +1952,9 @@ namespace scopeone::core
             next();
         });
         watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
-                                             [cameras = m_managers->hardwareRuntime->takeMicroManagerCameras()]() mutable
+                                             [hosts = m_managers->hardwareRuntime->takeDriverHosts()]() mutable
                                              {
-                                                 cameras.clear();
+                                                 hosts.clear();
                                              }));
     }
 
@@ -2011,7 +1962,7 @@ namespace scopeone::core
     void ScopeOneCore::startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                          const QString& errorMessage)
     {
-        stopMicroManagerCameras([this, result, errorMessage]()
+        stopDriverHosts([this, result, errorMessage]()
         {
             startDeviceUnloadAfterFailedLoad(result, errorMessage);
         });
@@ -2058,7 +2009,7 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        stopMicroManagerCameras([this]() { startConfigurationUnloadTask(); });
+        stopDriverHosts([this]() { startConfigurationUnloadTask(); });
         return true;
     }
 

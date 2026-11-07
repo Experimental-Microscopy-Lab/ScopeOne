@@ -228,13 +228,19 @@ namespace scopeone::core::internal
                 return false;
             }
 
+            m_rename = m_arguments.contains(QStringLiteral("--driver"));
             QSet<QString> logicalIds;
             const QJsonArray deviceArray = response.value(driverhost::kDevicesField).toArray();
+            const QJsonArray sourceArray = response.value(driverhost::kSignalSourcesField).toArray();
+            const QJsonArray daqArray = response.value(driverhost::kDaqDevicesField).toArray();
+            int deviceIndex = 0;
             for (const QJsonValue& value : deviceArray)
             {
                 const QJsonObject object = value.toObject();
                 HardwareDeviceDescriptor device;
-                device.logicalId = object.value(driverhost::kDeviceIdField).toString();
+                device.logicalId = m_devices.add(
+                    object.value(driverhost::kDeviceIdField).toString(),
+                    logicalName(deviceArray.size(), deviceIndex++));
                 device.providerId = descriptor.id;
                 device.providerDeviceId =
                     object.value(driverhost::kProviderDeviceIdField).toString();
@@ -284,13 +290,48 @@ namespace scopeone::core::internal
                     m_cameraIds.append(device.logicalId);
                 }
             }
-            for (const QJsonValue& value : response.value(driverhost::kSignalSourcesField).toArray())
+            // A driver that exposes no device is still a device of its label
+            if (m_rename && deviceArray.isEmpty())
             {
-                signalSources.append(hardwarestream::signalSourceDescriptorFromJson(value.toObject()));
+                HardwareDeviceDescriptor device;
+                device.logicalId = m_devices.add(QString{}, m_providerId);
+                device.providerId = descriptor.id;
+                device.name = m_providerId;
+                device.kind = HardwareDeviceKind::Generic;
+                device.state = HardwareDeviceState::Initialized;
+                device.endpoint = HardwareEndpointKind::DriverHost;
+                devices.append(device);
             }
-            for (const QJsonValue& value : response.value(driverhost::kDaqDevicesField).toArray())
+            int sourceIndex = 0;
+            for (const QJsonValue& value : sourceArray)
             {
-                daqDevices.append(hardwarestream::daqDeviceDescriptorFromJson(value.toObject()));
+                SignalSourceDescriptor source = hardwarestream::signalSourceDescriptorFromJson(value.toObject());
+                source.id = m_sources.add(source.id, logicalName(sourceArray.size(), sourceIndex++));
+                signalSources.append(source);
+            }
+            int daqIndex = 0;
+            for (const QJsonValue& value : daqArray)
+            {
+                DaqDeviceDescriptor daq = hardwarestream::daqDeviceDescriptorFromJson(value.toObject());
+                daq.id = m_daqDevices.add(daq.id, logicalName(daqArray.size(), daqIndex++));
+                daqDevices.append(daq);
+            }
+            // Everything downstream of the description reads logical ids. The cameras kept the ids
+            // of the driver here, so the event sequence and pixel size of a renamed camera were
+            // looked up under the wrong id.
+            QJsonArray logicalDevices;
+            for (const QJsonValue& value : deviceArray)
+            {
+                QJsonObject object = value.toObject();
+                object.insert(driverhost::kDeviceIdField,
+                              m_devices.toLogical(object.value(driverhost::kDeviceIdField).toString()));
+                logicalDevices.append(object);
+            }
+            response.insert(driverhost::kDevicesField, logicalDevices);
+            for (const QString& field : {driverhost::kDefaultXYStageField, driverhost::kDefaultZStageField,
+                                         driverhost::kDefaultShutterField, driverhost::kDefaultAutofocusField})
+            {
+                response.insert(field, m_devices.toLogical(response.value(field).toString()));
             }
             // The camera rings are attached now, so DriverHost can remove their names
             QStringList keys;
@@ -388,7 +429,7 @@ namespace scopeone::core::internal
             const QString id = signal ? config.value(QStringLiteral("sourceId")).toString()
                                       : config.value(QStringLiteral("deviceId")).toString();
             auto stream = std::make_shared<StreamReader>();
-            stream->streamId = response.value(driverhost::kStreamIdField).toString();
+            stream->streamId = logicalStreamId(response.value(driverhost::kStreamIdField).toString());
             const QString shmKey = response.value(driverhost::kSharedMemoryKeyField).toString();
             if (!streamring::attachSharedRing(stream->shm, driverhost::sharedMemoryNativeKey(shmKey), errorMessage))
             {
@@ -441,6 +482,7 @@ namespace scopeone::core::internal
                 return false;
             }
 
+            translateRequest(request);
             m_waitingRequestId = m_nextRequestId++;
             m_waitingResponse = {};
             m_lastError.clear();
@@ -673,21 +715,30 @@ namespace scopeone::core::internal
                 {
                     TimeSeriesChunk chunk;
                     if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.timeSeries)
+                    {
+                        chunk.sourceId = m_sources.toLogical(chunk.sourceId);
                         m_streamHandlers.timeSeries(chunk);
+                    }
                     break;
                 }
                 case streamring::RecordType::TimestampedEvents:
                 {
                     TimestampedEventChunk chunk;
                     if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.timestampedEvents)
+                    {
+                        chunk.sourceId = m_sources.toLogical(chunk.sourceId);
                         m_streamHandlers.timestampedEvents(chunk);
+                    }
                     break;
                 }
                 case streamring::RecordType::DaqInput:
                 {
                     DaqInputChunk chunk;
                     if (hardwarestream::decode(record.payload, chunk) && m_streamHandlers.daqInput)
+                    {
+                        chunk.deviceId = m_daqDevices.toLogical(chunk.deviceId);
                         m_streamHandlers.daqInput(chunk);
+                    }
                     break;
                 }
                 case streamring::RecordType::Skip:
@@ -769,7 +820,7 @@ namespace scopeone::core::internal
                 }
                 if (kind == driverhost::kMessageKindEvent)
                 {
-                    handleEvent(message);
+                    handleEvent(translateEvent(message));
                 }
             }
         }
@@ -899,9 +950,111 @@ namespace scopeone::core::internal
             }
         }
 
+        // The ids of a ScopeOne device as its driver names them and as ScopeOne knows them. The
+        // driver and DriverHost know no labels, so the ids are translated here, in the requests
+        // to DriverHost and in what comes back.
+        struct IdMap
+        {
+            QHash<QString, QString> toDriverId;
+            QHash<QString, QString> toLogicalId;
+
+            // An empty logical id keeps the id of the driver
+            QString add(const QString& driverId, const QString& name)
+            {
+                const QString logicalId = name.isEmpty() ? driverId : name;
+                toDriverId.insert(logicalId, driverId);
+                if (!driverId.isEmpty())
+                {
+                    toLogicalId.insert(driverId, logicalId);
+                }
+                return logicalId;
+            }
+            QString toDriver(const QString& id) const { return toDriverId.value(id, id); }
+            QString toLogical(const QString& id) const { return toLogicalId.value(id, id); }
+        };
+
+        // The label for a single device, and the label with the number of the device for several
+        QString logicalName(qsizetype count, int index) const
+        {
+            if (!m_rename)
+            {
+                return {};
+            }
+            return count == 1 ? m_providerId : QStringLiteral("%1.%2").arg(m_providerId).arg(index + 1);
+        }
+
+        QString logicalStreamId(const QString& streamId) const
+        {
+            const qsizetype colon = streamId.indexOf(QLatin1Char(':'));
+            const QString kind = streamId.left(colon + 1);
+            const QString id = streamId.mid(colon + 1);
+            if (kind == QStringLiteral("signal:")) return kind + m_sources.toLogical(id);
+            if (kind == QStringLiteral("daq:")) return kind + m_daqDevices.toLogical(id);
+            return streamId;
+        }
+
+        void translateRequest(QJsonObject& request) const
+        {
+            const bool daq = request.value(driverhost::kMessageTypeField).toString()
+                             == driverhost::kCommandStopDaq;
+            if (request.contains(driverhost::kDeviceIdField))
+            {
+                const QString id = request.value(driverhost::kDeviceIdField).toString();
+                request.insert(driverhost::kDeviceIdField,
+                               daq ? m_daqDevices.toDriver(id) : m_devices.toDriver(id));
+            }
+            if (request.contains(driverhost::kSourceIdField))
+            {
+                request.insert(driverhost::kSourceIdField,
+                               m_sources.toDriver(request.value(driverhost::kSourceIdField).toString()));
+            }
+            QJsonObject config = request.value(driverhost::kConfigField).toObject();
+            if (config.contains(QStringLiteral("sourceId")))
+            {
+                config.insert(QStringLiteral("sourceId"),
+                              m_sources.toDriver(config.value(QStringLiteral("sourceId")).toString()));
+            }
+            if (config.contains(QStringLiteral("deviceId")))
+            {
+                config.insert(QStringLiteral("deviceId"),
+                              m_daqDevices.toDriver(config.value(QStringLiteral("deviceId")).toString()));
+            }
+            if (request.contains(driverhost::kConfigField))
+            {
+                request.insert(driverhost::kConfigField, config);
+            }
+        }
+
+        QJsonObject translateEvent(QJsonObject event) const
+        {
+            const QString type = event.value(driverhost::kMessageTypeField).toString();
+            if (event.contains(driverhost::kDeviceIdField))
+            {
+                const QString id = event.value(driverhost::kDeviceIdField).toString();
+                event.insert(driverhost::kDeviceIdField,
+                             type == driverhost::kEventDaqState ? m_daqDevices.toLogical(id)
+                                                                : m_devices.toLogical(id));
+            }
+            if (event.contains(driverhost::kSourceIdField))
+            {
+                event.insert(driverhost::kSourceIdField,
+                             m_sources.toLogical(event.value(driverhost::kSourceIdField).toString()));
+            }
+            if (event.contains(driverhost::kStreamIdField))
+            {
+                event.insert(driverhost::kStreamIdField,
+                             logicalStreamId(event.value(driverhost::kStreamIdField).toString()));
+            }
+            return event;
+        }
+
         QString m_providerId;
         QStringList m_arguments;
         QString m_hostKey;
+        bool m_rename{false};
+        IdMap m_devices;
+        IdMap m_sources;
+        IdMap m_daqDevices;
         // Set and read on the transport thread only
         CameraFrameDelivery* m_delivery{nullptr};
         PreviewHandler m_previewHandler;
@@ -1833,17 +1986,17 @@ namespace scopeone::core::internal
         QHash<QString, double> m_pixelSizes;
     };
 
-    DevicePtr createScopeOneProvider(const QString& providerId,
-                                               const QString& driverPath,
-                                               const QString& deviceName,
-                                               const QVariantMap& preInitProperties,
-                                               QString* errorMessage)
+    DevicePtr createScopeOneDevice(const QString& label,
+                                   const QString& driverPath,
+                                   const QString& deviceName,
+                                   const QVariantMap& preInitProperties,
+                                   QString* errorMessage)
     {
-        const QString normalizedProviderId = providerId.trimmed();
+        const QString normalizedProviderId = label.trimmed();
         const QString normalizedDriverPath = QFileInfo(driverPath).absoluteFilePath();
         if (normalizedProviderId.isEmpty() || driverPath.trimmed().isEmpty())
         {
-            if (errorMessage) *errorMessage = QStringLiteral("Provider ID and module path are required");
+            if (errorMessage) *errorMessage = QStringLiteral("Label and driver path are required");
             return {};
         }
         if (!QFileInfo::exists(normalizedDriverPath))

@@ -15,6 +15,7 @@
 #include "internal/AcquisitionEngine.h"
 #include "internal/CameraFrameDelivery.h"
 #include "internal/MicroManagerProvider.h"
+#include "internal/ScopeOneProvider.h"
 
 namespace scopeone::core::internal
 {
@@ -185,14 +186,6 @@ namespace scopeone::core::internal
         DaqDeviceManager* daqDeviceManager() const { return m_daqDeviceManager; }
         double pixelSizeUm(const QString& cameraId) const;
 
-        // A driver in a DriverHost of its own. Safe to call from any thread, and the provider is
-        // registered afterwards on the thread of the runtime.
-        static DevicePtr startScopeOneProvider(const QString& providerId,
-                                               const QString& driverPath,
-                                               const QString& deviceName,
-                                               const QVariantMap& preInitProperties,
-                                               QString* errorMessage);
-
         // The Micro-Manager configuration. Loading and unloading block, so they run on a worker
         // thread, while the cameras are started and stopped on the thread of the runtime.
         QStringList microManagerAdapterSearchPaths() const;
@@ -201,20 +194,24 @@ namespace scopeone::core::internal
                                            MicroManagerProvider::LoadResult& result,
                                            QString& errorMessage);
         QStringList startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras);
-        // The cameras, to be destroyed on a worker thread, as their DriverHosts take time to exit
-        QList<DevicePtr> takeMicroManagerCameras();
+        // The ScopeOne devices of the configuration, each in a DriverHost. Loading blocks, so it
+        // runs on a worker thread, while the devices are registered on the thread of the runtime.
+        ScopeOneProvider::LoadResult loadScopeOneDevices(const QString& configPath);
+        // False when a device conflicts with registered hardware
+        bool registerScopeOneDevices();
+        // The cameras of Micro-Manager and the ScopeOne devices, unregistered and to be destroyed
+        // on a worker thread, as their DriverHosts take time to exit
+        QList<DevicePtr> takeDriverHosts();
         // Registers the devices again, false when one conflicts with the devices of a driver
         bool setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices);
         void stopMicroManagerPreview();
         bool unloadMicroManagerDevices(QString* errorMessage = nullptr);
         void applyMicroManagerShutdownPreset();
         QList<HardwareDeviceDescriptor> devices() const { return m_registry.devices(); }
-        bool hasProvider(const QString& providerId) const { return m_registry.provider(providerId) != nullptr; }
         static QString microManagerVersion();
         void clear();
         bool registerProvider(const DevicePtr& provider);
         void unregisterProvider(const QString& providerId);
-        bool refreshProvider(const QString& providerId);
         void stopPreviewForProvider(const QString& providerId);
 
     signals:
@@ -235,6 +232,7 @@ namespace scopeone::core::internal
 
         DeviceRegistry m_registry;
         std::shared_ptr<MicroManagerProvider> m_microManager;
+        ScopeOneProvider m_scopeOne;
         SignalSourceManager* m_signalSourceManager{nullptr};
         DaqDeviceManager* m_daqDeviceManager{nullptr};
 

@@ -1496,7 +1496,7 @@ namespace ni_daqmx
         Q_INTERFACES(scopeone::core::Driver)
 
     public:
-        QString providerId() const override
+        QString driverId() const override
         {
             return QStringLiteral("scopeone.nidaqmx");
         }

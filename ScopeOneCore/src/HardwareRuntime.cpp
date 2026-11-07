@@ -1,7 +1,6 @@
 #include "internal/HardwareRuntime.h"
 
 #include "internal/DaqDeviceManager.h"
-#include "internal/DriverHostClient.h"
 #include "internal/SignalSourceManager.h"
 #include "scopeone/Camera.h"
 
@@ -965,15 +964,6 @@ namespace scopeone::core::internal
         return provider ? provider->pixelSizeUm(cameraId) : 0.0;
     }
 
-    DevicePtr HardwareRuntime::startScopeOneProvider(const QString& providerId,
-                                                     const QString& driverPath,
-                                                     const QString& deviceName,
-                                                     const QVariantMap& preInitProperties,
-                                                     QString* errorMessage)
-    {
-        return createScopeOneProvider(providerId, driverPath, deviceName, preInitProperties, errorMessage);
-    }
-
     QStringList HardwareRuntime::microManagerAdapterSearchPaths() const
     {
         return m_microManager->adapterSearchPaths();
@@ -996,9 +986,32 @@ namespace scopeone::core::internal
         return m_microManager->startCameras(cameras);
     }
 
-    QList<DevicePtr> HardwareRuntime::takeMicroManagerCameras()
+    ScopeOneProvider::LoadResult HardwareRuntime::loadScopeOneDevices(const QString& configPath)
     {
-        return m_microManager->takeCameras();
+        return m_scopeOne.load(configPath);
+    }
+
+    bool HardwareRuntime::registerScopeOneDevices()
+    {
+        for (const DevicePtr& device : m_scopeOne.devices())
+        {
+            if (!registerProvider(device))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    QList<DevicePtr> HardwareRuntime::takeDriverHosts()
+    {
+        QList<DevicePtr> hosts = m_microManager->takeCameras();
+        for (const DevicePtr& device : m_scopeOne.takeDevices())
+        {
+            unregisterProvider(device->descriptor().id);
+            hosts.append(device);
+        }
+        return hosts;
     }
 
     bool HardwareRuntime::setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices)
@@ -1117,12 +1130,6 @@ namespace scopeone::core::internal
     {
         detachCamera(m_registry, providerId);
         m_registry.unregisterProvider(providerId);
-    }
-
-    bool HardwareRuntime::refreshProvider(const QString& providerId)
-    {
-        const DevicePtr provider = m_registry.provider(providerId);
-        return provider && registerProvider(provider);
     }
 
     void HardwareRuntime::stopPreviewForProvider(const QString& providerId)

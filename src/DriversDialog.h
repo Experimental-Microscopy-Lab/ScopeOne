@@ -1,20 +1,12 @@
 #pragma once
 
 #include <QDialog>
-#include <QStringList>
 
 class QPlainTextEdit;
 class QTableWidget;
 
-namespace scopeone::core
-{
-    class ScopeOneCore;
-}
-
 namespace scopeone::ui
 {
-    QStringList loadConfiguredDrivers(scopeone::core::ScopeOneCore& core);
-
     class DriversDialog final : public QDialog
     {
         Q_OBJECT
@@ -25,11 +17,9 @@ namespace scopeone::ui
     private:
         void refreshDrivers();
         void installDriver();
-        void showSelectedOptions();
-        void saveSettings();
+        void showSelectedDetails();
 
         QTableWidget* m_table{nullptr};
         QPlainTextEdit* m_detailsEdit{nullptr};
-        QPlainTextEdit* m_optionsEdit{nullptr};
     };
 }

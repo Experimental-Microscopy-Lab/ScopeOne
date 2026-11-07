@@ -258,8 +258,8 @@ namespace example_camera
     class ExampleCameraDevice final : public Device, public Hub, public Camera
     {
     public:
-        ExampleCameraDevice(const QString& providerId, int cameraCount, int width, int height)
-            : m_providerId(providerId)
+        ExampleCameraDevice(const QString& driverId, int cameraCount, int width, int height)
+            : m_driverId(driverId)
         {
             const auto patterns = std::make_shared<const TestPatterns>(width, height);
             for (int index = 0; index < cameraCount; ++index)
@@ -273,7 +273,7 @@ namespace example_camera
 
         HardwareProviderDescriptor descriptor() const override
         {
-            return {m_providerId, QStringLiteral("Example Camera"), QStringLiteral("1")};
+            return {m_driverId, QStringLiteral("Example Camera"), QStringLiteral("1")};
         }
 
         QList<HardwareDeviceDescriptor> peripherals() const override
@@ -283,7 +283,6 @@ namespace example_camera
             {
                 HardwareDeviceDescriptor device;
                 device.logicalId = m_cameras[index]->id();
-                device.providerId = m_providerId;
                 device.providerDeviceId = m_cameras[index]->id();
                 device.hardwareId = QStringLiteral("EX-%1").arg(1000 + index);
                 device.name = QStringLiteral("Example Camera %1").arg(index + 1);
@@ -524,7 +523,7 @@ namespace example_camera
             }
         }
 
-        QString m_providerId;
+        QString m_driverId;
         std::vector<std::unique_ptr<ExampleCamera>> m_cameras;
         QMutex m_mutex;
         PreviewStateSink m_previewStateSink;
@@ -539,7 +538,7 @@ namespace example_camera
         Q_INTERFACES(scopeone::core::Driver)
 
     public:
-        QString providerId() const override
+        QString driverId() const override
         {
             return QStringLiteral("example.camera");
         }
@@ -571,7 +570,7 @@ namespace example_camera
                 }
                 return {};
             }
-            return std::make_shared<ExampleCameraDevice>(providerId(), cameraCount, width, height);
+            return std::make_shared<ExampleCameraDevice>(driverId(), cameraCount, width, height);
         }
     };
 }

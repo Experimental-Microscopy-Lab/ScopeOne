@@ -642,7 +642,7 @@ namespace example_pmt
         Q_INTERFACES(scopeone::core::Driver)
 
     public:
-        QString providerId() const override
+        QString driverId() const override
         {
             return QString::fromLatin1(kSourceId);
         }

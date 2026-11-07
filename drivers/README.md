@@ -64,9 +64,7 @@ the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build co
   "name": "My Camera",
   "version": "1.0.0",
   "scopeOneApi": 3,
-  "kind": "driver",
-  "providerId": "my.camera",
-  "autoLoad": false
+  "kind": "driver"
 }
 ```
 
@@ -82,7 +80,7 @@ class MyCameraDriver final : public QObject, public scopeone::core::Driver
     Q_INTERFACES(scopeone::core::Driver)
 
 public:
-    QString providerId() const override;
+    QString driverId() const override;
     QStringList deviceNames() const override;
     scopeone::core::DevicePtr createDevice(const QString& name,
                                            const QVariantMap& preInitProperties,

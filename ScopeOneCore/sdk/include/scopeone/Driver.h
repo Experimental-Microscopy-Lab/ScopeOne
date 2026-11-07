@@ -16,7 +16,7 @@ namespace scopeone::core
     public:
         virtual ~Driver() = default;
 
-        virtual QString providerId() const = 0;
+        virtual QString driverId() const = 0;
         virtual QStringList deviceNames() const = 0;
         // The pre-init properties are the values a device needs before it can start, such as a
         // port, and come from the configuration of the system

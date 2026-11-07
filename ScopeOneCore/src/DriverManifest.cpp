@@ -8,7 +8,6 @@
 #include <QLibrary>
 #include <QPluginLoader>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QStandardPaths>
 
 namespace scopeone::core
@@ -19,18 +18,6 @@ namespace scopeone::core
             QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("drivers")),
             QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
                 .filePath(QStringLiteral("drivers"))};
-    }
-
-    QString driverSettingsKey(const QString& driverId, const QString& name)
-    {
-        return QStringLiteral("Drivers/%1/%2").arg(driverId, name);
-    }
-
-    bool driverEnabled(const DriverManifest& manifest)
-    {
-        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
-        const QString key = driverSettingsKey(manifest.id, QStringLiteral("enabled"));
-        return settings.contains(key) ? settings.value(key).toBool() : manifest.autoLoad;
     }
 
     QList<DiscoveredDriver> discoverDrivers(const QStringList& directories)
@@ -122,7 +109,6 @@ namespace scopeone::core
         manifest.id = id;
         manifest.name = name;
         manifest.version = version;
-        manifest.autoLoad = metadata.value(QStringLiteral("autoLoad")).toBool();
         manifest.metadata = metadata;
         if (errorMessage)
         {

@@ -20,6 +20,9 @@ class CMMCore;
 
 namespace scopeone::core::internal
 {
+    // Splits one line of a cfg file into fieldCount fields, the last of which may contain commas
+    QStringList splitConfigLine(const QString& line, int fieldCount);
+
     // The devices of the loaded Micro-Manager configuration. They run on the core of ScopeOne,
     // except the cameras of a configuration with more than one camera: each of those runs in a
     // DriverHost of its own, so two cameras of the same model do not share one vendor library.

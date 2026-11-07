@@ -155,25 +155,6 @@ namespace scopeone::core::internal
             return QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("value"), value}};
         }
 
-        // Splits one configuration line while preserving commas in the final field
-        QStringList splitConfigLine(const QString& line, int fieldCount)
-        {
-            QStringList parts;
-            int start = 0;
-            for (int i = 1; i < fieldCount; ++i)
-            {
-                const int comma = line.indexOf(QLatin1Char(','), start);
-                if (comma < 0)
-                {
-                    return {};
-                }
-                parts.append(line.mid(start, comma - start).trimmed());
-                start = comma + 1;
-            }
-            parts.append(line.mid(start).trimmed());
-            return parts;
-        }
-
         struct ConfigPropertyReplay
         {
             QHash<QString, QList<ConfigProperty>> explicitProperties;
@@ -422,6 +403,25 @@ namespace scopeone::core::internal
 
     // Loads and initializes the devices, but does not start the cameras. The devices of an
     // earlier configuration are unloaded first.
+    // Splits one configuration line while preserving commas in the final field
+    QStringList splitConfigLine(const QString& line, int fieldCount)
+    {
+        QStringList parts;
+        int start = 0;
+        for (int i = 1; i < fieldCount; ++i)
+        {
+            const int comma = line.indexOf(QLatin1Char(','), start);
+            if (comma < 0)
+            {
+                return {};
+            }
+            parts.append(line.mid(start, comma - start).trimmed());
+            start = comma + 1;
+        }
+        parts.append(line.mid(start).trimmed());
+        return parts;
+    }
+
     bool MicroManagerProvider::loadConfiguration(const QString& configPath,
                                                  LoadResult& result,
                                                  QString& errorMessage)

@@ -19,11 +19,10 @@ namespace scopeone::core::internal
                                         QString* errorMessage = nullptr);
 
     // One device of a ScopeOne driver, created by its name in the driver, the first one when the
-    // name is empty. Each driver is a provider of its own, as each camera of a Micro-Manager
-    // configuration is a device of MicroManagerProvider.
-    DevicePtr createScopeOneProvider(const QString& providerId,
-                                               const QString& driverPath,
-                                               const QString& deviceName,
-                                               const QVariantMap& preInitProperties,
-                                               QString* errorMessage = nullptr);
+    // name is empty. The provider id of the device is the label the configuration gives it.
+    DevicePtr createScopeOneDevice(const QString& label,
+                                   const QString& driverPath,
+                                   const QString& deviceName,
+                                   const QVariantMap& preInitProperties,
+                                   QString* errorMessage = nullptr);
 }

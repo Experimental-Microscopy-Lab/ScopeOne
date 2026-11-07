@@ -330,6 +330,7 @@ namespace scopeone::core::internal
         HardwareProviderDescriptor m_descriptor;
         QList<HardwareDeviceDescriptor> m_devices;
         QHash<QString, HardwareDeviceDescriptor> m_devicesById;
+        HardwareDeviceDescriptor m_rootDevice;
         QHash<QString, std::shared_ptr<CameraTransport>> m_cameraTransports;
         mutable QReadWriteLock m_cameraTransportsLock;
         std::unique_ptr<QPluginLoader> m_driverLoader;
@@ -372,13 +373,6 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (manifest.id != m_providerId
-            || manifest.metadata.value(QStringLiteral("providerId")).toString().trimmed()
-                   != m_providerId)
-        {
-            m_lastError = QStringLiteral("Provider manifest identity mismatch");
-            return false;
-        }
         QObject* const instance = m_driverLoader->instance();
         if (!instance)
         {
@@ -392,9 +386,9 @@ namespace scopeone::core::internal
             m_lastError = QStringLiteral("Module does not implement Driver");
             return false;
         }
-        if (factory->providerId() != m_providerId)
+        if (factory->driverId() != manifest.id)
         {
-            m_lastError = QStringLiteral("Provider module identity mismatch");
+            m_lastError = QStringLiteral("Driver identity mismatch");
             return false;
         }
 
@@ -426,13 +420,9 @@ namespace scopeone::core::internal
         {
             return false;
         }
+        // ScopeOne names the provider, which is the cfg label of a driver device
         m_descriptor = m_device->descriptor();
-        if (m_descriptor.id != m_providerId
-            || m_descriptor.id != m_descriptor.id.trimmed())
-        {
-            m_lastError = QStringLiteral("Provider descriptor identity mismatch");
-            return false;
-        }
+        m_descriptor.id = m_providerId;
 
         Device* const provider = m_device.get();
         m_camera = dynamic_cast<Camera*>(provider);
@@ -459,7 +449,6 @@ namespace scopeone::core::internal
                 && (device.kind != HardwareDeviceKind::AutoFocus || m_autofocus);
             if (logicalId.isEmpty()
                 || device.logicalId != logicalId
-                || device.providerId != m_providerId
                 || logicalIds.contains(logicalId)
                 || !capabilityAvailable)
             {
@@ -467,6 +456,7 @@ namespace scopeone::core::internal
                 return false;
             }
             logicalIds.insert(logicalId);
+            device.providerId = m_providerId;
             device.endpoint = HardwareEndpointKind::DriverHost;
             m_devices.append(device);
             m_devicesById.insert(logicalId, device);
@@ -843,6 +833,12 @@ namespace scopeone::core::internal
     {
         const QString deviceId = message.value(driverhost::kDeviceIdField)
                                      .toString().trimmed();
+        // A request without a device id addresses the Device itself, whose properties a driver
+        // with no peripherals has. It was answered as an unknown device before.
+        if (deviceId.isEmpty())
+        {
+            return &m_rootDevice;
+        }
         const auto it = m_devicesById.constFind(deviceId);
         return it == m_devicesById.cend() ? nullptr : &it.value();
     }
