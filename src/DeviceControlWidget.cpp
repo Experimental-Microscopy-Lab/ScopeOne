@@ -1,5 +1,6 @@
 #include "DeviceControlWidget.h"
 #include "ImageWorkspace.h"
+#include "LightSourceWidget.h"
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
 #include "PreviewWidget.h"
@@ -503,6 +504,10 @@ namespace scopeone::ui
         hardwareLayout->setSpacing(5);
         hardwareLayout->setContentsMargins(5, 5, 5, 5);
         hardwareLayout->addWidget(createControlGroup());
+        auto* lightSources = new LightSourceWidget(m_scopeonecore, hardwareContainer);
+        connect(lightSources, &LightSourceWidget::writeFailed, this, &DeviceControlWidget::lightSourceFailed);
+        connect(lightSources, &LightSourceWidget::editRequested, this, &DeviceControlWidget::lightSourceEditRequested);
+        hardwareLayout->addWidget(lightSources);
         hardwareLayout->addWidget(createStageGroup());
         hardwareLayout->addStretch();
         m_hardwareControlsWidget->setWidget(hardwareContainer);
@@ -2060,15 +2065,16 @@ namespace scopeone::ui
     }
 
     // Rebuilds available camera control targets
-    void DeviceControlWidget::setControlTargets(const QStringList& cameraIds)
+    void DeviceControlWidget::setControlTargets(const QStringList& cameraIds, const QString& defaultCamera)
     {
         {
             QSignalBlocker blocker(m_cameraSelectCombo);
             m_cameraSelectCombo->clear();
             m_cameraSelectCombo->addItem("All");
             m_cameraSelectCombo->addItems(cameraIds);
-            // A single camera is selected directly, several start on All
-            m_cameraSelectCombo->setCurrentIndex(cameraIds.size() == 1 ? 1 : 0);
+            // The configured camera may belong to a provider that MMCore cannot select.
+            const int configuredIndex = cameraIds.indexOf(defaultCamera);
+            m_cameraSelectCombo->setCurrentIndex(configuredIndex >= 0 ? configuredIndex + 1 : (cameraIds.size() == 1 ? 1 : 0));
         }
 
         onControlTargetSelectionChanged(m_cameraSelectCombo->currentText());

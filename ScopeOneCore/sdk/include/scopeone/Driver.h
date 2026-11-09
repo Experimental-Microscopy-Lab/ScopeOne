@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QStringList>
+#include <QList>
 #include <QVariantMap>
 #include <QtPlugin>
 
@@ -8,6 +9,13 @@
 
 namespace scopeone::core
 {
+    struct PreInitProperty
+    {
+        QString name;
+        QString defaultValue;
+        QStringList allowedValues;
+    };
+
     // The entry point of a driver library. ScopeOne_DriverHost loads the library, gets this
     // object from Qt's plugin loader and asks it to create one device by name. A library may
     // offer several devices, as an adapter library of Micro-Manager does.
@@ -18,6 +26,8 @@ namespace scopeone::core
 
         virtual QString driverId() const = 0;
         virtual QStringList deviceNames() const = 0;
+        virtual QList<PreInitProperty> preInitProperties(const QString& deviceName) const
+        { Q_UNUSED(deviceName); return {}; }
         // The pre-init properties are the values a device needs before it can start, such as a
         // port, and come from the configuration of the system
         virtual DevicePtr createDevice(const QString& name,

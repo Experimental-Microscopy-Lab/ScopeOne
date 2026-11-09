@@ -62,6 +62,7 @@ extern "C" int shm_unlink(const char* name);
 #include <optional>
 #include <string>
 #include <utility>
+#include <cstdio>
 
 #include "internal/DriverHostProtocol.h"
 #include "internal/MicroManagerCamera.h"
@@ -2066,6 +2067,7 @@ int main(int argc, char* argv[])
     QCommandLineOption optLauncherPid(QStringLiteral("launcherPid"),
                                       QStringLiteral("Process ID of the launching app"),
                                       QStringLiteral("pid"));
+    QCommandLineOption optDescribe(QStringLiteral("describe"), QStringLiteral("Describe a driver and exit"));
 
     parser.addOption(optProvider);
     parser.addOption(optDriver);
@@ -2074,7 +2076,41 @@ int main(int argc, char* argv[])
     parser.addOption(optDeviceName);
     parser.addOption(optProperties);
     parser.addOption(optLauncherPid);
+    parser.addOption(optDescribe);
     parser.process(app);
+
+    if (parser.isSet(optDescribe))
+    {
+        QPluginLoader loader(parser.value(optDriver));
+        scopeone::core::DriverManifest manifest;
+        QString error;
+        if (!scopeone::core::parseDriverManifest(loader.metaData().value(QStringLiteral("MetaData")).toObject(), manifest, &error))
+        {
+            qCritical().noquote() << error;
+            return 2;
+        }
+        auto* driver = qobject_cast<scopeone::core::Driver*>(loader.instance());
+        if (!driver)
+        {
+            qCritical().noquote() << loader.errorString();
+            return 2;
+        }
+        if (driver->driverId() != manifest.id)
+        {
+            qCritical().noquote() << "Driver identity mismatch";
+            return 2;
+        }
+        QJsonArray names = QJsonArray::fromStringList(driver->deviceNames());
+        QJsonArray properties;
+        for (const auto& property : driver->preInitProperties(parser.value(optDeviceName)))
+            properties.append(QJsonObject{{QStringLiteral("name"), property.name},
+                                          {QStringLiteral("defaultValue"), property.defaultValue},
+                                          {QStringLiteral("allowedValues"), QJsonArray::fromStringList(property.allowedValues)}});
+        const QByteArray json = QJsonDocument(QJsonObject{{QStringLiteral("devices"), names},
+                                                         {QStringLiteral("properties"), properties}}).toJson(QJsonDocument::Compact);
+        std::fwrite(json.constData(), 1, static_cast<size_t>(json.size()), stdout);
+        return 0;
+    }
 
     if (!parser.isSet(optLauncherPid)
         || !scopeone::core::internal::quitWithLauncher(app, parser.value(optLauncherPid).toLongLong()))

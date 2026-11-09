@@ -67,8 +67,11 @@ endif ()
 set(SCOPEONE_UI_SOURCES
         src/main.cpp
         src/ConfigPresetWidget.cpp
+        src/HardwareConfigurationDialog.cpp
         src/DeviceControlWidget.cpp
         src/DevicePropertyWidget.cpp
+        src/LightSourceWidget.cpp
+        src/LightSourcesPage.cpp
         src/PositionListFile.cpp
         src/RecordingWidget.cpp
         src/DriversDialog.cpp
@@ -110,8 +113,11 @@ list(APPEND SCOPEONE_UI_SOURCES ${SCOPEONE_TOOL_FILES})
 
 set(SCOPEONE_UI_HEADERS
         src/ConfigPresetWidget.h
+        src/HardwareConfigurationDialog.h
         src/DeviceControlWidget.h
         src/DevicePropertyWidget.h
+        src/LightSourceWidget.h
+        src/LightSourcesPage.h
         src/PositionListFile.h
         src/RecordingWidget.h
         src/DriversDialog.h

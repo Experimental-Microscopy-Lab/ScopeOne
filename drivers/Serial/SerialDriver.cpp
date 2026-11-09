@@ -5,6 +5,7 @@
 #include "scopeone/DriverSDK.h"
 
 #include <QObject>
+#include <QSerialPortInfo>
 
 namespace serial_driver
 {
@@ -24,6 +25,15 @@ namespace serial_driver
         QStringList deviceNames() const override
         {
             return {};
+        }
+
+        QList<PreInitProperty> preInitProperties(const QString&) const override
+        {
+            QStringList ports;
+            for (const auto& port : QSerialPortInfo::availablePorts()) ports.append(port.portName());
+            return {{QStringLiteral("Port"), {}, ports},
+                    {QStringLiteral("BaudRate"), QStringLiteral("9600"), {}},
+                    {QStringLiteral("AnswerTimeout"), QStringLiteral("500"), {}}};
         }
 
         DevicePtr createDevice(const QString& name, const QVariantMap& preInitProperties, QString* errorMessage) override

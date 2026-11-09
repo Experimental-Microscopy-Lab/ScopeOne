@@ -2,6 +2,7 @@
 #include "internal/MicroManagerProvider.h"
 
 #include "MMCore.h"
+#include "scopeone/HardwareConfiguration.h"
 #include <QFile>
 #include <QDebug>
 #include <QCoreApplication>
@@ -12,6 +13,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QTextStream>
+#include <QTemporaryFile>
 #include <algorithm>
 #include <vector>
 #ifdef Q_OS_WIN
@@ -165,46 +167,36 @@ namespace scopeone::core::internal
         ConfigPropertyReplay configPropertyReplay(const QString& configPath)
         {
             ConfigPropertyReplay replay;
-            QFile file(configPath);
-            if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            const HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
+            for (const ConfigSetting& property : document.propertyLines())
             {
-                return replay;
+                if (!property.device.isEmpty() && !property.property.isEmpty())
+                {
+                    replay.explicitProperties[property.device].append(
+                        ConfigProperty{property.property, property.value});
+                }
             }
-
-            QTextStream stream(&file);
-            while (!stream.atEnd())
+            for (const HardwareConfiguration::Group& group : document.configGroups())
             {
-                const QString line = stream.readLine().trimmed();
-                if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+                if (group.name != QString::fromLatin1(MM::g_CFGGroup_System))
                 {
                     continue;
                 }
-
-                const QStringList propertyParts = splitConfigLine(line, 4);
-                if (propertyParts.size() == 4
-                    && propertyParts[0] == QStringLiteral("Property"))
+                for (const HardwareConfiguration::Preset& preset : group.presets)
                 {
-                    const QString deviceLabel = propertyParts[1];
-                    const QString propertyName = propertyParts[2];
-                    const QString propertyValue = propertyParts[3];
-                    if (!deviceLabel.isEmpty() && !propertyName.isEmpty())
+                    if (preset.name != QString::fromLatin1(MM::g_CFGGroup_System_Startup))
                     {
-                        replay.explicitProperties[deviceLabel].append(
-                            ConfigProperty{propertyName, propertyValue});
+                        continue;
                     }
-                    continue;
-                }
-
-                const QStringList configParts = splitConfigLine(line, 6);
-                if (configParts.size() == 6
-                    && configParts[0] == QStringLiteral("ConfigGroup")
-                    && configParts[1] == QString::fromLatin1(MM::g_CFGGroup_System)
-                    && configParts[2] == QString::fromLatin1(MM::g_CFGGroup_System_Startup)
-                    && !configParts[3].isEmpty()
-                    && !configParts[4].isEmpty())
-                {
-                    replay.startupProperties[configParts[3]].append(
-                        ConfigProperty{configParts[4], configParts[5]});
+                    for (const HardwareConfiguration::PresetSetting& setting : preset.settings)
+                    {
+                        if (setting.source == HardwareConfiguration::Source::MicroManager
+                            && !setting.device.isEmpty() && !setting.property.isEmpty())
+                        {
+                            replay.startupProperties[setting.device].append(
+                                ConfigProperty{setting.property, setting.value});
+                        }
+                    }
                 }
             }
             return replay;
@@ -298,7 +290,20 @@ namespace scopeone::core::internal
         try
         {
             configureAdapterSearchPaths(core, additionalPaths);
-            core.loadSystemConfiguration(configPath.toStdString().c_str());
+            auto document = HardwareConfiguration::read(configPath, errorMessage);
+            const bool filtered = document.removeScopeOneCoreRoles();
+            QTemporaryFile filteredFile;
+            QString loadPath = configPath;
+            if (filtered)
+            {
+                if (!filteredFile.open() || filteredFile.write(document.toByteArray()) < 0 || !filteredFile.flush())
+                {
+                    if (errorMessage) *errorMessage = filteredFile.errorString();
+                    return false;
+                }
+                loadPath = filteredFile.fileName();
+            }
+            core.loadSystemConfiguration(loadPath.toStdString().c_str());
             return true;
         }
         catch (const CMMError& e)
@@ -403,25 +408,6 @@ namespace scopeone::core::internal
 
     // Loads and initializes the devices, but does not start the cameras. The devices of an
     // earlier configuration are unloaded first.
-    // Splits one configuration line while preserving commas in the final field
-    QStringList splitConfigLine(const QString& line, int fieldCount)
-    {
-        QStringList parts;
-        int start = 0;
-        for (int i = 1; i < fieldCount; ++i)
-        {
-            const int comma = line.indexOf(QLatin1Char(','), start);
-            if (comma < 0)
-            {
-                return {};
-            }
-            parts.append(line.mid(start, comma - start).trimmed());
-            start = comma + 1;
-        }
-        parts.append(line.mid(start).trimmed());
-        return parts;
-    }
-
     bool MicroManagerProvider::loadConfiguration(const QString& configPath,
                                                  LoadResult& result,
                                                  QString& errorMessage)

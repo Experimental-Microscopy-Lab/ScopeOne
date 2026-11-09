@@ -14,6 +14,7 @@
 #include "internal/DriverHostClient.h"
 #include "internal/MicroManagerProvider.h"
 #include "scopeone/DriverManifest.h"
+#include "scopeone/HardwareConfiguration.h"
 
 namespace scopeone::core::internal
 {
@@ -92,65 +93,29 @@ namespace scopeone::core::internal
         }
     }
 
-    // Reads the ScopeOneDevice, ScopeOneProperty and ScopeOneConfigGroup lines, which follow the
-    // fields of Device, Property and ConfigGroup of Micro-Manager
+    // Reads the ScopeOne lines of a cfg file: the devices with their properties, the ScopeOne
+    // settings of the presets and the light source channels
     ScopeOneConfiguration readScopeOneConfiguration(const QString& configPath)
     {
         ScopeOneConfiguration configuration;
-        QFile file(configPath);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        const HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
+        configuration.devices = document.scopeOneDevices();
+        for (const HardwareConfiguration::Group& group : document.configGroups())
         {
-            return configuration;
-        }
-
-        // The properties are collected by label after the whole file is read, so their place
-        // relative to the device line does not matter
-        QHash<QString, QList<QPair<QString, QString>>> properties;
-        QTextStream stream(&file);
-        while (!stream.atEnd())
-        {
-            const QString line = stream.readLine().trimmed();
-            if (!line.startsWith(QStringLiteral("ScopeOne")))
+            for (const HardwareConfiguration::Preset& preset : group.presets)
             {
-                continue;
-            }
-
-            const QStringList device = splitConfigLine(line, 4);
-            if (device.size() == 4 && device[0] == QStringLiteral("ScopeOneDevice"))
-            {
-                const bool used = std::any_of(configuration.devices.cbegin(), configuration.devices.cend(),
-                                              [&](const ScopeOneDeviceLine& existing)
-                                              { return existing.label == device[1]; });
-                if (used)
+                for (const HardwareConfiguration::PresetSetting& setting : preset.settings)
                 {
-                    configuration.rejected.append(
-                        QStringLiteral("%1 (label used twice)").arg(device[1]));
+                    if (setting.source == HardwareConfiguration::Source::ScopeOne)
+                    {
+                        configuration.configGroups.append(
+                            {group.name, preset.name, setting.device, setting.property, setting.value});
+                    }
                 }
-                else
-                {
-                    configuration.devices.append({device[1], device[2], device[3], {}});
-                }
-                continue;
-            }
-            if (device.size() == 4 && device[0] == QStringLiteral("ScopeOneProperty"))
-            {
-                properties[device[1]].append({device[2], device[3]});
-                continue;
-            }
-            const QStringList group = splitConfigLine(line, 6);
-            if (group.size() == 6 && group[0] == QStringLiteral("ScopeOneConfigGroup"))
-            {
-                configuration.configGroups.append({group[1], group[2], group[3], group[4], group[5]});
             }
         }
-        for (ScopeOneDeviceLine& device : configuration.devices)
-        {
-            device.properties = properties.take(device.label);
-        }
-        for (auto it = properties.cbegin(); it != properties.cend(); ++it)
-        {
-            configuration.rejected.append(QStringLiteral("%1 (no ScopeOneDevice)").arg(it.key()));
-        }
+        configuration.lightSources = document.lightSources();
+        configuration.rejected = document.rejectedLines();
         return configuration;
     }
 
@@ -200,4 +165,26 @@ namespace scopeone::core::internal
         taken.swap(m_devices);
         return taken;
     }
+
+    bool ScopeOneProvider::defineConfig(const QString& group, const QString& preset,
+                                        const QList<ScopeOneConfigGroupLine>& settings,
+                                        QString* errorMessage)
+    {
+        if (group.trimmed().isEmpty() || preset.trimmed().isEmpty()) { if (errorMessage) *errorMessage = QStringLiteral("Invalid config name"); return false; }
+        deleteConfig(group, preset, nullptr);
+        for (const auto& setting : settings) m_configuration.configGroups.append({group, preset, setting.label, setting.property, setting.value});
+        return true;
+    }
+    bool ScopeOneProvider::deleteConfig(const QString& group, const QString& preset, QString*)
+    {
+        for (auto it = m_configuration.configGroups.begin(); it != m_configuration.configGroups.end(); )
+            it = (it->group == group && it->preset == preset) ? m_configuration.configGroups.erase(it) : std::next(it);
+        return true;
+    }
+    bool ScopeOneProvider::renameConfigGroup(const QString& group, const QString& newGroup, QString*)
+    { for (auto& line : m_configuration.configGroups) if (line.group == group) line.group = newGroup; return true; }
+    bool ScopeOneProvider::renameConfig(const QString& group, const QString& preset, const QString& newPreset, QString*)
+    { for (auto& line : m_configuration.configGroups) if (line.group == group && line.preset == preset) line.preset = newPreset; return true; }
+    bool ScopeOneProvider::deleteConfigGroup(const QString& group, QString*)
+    { for (auto it = m_configuration.configGroups.begin(); it != m_configuration.configGroups.end(); ) it = it->group == group ? m_configuration.configGroups.erase(it) : std::next(it); return true; }
 }

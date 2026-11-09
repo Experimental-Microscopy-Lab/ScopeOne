@@ -720,6 +720,49 @@ namespace scopeone::core::internal
         return ok;
     }
 
+    bool MicroManagerProvider::defineConfigGroup(const QString& groupName, QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&] { m_core->defineConfigGroup(name8(groupName).c_str()); });
+    }
+
+    bool MicroManagerProvider::deleteConfigGroup(const QString& groupName, QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&] { m_core->deleteConfigGroup(name8(groupName).c_str()); });
+    }
+
+    bool MicroManagerProvider::renameConfigGroup(const QString& groupName, const QString& newGroup,
+                                                 QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&] { m_core->renameConfigGroup(name8(groupName).c_str(), name8(newGroup).c_str()); });
+    }
+
+    bool MicroManagerProvider::defineConfig(const QString& groupName, const QString& configName,
+                                            const std::vector<scopeone::core::ConfigSetting>& settings,
+                                            QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&]
+        {
+            const std::string group = name8(groupName), config = name8(configName);
+            if (!m_core->isGroupDefined(group.c_str())) m_core->defineConfigGroup(group.c_str());
+            m_core->defineConfig(group.c_str(), config.c_str());
+            for (const auto& setting : settings)
+                m_core->defineConfig(group.c_str(), config.c_str(), name8(setting.device).c_str(),
+                                     name8(setting.property).c_str(), name8(setting.value).c_str());
+        });
+    }
+
+    bool MicroManagerProvider::deleteConfig(const QString& groupName, const QString& configName,
+                                            QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&] { m_core->deleteConfig(name8(groupName).c_str(), name8(configName).c_str()); });
+    }
+
+    bool MicroManagerProvider::renameConfig(const QString& groupName, const QString& configName,
+                                            const QString& newName, QString* errorMessage)
+    {
+        return succeeds(errorMessage, [&] { m_core->renameConfig(name8(groupName).c_str(), name8(configName).c_str(), name8(newName).c_str()); });
+    }
+
     QString MicroManagerProvider::defaultShutter() const
     {
         return orElse(QString{}, [&] { return QString::fromStdString(m_core->getShutterDevice()); });

@@ -20,6 +20,7 @@ namespace scopeone::ui
     signals:
         void openImageRequested();
         void loadConfigurationRequested();
+        void newConfigurationRequested();
         void imageChosen(const QString& path);
         void configurationChosen(const QString& path);
         void closeRequested();

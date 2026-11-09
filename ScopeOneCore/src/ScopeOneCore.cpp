@@ -1734,6 +1734,7 @@ namespace scopeone::core
     void ScopeOneCore::finishConfigurationLoadFailure(const LoadConfigResult& result,
                                                       const QString& errorMessage)
     {
+        m_managers->hardwareRuntime->setConfigurationPath({});
         m_configurationState = ConfigurationState::Failed;
         m_configurationError = errorMessage.isEmpty()
                                    ? QStringLiteral("Failed to load configuration")
@@ -1782,6 +1783,7 @@ namespace scopeone::core
         clearStaticFrames();
         m_cameraIds.clear();
         m_loadedConfigPath.clear();
+        m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
         m_frameGraph.clear();
         m_previewFlushTimer->stop();
@@ -1923,7 +1925,10 @@ namespace scopeone::core
                 });
                 HardwareRuntime* const runtime = m_managers->hardwareRuntime;
                 startup->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
-                                                     [runtime]() { runtime->applyScopeOneStartupPreset(); }));
+                                                     [runtime]() {
+                                                         runtime->applyScopeOneStartupPreset();
+                                                         runtime->applyScopeOneAutoShutter();
+                                                     }));
             }
             else
             {
@@ -1934,6 +1939,7 @@ namespace scopeone::core
         });
 
         HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        runtime->setConfigurationPath(QFileInfo(path).absoluteFilePath());
         const auto future = QtConcurrent::run(m_hardwareThreadPool.get(), [runtime, path]()
         {
             ConfigurationTaskResult task;
@@ -3680,6 +3686,11 @@ namespace scopeone::core
         return devices;
     }
 
+    QString ScopeOneCore::configuredCamera() const
+    {
+        return m_managers->hardwareRuntime->configuredCamera();
+    }
+
     QString ScopeOneCore::currentXYStageDevice() const
     {
         if (m_configurationOperationRunning)
@@ -3831,6 +3842,98 @@ namespace scopeone::core
         return ok;
     }
 
+    // List the light source channels declared in the configuration for the loaded devices
+    QList<ScopeOneCore::LightSource> ScopeOneCore::lightSources() const
+    {
+        QList<LightSource> sources;
+        if (m_configurationOperationRunning)
+        {
+            return sources;
+        }
+        for (const auto& line : m_managers->hardwareRuntime->lightSources())
+        {
+            sources.append({line.name, line.enableDevice, line.enableProperty, line.onValue, line.offValue,
+                            line.powerDevice, line.powerProperty, line.readingDevice, line.readingProperty});
+        }
+        return sources;
+    }
+
+    bool ScopeOneCore::setLightSource(const LightSource& source, QString* errorMessage)
+    {
+        if (!canEditConfiguration(errorMessage)) return false;
+        const auto field = [](const QString& value) {
+            return value == value.trimmed() && !value.contains(QLatin1Char(','))
+                && !value.contains(QLatin1Char('\n')) && !value.contains(QLatin1Char('\r'));
+        };
+        const QStringList fields{source.name, source.powerDevice, source.powerProperty, source.enableDevice,
+            source.enableProperty, source.onValue, source.offValue, source.readingDevice, source.readingProperty};
+        bool valid = !source.name.isEmpty() && !source.powerDevice.isEmpty() && !source.powerProperty.isEmpty();
+        for (const auto& value : fields) valid = valid && field(value);
+        valid = valid && (source.enableDevice.isEmpty() == source.enableProperty.isEmpty())
+            && (source.readingDevice.isEmpty() == source.readingProperty.isEmpty());
+        if (!source.enableProperty.isEmpty())
+            valid = valid && !source.onValue.isEmpty() && !source.offValue.isEmpty() && source.onValue != source.offValue;
+        if (!valid)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Invalid light source");
+            return false;
+        }
+        const HardwareConfiguration::LightSource line{source.name, source.enableDevice, source.enableProperty,
+            source.onValue, source.offValue, source.powerDevice, source.powerProperty,
+            source.readingDevice, source.readingProperty};
+        return finishConfigurationEdit(m_managers->hardwareRuntime->setLightSource(line, errorMessage));
+    }
+
+    bool ScopeOneCore::removeLightSource(const QString& name, QString* errorMessage)
+    {
+        return canEditConfiguration(errorMessage)
+            && finishConfigurationEdit(m_managers->hardwareRuntime->removeLightSource(name, errorMessage));
+    }
+
+    // Read the light sources on the hardware thread, so the reads are ordered with load and unload
+    QFuture<QList<ScopeOneCore::LightSourceState>> ScopeOneCore::readLightSources(
+        const QList<LightSource>& sources, bool settings)
+    {
+        return QtConcurrent::run(m_hardwareThreadPool.get(), [this, sources, settings]()
+        {
+            QList<LightSourceState> states;
+            for (const LightSource& source : sources)
+            {
+                LightSourceState state;
+                if (settings)
+                {
+                    state.hasLimits = getPropertyLimits(source.powerDevice, source.powerProperty,
+                                                        state.lower, state.upper);
+                    if (!source.enableProperty.isEmpty())
+                    {
+                        state.enable = getPropertyValue(source.enableDevice, source.enableProperty, true);
+                    }
+                    state.power = getPropertyValue(source.powerDevice, source.powerProperty, true);
+                }
+                if (!source.readingProperty.isEmpty())
+                {
+                    state.reading = getPropertyValue(source.readingDevice, source.readingProperty, false);
+                }
+                states.append(state);
+            }
+            return states;
+        });
+    }
+
+    // Set a property on the hardware thread
+    QFuture<QString> ScopeOneCore::writeProperty(const QString& deviceLabel, const QString& name, const QString& value)
+    {
+        return QtConcurrent::run(m_hardwareThreadPool.get(), [this, deviceLabel, name, value]()
+        {
+            QString error;
+            if (setPropertyValue(deviceLabel, name, value, &error))
+            {
+                return QString{};
+            }
+            return error.isEmpty() ? QStringLiteral("failed") : error;
+        });
+    }
+
     // List configuration groups exposed by registered providers
     QStringList ScopeOneCore::availableConfigGroups() const
     {
@@ -3859,6 +3962,33 @@ namespace scopeone::core
             return {};
         }
         return m_managers->hardwareRuntime->currentConfig(groupName);
+    }
+
+    QList<ConfigSetting> ScopeOneCore::configPresetSettings(const QString& groupName, const QString& presetName) const
+    {
+        if (m_configurationOperationRunning) return {};
+        const auto settings = m_managers->hardwareRuntime->configSettings(groupName, presetName);
+        return {settings.cbegin(), settings.cend()};
+    }
+
+    bool ScopeOneCore::canEditConfiguration(QString* errorMessage) const
+    {
+        if (hardwareBusy(errorMessage)) return false;
+        if (m_configurationState == ConfigurationState::Loaded
+            || m_configurationState == ConfigurationState::PartiallyLoaded) return true;
+        if (errorMessage) *errorMessage = QStringLiteral("No configuration is loaded");
+        return false;
+    }
+
+    bool ScopeOneCore::finishConfigurationEdit(bool success)
+    {
+        if (!success) return false;
+        QFile file(m_loadedConfigPath);
+        m_loadedConfigSha256 = file.open(QIODevice::ReadOnly)
+            ? QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex())
+            : QString{};
+        emit hardwareConfigurationChanged();
+        return true;
     }
 
     // Reports whether a configuration load or a stage move keeps the hardware from other changes
@@ -3908,6 +4038,23 @@ namespace scopeone::core
         }
         return ok;
     }
+
+    bool ScopeOneCore::addConfigGroup(const QString& groupName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->addConfigGroup(groupName,errorMessage)); }
+    bool ScopeOneCore::removeConfigGroup(const QString& groupName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->removeConfigGroup(groupName,errorMessage)); }
+    bool ScopeOneCore::renameConfigGroup(const QString& groupName, const QString& newName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->renameConfigGroup(groupName,newName,errorMessage)); }
+    bool ScopeOneCore::setConfigPreset(const QString& groupName, const QString& presetName,
+                                       const QList<ConfigSetting>& settings, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->setConfigPreset(groupName,presetName,{settings.cbegin(),settings.cend()},errorMessage)); }
+    bool ScopeOneCore::removeConfigPreset(const QString& groupName, const QString& presetName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->removeConfigPreset(groupName,presetName,errorMessage)); }
+    bool ScopeOneCore::renameConfigPreset(const QString& groupName, const QString& presetName, const QString& newName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->renameConfigPreset(groupName,presetName,newName,errorMessage)); }
+
+    bool ScopeOneCore::setConfigGroupProperties(const QString& groupName, const QList<ConfigSetting>& properties, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->setConfigGroupProperties(groupName, properties, errorMessage)); }
 
     // Read exposure from the active camera path
     bool ScopeOneCore::readExposure(const QString& cameraIdOrAll, double& exposureMs) const

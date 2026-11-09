@@ -104,6 +104,17 @@ Outputs:
 
 ## Core and SDK API
 
+`HardwareConfiguration` reads and edits cfg files while preserving untouched lines and their order.
+The Hardware Configuration dialog uses it to edit ScopeOne devices and Core roles, then writes and
+reloads the configuration on Apply. Micro-Manager devices remain editable in Micro-Manager.
+The dialog also assigns light source properties; those changes are saved and reflected in the Light
+Sources panel immediately. The preset editor saves group and preset changes immediately and updates
+both providers. Both editors use the current cfg file.
+
+Drivers can expose pre-initialization properties through `Driver::preInitProperties`. DriverHost's
+`--describe` mode returns these properties without starting a device, so the configuration editor
+can offer their default and allowed values before loading it.
+
 The installed headers in `include/scopeone` and `include/sdk/scopeone` are the source of truth for the public API:
 
 - `ScopeOneCore.h` provides the main hardware, acquisition, processing, recording and frame-graph facade.

@@ -20,9 +20,6 @@ class CMMCore;
 
 namespace scopeone::core::internal
 {
-    // Splits one line of a cfg file into fieldCount fields, the last of which may contain commas
-    QStringList splitConfigLine(const QString& line, int fieldCount);
-
     // The devices of the loaded Micro-Manager configuration. They run on the core of ScopeOne,
     // except the cameras of a configuration with more than one camera: each of those runs in a
     // DriverHost of its own, so two cameras of the same model do not share one vendor library.
@@ -158,6 +155,17 @@ namespace scopeone::core::internal
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage) override;
+        bool defineConfig(const QString& groupName, const QString& configName,
+                          const std::vector<scopeone::core::ConfigSetting>& settings,
+                          QString* errorMessage = nullptr);
+        bool deleteConfig(const QString& groupName, const QString& configName,
+                          QString* errorMessage = nullptr);
+        bool defineConfigGroup(const QString& groupName, QString* errorMessage = nullptr);
+        bool deleteConfigGroup(const QString& groupName, QString* errorMessage = nullptr);
+        bool renameConfigGroup(const QString& groupName, const QString& newGroup,
+                               QString* errorMessage = nullptr);
+        bool renameConfig(const QString& groupName, const QString& configName,
+                          const QString& newName, QString* errorMessage = nullptr);
 
         QString defaultShutter() const override;
         bool autoShutter() const override;

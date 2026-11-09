@@ -155,6 +155,9 @@ namespace scopeone::core::internal
                       long state,
                       QString* errorMessage = nullptr);
         QString stateLabel(const QString& deviceId, long state) const;
+        std::vector<LightSourceLine> lightSources() const;
+        bool setLightSource(const LightSourceLine& source, QString* errorMessage);
+        bool removeLightSource(const QString& name, QString* errorMessage);
         QStringList availableConfigGroups() const;
         QStringList availableConfigs(const QString& groupName) const;
         QString currentConfig(const QString& groupName) const;
@@ -164,7 +167,19 @@ namespace scopeone::core::internal
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage = nullptr);
+        bool addConfigGroup(const QString& group, QString* errorMessage = nullptr);
+        bool removeConfigGroup(const QString& group, QString* errorMessage = nullptr);
+        bool renameConfigGroup(const QString& group, const QString& newGroup, QString* errorMessage = nullptr);
+        bool setConfigPreset(const QString& group, const QString& preset,
+                             const std::vector<scopeone::core::ConfigSetting>& settings,
+                             QString* errorMessage = nullptr);
+        bool removeConfigPreset(const QString& group, const QString& preset, QString* errorMessage = nullptr);
+        bool renameConfigPreset(const QString& group, const QString& preset, const QString& newPreset,
+                                QString* errorMessage = nullptr);
+        bool setConfigGroupProperties(const QString& group, const QList<ConfigSetting>& properties,
+                                      QString* errorMessage = nullptr);
         void applyScopeOneStartupPreset();
+        void applyScopeOneAutoShutter();
 
         bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const;
         bool setAutoShutter(bool enabled, QString* errorMessage = nullptr);
@@ -199,6 +214,8 @@ namespace scopeone::core::internal
         // The ScopeOne devices of the configuration, each in a DriverHost. Loading blocks, so it
         // runs on a worker thread, while the devices are registered on the thread of the runtime.
         ScopeOneProvider::LoadResult loadScopeOneDevices(const QString& configPath);
+        void setConfigurationPath(const QString& path);
+        QString configuredCamera() const { return m_cameraRole; }
         // False when a device conflicts with registered hardware
         bool registerScopeOneDevices();
         // The cameras of Micro-Manager and the ScopeOne devices, unregistered and to be destroyed
@@ -223,10 +240,17 @@ namespace scopeone::core::internal
         void previewStateChanged(bool running);
 
     private:
+        bool editConfigGroups(const QStringList& groups,
+                              const std::function<bool(HardwareConfiguration&, QString*)>& edit,
+                              QString* errorMessage);
+        bool presetSettingsForEdit(const QList<ConfigSetting>& settings,
+                                   QList<HardwareConfiguration::PresetSetting>& rows,
+                                   QString* errorMessage) const;
         Camera* cameraForDevice(const QString& logicalId) const;
         Device* propertyDeviceForDevice(const QString& logicalId) const;
         Stage* stageForDevice(const QString& logicalId) const;
         Shutter* shutterForDevice(const QString& logicalId) const;
+        Shutter* configuredShutter(QString* deviceId) const;
         StateDevice* stateDeviceForDevice(const QString& logicalId) const;
         std::vector<ScopeOneConfigGroupLine> scopeOneConfigLines() const;
         bool applyScopeOnePreset(const QString& groupName, const QString& configName, QString* errorMessage);
@@ -237,6 +261,12 @@ namespace scopeone::core::internal
         DeviceRegistry m_registry;
         std::shared_ptr<MicroManagerProvider> m_microManager;
         ScopeOneProvider m_scopeOne;
+        QString m_configurationPath;
+        QString m_cameraRole;
+        QString m_focusRole;
+        QString m_shutterRole;
+        QString m_autoShutterRole;
+        bool m_scopeOneShutter{false};
         SignalSourceManager* m_signalSourceManager{nullptr};
         DaqDeviceManager* m_daqDeviceManager{nullptr};
 

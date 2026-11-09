@@ -4,6 +4,7 @@
 #include "ToolIcons.h"
 #include "UpdateChecker.h"
 #include "WelcomeOverlay.h"
+#include "HardwareConfigurationDialog.h"
 
 #include "scopeone/ScopeOneCore.h"
 #include "AboutDialog.h"
@@ -838,6 +839,7 @@ namespace scopeone::ui
         m_imageWorkspace->viewerHost()->installEventFilter(this);
         connect(m_welcome, &WelcomeOverlay::openImageRequested, this, &MainWindow::openImageDialog);
         connect(m_welcome, &WelcomeOverlay::loadConfigurationRequested, this, &MainWindow::loadConfigurationFromDialog);
+        connect(m_welcome, &WelcomeOverlay::newConfigurationRequested, this, [this]() { openHardwareConfiguration(); });
         connect(m_welcome, &WelcomeOverlay::imageChosen, this, [this](const QString& path) { openImages({path}); });
         connect(m_welcome, &WelcomeOverlay::configurationChosen, this, &MainWindow::loadConfigurationPath);
         connect(m_welcome, &WelcomeOverlay::closeRequested, this, [this]()
@@ -1456,6 +1458,8 @@ namespace scopeone::ui
         m_viewExportActions = {saveViewAction, copyViewAction};
 
         auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
+        connect(toolsMenu->addAction(tr("Hardware Configuration...")), &QAction::triggered,
+                this, [this]() { openHardwareConfiguration(); });
         // Image, Process and Analyze come before Tools, as in ImageJ
         m_imageAnalysis = new ImageAnalysis(m_scopeonecore, m_imageWorkspace, this, this);
         m_imageAnalysis->setPresenter([this](
@@ -1545,12 +1549,14 @@ namespace scopeone::ui
         m_deviceControlWidget = new DeviceControlWidget(m_scopeonecore, this);
         m_deviceControlWidget->setImageWorkspace(m_imageWorkspace);
         m_deviceControlWidget->setPreviewWidget(m_previewWidget);
-        connect(m_deviceControlWidget, &DeviceControlWidget::stageMoveFailed,
-                this, [this](const QString& message)
-                {
-                    showStatusMessage(message, 5000);
-                    qWarning().noquote() << message;
-                });
+        const auto showFailure = [this](const QString& message)
+        {
+            showStatusMessage(message, 5000);
+            qWarning().noquote() << message;
+        };
+        connect(m_deviceControlWidget, &DeviceControlWidget::stageMoveFailed, this, showFailure);
+        connect(m_deviceControlWidget, &DeviceControlWidget::lightSourceFailed, this, showFailure);
+        connect(m_deviceControlWidget, &DeviceControlWidget::lightSourceEditRequested, this, [this]() { openHardwareConfiguration(true); });
     }
 
     // Create the image inspection dock
@@ -1761,7 +1767,7 @@ namespace scopeone::ui
     void MainWindow::applyLoadedCameraState(const QStringList& cameraIds)
     {
         m_previewWidget->setAvailableCameraIds(cameraIds);
-        m_deviceControlWidget->setControlTargets(cameraIds);
+        m_deviceControlWidget->setControlTargets(cameraIds, m_scopeonecore->configuredCamera());
         m_deviceControlWidget->onCameraInitialized(true);
         m_inspectWidget->setAvailableCameras(cameraIds);
         m_inspectWidget->onCameraInitialized(true);
@@ -2394,6 +2400,13 @@ namespace scopeone::ui
     }
 
     // Load a configuration from a known path
+    void MainWindow::openHardwareConfiguration(bool lightSources)
+    {
+        HardwareConfigurationDialog dialog(m_scopeonecore, this);
+        if (lightSources) dialog.showLightSources();
+        if (dialog.exec() == QDialog::Accepted) loadConfigurationPath(dialog.configurationPath());
+    }
+
     void MainWindow::loadConfigurationPath(const QString& configPath)
     {
         closeLoadConfigProgress();

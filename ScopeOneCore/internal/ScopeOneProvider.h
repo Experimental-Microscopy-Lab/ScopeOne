@@ -6,17 +6,12 @@
 #include <QStringList>
 
 #include "scopeone/Device.h"
+#include "scopeone/HardwareConfiguration.h"
 
 namespace scopeone::core::internal
 {
-    // A ScopeOneDevice line of the cfg file with the ScopeOneProperty lines of its label
-    struct ScopeOneDeviceLine
-    {
-        QString label;
-        QString driverId;
-        QString deviceName;
-        QList<QPair<QString, QString>> properties;
-    };
+    using ScopeOneDeviceLine = HardwareConfiguration::ScopeOneDevice;
+    using LightSourceLine = HardwareConfiguration::LightSource;
 
     struct ScopeOneConfigGroupLine
     {
@@ -32,6 +27,8 @@ namespace scopeone::core::internal
     {
         QList<ScopeOneDeviceLine> devices;
         QList<ScopeOneConfigGroupLine> configGroups;
+        // In the order of the first line of each name
+        QList<LightSourceLine> lightSources;
         // Lines that name no device to start, such as a second device of a label or a property of
         // a label without device, each as "label (reason)"
         QStringList rejected;
@@ -54,6 +51,17 @@ namespace scopeone::core::internal
         // Starts the devices of the file together and blocks until all have started or failed
         LoadResult load(const QString& configPath);
         const ScopeOneConfiguration& configuration() const { return m_configuration; }
+        void setLightSources(const QList<LightSourceLine>& sources) { m_configuration.lightSources = sources; }
+        bool defineConfig(const QString& group, const QString& preset,
+                          const QList<ScopeOneConfigGroupLine>& settings,
+                          QString* errorMessage = nullptr);
+        bool deleteConfig(const QString& group, const QString& preset,
+                          QString* errorMessage = nullptr);
+        bool renameConfigGroup(const QString& group, const QString& newGroup,
+                               QString* errorMessage = nullptr);
+        bool renameConfig(const QString& group, const QString& preset, const QString& newPreset,
+                          QString* errorMessage = nullptr);
+        bool deleteConfigGroup(const QString& group, QString* errorMessage = nullptr);
         QList<DevicePtr> devices() const { return m_devices; }
         // Hands over the devices, so they can be stopped away from the calling thread
         QList<DevicePtr> takeDevices();

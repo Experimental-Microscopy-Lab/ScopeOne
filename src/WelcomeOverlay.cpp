@@ -53,13 +53,16 @@ namespace scopeone::ui
         auto* buttons = new QHBoxLayout;
         auto* openImage = new QPushButton(tr("Open Image..."), this);
         auto* loadConfiguration = new QPushButton(tr("Load Configuration..."), this);
+        auto* newConfiguration = new QPushButton(tr("New Configuration..."), this);
         buttons->addStretch(1);
         buttons->addWidget(openImage);
         buttons->addWidget(loadConfiguration);
+        buttons->addWidget(newConfiguration);
         buttons->addStretch(1);
         layout->addLayout(buttons);
         connect(openImage, &QPushButton::clicked, this, &WelcomeOverlay::openImageRequested);
         connect(loadConfiguration, &QPushButton::clicked, this, &WelcomeOverlay::loadConfigurationRequested);
+        connect(newConfiguration, &QPushButton::clicked, this, &WelcomeOverlay::newConfigurationRequested);
 
         m_recentHost = new QWidget(this);
         m_recentLayout = new QVBoxLayout(m_recentHost);

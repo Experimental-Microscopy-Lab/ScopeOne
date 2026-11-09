@@ -3,6 +3,7 @@
 #include "internal/DaqDeviceManager.h"
 #include "internal/SignalSourceManager.h"
 #include "scopeone/Camera.h"
+#include "scopeone/HardwareConfiguration.h"
 
 #include <algorithm>
 #include <QDebug>
@@ -10,6 +11,7 @@
 #include <functional>
 #include <QSet>
 #include <QThread>
+#include <QFileInfo>
 #include <utility>
 
 namespace scopeone::core::internal
@@ -305,6 +307,7 @@ namespace scopeone::core::internal
     Device* HardwareRuntime::propertyDeviceForDevice(
         const QString& logicalId) const
     {
+        if (logicalId.trimmed() == QStringLiteral("Core")) return m_microManager.get();
         const DevicePtr provider = m_registry.providerForDevice(logicalId);
         return dynamic_cast<Device*>(provider.get());
     }
@@ -655,6 +658,7 @@ namespace scopeone::core::internal
 
     QString HardwareRuntime::defaultZStage() const
     {
+        if (!m_focusRole.isEmpty()) return m_registry.device(m_focusRole).kind == HardwareDeviceKind::ZStage ? m_focusRole : QString{};
         QString stage;
         uniqueDefault(m_registry, &Stage::defaultZStage, HardwareDeviceKind::ZStage, &stage);
         return stage;
@@ -794,6 +798,47 @@ namespace scopeone::core::internal
         return lines;
     }
 
+    // The light source channels of the cfg file whose devices are all loaded, in cfg order. A
+    // channel with a device that failed to load or is unloaded is left out.
+    std::vector<LightSourceLine> HardwareRuntime::lightSources() const
+    {
+        const auto loaded = [this](const QString& device, const QString& property)
+        { return property.isEmpty() || m_registry.providerForDevice(device); };
+        std::vector<LightSourceLine> sources;
+        for (const LightSourceLine& source : m_scopeOne.configuration().lightSources)
+        {
+            if (!source.powerProperty.isEmpty() && loaded(source.powerDevice, source.powerProperty)
+                && loaded(source.enableDevice, source.enableProperty)
+                && loaded(source.readingDevice, source.readingProperty))
+            {
+                sources.push_back(source);
+            }
+        }
+        return sources;
+    }
+
+    bool HardwareRuntime::setLightSource(const LightSourceLine& source, QString* errorMessage)
+    {
+        QString error;
+        auto document = HardwareConfiguration::read(m_configurationPath, &error);
+        if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
+        document.setLightSource(source);
+        if (!document.write(m_configurationPath, errorMessage)) return false;
+        m_scopeOne.setLightSources(document.lightSources());
+        return true;
+    }
+
+    bool HardwareRuntime::removeLightSource(const QString& name, QString* errorMessage)
+    {
+        QString error;
+        auto document = HardwareConfiguration::read(m_configurationPath, &error);
+        if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
+        document.removeLightSource(name);
+        if (!document.write(m_configurationPath, errorMessage)) return false;
+        m_scopeOne.setLightSources(document.lightSources());
+        return true;
+    }
+
     // The preset names of the group in cfg order, which are the Micro-Manager ones first
     QStringList HardwareRuntime::availableConfigs(const QString& groupName) const
     {
@@ -829,6 +874,26 @@ namespace scopeone::core::internal
     {
         std::vector<scopeone::core::ConfigSetting> settings =
             m_microManager->configSettings(groupName.trimmed(), configName);
+        // ScopeOne role lines are removed from the temporary MM cfg before loading. Keep them in
+        // the editor's view so editing System/Startup writes the original role lines back.
+        if (groupName.trimmed() == QStringLiteral("System")
+            && configName == QStringLiteral("Startup") && !m_configurationPath.isEmpty())
+        {
+            QString error;
+            const auto document = HardwareConfiguration::read(m_configurationPath, &error);
+            if (error.isEmpty())
+            {
+                for (const auto& group : document.configGroups())
+                    if (group.name == QStringLiteral("System"))
+                        for (const auto& preset : group.presets)
+                            if (preset.name == QStringLiteral("Startup"))
+                                for (const auto& setting : preset.settings)
+                                    if (setting.device == QStringLiteral("Core")
+                                        && !std::any_of(settings.cbegin(), settings.cend(), [&](const auto& current)
+                                        { return current.device == setting.device && current.property == setting.property; }))
+                                        settings.push_back({setting.device, setting.property, setting.value});
+            }
+        }
         for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
         {
             if (line.group == groupName.trimmed() && line.preset == configName)
@@ -926,6 +991,301 @@ namespace scopeone::core::internal
         return applyScopeOnePreset(groupName, configName, errorMessage);
     }
 
+    namespace
+    {
+        bool editError(QString* error, const QString& message)
+        {
+            if (error) *error = message;
+            return false;
+        }
+
+        bool validField(const QString& value, bool allowComma = false)
+        {
+            return value == value.trimmed() && !value.contains(QLatin1Char('\n'))
+                && !value.contains(QLatin1Char('\r')) && !value.contains(QChar(0))
+                && (allowComma || !value.contains(QLatin1Char(',')));
+        }
+
+        bool validName(const QString& name) { return !name.isEmpty() && validField(name); }
+
+        bool hasGroup(const HardwareConfiguration& document, const QString& name)
+        {
+            for (const auto& group : document.configGroups())
+                if (group.name == name) return true;
+            return false;
+        }
+
+        bool hasPreset(const HardwareConfiguration& document, const QString& groupName, const QString& presetName)
+        {
+            for (const auto& group : document.configGroups())
+                if (group.name == groupName)
+                    for (const auto& preset : group.presets)
+                        if (preset.name == presetName) return true;
+            return false;
+        }
+    }
+
+    // Snapshot the affected groups before changing either provider or the file.
+    bool HardwareRuntime::editConfigGroups(
+        const QStringList& groups,
+        const std::function<bool(HardwareConfiguration&, QString*)>& edit, QString* error)
+    {
+        if (error) error->clear();
+        if (m_configurationPath.isEmpty()) return editError(error, QStringLiteral("No configuration file is loaded"));
+        QString failure;
+        auto document = HardwareConfiguration::read(m_configurationPath, &failure);
+        if (!failure.isEmpty()) return editError(error, failure);
+
+        QList<HardwareConfiguration::Group> mmSnapshot;
+        const QStringList mmGroups = m_microManager->availableConfigGroups();
+        for (const auto& name : groups)
+        {
+            if (!mmGroups.contains(name)) continue;
+            HardwareConfiguration::Group group{name, {}};
+            for (const auto& presetName : m_microManager->availableConfigs(name))
+            {
+                HardwareConfiguration::Preset preset{presetName, {}};
+                for (const auto& setting : m_microManager->configSettings(name, presetName))
+                    preset.settings.append({setting, HardwareConfiguration::Source::MicroManager});
+                group.presets.append(preset);
+            }
+            mmSnapshot.append(group);
+        }
+        QList<ScopeOneConfigGroupLine> scopeSnapshot;
+        for (const auto& line : m_scopeOne.configuration().configGroups)
+            if (groups.contains(line.group)) scopeSnapshot.append(line);
+
+        if (!edit(document, &failure)) return editError(error, failure);
+        const auto editedGroups = document.configGroups();
+        for (const auto& group : editedGroups)
+        {
+            if (!groups.contains(group.name)) continue;
+            if (!validName(group.name)) return editError(error, QStringLiteral("Invalid group name"));
+            for (const auto& preset : group.presets)
+            {
+                if (!validName(preset.name) || preset.settings.isEmpty())
+                    return editError(error, QStringLiteral("Preset needs a valid name and at least one property"));
+                for (const auto& setting : preset.settings)
+                    if (!validName(setting.device) || !validName(setting.property)
+                        || !validField(setting.value, setting.source == HardwareConfiguration::Source::ScopeOne))
+                        return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
+                                         .arg(setting.device, setting.property));
+            }
+        }
+
+        const auto clear = [&](QStringList& failures)
+        {
+            for (const auto& name : groups)
+            {
+                QString reason;
+                if (m_microManager->availableConfigGroups().contains(name)
+                    && !m_microManager->deleteConfigGroup(name, &reason)) failures.append(reason);
+                reason.clear();
+                if (!m_scopeOne.deleteConfigGroup(name, &reason)) failures.append(reason);
+            }
+        };
+        QStringList errors;
+        clear(errors);
+        bool ok = errors.isEmpty();
+        if (!ok) failure = errors.join(QStringLiteral("; "));
+        for (const auto& group : editedGroups)
+        {
+            if (!ok || !groups.contains(group.name)) continue;
+            ok = m_microManager->defineConfigGroup(group.name, &failure);
+            for (const auto& preset : group.presets)
+            {
+                if (!ok) break;
+                std::vector<ConfigSetting> mm;
+                QList<ScopeOneConfigGroupLine> scope;
+                for (const auto& setting : preset.settings)
+                {
+                    const bool scopeOneRole = group.name == QStringLiteral("System")
+                        && preset.name == QStringLiteral("Startup")
+                        && setting.device == QStringLiteral("Core")
+                        && (setting.property == QStringLiteral("Camera")
+                            || setting.property == QStringLiteral("Shutter")
+                            || setting.property == QStringLiteral("Focus"))
+                        && m_registry.providerForDevice(setting.value);
+                    if (scopeOneRole) continue;
+                    if (setting.source == HardwareConfiguration::Source::MicroManager)
+                        mm.push_back(setting);
+                    else
+                        scope.append({group.name, preset.name, setting.device, setting.property, setting.value});
+                }
+                if (!mm.empty()) ok = m_microManager->defineConfig(group.name, preset.name, mm, &failure);
+                if (ok && !scope.isEmpty()) ok = m_scopeOne.defineConfig(group.name, preset.name, scope, &failure);
+            }
+        }
+        if (ok) ok = document.write(m_configurationPath, &failure);
+        if (ok) return true;
+
+        QStringList recoveryErrors;
+        clear(recoveryErrors);
+        for (const auto& group : mmSnapshot)
+        {
+            QString reason;
+            if (!m_microManager->defineConfigGroup(group.name, &reason)) recoveryErrors.append(reason);
+            for (const auto& preset : group.presets)
+            {
+                std::vector<ConfigSetting> settings;
+                for (const auto& setting : preset.settings) settings.push_back(setting);
+                reason.clear();
+                if (!m_microManager->defineConfig(group.name, preset.name, settings, &reason))
+                    recoveryErrors.append(reason);
+            }
+        }
+        QSet<QString> restored;
+        for (const auto& line : scopeSnapshot)
+        {
+            const QString key = line.group + QChar(0x1f) + line.preset;
+            if (restored.contains(key)) continue;
+            restored.insert(key);
+            QList<ScopeOneConfigGroupLine> settings;
+            for (const auto& setting : scopeSnapshot)
+                if (setting.group == line.group && setting.preset == line.preset) settings.append(setting);
+            QString reason;
+            if (!m_scopeOne.defineConfig(line.group, line.preset, settings, &reason)) recoveryErrors.append(reason);
+        }
+        if (!recoveryErrors.isEmpty())
+            failure += QStringLiteral("; restoring configuration failed: %1").arg(recoveryErrors.join(QStringLiteral("; ")));
+        return editError(error, failure);
+    }
+
+    bool HardwareRuntime::presetSettingsForEdit(
+        const QList<ConfigSetting>& settings, QList<HardwareConfiguration::PresetSetting>& rows, QString* error) const
+    {
+        if (settings.isEmpty()) return editError(error, QStringLiteral("Select at least one property"));
+        for (const auto& setting : settings)
+        {
+            const auto device = m_registry.device(setting.device);
+            const bool coreDevice = setting.device == QStringLiteral("Core");
+            if (!coreDevice && device.logicalId.isEmpty()) return editError(error, QStringLiteral("Unknown device %1").arg(setting.device));
+            const auto source = coreDevice || device.providerId == QStringLiteral("micro-manager")
+                ? HardwareConfiguration::Source::MicroManager : HardwareConfiguration::Source::ScopeOne;
+            if (!validName(setting.device) || !validName(setting.property)
+                || !validField(setting.value, source == HardwareConfiguration::Source::ScopeOne))
+                return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
+                                 .arg(setting.device, setting.property));
+            for (const auto& row : rows)
+                if (row.device == setting.device && row.property == setting.property)
+                    return editError(error, QStringLiteral("Property selected twice: %1.%2")
+                                     .arg(setting.device, setting.property));
+            rows.append({setting, source});
+        }
+        return true;
+    }
+
+    bool HardwareRuntime::addConfigGroup(const QString& group, QString* error)
+    {
+        const QString name = group.trimmed();
+        if (!validName(name)) return editError(error, QStringLiteral("Invalid group name"));
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            if (hasGroup(document, name)) return editError(reason, QStringLiteral("Group already exists: %1").arg(name));
+            document.addConfigGroup(name);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::removeConfigGroup(const QString& group, QString* error)
+    {
+        const QString name = group.trimmed();
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            if (!hasGroup(document, name)) return editError(reason, QStringLiteral("No group %1").arg(name));
+            document.removeConfigGroup(name);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::renameConfigGroup(const QString& group, const QString& newGroup, QString* error)
+    {
+        const QString name = group.trimmed(), next = newGroup.trimmed();
+        if (!validName(next)) return editError(error, QStringLiteral("Invalid group name"));
+        return editConfigGroups({name, next}, [&](auto& document, QString* reason)
+        {
+            if (!hasGroup(document, name)) return editError(reason, QStringLiteral("No group %1").arg(name));
+            if (hasGroup(document, next)) return editError(reason, QStringLiteral("Group already exists: %1").arg(next));
+            document.renameConfigGroup(name, next);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::setConfigPreset(const QString& group, const QString& preset,
+                                         const std::vector<ConfigSetting>& settings, QString* error)
+    {
+        const QString name = group.trimmed(), presetName = preset.trimmed();
+        if (!validName(presetName)) return editError(error, QStringLiteral("Invalid preset name"));
+        QList<HardwareConfiguration::PresetSetting> rows;
+        const QList<ConfigSetting> values(settings.cbegin(), settings.cend());
+        if (!presetSettingsForEdit(values, rows, error)) return false;
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            if (!hasGroup(document, name)) return editError(reason, QStringLiteral("No group %1").arg(name));
+            document.setPreset(name, presetName, rows);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::removeConfigPreset(const QString& group, const QString& preset, QString* error)
+    {
+        const QString name = group.trimmed(), presetName = preset.trimmed();
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            if (!hasPreset(document, name, presetName))
+                return editError(reason, QStringLiteral("No preset %1 in group %2").arg(presetName, name));
+            document.removePreset(name, presetName);
+            if (!hasGroup(document, name)) document.addConfigGroup(name);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::renameConfigPreset(const QString& group, const QString& preset,
+                                            const QString& newPreset, QString* error)
+    {
+        const QString name = group.trimmed(), old = preset.trimmed(), next = newPreset.trimmed();
+        if (!validName(next)) return editError(error, QStringLiteral("Invalid preset name"));
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            if (!hasPreset(document, name, old))
+                return editError(reason, QStringLiteral("No preset %1 in group %2").arg(old, name));
+            if (hasPreset(document, name, next))
+                return editError(reason, QStringLiteral("Preset already exists: %1").arg(next));
+            document.renamePreset(name, old, next);
+            return true;
+        }, error);
+    }
+
+    bool HardwareRuntime::setConfigGroupProperties(const QString& group, const QList<ConfigSetting>& properties,
+                                                  QString* error)
+    {
+        const QString name = group.trimmed();
+        QList<HardwareConfiguration::PresetSetting> selected;
+        if (!presetSettingsForEdit(properties, selected, error)) return false;
+        return editConfigGroups({name}, [&](auto& document, QString* reason)
+        {
+            for (const auto& current : document.configGroups())
+            {
+                if (current.name != name) continue;
+                if (current.presets.isEmpty()) document.setPreset(name, QStringLiteral("Default"), selected);
+                for (const auto& preset : current.presets)
+                {
+                    auto rows = selected;
+                    for (auto& row : rows)
+                        for (const auto& previous : preset.settings)
+                            if (row.device == previous.device && row.property == previous.property)
+                            {
+                                row.value = previous.value;
+                                break;
+                            }
+                    document.setPreset(name, preset.name, rows);
+                }
+                return true;
+            }
+            return editError(reason, QStringLiteral("No group %1").arg(name));
+        }, error);
+    }
+
     // System/Startup of the ScopeOne devices, after the load. MMCore has applied its own part.
     void HardwareRuntime::applyScopeOneStartupPreset()
     {
@@ -936,10 +1296,18 @@ namespace scopeone::core::internal
         }
     }
 
+    void HardwareRuntime::applyScopeOneAutoShutter()
+    {
+        if (!m_scopeOneShutter || m_autoShutterRole.isEmpty()) return;
+        QString error;
+        if (!setAutoShutter(m_autoShutterRole == QStringLiteral("1"), &error))
+            qWarning().noquote() << QStringLiteral("AutoShutter failed: %1").arg(error);
+    }
+
     bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
     {
         QString shutter;
-        Shutter* const provider = defaultShutter(m_registry, &shutter);
+        Shutter* const provider = configuredShutter(&shutter);
         enabled = provider && provider->autoShutter();
         if (!provider && errorMessage)
         {
@@ -951,15 +1319,43 @@ namespace scopeone::core::internal
     bool HardwareRuntime::setAutoShutter(bool enabled, QString* errorMessage)
     {
         QString shutter;
-        return forward(defaultShutter(m_registry, &shutter), "No shutter lights the cameras", errorMessage,
+        return forward(configuredShutter(&shutter), "No shutter lights the cameras", errorMessage,
                        [&](Shutter& provider) { return provider.setAutoShutter(enabled, errorMessage); });
     }
 
     bool HardwareRuntime::setDefaultShutterOpen(bool open, QString* errorMessage)
     {
         QString shutter;
-        return forward(defaultShutter(m_registry, &shutter), "No shutter lights the cameras", errorMessage,
+        return forward(configuredShutter(&shutter), "No shutter lights the cameras", errorMessage,
                        [&](Shutter& provider) { return provider.setShutterOpen(shutter, open, errorMessage); });
+    }
+
+    Shutter* HardwareRuntime::configuredShutter(QString* deviceId) const
+    {
+        if (m_shutterRole.isEmpty()) return defaultShutter(m_registry, deviceId);
+        if (m_registry.device(m_shutterRole).kind != HardwareDeviceKind::Shutter) return nullptr;
+        *deviceId = m_shutterRole;
+        return shutterForDevice(m_shutterRole);
+    }
+
+    void HardwareRuntime::setConfigurationPath(const QString& path)
+    {
+        m_configurationPath = path;
+        m_cameraRole.clear();
+        m_focusRole.clear();
+        m_shutterRole.clear();
+        m_autoShutterRole.clear();
+        m_scopeOneShutter = false;
+        if (path.isEmpty()) return;
+        const auto document = HardwareConfiguration::read(path, nullptr);
+        m_cameraRole = document.coreRole(QStringLiteral("Camera"));
+        m_focusRole = document.coreRole(QStringLiteral("Focus"));
+        m_shutterRole = document.coreRole(QStringLiteral("Shutter"));
+        m_autoShutterRole = document.coreRole(QStringLiteral("AutoShutter"));
+        if (!document.microManagerDeviceLabels().contains(m_shutterRole))
+            for (const auto& device : document.scopeOneDevices())
+                if (m_shutterRole == device.label || m_shutterRole.startsWith(device.label + QLatin1Char('.')))
+                    m_scopeOneShutter = true;
     }
 
     bool HardwareRuntime::hasAutofocus() const

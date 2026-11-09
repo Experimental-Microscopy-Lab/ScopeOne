@@ -45,6 +45,9 @@ same file still opens in Micro-Manager. Each `ScopeOneDevice` line starts one de
 ScopeOneDevice,<label>,<driver id>,<device name>
 ScopeOneProperty,<label>,<property>,<value>
 ScopeOneConfigGroup,<group>,<preset>,<label>,<property>,<value>
+ScopeOneLightSource,<name>,<label>,Enable,<property>,<on value>,<off value>
+ScopeOneLightSource,<name>,<label>,Power,<property>
+ScopeOneLightSource,<name>,<label>,Reading,<property>
 ```
 
 The label is the device id in ScopeOne, and the driver id is the `id` of its manifest or the name of
@@ -65,13 +68,44 @@ ScopeOneDevice,Example Camera,example.camera,Example Camera
 ScopeOneConfigGroup,Channel,FITC,Example Camera.1,Pattern,Gradient
 ```
 
+The `ScopeOneLightSource` lines declare a channel of the Light Sources group in the Control dock, one
+row per name in the order of the file. The label may be a ScopeOne device or a Micro-Manager device, so a
+laser adapter of Micro-Manager works the same way, and each role can name a different device. `Power` is
+required. `Enable` gives the switch with the values for on and off, and `Reading` gives the measured
+power that is read once per second. The unit shown after the values is the one at the end of the property
+name, as in `Power Setpoint [mW]`. A channel whose device is not loaded is not shown.
+
+```text
+ScopeOneLightSource,561,Laser 488,Enable,Laser,On,Off
+ScopeOneLightSource,561,Laser 488,Power,Power Setpoint [mW]
+ScopeOneLightSource,561,Laser 488,Reading,Power Reading [W]
+```
+
 Only the devices in the file are loaded. `config/ScopeOne_MM_demo.cfg` has Micro-Manager and ScopeOne devices in one file, and `config/ScopeOne_demo.cfg` has ScopeOne devices only.
+
+In ScopeOne, Tools > Hardware Configuration opens the configuration editor. The Devices page adds
+and removes ScopeOne devices and sets their pre-init properties; Micro-Manager devices are shown
+there but are edited with Micro-Manager. Roles selects the default devices and auto shutter. Apply
+shows the changes and reloads the configuration. The same editor can create a new configuration.
+
+The Light Sources page assigns Power and optional Enable and Reading properties to a channel.
+The property lists show current values, and changes are written to the current configuration
+immediately. The edit button on the Light Sources panel opens this page.
+
+The preset editor in the Control dock creates and edits groups and presets. A group selects device
+properties; a new preset starts with their current values. Changes are saved to the current
+configuration and take effect immediately for both Micro-Manager and ScopeOne devices.
 
 ## Writing a C++ driver
 
 A driver has one entry class, a `Driver`. ScopeOne_DriverHost loads the library, gets that object
 from Qt's plugin loader and calls `createDevice` with one of its `deviceNames()`. A driver that
 lists no names checks the name in `createDevice` itself.
+
+Override `preInitProperties(deviceName)` to list the names, default values and allowed values of
+properties needed before a device starts. The configuration editor obtains these through
+`ScopeOne_DriverHost --describe`. The Serial driver lists available ports, baud rate and answer
+timeout this way.
 
 The `scopeone::DriverSDK` target gives a driver the SDK headers and the small SDK library, and
 nothing else of Core, so a driver that includes or calls any other part of Core fails to build.

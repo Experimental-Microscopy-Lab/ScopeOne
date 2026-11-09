@@ -32,11 +32,24 @@ namespace scopeone::ui
 
         void setupUI();
         void populateConfigTree();
+        void addGroup();
+        void editGroup();
+        void removeGroup();
+        void renameGroup();
+        void addPreset();
+        void editPreset();
+        void removePreset();
+        void renamePreset();
+        QString selectedGroup() const;
+        QString selectedPreset() const;
+        QString choosePreset(const QString& group, const QString& title);
+        void finishEdit(const QString& group, const QString& preset = QString());
 
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
         QTreeWidget* m_configTree{nullptr};
         QTimer* m_autoRefreshTimer{nullptr};
         bool m_autoRefresh{false};
         bool m_updating{false};
+        bool m_editing{false};
     };
 }
