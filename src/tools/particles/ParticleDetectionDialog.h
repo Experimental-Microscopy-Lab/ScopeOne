@@ -14,7 +14,7 @@ class QTimer;
 
 namespace scopeone::ui
 {
-    class ScopeOneToolContext;
+    class ToolContext;
 
     class ParticleDetectionDialog : public QDialog
     {
@@ -22,7 +22,7 @@ namespace scopeone::ui
 
     public:
         ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
-                                ScopeOneToolContext& context,
+                                ToolContext& context,
                                 QWidget* parent = nullptr);
 
         void reject() override;
@@ -40,7 +40,7 @@ namespace scopeone::ui
         QString selectedCameraId() const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
-        ScopeOneToolContext& m_context;
+        ToolContext& m_context;
         QComboBox* m_cameraCombo{nullptr};
         QSpinBox* m_thresholdSpinBox{nullptr};
         QSpinBox* m_minAreaSpinBox{nullptr};

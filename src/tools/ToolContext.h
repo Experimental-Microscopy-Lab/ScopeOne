@@ -39,10 +39,10 @@ namespace scopeone::ui
     };
 
     // What the desktop offers a tool beside the Core
-    class ScopeOneToolContext
+    class ToolContext
     {
     public:
-        virtual ~ScopeOneToolContext() = default;
+        virtual ~ToolContext() = default;
 
         virtual scopeone::core::ScopeOneCore& core() const = 0;
         virtual QString currentLayerKey() const = 0;
@@ -53,7 +53,7 @@ namespace scopeone::ui
             const QString& title) = 0;
     };
 
-    using ToolFactory = std::function<QWidget*(ScopeOneToolContext& context, QWidget* parent)>;
+    using ToolFactory = std::function<QWidget*(ToolContext& context, QWidget* parent)>;
 
     struct ToolDefinition
     {
@@ -64,7 +64,7 @@ namespace scopeone::ui
     // Every registered tool, in the order the menu lists them: tools without a category first,
     // then by category and name
     std::vector<ToolDefinition> registeredTools();
-    bool registerToolDefinition(ToolDefinition definition);
+    void registerToolDefinition(ToolDefinition definition);
 }
 
 // Registers the tool of a source file, when the program starts, with a descriptor and a factory:
@@ -73,6 +73,6 @@ namespace scopeone::ui
 #define SCOPEONE_REGISTER_TOOL(...)                                                              \
     namespace                                                                                    \
     {                                                                                            \
-        [[maybe_unused]] const bool toolRegistered =                                             \
-            ::scopeone::ui::registerToolDefinition({__VA_ARGS__});                               \
+        [[maybe_unused]] const int toolRegistered =                                              \
+            (::scopeone::ui::registerToolDefinition({__VA_ARGS__}), 0);                          \
     }

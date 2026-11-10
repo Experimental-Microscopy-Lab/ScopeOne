@@ -2102,7 +2102,8 @@ int main(int argc, char* argv[])
         }
         QJsonArray names = QJsonArray::fromStringList(driver->deviceNames());
         QJsonArray properties;
-        for (const auto& property : driver->preInitProperties(parser.value(optDeviceName)))
+        const QVariantMap values = QJsonDocument::fromJson(parser.value(optProperties).toUtf8()).object().toVariantMap();
+        for (const auto& property : driver->preInitProperties(parser.value(optDeviceName), values))
             properties.append(QJsonObject{{QStringLiteral("name"), property.name},
                                           {QStringLiteral("defaultValue"), property.defaultValue},
                                           {QStringLiteral("allowedValues"), QJsonArray::fromStringList(property.allowedValues)}});

@@ -53,6 +53,7 @@ namespace scopeone::core
             QString driverId;
             QString deviceName;
             QList<QPair<QString, QString>> properties;
+            bool operator==(const ScopeOneDevice&) const = default;
         };
 
         // One light source channel of the ScopeOneLightSource lines of a name. Each role names its own
@@ -70,6 +71,9 @@ namespace scopeone::core
             QString readingProperty;
         };
 
+        // A value a cfg line can hold: no surrounding spaces, line breaks or NUL, and no comma unless
+        // the line allows it
+        static bool isValidField(const QString& value, bool allowComma = false);
         // Reads a file. A file that cannot be read gives an empty document and the reason.
         static HardwareConfiguration read(const QString& path, QString* errorMessage);
         static HardwareConfiguration fromByteArray(const QByteArray& bytes);
@@ -96,7 +100,6 @@ namespace scopeone::core
         // Removes the device with its ScopeOneProperty, ScopeOneConfigGroup and ScopeOneLightSource lines
         void removeScopeOneDevice(const QString& label);
         void setScopeOneProperty(const QString& label, const QString& name, const QString& value);
-        void removeScopeOneProperty(const QString& label, const QString& name);
 
         void addConfigGroup(const QString& name);
         void removeConfigGroup(const QString& name);
@@ -141,6 +144,9 @@ namespace scopeone::core
             // The bytes are not valid UTF-8 and the fields were decoded as Latin-1
             bool latin1{false};
         };
+
+        // A ConfigGroup line of Micro-Manager or of ScopeOne
+        static bool isGroupLine(const Line& line);
 
         static Line parseLine(const QByteArray& text, const QByteArray& ending);
         static QByteArray encode(const QString& text, bool latin1);

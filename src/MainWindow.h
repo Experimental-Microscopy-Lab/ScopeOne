@@ -46,7 +46,7 @@ namespace scopeone::ui
     class DeviceControlWidget;
     class RecordingWidget;
     class ScopeOneLocalApiServer;
-    class MainWindow : public QMainWindow, public ScopeOneToolContext
+    class MainWindow : public QMainWindow, public ToolContext
     {
         Q_OBJECT
 
@@ -131,7 +131,7 @@ namespace scopeone::ui
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void showSaveResult(const scopeone::core::ScopeOneCore::RecordingSessionData& session);
         void loadConfigurationFromDialog();
-        void openHardwareConfiguration(bool lightSources = false);
+        void openHardwareConfiguration(bool roles = false);
         void loadConfigurationPath(const QString& configPath);
         void refreshRecentConfigurationsMenu();
         void refreshRecentImagesMenu();

@@ -16,7 +16,7 @@ namespace scopeone::ui
     class ToolRegistry
     {
     public:
-        explicit ToolRegistry(ScopeOneToolContext& context);
+        explicit ToolRegistry(ToolContext& context);
         ~ToolRegistry();
 
         void populateMenu(QMenu* menu, QWidget* parent);
@@ -27,7 +27,7 @@ namespace scopeone::ui
         struct Entry;
         void openTool(const QString& toolId, QWidget* parent);
 
-        ScopeOneToolContext& m_context;
+        ToolContext& m_context;
         std::vector<std::unique_ptr<Entry>> m_entries;
         bool m_enabled{true};
     };

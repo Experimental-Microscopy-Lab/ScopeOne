@@ -48,7 +48,7 @@ and is reachable through the Local API before it gets a widget. Anything that on
 is shown goes into `src`. Hardware goes into drivers.
 
 **Tools.** A window of the Tools menu, with its own state and workflow, goes into its own folder
-under `src/tools`. It uses only the public Core headers and `ScopeOneToolContext` from
+under `src/tools`. It uses only the public Core headers and `ToolContext` from
 `src/tools/ToolContext.h`, and registers itself with `SCOPEONE_REGISTER_TOOL` at the end of its
 source file, so adding a tool changes neither `MainWindow` nor CMake. Its algorithm belongs in Core.
 A command that takes an image and parameters and returns a result is not a tool; it belongs in the

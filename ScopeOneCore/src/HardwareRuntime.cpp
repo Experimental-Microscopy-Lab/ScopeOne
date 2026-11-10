@@ -828,14 +828,26 @@ namespace scopeone::core::internal
         return true;
     }
 
-    bool HardwareRuntime::removeLightSource(const QString& name, QString* errorMessage)
+    // Takes the Core roles and the light sources of the cfg file again after an edit, without
+    // restarting a device. The roles of Micro-Manager devices are set on its Core.
+    bool HardwareRuntime::reloadRoles(QString* errorMessage)
     {
         QString error;
-        auto document = HardwareConfiguration::read(m_configurationPath, &error);
+        const auto document = HardwareConfiguration::read(m_configurationPath, &error);
         if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
-        document.removeLightSource(name);
-        if (!document.write(m_configurationPath, errorMessage)) return false;
+        setConfigurationPath(m_configurationPath);
         m_scopeOne.setLightSources(document.lightSources());
+        const QStringList mmLabels = document.microManagerDeviceLabels();
+        for (const QString& role : {QStringLiteral("Camera"), QStringLiteral("Shutter"), QStringLiteral("Focus")})
+        {
+            const QString value = document.coreRole(role);
+            if ((value.isEmpty() || mmLabels.contains(value))
+                && !m_microManager->setProperty(QStringLiteral("Core"), role, value, errorMessage)) return false;
+        }
+        const QString autoShutter = document.coreRole(QStringLiteral("AutoShutter"));
+        if (!autoShutter.isEmpty()
+            && !m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"), autoShutter, errorMessage)) return false;
+        applyScopeOneAutoShutter();
         return true;
     }
 
@@ -999,14 +1011,7 @@ namespace scopeone::core::internal
             return false;
         }
 
-        bool validField(const QString& value, bool allowComma = false)
-        {
-            return value == value.trimmed() && !value.contains(QLatin1Char('\n'))
-                && !value.contains(QLatin1Char('\r')) && !value.contains(QChar(0))
-                && (allowComma || !value.contains(QLatin1Char(',')));
-        }
-
-        bool validName(const QString& name) { return !name.isEmpty() && validField(name); }
+        bool validName(const QString& name) { return !name.isEmpty() && HardwareConfiguration::isValidField(name); }
 
         bool hasGroup(const HardwareConfiguration& document, const QString& name)
         {
@@ -1067,7 +1072,7 @@ namespace scopeone::core::internal
                     return editError(error, QStringLiteral("Preset needs a valid name and at least one property"));
                 for (const auto& setting : preset.settings)
                     if (!validName(setting.device) || !validName(setting.property)
-                        || !validField(setting.value, setting.source == HardwareConfiguration::Source::ScopeOne))
+                        || !HardwareConfiguration::isValidField(setting.value, setting.source == HardwareConfiguration::Source::ScopeOne))
                         return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
                                          .arg(setting.device, setting.property));
             }
@@ -1163,7 +1168,7 @@ namespace scopeone::core::internal
             const auto source = coreDevice || device.providerId == QStringLiteral("micro-manager")
                 ? HardwareConfiguration::Source::MicroManager : HardwareConfiguration::Source::ScopeOne;
             if (!validName(setting.device) || !validName(setting.property)
-                || !validField(setting.value, source == HardwareConfiguration::Source::ScopeOne))
+                || !HardwareConfiguration::isValidField(setting.value, source == HardwareConfiguration::Source::ScopeOne))
                 return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
                                  .arg(setting.device, setting.property));
             for (const auto& row : rows)

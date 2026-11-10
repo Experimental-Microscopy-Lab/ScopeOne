@@ -15,6 +15,7 @@ namespace scopeone::ui
         explicit DriversDialog(QWidget* parent = nullptr);
 
     private:
+        bool makeDriverDirectory(const QString& path);
         void refreshDrivers();
         void installDriver();
         void installDescription();

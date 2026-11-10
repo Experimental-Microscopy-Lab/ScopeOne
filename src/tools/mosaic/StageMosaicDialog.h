@@ -14,7 +14,7 @@ class QSpinBox;
 
 namespace scopeone::ui
 {
-    class ScopeOneToolContext;
+    class ToolContext;
 
     class StageMosaicDialog : public QDialog
     {
@@ -22,7 +22,7 @@ namespace scopeone::ui
 
     public:
         StageMosaicDialog(scopeone::core::ScopeOneCore* core,
-                          ScopeOneToolContext& context,
+                          ToolContext& context,
                           QWidget* parent = nullptr);
 
         void reject() override;
@@ -37,7 +37,7 @@ namespace scopeone::ui
         QString selectedStageId() const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
-        ScopeOneToolContext& m_context;
+        ToolContext& m_context;
         QComboBox* m_cameraCombo{nullptr};
         QComboBox* m_stageCombo{nullptr};
         QSpinBox* m_rowsSpinBox{nullptr};

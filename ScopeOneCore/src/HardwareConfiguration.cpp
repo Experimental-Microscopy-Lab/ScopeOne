@@ -97,6 +97,18 @@ namespace scopeone::core
         }
     }
 
+    bool HardwareConfiguration::isGroupLine(const Line& line)
+    {
+        return line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup;
+    }
+
+    bool HardwareConfiguration::isValidField(const QString& value, bool allowComma)
+    {
+        return value == value.trimmed() && !value.contains(QLatin1Char('\n'))
+            && !value.contains(QLatin1Char('\r')) && !value.contains(QChar(0))
+            && (allowComma || !value.contains(QLatin1Char(',')));
+    }
+
     HardwareConfiguration HardwareConfiguration::read(const QString& path, QString* errorMessage)
     {
         QFile file(path);
@@ -371,7 +383,7 @@ namespace scopeone::core
         };
         for (const Line& line : m_lines)
         {
-            if (line.kind != Kind::ConfigGroup && line.kind != Kind::ScopeOneConfigGroup)
+            if (!isGroupLine(line))
             {
                 continue;
             }
@@ -519,14 +531,6 @@ namespace scopeone::core
         }
     }
 
-    void HardwareConfiguration::removeScopeOneProperty(const QString& label, const QString& name)
-    {
-        removeLines([&](const Line& line)
-        {
-            return line.kind == Kind::ScopeOneProperty && line.fields[1] == label && line.fields[2] == name;
-        });
-    }
-
     void HardwareConfiguration::addConfigGroup(const QString& name)
     {
         insertAfterLast(Kind::ConfigGroup, {QStringLiteral("ConfigGroup"), name});
@@ -536,7 +540,7 @@ namespace scopeone::core
     {
         removeLines([&](const Line& line)
         {
-            return (line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup) && line.fields[1] == name;
+            return isGroupLine(line) && line.fields[1] == name;
         });
     }
 
@@ -545,7 +549,7 @@ namespace scopeone::core
         for (qsizetype index = 0; index < m_lines.size(); ++index)
         {
             const Line& line = m_lines[index];
-            if ((line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup) && line.fields[1] == name)
+            if (isGroupLine(line) && line.fields[1] == name)
             {
                 QStringList fields = line.fields;
                 fields[1] = newName;
@@ -559,7 +563,7 @@ namespace scopeone::core
     {
         const auto ofPreset = [&](const Line& line)
         {
-            return (line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup)
+            return isGroupLine(line)
                    && line.fields.size() == 6 && line.fields[1] == group && line.fields[2] == preset;
         };
         QList<bool> matched(settings.size(), false);
@@ -600,7 +604,7 @@ namespace scopeone::core
     {
         removeLines([&](const Line& line)
         {
-            return (line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup)
+            return isGroupLine(line)
                    && line.fields.size() == 6 && line.fields[1] == group && line.fields[2] == preset;
         });
     }
@@ -610,7 +614,7 @@ namespace scopeone::core
         for (qsizetype index = 0; index < m_lines.size(); ++index)
         {
             const Line& line = m_lines[index];
-            if ((line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup)
+            if (isGroupLine(line)
                 && line.fields.size() == 6 && line.fields[1] == group && line.fields[2] == preset)
             {
                 QStringList fields = line.fields;

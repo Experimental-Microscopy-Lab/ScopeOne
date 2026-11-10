@@ -35,7 +35,7 @@ namespace scopeone::ui
 
     public:
         explicit SignalMonitorWidget(scopeone::core::ScopeOneCore* core,
-                                     scopeone::ui::ScopeOneToolContext& context,
+                                     scopeone::ui::ToolContext& context,
                                      QWidget* parent = nullptr);
         ~SignalMonitorWidget() override;
 
@@ -85,7 +85,7 @@ namespace scopeone::ui
         QVariantMap sourceSettings(int index) const;
 
         scopeone::core::ScopeOneCore* m_core{nullptr};
-        scopeone::ui::ScopeOneToolContext& m_context;
+        scopeone::ui::ToolContext& m_context;
         OscilloscopeView* m_view{nullptr};
         std::array<ChannelControls, OscilloscopeView::kChannelCount> m_channels;
         QList<scopeone::core::SignalSourceDescriptor> m_sources;

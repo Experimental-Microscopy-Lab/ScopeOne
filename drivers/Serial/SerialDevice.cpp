@@ -77,7 +77,8 @@ namespace serial_driver
         profile.writeTerminator = terminator.value(QStringLiteral("write")).toString();
         profile.readTerminator = terminator.value(QStringLiteral("read")).toString();
         profile.setReply = root.value(QStringLiteral("setReply")).toString();
-        profile.errorPattern = root.value(QStringLiteral("error")).toString();
+        // Compiled once, as every reply line is matched against it
+        profile.error = QRegularExpression(root.value(QStringLiteral("error")).toString());
         profile.ack = root.value(QStringLiteral("ack")).toString();
         profile.answerTimeout = root.value(QStringLiteral("AnswerTimeout")).toInt(profile.answerTimeout);
 
@@ -89,7 +90,7 @@ namespace serial_driver
             property.type = object.value(QStringLiteral("type")).toString();
             property.get = object.value(QStringLiteral("get")).toString();
             property.set = object.value(QStringLiteral("set")).toString();
-            property.parse = object.value(QStringLiteral("parse")).toString();
+            property.parse = QRegularExpression(object.value(QStringLiteral("parse")).toString());
             const QJsonObject values = object.value(QStringLiteral("values")).toObject();
             for (auto value = values.constBegin(); value != values.constEnd(); ++value)
             {
@@ -512,7 +513,7 @@ namespace serial_driver
 
     bool SerialDevice::isErrorLine(const QString& line) const
     {
-        return !m_profile.errorPattern.isEmpty() && QRegularExpression(m_profile.errorPattern).match(line).hasMatch();
+        return !m_profile.error.pattern().isEmpty() && m_profile.error.match(line).hasMatch();
     }
 
     bool SerialDevice::query(const SerialProperty& property, QString* value, QString* errorMessage) const
@@ -522,9 +523,9 @@ namespace serial_driver
         {
             return false;
         }
-        if (!property.parse.isEmpty())
+        if (!property.parse.pattern().isEmpty())
         {
-            const QRegularExpressionMatch match = QRegularExpression(property.parse).match(reply);
+            const QRegularExpressionMatch match = property.parse.match(reply);
             if (!match.hasMatch())
             {
                 *errorMessage = QStringLiteral("Unexpected reply \"%1\" to \"%2\" from %3")

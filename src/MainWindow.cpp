@@ -2400,11 +2400,18 @@ namespace scopeone::ui
     }
 
     // Load a configuration from a known path
-    void MainWindow::openHardwareConfiguration(bool lightSources)
+    void MainWindow::openHardwareConfiguration(bool roles)
     {
         HardwareConfigurationDialog dialog(m_scopeonecore, this);
-        if (lightSources) dialog.showLightSources();
-        if (dialog.exec() == QDialog::Accepted) loadConfigurationPath(dialog.configurationPath());
+        if (roles) dialog.showRoles();
+        if (dialog.exec() != QDialog::Accepted) return;
+        if (dialog.reloadNeeded())
+        {
+            loadConfigurationPath(dialog.configurationPath());
+            return;
+        }
+        QString error;
+        if (!m_scopeonecore->reloadRoles(&error)) QMessageBox::warning(this, tr("Hardware Configuration"), error);
     }
 
     void MainWindow::loadConfigurationPath(const QString& configPath)

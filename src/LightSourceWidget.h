@@ -50,6 +50,7 @@ namespace scopeone::ui
         };
 
         void rebuild();
+        void readRows(bool settings);
         void refreshSettings();
         void applyStates(const QList<scopeone::core::ScopeOneCore::LightSourceState>& states, bool settings);
         void updateTimer();

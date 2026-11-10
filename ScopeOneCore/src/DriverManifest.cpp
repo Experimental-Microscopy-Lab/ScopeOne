@@ -95,6 +95,23 @@ namespace scopeone::core
         return drivers;
     }
 
+    bool runsDescriptions(const DiscoveredDriver& driver)
+    {
+        return driver.manifest.id == QStringLiteral("scopeone.serial");
+    }
+
+    const DiscoveredDriver* findDriver(const QList<DiscoveredDriver>& drivers, const QString& id)
+    {
+        for (const DiscoveredDriver& candidate : drivers)
+        {
+            if (candidate.error.isEmpty() && candidate.manifest.id == id)
+            {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    }
+
     bool parseDriverManifest(const QJsonObject& metadata,
                              DriverManifest& manifest,
                              QString* errorMessage)

@@ -105,15 +105,16 @@ Outputs:
 ## Core and SDK API
 
 `HardwareConfiguration` reads and edits cfg files while preserving untouched lines and their order.
-The Hardware Configuration dialog uses it to edit ScopeOne devices and Core roles, then writes and
-reloads the configuration on Apply. Micro-Manager devices remain editable in Micro-Manager.
-The dialog also assigns light source properties; those changes are saved and reflected in the Light
-Sources panel immediately. The preset editor saves group and preset changes immediately and updates
+The Hardware Configuration dialog uses it to edit ScopeOne devices, Core roles and light sources,
+and writes them on Apply. A change of the devices reloads the configuration, and otherwise
+`ScopeOneCore::reloadRoles` takes the roles and light sources from the file without restarting a
+device. Micro-Manager devices remain editable in Micro-Manager. The preset editor saves group and preset changes immediately and updates
 both providers. Both editors use the current cfg file.
 
-Drivers can expose pre-initialization properties through `Driver::preInitProperties`. DriverHost's
-`--describe` mode returns these properties without starting a device, so the configuration editor
-can offer their default and allowed values before loading it.
+Drivers can expose pre-initialization properties through `Driver::preInitProperties`.
+`describeDriver` in `DriverManifest.h` runs DriverHost's `--describe` mode, which returns the device
+names and these properties without starting a device, so the configuration editor can offer their
+default and allowed values before loading it.
 
 The installed headers in `include/scopeone` and `include/sdk/scopeone` are the source of truth for the public API:
 
@@ -136,7 +137,7 @@ frames are delivered and paused is ScopeOne's own policy and stays out of the dr
 - `drivers` contains the drivers, among them NI-DAQmx, the serial driver and the example camera and PMT. Each ScopeOne device runs in an isolated DriverHost process, so a vendor library such as NI-DAQmx is never loaded into ScopeOne. The serial driver runs the JSON description files in `drivers/Serial/profiles`, and each description is a driver of its own. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne drivers.
 - Python processing modules are scripts in `processing/python`, beside the executable or in the application data directory. Core runs each module of a pipeline in its own Python process.
 - The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is always built, with the official ONNX Runtime package that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK. Every processing method and the DHM reconstruction are part of Core.
-- The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ScopeOneToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
+- The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
 
 Drivers outside this repository consume the exported `scopeone::DriverSDK` CMake target. Every driver manifest declares `id`, `name`, `version`, `scopeOneApi`, and `kind`, and incompatible manifests are rejected before the library instance is created. A serial description file has no library, and its `properties` object marks it as a driver.
 

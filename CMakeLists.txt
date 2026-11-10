@@ -64,91 +64,14 @@ if (WIN32 AND TARGET Qt6::qmake)
     endif ()
 endif ()
 
-set(SCOPEONE_UI_SOURCES
-        src/main.cpp
-        src/ConfigPresetWidget.cpp
-        src/HardwareConfigurationDialog.cpp
-        src/DeviceControlWidget.cpp
-        src/DevicePropertyWidget.cpp
-        src/LightSourceWidget.cpp
-        src/LightSourcesPage.cpp
-        src/PositionListFile.cpp
-        src/RecordingWidget.cpp
-        src/DriversDialog.cpp
-        src/ScopeOneLocalApiServer.cpp
-        src/ToolRegistry.cpp
-        src/AboutDialog.cpp
-        src/Appearance.cpp
-        src/CollapsibleSection.cpp
-        src/CommandSearchBox.cpp
-        src/ConsoleWidget.cpp
-        src/EmptyHint.cpp
-        src/MainWindow.cpp
-        src/PtyProcess.cpp
-        src/SettingsDialog.cpp
-        src/TerminalWidget.cpp
-        src/ToolIcons.cpp
-        src/UpdateChecker.cpp
-        src/WelcomeOverlay.cpp
-        src/ImageAnalysis.cpp
-        src/ImageGalleryWidget.cpp
-        src/ImageProcessingWidget.cpp
-        src/ImageWorkspace.cpp
-        src/InspectWidget.cpp
-        src/OrthogonalViewsDialog.cpp
-        src/ParameterDialog.cpp
-        src/PreviewWidget.cpp
-        src/ProfilePlotWindow.cpp
-        src/ResultsWindow.cpp
-        src/RoiManagerWindow.cpp
-        ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+# Every source file of src is part of the application, the tools in src/tools included, and
+# ScopeOneMcpServer.cpp is its own executable
+file(GLOB_RECURSE SCOPEONE_UI_FILES CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/src/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/*.h"
 )
-
-# Every tool in src/tools registers itself, so a new tool needs no change here
-file(GLOB_RECURSE SCOPEONE_TOOL_FILES CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/src/tools/*.cpp"
-        "${CMAKE_SOURCE_DIR}/src/tools/*.h"
-)
-list(APPEND SCOPEONE_UI_SOURCES ${SCOPEONE_TOOL_FILES})
-
-set(SCOPEONE_UI_HEADERS
-        src/ConfigPresetWidget.h
-        src/HardwareConfigurationDialog.h
-        src/DeviceControlWidget.h
-        src/DevicePropertyWidget.h
-        src/LightSourceWidget.h
-        src/LightSourcesPage.h
-        src/PositionListFile.h
-        src/RecordingWidget.h
-        src/DriversDialog.h
-        src/ScopeOneLocalApiServer.h
-        src/ToolRegistry.h
-        src/AboutDialog.h
-        src/Appearance.h
-        src/CollapsibleSection.h
-        src/CommandSearchBox.h
-        src/ConsoleWidget.h
-        src/EmptyHint.h
-        src/MainWindow.h
-        src/PtyProcess.h
-        src/SettingsDialog.h
-        src/TerminalWidget.h
-        src/ToolIcons.h
-        src/UpdateChecker.h
-        src/WelcomeOverlay.h
-        src/ImageAnalysis.h
-        src/ImageGalleryWidget.h
-        src/ImageProcessingWidget.h
-        src/ImageWorkspace.h
-        src/InspectWidget.h
-        src/OrthogonalViewsDialog.h
-        src/ParameterDialog.h
-        src/PreviewWidget.h
-        src/ProfilePlotWindow.h
-        src/ResultsWindow.h
-        src/RoiManagerWindow.h
-        src/StackAxes.h
-)
+list(REMOVE_ITEM SCOPEONE_UI_FILES "${CMAKE_SOURCE_DIR}/src/ScopeOneMcpServer.cpp")
+set(SCOPEONE_UI_SOURCES ${SCOPEONE_UI_FILES} ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
 
 if (WIN32)
     list(APPEND SCOPEONE_UI_SOURCES ${CMAKE_SOURCE_DIR}/resources/app_icon.rc)
@@ -157,7 +80,6 @@ endif ()
 qt_add_executable(ScopeOne
         WIN32
         ${SCOPEONE_UI_SOURCES}
-        ${SCOPEONE_UI_HEADERS}
 )
 qt_add_executable(ScopeOneMcpServer
         src/ScopeOneMcpServer.cpp

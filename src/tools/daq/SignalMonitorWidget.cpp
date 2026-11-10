@@ -118,7 +118,7 @@ namespace scopeone::ui
     }
 
     SignalMonitorWidget::SignalMonitorWidget(scopeone::core::ScopeOneCore* core,
-                                             scopeone::ui::ScopeOneToolContext& context,
+                                             scopeone::ui::ToolContext& context,
                                              QWidget* parent)
         : QWidget(parent)
           , m_core(core)
@@ -1057,7 +1057,7 @@ namespace scopeone::ui
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.signal_monitor"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Signal Monitor")),
          {}, ToolWindowMode::ModelessSingleton},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new SignalMonitorWidget(&context.core(), context, parent);
         })

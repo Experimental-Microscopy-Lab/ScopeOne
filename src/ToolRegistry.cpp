@@ -13,21 +13,17 @@ namespace scopeone::ui
 {
     struct ToolRegistry::Entry
     {
-        ToolDescriptor descriptor;
-        ToolFactory factory;
+        ToolDefinition tool;
         QAction* action{nullptr};
         QPointer<QWidget> instance;
     };
 
-    ToolRegistry::ToolRegistry(ScopeOneToolContext& context)
+    ToolRegistry::ToolRegistry(ToolContext& context)
         : m_context(context)
     {
         for (ToolDefinition& tool : registeredTools())
         {
-            auto entry = std::make_unique<Entry>();
-            entry->descriptor = std::move(tool.descriptor);
-            entry->factory = std::move(tool.create);
-            m_entries.push_back(std::move(entry));
+            m_entries.push_back(std::make_unique<Entry>(Entry{std::move(tool), nullptr, {}}));
         }
     }
 
@@ -45,7 +41,7 @@ namespace scopeone::ui
         for (const auto& entry : m_entries)
         {
             QMenu* target = menu;
-            const QString category = entry->descriptor.category.trimmed();
+            const QString category = entry->tool.descriptor.category.trimmed();
             if (!category.isEmpty())
             {
                 target = categories.value(category);
@@ -56,8 +52,8 @@ namespace scopeone::ui
                 }
             }
             entry->action = target->addAction(
-                QCoreApplication::translate("Tools", entry->descriptor.name.toUtf8().constData()));
-            const QString id = entry->descriptor.id;
+                QCoreApplication::translate("Tools", entry->tool.descriptor.name.toUtf8().constData()));
+            const QString id = entry->tool.descriptor.id;
             QObject::connect(entry->action, &QAction::triggered, parent,
                              [this, id, parent]() { openTool(id, parent); });
         }
@@ -72,7 +68,7 @@ namespace scopeone::ui
             if (entry->action)
             {
                 entry->action->setEnabled(
-                    m_enabled && (!entry->descriptor.requiresCamera || hasCamera));
+                    m_enabled && (!entry->tool.descriptor.requiresCamera || hasCamera));
             }
         }
     }
@@ -102,11 +98,11 @@ namespace scopeone::ui
 
         for (const auto& entry : m_entries)
         {
-            if (entry->descriptor.id != toolId)
+            if (entry->tool.descriptor.id != toolId)
             {
                 continue;
             }
-            if (entry->descriptor.windowMode == ToolWindowMode::ModelessSingleton && entry->instance)
+            if (entry->tool.descriptor.windowMode == ToolWindowMode::ModelessSingleton && entry->instance)
             {
                 entry->instance->show();
                 entry->instance->raise();
@@ -114,12 +110,12 @@ namespace scopeone::ui
                 return;
             }
 
-            QWidget* tool = entry->factory(m_context, parent);
+            QWidget* tool = entry->tool.create(m_context, parent);
             if (!tool)
             {
                 return;
             }
-            if (entry->descriptor.windowMode == ToolWindowMode::Modal)
+            if (entry->tool.descriptor.windowMode == ToolWindowMode::Modal)
             {
                 if (auto* dialog = qobject_cast<QDialog*>(tool))
                 {
@@ -140,6 +136,7 @@ namespace scopeone::ui
                 tool->adjustSize();
                 centerTool(tool);
             });
+            return;
         }
     }
 }

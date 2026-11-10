@@ -55,6 +55,16 @@ namespace scopeone::ui
         }
     }
 
+    bool DriversDialog::makeDriverDirectory(const QString& path)
+    {
+        if (QDir().mkpath(path))
+        {
+            return true;
+        }
+        QMessageBox::warning(this, tr("Drivers"), tr("The install directory could not be created."));
+        return false;
+    }
+
     DriversDialog::DriversDialog(QWidget* parent)
         : QDialog(parent)
     {
@@ -160,9 +170,8 @@ namespace scopeone::ui
         }
 
         const QString driverDirectory = userDriverDirectory();
-        if (!QDir().mkpath(driverDirectory))
+        if (!makeDriverDirectory(driverDirectory))
         {
-            QMessageBox::warning(this, tr("Drivers"), tr("The install directory could not be created."));
             return;
         }
         if (QFileInfo(sourceDirectory).canonicalFilePath()
@@ -204,9 +213,8 @@ namespace scopeone::ui
         }
 
         const QString driverDirectory = userDriverDirectory();
-        if (!QDir().mkpath(driverDirectory))
+        if (!makeDriverDirectory(driverDirectory))
         {
-            QMessageBox::warning(this, tr("Drivers"), tr("The install directory could not be created."));
             return;
         }
         if (!copyFiles({source}, driverDirectory))

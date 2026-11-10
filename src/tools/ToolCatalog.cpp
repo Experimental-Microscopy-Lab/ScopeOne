@@ -20,21 +20,9 @@ namespace scopeone::ui
         }
     }
 
-    bool registerToolDefinition(ToolDefinition definition)
+    void registerToolDefinition(ToolDefinition definition)
     {
-        const QString id = definition.descriptor.id.trimmed();
-        std::vector<ToolDefinition>& tools = catalog();
-        const bool duplicate = std::any_of(tools.begin(), tools.end(), [&id](const ToolDefinition& tool)
-        {
-            return tool.descriptor.id == id;
-        });
-        if (id.isEmpty() || definition.descriptor.name.trimmed().isEmpty() || !definition.create || duplicate)
-        {
-            return false;
-        }
-        definition.descriptor.id = id;
-        tools.push_back(std::move(definition));
-        return true;
+        catalog().push_back(std::move(definition));
     }
 
     std::vector<ToolDefinition> registeredTools()

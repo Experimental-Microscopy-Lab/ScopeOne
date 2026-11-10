@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QDialog>
+#include <QList>
+
+#include <utility>
 #include "scopeone/HardwareConfiguration.h"
 
 class QListWidget;
 class QStackedWidget;
 class QTreeWidget;
-class QPlainTextEdit;
 class QComboBox;
 
 namespace scopeone::core { class ScopeOneCore; }
@@ -17,15 +19,20 @@ namespace scopeone::ui
     {
     public:
         explicit HardwareConfigurationDialog(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
-        void showLightSources();
+        void showRoles();
         QString configurationPath() const { return m_path; }
+        // Whether the devices changed, so the written configuration has to be loaded again
+        bool reloadNeeded() const { return m_reload; }
 
     private:
         void refreshDevices();
         void addDevice();
         void editDevice();
         void removeDevice();
-        bool updateChanges();
+        void readRoles();
+        void refreshLightSources();
+        void editLightSource(bool existing);
+        QString changes() const;
         void apply();
 
         scopeone::core::ScopeOneCore* m_core;
@@ -35,10 +42,9 @@ namespace scopeone::ui
         QListWidget* m_steps;
         QStackedWidget* m_pages;
         QTreeWidget* m_devices;
-        QPlainTextEdit* m_changes;
-        QComboBox* m_camera;
-        QComboBox* m_shutter;
-        QComboBox* m_focus;
-        QComboBox* m_autoShutter;
+        // The Core roles with the combo that picks each
+        QList<std::pair<QString, QComboBox*>> m_roles;
+        QListWidget* m_lightSources;
+        bool m_reload{false};
     };
 }

@@ -7,6 +7,7 @@
 #include <QList>
 #include <QMap>
 #include <QPair>
+#include <QRegularExpression>
 #include <QSerialPort>
 #include <QString>
 #include <QStringList>
@@ -25,7 +26,7 @@ namespace serial_driver
         QString type;
         QString get;
         QString set;
-        QString parse;
+        QRegularExpression parse;
         QList<QPair<QString, QString>> values;
         std::optional<double> min;
         std::optional<double> max;
@@ -51,7 +52,7 @@ namespace serial_driver
         QString writeTerminator;
         QString readTerminator;
         QString setReply;
-        QString errorPattern;
+        QRegularExpression error;
         QString ack;
         int answerTimeout{500};
         QMap<QString, SerialProperty> properties;

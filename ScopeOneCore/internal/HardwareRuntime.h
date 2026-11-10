@@ -157,7 +157,7 @@ namespace scopeone::core::internal
         QString stateLabel(const QString& deviceId, long state) const;
         std::vector<LightSourceLine> lightSources() const;
         bool setLightSource(const LightSourceLine& source, QString* errorMessage);
-        bool removeLightSource(const QString& name, QString* errorMessage);
+        bool reloadRoles(QString* errorMessage);
         QStringList availableConfigGroups() const;
         QStringList availableConfigs(const QString& groupName) const;
         QString currentConfig(const QString& groupName) const;

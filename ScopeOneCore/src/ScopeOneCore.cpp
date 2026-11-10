@@ -3861,14 +3861,10 @@ namespace scopeone::core
     bool ScopeOneCore::setLightSource(const LightSource& source, QString* errorMessage)
     {
         if (!canEditConfiguration(errorMessage)) return false;
-        const auto field = [](const QString& value) {
-            return value == value.trimmed() && !value.contains(QLatin1Char(','))
-                && !value.contains(QLatin1Char('\n')) && !value.contains(QLatin1Char('\r'));
-        };
         const QStringList fields{source.name, source.powerDevice, source.powerProperty, source.enableDevice,
             source.enableProperty, source.onValue, source.offValue, source.readingDevice, source.readingProperty};
         bool valid = !source.name.isEmpty() && !source.powerDevice.isEmpty() && !source.powerProperty.isEmpty();
-        for (const auto& value : fields) valid = valid && field(value);
+        for (const auto& value : fields) valid = valid && HardwareConfiguration::isValidField(value);
         valid = valid && (source.enableDevice.isEmpty() == source.enableProperty.isEmpty())
             && (source.readingDevice.isEmpty() == source.readingProperty.isEmpty());
         if (!source.enableProperty.isEmpty())
@@ -3884,10 +3880,10 @@ namespace scopeone::core
         return finishConfigurationEdit(m_managers->hardwareRuntime->setLightSource(line, errorMessage));
     }
 
-    bool ScopeOneCore::removeLightSource(const QString& name, QString* errorMessage)
+    bool ScopeOneCore::reloadRoles(QString* errorMessage)
     {
         return canEditConfiguration(errorMessage)
-            && finishConfigurationEdit(m_managers->hardwareRuntime->removeLightSource(name, errorMessage));
+            && finishConfigurationEdit(m_managers->hardwareRuntime->reloadRoles(errorMessage));
     }
 
     // Read the light sources on the hardware thread, so the reads are ordered with load and unload

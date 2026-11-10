@@ -33,7 +33,7 @@ namespace scopeone::ui
 
     // Create a particle detection tool
     ParticleDetectionDialog::ParticleDetectionDialog(scopeone::core::ScopeOneCore* core,
-                                                     ScopeOneToolContext& context,
+                                                     ToolContext& context,
                                                      QWidget* parent)
         : QDialog(parent)
           , m_core(core)
@@ -257,7 +257,7 @@ namespace scopeone::ui
         {QStringLiteral("scopeone.particle_detection"),
          QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "&Particle Detection...")), {},
          ToolWindowMode::ModelessSingleton},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new ParticleDetectionDialog(&context.core(), context, parent);
         })

@@ -42,7 +42,7 @@ namespace scopeone::ui
 
     // Create a stage driven mosaic tool
     StageMosaicDialog::StageMosaicDialog(scopeone::core::ScopeOneCore* core,
-                                         ScopeOneToolContext& context,
+                                         ToolContext& context,
                                          QWidget* parent)
         : QDialog(parent)
           , m_core(core)
@@ -261,7 +261,7 @@ namespace scopeone::ui
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.stage_mosaic"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Stage &Mosaic...")), {},
          ToolWindowMode::ModelessSingleton},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new StageMosaicDialog(&context.core(), context, parent);
         })

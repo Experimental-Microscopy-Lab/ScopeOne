@@ -27,13 +27,17 @@ namespace serial_driver
             return {};
         }
 
-        QList<PreInitProperty> preInitProperties(const QString&) const override
+        // The baud rate and answer timeout default to those of the description file
+        QList<PreInitProperty> preInitProperties(const QString& deviceName, const QVariantMap& values) const override
         {
             QStringList ports;
             for (const auto& port : QSerialPortInfo::availablePorts()) ports.append(port.portName());
+            QString unused;
+            const SerialProfile profile = loadSerialProfile(
+                values.value(QStringLiteral("Description File")).toString(), deviceName, &unused).value_or(SerialProfile{});
             return {{QStringLiteral("Port"), {}, ports},
-                    {QStringLiteral("BaudRate"), QStringLiteral("9600"), {}},
-                    {QStringLiteral("AnswerTimeout"), QStringLiteral("500"), {}}};
+                    {QStringLiteral("BaudRate"), QString::number(profile.baudRate), {}},
+                    {QStringLiteral("AnswerTimeout"), QString::number(profile.answerTimeout), {}}};
         }
 
         DevicePtr createDevice(const QString& name, const QVariantMap& preInitProperties, QString* errorMessage) override

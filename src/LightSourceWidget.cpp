@@ -225,13 +225,10 @@ namespace scopeone::ui
         updateTimer();
     }
 
-    // Reads the switch state, the power setting and the power limits on the hardware thread
-    void LightSourceWidget::refreshSettings()
+    // Reads the rows on the hardware thread and shows the result, unless the rows were rebuilt
+    // meanwhile. The settings are the switch state, the power setting and the power limits.
+    void LightSourceWidget::readRows(bool settings)
     {
-        if (m_rows.isEmpty())
-        {
-            return;
-        }
         QList<scopeone::core::ScopeOneCore::LightSource> sources;
         for (const Row& row : m_rows)
         {
@@ -240,15 +237,27 @@ namespace scopeone::ui
         const int generation = m_generation;
         auto* watcher = new QFutureWatcher<QList<scopeone::core::ScopeOneCore::LightSourceState>>(this);
         connect(watcher, &QFutureWatcherBase::finished, this,
-                [this, watcher, generation]()
+                [this, watcher, generation, settings]()
                 {
+                    if (!settings)
+                    {
+                        m_reading = false;
+                    }
                     watcher->deleteLater();
                     if (generation == m_generation)
                     {
-                        applyStates(watcher->result(), true);
+                        applyStates(watcher->result(), settings);
                     }
                 });
-        watcher->setFuture(m_core->readLightSources(sources, true));
+        watcher->setFuture(m_core->readLightSources(sources, settings));
+    }
+
+    void LightSourceWidget::refreshSettings()
+    {
+        if (!m_rows.isEmpty())
+        {
+            readRows(true);
+        }
     }
 
     // Shows the values of a round on the rows, the settings only when the round read them
@@ -334,33 +343,16 @@ namespace scopeone::ui
         }
     }
 
-    // Reads the measured power of all rows on the hardware thread. A round is skipped while the
-    // previous one is still reading.
+    // Reads the measured power of all rows. A round is skipped while the previous one is still
+    // reading.
     void LightSourceWidget::readMeasuredPower()
     {
         if (m_reading || m_rows.isEmpty() || m_core->configurationOperationRunning())
         {
             return;
         }
-        QList<scopeone::core::ScopeOneCore::LightSource> sources;
-        for (const Row& row : m_rows)
-        {
-            sources.append(row.source);
-        }
         m_reading = true;
-        const int generation = m_generation;
-        auto* watcher = new QFutureWatcher<QList<scopeone::core::ScopeOneCore::LightSourceState>>(this);
-        connect(watcher, &QFutureWatcherBase::finished, this,
-                [this, watcher, generation]()
-                {
-                    watcher->deleteLater();
-                    m_reading = false;
-                    if (generation == m_generation)
-                    {
-                        applyStates(watcher->result(), false);
-                    }
-                });
-        watcher->setFuture(m_core->readLightSources(sources, false));
+        readRows(false);
     }
 
     // Writes one property in the thread pool and reports a failure

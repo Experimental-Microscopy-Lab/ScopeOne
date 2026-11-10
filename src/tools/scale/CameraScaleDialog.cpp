@@ -109,7 +109,7 @@ namespace scopeone::ui
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.scale"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "&Scale...")), {},
          ToolWindowMode::Modal, true},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new CameraScaleDialog(&context.core(), parent);
         })

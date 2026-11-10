@@ -398,7 +398,9 @@ namespace scopeone::core
         // or unload.
         QList<LightSource> lightSources() const;
         bool setLightSource(const LightSource& source, QString* errorMessage = nullptr);
-        bool removeLightSource(const QString& name, QString* errorMessage = nullptr);
+        // Takes the Core roles and the light sources of the loaded cfg file again after it was edited,
+        // without restarting a device
+        bool reloadRoles(QString* errorMessage = nullptr);
         // Reads the measured power of the light sources on the hardware thread, which also runs the
         // configuration load and unload. With settings it also reads the switch, the power setting
         // and the limits of the power.

@@ -26,8 +26,11 @@ namespace scopeone::core
 
         virtual QString driverId() const = 0;
         virtual QStringList deviceNames() const = 0;
-        virtual QList<PreInitProperty> preInitProperties(const QString& deviceName) const
-        { Q_UNUSED(deviceName); return {}; }
+        // The pre-init properties of a device with their defaults. The values already known, such
+        // as the description file of a serial device, may set those defaults.
+        virtual QList<PreInitProperty> preInitProperties(const QString& deviceName,
+                                                         const QVariantMap& values) const
+        { Q_UNUSED(deviceName); Q_UNUSED(values); return {}; }
         // The pre-init properties are the values a device needs before it can start, such as a
         // port, and come from the configuration of the system
         virtual DevicePtr createDevice(const QString& name,

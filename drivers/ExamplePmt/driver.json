@@ -2,6 +2,6 @@
   "id": "example.pmt",
   "name": "Example PMT",
   "version": "1.0.0",
-  "scopeOneApi": 3,
+  "scopeOneApi": 4,
   "kind": "driver"
 }

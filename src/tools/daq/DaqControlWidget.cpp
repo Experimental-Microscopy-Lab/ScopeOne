@@ -860,7 +860,7 @@ namespace scopeone::ui
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.daq_control"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "Scanning and DAQ Control")),
          {}, ToolWindowMode::ModelessSingleton},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new DaqControlWidget(&context.core(), parent);
         })

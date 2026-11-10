@@ -208,7 +208,7 @@ namespace
     class DhmTool final : public QWidget
     {
     public:
-        DhmTool(scopeone::ui::ScopeOneToolContext& context, QWidget* parent)
+        DhmTool(scopeone::ui::ToolContext& context, QWidget* parent)
             : QWidget(parent)
               , m_context(context)
         {
@@ -731,7 +731,7 @@ namespace
             }
         }
 
-        scopeone::ui::ScopeOneToolContext& m_context;
+        scopeone::ui::ToolContext& m_context;
         QLabel* m_inputPreview{nullptr};
         SpectrumView* m_spectrumView{nullptr};
         QLabel* m_resultPreview{nullptr};
@@ -773,7 +773,7 @@ namespace scopeone::ui
     SCOPEONE_REGISTER_TOOL(
         {QStringLiteral("scopeone.dhm_reconstruction"), QString::fromUtf8(QT_TRANSLATE_NOOP("Tools", "DHM Reconstruction")),
          {}, ToolWindowMode::ModelessSingleton},
-        [](ScopeOneToolContext& context, QWidget* parent)
+        [](ToolContext& context, QWidget* parent)
         {
             return new DhmTool(context, parent);
         })
