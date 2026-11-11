@@ -240,6 +240,8 @@ namespace scopeone::core::internal
         void previewStateChanged(bool running);
 
     private:
+        // Takes the Core roles of the cfg for the ScopeOne devices
+        void applyRoles(const HardwareConfiguration& document);
         bool editConfigGroups(const QStringList& groups,
                               const std::function<bool(HardwareConfiguration&, QString*)>& edit,
                               QString* errorMessage);

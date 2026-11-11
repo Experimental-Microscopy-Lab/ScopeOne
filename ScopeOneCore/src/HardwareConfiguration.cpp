@@ -296,17 +296,17 @@ namespace scopeone::core
         return index < 0 ? QString{} : m_lines[index].fields[3];
     }
 
+    bool HardwareConfiguration::namesScopeOneDevice(const QString& value) const
+    {
+        if (value.isEmpty() || microManagerDeviceLabels().contains(value)) return false;
+        for (const auto& device : scopeOneDevices())
+            if (value == device.label || value.startsWith(device.label + QLatin1Char('.'))) return true;
+        return false;
+    }
+
     bool HardwareConfiguration::removeScopeOneCoreRoles()
     {
-        const auto devices = scopeOneDevices();
-        const auto mmLabels = microManagerDeviceLabels();
-        const auto isScopeOne = [&](const QString& value)
-        {
-            if (mmLabels.contains(value)) return false;
-            for (const auto& device : devices)
-                if (value == device.label || value.startsWith(device.label + QLatin1Char('.'))) return true;
-            return false;
-        };
+        const auto isScopeOne = [this](const QString& value) { return namesScopeOneDevice(value); };
         const bool scopeOneShutter = isScopeOne(coreRole(QStringLiteral("Shutter")));
         bool removed = false;
         // MMCore cannot resolve ScopeOne role values before those devices are registered.
@@ -504,9 +504,18 @@ namespace scopeone::core
 
     void HardwareConfiguration::removeScopeOneDevice(const QString& label)
     {
+        // A Core role left naming the removed device reached MMCore on the next load, which failed
+        // the whole configuration on the unknown label
+        const auto namesDevice = [&](const QString& value)
+        { return value == label || value.startsWith(label + QLatin1Char('.')); };
         removeLines([&](const Line& line)
         {
-            return (line.kind == Kind::ScopeOneDevice && line.fields[1] == label)
+            return (line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core")
+                    && namesDevice(line.fields[3]))
+                   || (line.kind == Kind::ConfigGroup && line.fields.size() >= 6
+                       && line.fields[1] == QStringLiteral("System") && line.fields[2] == QStringLiteral("Startup")
+                       && line.fields[3] == QStringLiteral("Core") && namesDevice(line.fields[5]))
+                   || (line.kind == Kind::ScopeOneDevice && line.fields[1] == label)
                    || (line.kind == Kind::ScopeOneProperty && line.fields[1] == label)
                    || (line.kind == Kind::ScopeOneConfigGroup && line.fields[3] == label)
                    || (line.kind == Kind::ScopeOneLightSource && line.fields[2] == label);

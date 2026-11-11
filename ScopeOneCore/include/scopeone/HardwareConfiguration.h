@@ -86,6 +86,8 @@ namespace scopeone::core
         QList<ConfigSetting> propertyLines() const;
         // The effective Core role after System/Startup has been applied
         QString coreRole(const QString& role) const;
+        // Whether a Core role value names a ScopeOne device or one of its subdevices
+        bool namesScopeOneDevice(const QString& value) const;
         bool removeScopeOneCoreRoles();
         // The ScopeOne devices, a second device of a label is left out
         QList<ScopeOneDevice> scopeOneDevices() const;

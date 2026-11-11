@@ -156,6 +156,14 @@ namespace scopeone::ui
                 }
                 dialog.accept();
             });
+            // A device whose driver is missing had the first driver selected, and OK wrote that
+            // driver's pre-init properties into the device
+            if (!adding && driver->findData(device.driverId) < 0)
+            {
+                QMessageBox::warning(parent, QObject::tr("Edit Device"),
+                                     QObject::tr("The driver %1 of %2 is not installed.").arg(device.driverId, device.label));
+                return false;
+            }
             {
                 const QSignalBlocker blocker(driver);
                 driver->setCurrentIndex(qMax(0, driver->findData(device.driverId)));
@@ -208,7 +216,7 @@ namespace scopeone::ui
             enable->addItem(QObject::tr("None")); reading->addItem(QObject::tr("None"));
             for (const auto& device : core->loadedDevices())
             {
-                for (const auto& property : core->deviceProperties(device, false))
+                for (const auto& property : core->deviceProperties(device, true))
                 {
                     const QVariantList key{device, property.name()};
                     const QString label = QStringLiteral("%1 / %2 = %3").arg(device, property.name(), property.value());
@@ -239,7 +247,7 @@ namespace scopeone::ui
                 on->clear(); off->clear();
                 const auto key = enable->currentData().toList();
                 if (key.size() != 2) return;
-                for (const auto& property : core->deviceProperties(key[0].toString(), false))
+                for (const auto& property : core->deviceProperties(key[0].toString(), true))
                     if (property.name() == key[1].toString()) { on->addItems(property.allowedValues()); off->addItems(property.allowedValues()); break; }
                 if (off->count() > 1) off->setCurrentIndex(1);
             };

@@ -116,6 +116,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: 6.8.0
+          modules: qtserialport
           cache: true
 
       - name: Compile mmCoreAndDevices and ScopeOne
@@ -170,16 +171,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up MSVC
-        shell: pwsh
-        run: |
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
-              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
-            }
-          }
-
       - name: Set up vcpkg
         shell: pwsh
         run: |
@@ -200,9 +191,7 @@ jobs:
           key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-x64-windows-
 
-      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore
+      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore, and the runner has no CUDA
       - name: Compile MMCore, Core, drivers and GUI
         shell: pwsh
-        run: |
-          .\scripts\build.ps1 --configure `
-            --coreConfigureOption -DSCOPEONE_ENABLE_CUDA=OFF
+        run: .\scripts\build.ps1

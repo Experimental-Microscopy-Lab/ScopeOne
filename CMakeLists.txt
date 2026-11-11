@@ -152,6 +152,8 @@ install(TARGETS ScopeOne ScopeOneMcpServer
 install(FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/config/MMConfig_demo.cfg"
         "${CMAKE_CURRENT_SOURCE_DIR}/config/MMConfig_demo_dual.cfg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/ScopeOne_demo.cfg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/ScopeOne_MM_demo.cfg"
         DESTINATION .
 )
 
@@ -223,11 +225,14 @@ endif ()
 
 if (WIN32)
     if (WINDEPLOYQT_EXECUTABLE)
+        # windeployqt finds the modules of ScopeOne.exe only, and Serial Port is linked by the
+        # serial driver alone, so it is named here
         add_custom_command(TARGET ScopeOne POST_BUILD
                 COMMAND "${WINDEPLOYQT_EXECUTABLE}"
                 --no-translations
                 --no-compiler-runtime
                 --release
+                --serialport
                 "$<TARGET_FILE:ScopeOne>"
                 WORKING_DIRECTORY "${SCOPEONE_QT_BIN_DIR}"
                 VERBATIM

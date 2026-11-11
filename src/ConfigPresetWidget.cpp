@@ -12,7 +12,6 @@
 #include <QAction>
 #include <QEvent>
 #include <QHash>
-#include <QLabel>
 #include <QLineEdit>
 #include <QScopedValueRollback>
 #include <QSet>
@@ -89,9 +88,6 @@ namespace scopeone::ui
             dialog.setWindowTitle(title);
             dialog.resize(760, 560);
             auto* layout = new QVBoxLayout(&dialog);
-            layout->addWidget(new QLabel(groupMode
-                ? QObject::tr("Select the properties included in this group. New properties use their current values.")
-                : QObject::tr("Edit each property value for this preset."), &dialog));
             auto* tree = new QTreeWidget(&dialog);
             tree->setHeaderLabels({QObject::tr("Device / Property"), QObject::tr("Value"), QObject::tr("Details")});
             tree->setAlternatingRowColors(true);
@@ -106,7 +102,7 @@ namespace scopeone::ui
             for (const auto& device : core->loadedDevices())
             {
                 QTreeWidgetItem* deviceItem = nullptr;
-                for (const auto& property : core->deviceProperties(device, false))
+                for (const auto& property : core->deviceProperties(device, true))
                 {
                     const QString key = settingKey(device, property.name());
                     if (!groupMode && !selected.contains(key)) continue;
@@ -443,7 +439,7 @@ namespace scopeone::ui
         if (m_scopeonecore->availableConfigs(g).contains(p)) { emit errorOccurred(tr("Preset already exists: %1").arg(p)); return; }
         QList<Setting> initial = groupSettings(m_scopeonecore, g);
         for (auto& setting : initial)
-            setting.value = m_scopeonecore->getPropertyValue(setting.device, setting.property, false);
+            setting.value = m_scopeonecore->getPropertyValue(setting.device, setting.property, true);
         QList<Setting> settings;
         // An empty group chooses its properties here; otherwise only its own properties appear.
         if (initial.isEmpty())

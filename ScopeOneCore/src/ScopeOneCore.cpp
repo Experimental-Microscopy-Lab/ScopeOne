@@ -3882,6 +3882,13 @@ namespace scopeone::core
 
     bool ScopeOneCore::reloadRoles(QString* errorMessage)
     {
+        // An experiment and a mosaic read the shutter role on their own thread, and changing it
+        // under them raced on the role strings and swapped the shutter they held open
+        if (isRecording() || isStageMosaicRunning())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Roles cannot change while recording or a mosaic runs");
+            return false;
+        }
         return canEditConfiguration(errorMessage)
             && finishConfigurationEdit(m_managers->hardwareRuntime->reloadRoles(errorMessage));
     }

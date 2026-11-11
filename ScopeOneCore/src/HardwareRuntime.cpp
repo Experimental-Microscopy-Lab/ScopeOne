@@ -835,18 +835,21 @@ namespace scopeone::core::internal
         QString error;
         const auto document = HardwareConfiguration::read(m_configurationPath, &error);
         if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
-        setConfigurationPath(m_configurationPath);
+        applyRoles(document);
         m_scopeOne.setLightSources(document.lightSources());
+        // A role that moved to a ScopeOne device is cleared in MMCore, which had kept driving the
+        // earlier Micro-Manager device beside the new one
         const QStringList mmLabels = document.microManagerDeviceLabels();
         for (const QString& role : {QStringLiteral("Camera"), QStringLiteral("Shutter"), QStringLiteral("Focus")})
         {
             const QString value = document.coreRole(role);
-            if ((value.isEmpty() || mmLabels.contains(value))
-                && !m_microManager->setProperty(QStringLiteral("Core"), role, value, errorMessage)) return false;
+            if (!m_microManager->setProperty(QStringLiteral("Core"), role,
+                                             mmLabels.contains(value) ? value : QString{}, errorMessage)) return false;
         }
+        // An AutoShutter removed from the cfg is the default of MMCore, which is on
         const QString autoShutter = document.coreRole(QStringLiteral("AutoShutter"));
-        if (!autoShutter.isEmpty()
-            && !m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"), autoShutter, errorMessage)) return false;
+        if (!m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"),
+                                         autoShutter.isEmpty() ? QStringLiteral("1") : autoShutter, errorMessage)) return false;
         applyScopeOneAutoShutter();
         return true;
     }
@@ -1110,7 +1113,7 @@ namespace scopeone::core::internal
                         && (setting.property == QStringLiteral("Camera")
                             || setting.property == QStringLiteral("Shutter")
                             || setting.property == QStringLiteral("Focus"))
-                        && m_registry.providerForDevice(setting.value);
+                        && document.namesScopeOneDevice(setting.value);
                     if (scopeOneRole) continue;
                     if (setting.source == HardwareConfiguration::Source::MicroManager)
                         mm.push_back(setting);
@@ -1303,9 +1306,9 @@ namespace scopeone::core::internal
 
     void HardwareRuntime::applyScopeOneAutoShutter()
     {
-        if (!m_scopeOneShutter || m_autoShutterRole.isEmpty()) return;
+        if (!m_scopeOneShutter) return;
         QString error;
-        if (!setAutoShutter(m_autoShutterRole == QStringLiteral("1"), &error))
+        if (!setAutoShutter(m_autoShutterRole != QStringLiteral("0"), &error))
             qWarning().noquote() << QStringLiteral("AutoShutter failed: %1").arg(error);
     }
 
@@ -1346,21 +1349,16 @@ namespace scopeone::core::internal
     void HardwareRuntime::setConfigurationPath(const QString& path)
     {
         m_configurationPath = path;
-        m_cameraRole.clear();
-        m_focusRole.clear();
-        m_shutterRole.clear();
-        m_autoShutterRole.clear();
-        m_scopeOneShutter = false;
-        if (path.isEmpty()) return;
-        const auto document = HardwareConfiguration::read(path, nullptr);
+        applyRoles(path.isEmpty() ? HardwareConfiguration{} : HardwareConfiguration::read(path, nullptr));
+    }
+
+    void HardwareRuntime::applyRoles(const HardwareConfiguration& document)
+    {
         m_cameraRole = document.coreRole(QStringLiteral("Camera"));
         m_focusRole = document.coreRole(QStringLiteral("Focus"));
         m_shutterRole = document.coreRole(QStringLiteral("Shutter"));
         m_autoShutterRole = document.coreRole(QStringLiteral("AutoShutter"));
-        if (!document.microManagerDeviceLabels().contains(m_shutterRole))
-            for (const auto& device : document.scopeOneDevices())
-                if (m_shutterRole == device.label || m_shutterRole.startsWith(device.label + QLatin1Char('.')))
-                    m_scopeOneShutter = true;
+        m_scopeOneShutter = document.namesScopeOneDevice(m_shutterRole);
     }
 
     bool HardwareRuntime::hasAutofocus() const

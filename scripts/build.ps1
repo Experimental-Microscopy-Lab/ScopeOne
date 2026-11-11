@@ -325,6 +325,7 @@ else {
 }
 
 $msvcError = $null
+$vcpkgRootBeforeMsvc = $env:VCPKG_ROOT
 try {
     Import-MsvcEnvironment
     Write-ToolLine $true "Visual Studio" ("MSVC $env:VCToolsVersion, Windows SDK $env:WindowsSDKVersion".TrimEnd("\"))
@@ -335,14 +336,19 @@ catch {
     $missingTools += "Visual Studio"
 }
 
-# The Visual Studio developer environment sets VCPKG_ROOT to the vcpkg bundled with Visual Studio,
-# which replaced the user's vcpkg, so VCPKG_ROOT is read again from the user and system settings
-$savedVcpkgRoot = [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User")
-if (-not $savedVcpkgRoot) {
-    $savedVcpkgRoot = [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+# The Visual Studio developer environment sets VCPKG_ROOT to the vcpkg bundled with Visual Studio.
+# Reading it back from the user and system settings alone dropped a VCPKG_ROOT set only in the
+# session, as CI sets it, so the first one outside Visual Studio is taken.
+function Test-VisualStudioPath {
+    param([string]$Path)
+    return $env:VSINSTALLDIR -and $Path.StartsWith($env:VSINSTALLDIR, [System.StringComparison]::OrdinalIgnoreCase)
 }
-if ($savedVcpkgRoot) {
-    $env:VCPKG_ROOT = $savedVcpkgRoot
+if (-not $env:VCPKG_ROOT -or (Test-VisualStudioPath $env:VCPKG_ROOT)) {
+    $env:VCPKG_ROOT = @(
+        $vcpkgRootBeforeMsvc,
+        [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User"),
+        [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+    ) | Where-Object { $_ -and -not (Test-VisualStudioPath $_) } | Select-Object -First 1
 }
 
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue

@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BOOST_VERSION: 1.86.0
   CUDA_VERSION: 12.8.1
 
 jobs:
@@ -62,16 +61,6 @@ jobs:
           }
           exit 0
 
-      - name: Set up MSVC
-        shell: pwsh
-        run: |
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
-              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
-            }
-          }
-
       - name: Set up vcpkg
         shell: pwsh
         run: |
@@ -91,59 +80,6 @@ jobs:
           path: ${{ runner.temp }}\vcpkg-binary-cache
           key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-x64-windows-
-
-      - name: Cache Boost
-        id: boost-cache
-        uses: actions/cache@v6
-        with:
-          path: ${{ runner.temp }}\boost
-          key: boost-${{ env.BOOST_VERSION }}-vc143-x64
-
-      - name: Build Boost for SerialManager
-        if: steps.boost-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $name = "boost_$($env:BOOST_VERSION -replace '\.', '_')"
-          $archive = "$env:RUNNER_TEMP\$name.7z"
-          Invoke-WebRequest "https://archives.boost.io/release/$env:BOOST_VERSION/source/$name.7z" -OutFile $archive
-          7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
-          Push-Location "$env:RUNNER_TEMP\$name"
-          .\bootstrap.bat
-          if ($LASTEXITCODE -ne 0) { throw "Boost bootstrap failed." }
-          .\b2 --with-thread --with-chrono --with-date_time --with-system toolset=msvc-14.3 address-model=64 architecture=x86 link=static runtime-link=shared threading=multi variant=release -j4 stage
-          if ($LASTEXITCODE -ne 0) { throw "Boost build failed." }
-          Pop-Location
-          $boostRoot = "$env:RUNNER_TEMP\boost"
-          New-Item -ItemType Directory -Force -Path $boostRoot | Out-Null
-          Move-Item "$env:RUNNER_TEMP\$name\boost" "$boostRoot\boost"
-          Move-Item "$env:RUNNER_TEMP\$name\stage\lib" "$boostRoot\lib"
-
-      - name: Build Micro-Manager core and adapters
-        shell: pwsh
-        run: |
-          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
-          git clone --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $mm
-          $boostRoot = "$env:RUNNER_TEMP\boost"
-          $properties = @(
-            "/p:Configuration=Release",
-            "/p:Platform=x64",
-            "/p:SolutionDir=$mm\",
-            "/p:MM_BOOST_INCLUDEDIR=$boostRoot",
-            "/p:MM_BOOST_LIBDIR=$boostRoot\lib",
-            "/m",
-            "/nologo",
-            "/v:minimal"
-          )
-          foreach ($project in @(
-            "MMCore\MMCore.vcxproj",
-            "DeviceAdapters\DemoCamera\DemoCamera.vcxproj",
-            "DeviceAdapters\Utilities\Utilities.vcxproj",
-            "DeviceAdapters\SerialManager\SerialManager.vcxproj"
-          )) {
-            msbuild "$mm\$project" @properties
-            if ($LASTEXITCODE -ne 0) { throw "Building $project failed." }
-          }
-          Get-ChildItem "$mm\build\Release\x64" -File | Select-Object Name, Length
 
       - name: Install CUDA
         if: matrix.gpu
@@ -177,14 +113,11 @@ jobs:
             choco install nsis -y --no-progress
           }
 
+      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore, and Core is built with CUDA
+      # when the step above put nvcc on the path
       - name: Build and package
         shell: pwsh
-        run: |
-          $options = @()
-          if ("${{ matrix.gpu }}" -ne "true") {
-            $options += @("--coreConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF")
-          }
-          .\scripts\build.ps1 --configure --package @options
+        run: .\scripts\build.ps1 --package
 
       - name: Check packages
         shell: pwsh
