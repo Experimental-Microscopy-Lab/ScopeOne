@@ -38,6 +38,7 @@ Download the latest release installer from the [Releases](https://github.com/Exp
 
 - Windows 10/11 (64-bit)
 - Micro-Manager device adapters for your hardware
+- For the GPU package, an NVIDIA GPU; ONNX inference on CUDA also needs cuDNN 9 and the cuBLAS of CUDA 12 on the `PATH`, which the package does not include
 
 **Device Adapter Setup:**
 

@@ -174,7 +174,7 @@ jobs:
           ls -l packages
           cat > notes.md <<'NOTES'
           - **Standard** (`win-x64`): live imaging, recording, image processing and inference on CPU.
-          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference on CUDA. Needs an NVIDIA GPU.
+          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference on CUDA. Needs an NVIDIA GPU. ONNX inference on CUDA also needs cuDNN 9 and the cuBLAS of CUDA 12 on the `PATH`, which the package does not include.
           NOTES
           gh release create "v${{ steps.version.outputs.version }}" packages/* \
             --target "$GITHUB_SHA" \
