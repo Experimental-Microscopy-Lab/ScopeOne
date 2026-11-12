@@ -354,6 +354,8 @@ namespace scopeone::ui
                     m_descriptors.insert(parameter.key, parameter);
                     form->addRow(parameter.name + QLatin1Char(':'), editor);
                 }
+                m_form = form;
+                updateShownRows();
                 layout->addWidget(group);
 
                 if (info.descriptor().resettable)
@@ -401,9 +403,24 @@ namespace scopeone::ui
                 {
                     m_maskPreview->setParameters(parameters);
                 }
+                updateShownRows();
             }
 
         private:
+            // Shows only the parameters that the current choices use
+            void updateShownRows()
+            {
+                for (auto it = m_descriptors.constBegin(); it != m_descriptors.constEnd(); ++it)
+                {
+                    if (!it->shownWithKey.isEmpty())
+                    {
+                        m_form->setRowVisible(m_editors.value(it.key()),
+                                              it->shownWithValues.contains(
+                                                  editorValue(it->shownWithKey).toInt()));
+                    }
+                }
+            }
+
             QWidget* createEditor(const ProcessingParameterDescriptor& descriptor,
                                   const QVariant& value,
                                   QWidget* parent)
@@ -488,6 +505,7 @@ namespace scopeone::ui
                     parameters.insert(it.key(), editorValue(it.key()));
                 }
                 m_core->setProcessingModuleParameters(m_moduleIndex, parameters, m_cameraId);
+                updateShownRows();
             }
 
             scopeone::core::ScopeOneCore* m_core;
@@ -496,6 +514,7 @@ namespace scopeone::ui
             QHash<QString, QWidget*> m_editors;
             QHash<QString, ProcessingParameterDescriptor> m_descriptors;
             MaskPreviewWidget* m_maskPreview{nullptr};
+            QFormLayout* m_form{nullptr};
         };
     }
 

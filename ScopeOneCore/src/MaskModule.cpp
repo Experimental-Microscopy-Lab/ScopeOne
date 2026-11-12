@@ -302,7 +302,7 @@ namespace scopeone::core::internal
          realParameter("center_y", "Center Y", 0.0, -0.5, 0.5, 0.001, 3),
          realParameter("size_x", "Size X", 0.1, 0.001, 1.0, 0.001, 3),
          realParameter("size_y", "Size Y", 0.1, 0.001, 1.0, 0.001, 3),
-         realParameter("inner_size", "Inner size", 0.0, 0.0, 1.0, 0.001, 3),
+         shownWhen(realParameter("inner_size", "Inner size", 0.0, 0.0, 1.0, 0.001, 3), "shape", {2}),
          realParameter("rotation", "Rotation", 0.0, -180.0, 180.0, 0.1, 1),
          realParameter("edge_width", "Edge width", 0.0, 0.0, 0.5, 0.001, 3),
          booleanParameter("invert", "Invert", false)})

@@ -72,4 +72,14 @@ namespace scopeone::core::internal
         }
         return descriptor;
     }
+
+    // The parameter is shown only while the choice parameter key has one of the values
+    inline ProcessingParameterDescriptor shownWhen(ProcessingParameterDescriptor descriptor,
+                                                   const char* key,
+                                                   std::initializer_list<int> values)
+    {
+        descriptor.shownWithKey = QString::fromLatin1(key);
+        descriptor.shownWithValues = QList<int>(values);
+        return descriptor;
+    }
 }

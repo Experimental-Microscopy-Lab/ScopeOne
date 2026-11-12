@@ -40,6 +40,9 @@ namespace scopeone::core
         int decimals{0};
         QList<ProcessingParameterChoice> choices;
         QString fileFilter;
+        // Shown only while the choice parameter shownWithKey has one of shownWithValues
+        QString shownWithKey;
+        QList<int> shownWithValues;
     };
 
     struct ProcessingModuleDescriptor

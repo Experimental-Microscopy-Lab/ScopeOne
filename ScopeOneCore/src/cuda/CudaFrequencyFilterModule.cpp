@@ -166,8 +166,14 @@ SCOPEONE_REGISTER_PROCESSING_MODULE(
     1,
     {scopeone::core::internal::choiceParameter(
          "output_mode", "Output", 2, {"Spectrum", "Filtered spectrum", "Filtered image"}),
-     scopeone::core::internal::realParameter(
-         "min_feature_size", "Min feature size", 2.0, 0.0, 1000.0, 0.1, 2),
-     scopeone::core::internal::realParameter(
-         "max_feature_size", "Max feature size", 10.0, 0.0, 1000.0, 0.1, 2),
-     scopeone::core::internal::choiceParameter("filter_kind", "Filter kind", 0, {"Smooth", "Hard"})})
+     scopeone::core::internal::shownWhen(
+         scopeone::core::internal::realParameter(
+             "min_feature_size", "Min feature size", 2.0, 0.0, 1000.0, 0.1, 2),
+         "output_mode", {1, 2}),
+     scopeone::core::internal::shownWhen(
+         scopeone::core::internal::realParameter(
+             "max_feature_size", "Max feature size", 10.0, 0.0, 1000.0, 0.1, 2),
+         "output_mode", {1, 2}),
+     scopeone::core::internal::shownWhen(
+         scopeone::core::internal::choiceParameter("filter_kind", "Filter kind", 0, {"Smooth", "Hard"}),
+         "output_mode", {1, 2})})

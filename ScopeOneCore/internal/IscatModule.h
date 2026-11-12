@@ -7,6 +7,9 @@
 
 namespace scopeone::core::internal
 {
+    // iSCAT contrast (frame - background) / background, with the background from a blur of the
+    // frame (Flat Field), the mean of frames taken on Capture Reference (Reference), or the batch
+    // of frames before the latest batch (DRA)
     class IscatModule final : public scopeone::core::ProcessingModule
     {
     public:
@@ -21,41 +24,28 @@ namespace scopeone::core::internal
 
     private:
         void clearState();
-        cv::Mat computePixelMedian(const std::deque<cv::Mat>& frames) const;
         scopeone::core::ProcessingResult processFlatField(
             const cv::Mat& input,
             const scopeone::core::ImageFrame& frame);
-        scopeone::core::ProcessingResult processTemporalMedian(
-            const cv::Mat& input,
-            const scopeone::core::ImageFrame& frame);
-        scopeone::core::ProcessingResult processEma(
-            const cv::Mat& input,
-            const scopeone::core::ImageFrame& frame);
-        scopeone::core::ProcessingResult processSnapshot(
+        scopeone::core::ProcessingResult processReference(
             const cv::Mat& input,
             const scopeone::core::ImageFrame& frame);
         scopeone::core::ProcessingResult processDra(
             const cv::Mat& input,
             const scopeone::core::ImageFrame& frame);
-        scopeone::core::ProcessingResult finalizeContrastOutput(
+        scopeone::core::ProcessingResult contrastOutput(
             const cv::Mat& input,
             const cv::Mat& background,
             const scopeone::core::ImageFrame& frame);
 
         int m_mode{0};
+        int m_frames{16};
         double m_blurSigma{15.0};
-        int m_medianWindow{31};
-        double m_emaAlpha{0.05};
         bool m_captureReference{false};
-        int m_batchSize{16};
         double m_contrastGain{20.0};
-        bool m_enableHighPass{false};
-        double m_highPassSigma{30.0};
-        int m_outputMode{0};
-        std::deque<cv::Mat> m_medianBuffer;
-        cv::Mat m_lockedMedianBackground;
-        cv::Mat m_emaAccumulator;
-        cv::Mat m_snapshotBackground;
+        cv::Mat m_referenceSum;
+        int m_referenceCount{0};
+        cv::Mat m_reference;
         std::deque<cv::Mat> m_draBatchA;
         std::deque<cv::Mat> m_draBatchB;
         cv::Mat m_draSumA;

@@ -248,10 +248,12 @@ namespace scopeone::core::internal
         1,
         {choiceParameter("output_mode", "Output", 2,
                          {"Spectrum", "Filtered spectrum", "Filtered image"}),
-         realParameter("min_feature_size", "Min feature size", 2.0,
-                       0.0, 1000.0, 0.1, 2),
-         realParameter("max_feature_size", "Max feature size", 10.0,
-                       0.0, 1000.0, 0.1, 2),
-         choiceParameter("filter_kind", "Filter kind", 0,
-                         {"Smooth", "Hard"})})
+         shownWhen(realParameter("min_feature_size", "Min feature size", 2.0,
+                                 0.0, 1000.0, 0.1, 2),
+                   "output_mode", {1, 2}),
+         shownWhen(realParameter("max_feature_size", "Max feature size", 10.0,
+                                 0.0, 1000.0, 0.1, 2),
+                   "output_mode", {1, 2}),
+         shownWhen(choiceParameter("filter_kind", "Filter kind", 0, {"Smooth", "Hard"}),
+                   "output_mode", {1, 2})})
 }
