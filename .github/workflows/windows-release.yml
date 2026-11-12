@@ -16,11 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
-  BOOST_VERSION: 1.86.0
   CUDA_VERSION: 12.8.1
-  ONNXRUNTIME_PACKAGE: onnxruntime-win-x64-gpu_cuda12-1.30.0
-  ONNXRUNTIME_VERSION: 1.30.0
 
 jobs:
   package:
@@ -65,16 +61,6 @@ jobs:
           }
           exit 0
 
-      - name: Set up MSVC
-        shell: pwsh
-        run: |
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
-              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
-            }
-          }
-
       - name: Set up vcpkg
         shell: pwsh
         run: |
@@ -94,61 +80,6 @@ jobs:
           path: ${{ runner.temp }}\vcpkg-binary-cache
           key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-x64-windows-
-
-      - name: Cache Boost
-        id: boost-cache
-        uses: actions/cache@v6
-        with:
-          path: ${{ runner.temp }}\boost
-          key: boost-${{ env.BOOST_VERSION }}-vc143-x64
-
-      - name: Build Boost for SerialManager
-        if: steps.boost-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $name = "boost_$($env:BOOST_VERSION -replace '\.', '_')"
-          $archive = "$env:RUNNER_TEMP\$name.7z"
-          Invoke-WebRequest "https://archives.boost.io/release/$env:BOOST_VERSION/source/$name.7z" -OutFile $archive
-          7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
-          Push-Location "$env:RUNNER_TEMP\$name"
-          .\bootstrap.bat
-          if ($LASTEXITCODE -ne 0) { throw "Boost bootstrap failed." }
-          .\b2 --with-thread --with-chrono --with-date_time --with-system toolset=msvc-14.3 address-model=64 architecture=x86 link=static runtime-link=shared threading=multi variant=release -j4 stage
-          if ($LASTEXITCODE -ne 0) { throw "Boost build failed." }
-          Pop-Location
-          $boostRoot = "$env:RUNNER_TEMP\boost"
-          New-Item -ItemType Directory -Force -Path $boostRoot | Out-Null
-          Move-Item "$env:RUNNER_TEMP\$name\boost" "$boostRoot\boost"
-          Move-Item "$env:RUNNER_TEMP\$name\stage\lib" "$boostRoot\lib"
-
-      - name: Build Micro-Manager core and adapters
-        shell: pwsh
-        run: |
-          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
-          git init $mm
-          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
-          git -C $mm checkout FETCH_HEAD
-          $boostRoot = "$env:RUNNER_TEMP\boost"
-          $properties = @(
-            "/p:Configuration=Release",
-            "/p:Platform=x64",
-            "/p:SolutionDir=$mm\",
-            "/p:MM_BOOST_INCLUDEDIR=$boostRoot",
-            "/p:MM_BOOST_LIBDIR=$boostRoot\lib",
-            "/m",
-            "/nologo",
-            "/v:minimal"
-          )
-          foreach ($project in @(
-            "MMCore\MMCore.vcxproj",
-            "DeviceAdapters\DemoCamera\DemoCamera.vcxproj",
-            "DeviceAdapters\Utilities\Utilities.vcxproj",
-            "DeviceAdapters\SerialManager\SerialManager.vcxproj"
-          )) {
-            msbuild "$mm\$project" @properties
-            if ($LASTEXITCODE -ne 0) { throw "Building $project failed." }
-          }
-          Get-ChildItem "$mm\build\Release\x64" -File | Select-Object Name, Length
 
       - name: Install CUDA
         if: matrix.gpu
@@ -174,14 +105,6 @@ jobs:
           "CUDA_PATH_V$($short -replace '\.', '_')=$cudaPath" >> $env:GITHUB_ENV
           "$cudaPath\bin" >> $env:GITHUB_PATH
 
-      - name: Download ONNX Runtime
-        if: matrix.gpu
-        shell: pwsh
-        run: |
-          $archive = "$env:RUNNER_TEMP\$env:ONNXRUNTIME_PACKAGE.zip"
-          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ONNXRUNTIME_VERSION/$env:ONNXRUNTIME_PACKAGE.zip" -OutFile $archive
-          Expand-Archive $archive -DestinationPath "$env:GITHUB_WORKSPACE\ScopeOneCore\external"
-
       - name: Set up NSIS
         shell: pwsh
         run: |
@@ -190,20 +113,11 @@ jobs:
             choco install nsis -y --no-progress
           }
 
+      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore, and Core is built with CUDA
+      # when the step above put nvcc on the path
       - name: Build and package
         shell: pwsh
-        run: |
-          $options = @()
-          if ("${{ matrix.gpu }}" -eq "true") {
-            $options += @("--guiConfigureOption", "-DSCOPEONE_PACKAGE_VARIANT=gpu")
-          }
-          else {
-            $options += @(
-              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_CUDA=OFF",
-              "--pluginConfigureOption", "-DSCOPEONE_ENABLE_INFERENCE=OFF"
-            )
-          }
-          .\scripts\build.ps1 --configure --package @options
+        run: .\scripts\build.ps1 --package
 
       - name: Check packages
         shell: pwsh
@@ -214,9 +128,11 @@ jobs:
             Get-Item $file | Select-Object Name, Length
           }
           $listing = 7z l "build\$name.zip"
-          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime|ScopeOneInference")
-          if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA or ONNX Runtime files." }
-          if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA or ONNX Runtime files." }
+          # Both packages carry ONNX Runtime, and only the GPU one its CUDA provider and cuFFT
+          if (-not ($listing | Select-String -Pattern "onnxruntime\.dll")) { throw "The package has no ONNX Runtime." }
+          $hasGpuFiles = [bool]($listing | Select-String -Pattern "cufft64|onnxruntime_providers_cuda")
+          if ("${{ matrix.gpu }}" -eq "true" -and -not $hasGpuFiles) { throw "The GPU package has no CUDA files." }
+          if ("${{ matrix.gpu }}" -ne "true" -and $hasGpuFiles) { throw "The standard package must not contain CUDA files." }
 
       - name: Upload packages
         uses: actions/upload-artifact@v7
@@ -257,8 +173,8 @@ jobs:
         run: |
           ls -l packages
           cat > notes.md <<'NOTES'
-          - **Standard** (`win-x64`): live imaging, recording and image processing on CPU.
-          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference. Needs an NVIDIA GPU.
+          - **Standard** (`win-x64`): live imaging, recording, image processing and inference on CPU.
+          - **GPU** (`win-x64-gpu`): adds CUDA processing and ONNX inference on CUDA. Needs an NVIDIA GPU. ONNX inference on CUDA also needs cuDNN 9 and the cuBLAS of CUDA 12 on the `PATH`, which the package does not include.
           NOTES
           gh release create "v${{ steps.version.outputs.version }}" packages/* \
             --target "$GITHUB_SHA" \

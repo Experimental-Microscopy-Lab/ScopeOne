@@ -1,7 +1,7 @@
 #pragma once
 
 #include "scopeone/ScopeOneCore.h"
-#include "ScopeOneToolPlugin.h"
+#include "ToolRegistry.h"
 
 #include <QByteArray>
 #include <QMainWindow>
@@ -46,7 +46,7 @@ namespace scopeone::ui
     class DeviceControlWidget;
     class RecordingWidget;
     class ScopeOneLocalApiServer;
-    class MainWindow : public QMainWindow, public ScopeOneToolContext
+    class MainWindow : public QMainWindow, public ToolContext
     {
         Q_OBJECT
 
@@ -54,7 +54,7 @@ namespace scopeone::ui
         explicit MainWindow(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~MainWindow() override = default;
 
-        ScopeOneToolCore& core() const override;
+        scopeone::core::ScopeOneCore& core() const override;
         QString currentLayerKey() const override;
         void showLayers(const QStringList& layerKeys, bool sideBySide = false) override;
         void showToolStatus(const QString& message, int timeoutMs = 5000) override;
@@ -131,6 +131,7 @@ namespace scopeone::ui
             const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session);
         void showSaveResult(const scopeone::core::ScopeOneCore::RecordingSessionData& session);
         void loadConfigurationFromDialog();
+        void openHardwareConfiguration(bool roles = false);
         void loadConfigurationPath(const QString& configPath);
         void refreshRecentConfigurationsMenu();
         void refreshRecentImagesMenu();
@@ -207,8 +208,6 @@ namespace scopeone::ui
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
-        // Owned by the Core, so it outlives the tool windows closed with this window
-        ScopeOneToolCore* m_toolCore{nullptr};
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;

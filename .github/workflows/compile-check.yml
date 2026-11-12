@@ -63,7 +63,65 @@ jobs:
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
-        run: ./scripts/build-unix.sh
+        run: ./scripts/build.sh
+
+  compile-installed-qt:
+    name: Compile (Linux, installed Qt 6.8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            build-essential \
+            cmake \
+            autoconf \
+            automake \
+            libtool \
+            autoconf-archive \
+            pkg-config \
+            libboost-all-dev \
+            ninja-build curl zip unzip \
+            libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+            libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+            libxkbcommon-x11-dev
+
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
+          git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+          "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-scopeone-ubuntu-24.04-installed-qt-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-ubuntu-24.04-installed-qt-
+
+      # The oldest Qt that ScopeOne supports, so a newer Qt API used by mistake fails here
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.0
+          modules: qtserialport
+          cache: true
+
+      - name: Compile mmCoreAndDevices and ScopeOne
+        shell: bash
+        run: ./scripts/build.sh --qt "$QT_ROOT_DIR"
 
   compile-macos:
     name: Compile (macOS)
@@ -100,32 +158,18 @@ jobs:
 
       - name: Compile mmCoreAndDevices and ScopeOne
         shell: bash
-        run: ./scripts/build-unix.sh
+        run: ./scripts/build.sh
 
   compile-windows:
     name: Compile (Windows)
     runs-on: windows-2022
     timeout-minutes: 180
 
-    env:
-      # Keep in sync with windows-release.yml
-      MMCORE_COMMIT: 212cc416eec291634c916078a31efd4c5f914c64
-
     steps:
       - name: Check out ScopeOne
         uses: actions/checkout@v7
         with:
           submodules: recursive
-
-      - name: Set up MSVC
-        shell: pwsh
-        run: |
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
-              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
-            }
-          }
 
       - name: Set up vcpkg
         shell: pwsh
@@ -147,20 +191,7 @@ jobs:
           key: vcpkg-scopeone-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-scopeone-x64-windows-
 
-      - name: Build MMCore
+      # build.ps1 clones the latest mmCoreAndDevices and builds MMCore, and the runner has no CUDA
+      - name: Compile MMCore, Core, drivers and GUI
         shell: pwsh
-        run: |
-          $mm = "$env:GITHUB_WORKSPACE\ScopeOneCore\external\mmCoreAndDevices"
-          git init $mm
-          git -C $mm fetch --depth 1 https://github.com/micro-manager/mmCoreAndDevices.git $env:MMCORE_COMMIT
-          git -C $mm checkout FETCH_HEAD
-          msbuild "$mm\MMCore\MMCore.vcxproj" /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$mm\" /m /nologo /v:minimal
-          if ($LASTEXITCODE -ne 0) { throw "Building MMCore failed." }
-          if (-not (Test-Path "$mm\build\Release\x64\MMCore.lib")) { throw "MMCore.lib was not produced." }
-
-      - name: Compile Core, plugins and GUI
-        shell: pwsh
-        run: |
-          .\scripts\build.ps1 --configure `
-            --pluginConfigureOption -DSCOPEONE_ENABLE_CUDA=OFF `
-            --pluginConfigureOption -DSCOPEONE_ENABLE_INFERENCE=OFF
+        run: .\scripts\build.ps1

@@ -1,6 +1,0 @@
-add_subdirectory(ExampleProcessing)
-add_subdirectory(IscatProcessing)
-add_subdirectory(PythonProcessing)
-if (TARGET ScopeOneCuda)
-    add_subdirectory(ExampleCudaProcessing)
-endif ()

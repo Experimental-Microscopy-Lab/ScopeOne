@@ -1,4 +1,7 @@
 #include "internal/GaussianBlurModule.h"
+
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
 #include "internal/FrameBufferUtils.h"
 
 #include <utility>
@@ -82,3 +85,14 @@ namespace scopeone::core::internal
         }
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        GaussianBlurModule,
+        QStringLiteral("gaussian_blur"),
+        QStringLiteral("Gaussian Blur"),
+        1,
+        {integerParameter("kernel_size", "Kernel size", 3, 1, 99, 2),
+         realParameter("sigma", "Sigma", 0.0, 0.0, 100.0, 0.1, 2)})
+}

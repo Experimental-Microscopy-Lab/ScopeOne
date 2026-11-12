@@ -2,15 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $target = "all"
 $coreConfigureOption = @()
-$guiConfigureOption = @()
-$pluginConfigureOption = @()
-$coreBuildOption = @()
-$guiBuildOption = @()
 $configure = $false
 $clean = $false
 $run = $false
 $package = $false
-$skipCoreInstall = $false
+$assumeYes = $false
+$qtArgument = $null
 
 function Read-OptionValue {
     param(
@@ -39,22 +36,6 @@ for ($i = 0; $i -lt $args.Count; $i++) {
             $coreConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
             continue
         }
-        { $_ -in @("--guiConfigureOption", "-guiConfigureOption") } {
-            $guiConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
-            continue
-        }
-        { $_ -in @("--pluginConfigureOption", "-pluginConfigureOption") } {
-            $pluginConfigureOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
-            continue
-        }
-        { $_ -in @("--coreBuildOption", "-coreBuildOption") } {
-            $coreBuildOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
-            continue
-        }
-        { $_ -in @("--guiBuildOption", "-guiBuildOption") } {
-            $guiBuildOption += Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
-            continue
-        }
         { $_ -in @("--configure", "-configure") } {
             $configure = $true
             continue
@@ -71,8 +52,12 @@ for ($i = 0; $i -lt $args.Count; $i++) {
             $package = $true
             continue
         }
-        { $_ -in @("--skipCoreInstall", "-skipCoreInstall") } {
-            $skipCoreInstall = $true
+        { $_ -in @("--yes", "-yes", "-y") } {
+            $assumeYes = $true
+            continue
+        }
+        { $_ -in @("--qt", "-qt") } {
+            $qtArgument = Read-OptionValue -Arguments $args -Index ([ref]$i) -OptionName $arg
             continue
         }
         default {
@@ -81,14 +66,11 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($target -notin @("all", "core", "gui", "plugins", "scopewriter")) {
-    throw "Invalid target '$target'. Expected one of: all, core, gui, plugins, scopewriter."
+if ($target -notin @("all", "core", "gui", "drivers")) {
+    throw "Invalid target '$target'. Expected one of: all, core, gui, drivers."
 }
-if ($package -and $target -in @("core", "plugins", "scopewriter")) {
+if ($package -and $target -in @("core", "drivers")) {
     throw "--package requires --target gui or --target all."
-}
-if ($run -and $target -eq "scopewriter") {
-    throw "--run is not available for the scopewriter target."
 }
 
 function Write-Step {
@@ -183,7 +165,7 @@ function Import-MsvcEnvironment {
 
     $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
-        throw "Visual Studio Installer was not found."
+        throw "Visual Studio 2022 with the C++ tools was not found.`n$visualStudioInstallHint"
     }
     $installationPath = & $vsWhere `
         -latest `
@@ -191,7 +173,7 @@ function Import-MsvcEnvironment {
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         -property installationPath
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
-        throw "A Visual Studio installation with the C++ toolchain was not found."
+        throw "Visual Studio is installed without the C++ tools.`n$visualStudioInstallHint"
     }
 
     $devShellModule = Join-Path $installationPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
@@ -222,10 +204,194 @@ function Import-MsvcEnvironment {
     $env:CXX = "cl.exe"
 }
 
-$scopeOneVcpkgRoot = $env:VCPKG_ROOT
-Import-MsvcEnvironment
+# The Build Tools bring MSVC, MSBuild, the Windows SDK and CMake, which is all the build needs
+# besides Git
+$visualStudioInstallHint = @"
+Install the Visual Studio 2022 Build Tools with the C++ workload and run this script again:
 
-$cmake = (Get-Command cmake -ErrorAction Stop).Source
+  winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+
+An existing Visual Studio 2022 works too once "Desktop development with C++" is added in the Visual Studio Installer.
+"@
+
+# Clones vcpkg into the user's folder when VCPKG_ROOT does not name one, after asking, and
+# bootstraps it. vcpkg builds Qt, OpenCV and the other libraries inside the repository.
+function Resolve-Vcpkg {
+    $root = $env:VCPKG_ROOT
+    if (-not $root -or -not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+        $root = Join-Path $env:USERPROFILE "vcpkg"
+        if (-not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+            if (-not $assumeYes) {
+                if ([Console]::IsInputRedirected) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout, or pass --yes to download vcpkg into $root."
+                }
+                Write-Host "vcpkg is a C++ package manager. ScopeOne uses it to download and build Qt, OpenCV and its other libraries, and nothing is installed system wide."
+                $answer = Read-Host "vcpkg was not found. Download it into $root? Press Enter to accept, type another folder, or n to cancel"
+                if ($answer -in @("n", "N", "no", "No")) {
+                    throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout and run this script again."
+                }
+                if ($answer) {
+                    $root = $answer
+                }
+            }
+            if (-not (Test-Path (Join-Path $root "scripts\buildsystems\vcpkg.cmake"))) {
+                Invoke-Step `
+                    -Label "Downloading vcpkg" `
+                    -FilePath $git `
+                    -Arguments @("clone", "https://github.com/microsoft/vcpkg.git", $root) `
+                    -WorkingDirectory $env:USERPROFILE
+            }
+        }
+        $env:VCPKG_ROOT = $root
+        [Environment]::SetEnvironmentVariable("VCPKG_ROOT", $root, "User")
+        Write-Host "Using vcpkg in $root, saved as VCPKG_ROOT for your user account."
+    }
+    if (-not (Test-Path (Join-Path $root "vcpkg.exe"))) {
+        Invoke-Step `
+            -Label "Bootstrapping vcpkg" `
+            -FilePath (Join-Path $root "bootstrap-vcpkg.bat") `
+            -Arguments @("-disableMetrics") `
+            -WorkingDirectory $root
+    }
+    return $root
+}
+
+# Clones the latest mmCoreAndDevices and builds MMCore and the two adapters the demo
+# configurations use. Core links MMCore.lib and copies the adapters next to
+# ScopeOne. An existing checkout is used as it is, and nothing is rebuilt once its outputs exist.
+function Ensure-MMCore {
+    $mm = Join-Path $coreSourceDir "external\mmCoreAndDevices"
+    $binDir = Join-Path $mm "build\Release\x64"
+    $missing = @(@("MMCore.lib", "mmgr_dal_DemoCamera.dll", "mmgr_dal_Utilities.dll") |
+        Where-Object { -not (Test-Path (Join-Path $binDir $_)) })
+    if ($missing.Count -eq 0) {
+        return
+    }
+    if (-not (Test-Path (Join-Path $mm "MMCore\MMCore.vcxproj"))) {
+        Invoke-Step -Label "Downloading mmCoreAndDevices" -FilePath $git `
+            -Arguments @("clone", "--depth", "1",
+                "https://github.com/micro-manager/mmCoreAndDevices.git", $mm) `
+            -WorkingDirectory $repoRoot
+    }
+    $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
+    foreach ($project in @(
+            "MMCore\MMCore.vcxproj",
+            "DeviceAdapters\DemoCamera\DemoCamera.vcxproj",
+            "DeviceAdapters\Utilities\Utilities.vcxproj")) {
+        Invoke-Step `
+            -Label "Building $project" `
+            -FilePath $msbuild `
+            -Arguments @(
+                (Join-Path $mm $project),
+                "/p:Configuration=Release",
+                "/p:Platform=x64",
+                "/p:SolutionDir=$mm\",
+                "/m",
+                "/nologo",
+                "/v:minimal"
+            ) `
+            -WorkingDirectory $mm
+    }
+}
+
+# Prints one line per tool, a check mark or a cross with what it is for, and stops after the list
+# with the install commands of everything missing. The marks are built from code points, as
+# Windows PowerShell reads a script without a byte order mark in the legacy code page.
+$checkMark = [string][char]0x2713
+$crossMark = [string][char]0x2717
+$missingTools = @()
+function Write-ToolLine {
+    param([bool]$Found, [string]$Label, [string]$Detail)
+
+    Write-Host "  " -NoNewline
+    if ($Found) {
+        Write-Host $checkMark -ForegroundColor Green -NoNewline
+    }
+    else {
+        Write-Host $crossMark -ForegroundColor Red -NoNewline
+    }
+    Write-Host (" {0,-14} {1}" -f $Label, $Detail)
+}
+
+Write-Step "Checking build tools"
+$gitCommand = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCommand) {
+    $git = $gitCommand.Source
+    Write-ToolLine $true "Git" ((& $git --version) -join " ")
+}
+else {
+    Write-ToolLine $false "Git" "fetches the ScopeWriter submodule, vcpkg and Micro-Manager"
+    $missingTools += "Git"
+}
+
+$msvcError = $null
+$vcpkgRootBeforeMsvc = $env:VCPKG_ROOT
+try {
+    Import-MsvcEnvironment
+    Write-ToolLine $true "Visual Studio" ("MSVC $env:VCToolsVersion, Windows SDK $env:WindowsSDKVersion".TrimEnd("\"))
+}
+catch {
+    $msvcError = $_.Exception.Message
+    Write-ToolLine $false "Visual Studio" "compiles everything with MSVC"
+    $missingTools += "Visual Studio"
+}
+
+# The Visual Studio developer environment sets VCPKG_ROOT to the vcpkg bundled with Visual Studio.
+# Reading it back from the user and system settings alone dropped a VCPKG_ROOT set only in the
+# session, as CI sets it, so the first one outside Visual Studio is taken.
+function Test-VisualStudioPath {
+    param([string]$Path)
+    return $env:VSINSTALLDIR -and $Path.StartsWith($env:VSINSTALLDIR, [System.StringComparison]::OrdinalIgnoreCase)
+}
+if (-not $env:VCPKG_ROOT -or (Test-VisualStudioPath $env:VCPKG_ROOT)) {
+    $env:VCPKG_ROOT = @(
+        $vcpkgRootBeforeMsvc,
+        [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "User"),
+        [Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+    ) | Where-Object { $_ -and -not (Test-VisualStudioPath $_) } | Select-Object -First 1
+}
+
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+$msbuildCommand = Get-Command msbuild -ErrorAction SilentlyContinue
+if ($cmakeCommand) {
+    $cmake = $cmakeCommand.Source
+    Write-ToolLine $true "CMake" ((& $cmake --version) | Select-Object -First 1)
+}
+else {
+    Write-ToolLine $false "CMake" "configures ScopeOne, part of the C++ tools of Visual Studio"
+    $missingTools += "CMake"
+}
+if ($msbuildCommand) {
+    Write-ToolLine $true "MSBuild" "builds Micro-Manager's core and adapters"
+}
+else {
+    Write-ToolLine $false "MSBuild" "builds Micro-Manager's core and adapters, part of Visual Studio"
+    $missingTools += "MSBuild"
+}
+
+if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT "scripts\buildsystems\vcpkg.cmake"))) {
+    Write-ToolLine $true "vcpkg" $env:VCPKG_ROOT
+}
+else {
+    Write-Host "  - " -ForegroundColor Yellow -NoNewline
+    Write-Host ("{0,-14} {1}" -f "vcpkg", "not set up yet, offered below")
+}
+
+if ($missingTools.Count -gt 0) {
+    $hints = @()
+    if ("Git" -in $missingTools) {
+        $hints += "Install Git:`n`n  winget install Git.Git`n"
+    }
+    if ($missingTools | Where-Object { $_ -ne "Git" }) {
+        if ($msvcError) {
+            $hints += $msvcError
+        }
+        else {
+            $hints += $visualStudioInstallHint
+        }
+    }
+    throw "Missing build tools: $($missingTools -join ', ')`n`n$($hints -join "`n")`nOpen a new terminal after installing, so the tools are on the path."
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
@@ -236,183 +402,107 @@ $guiBuildDir = Join-Path $repoRoot "build"
 $coreSourceDir = Join-Path $repoRoot "ScopeOneCore"
 $coreBuildDir = Join-Path $coreSourceDir "build"
 $coreInstallDir = Join-Path $coreSourceDir "install"
-$writerSourceDir = Join-Path $coreSourceDir "external\ScopeWriter"
-$writerBuildRoot = Join-Path $writerSourceDir "build"
-$writerBuildDir = Join-Path $writerBuildRoot "standalone"
-$writerInstallDir = Join-Path $writerSourceDir "install"
-$writerConsumerSourceDir = Join-Path $writerSourceDir "tests\consumer"
-$writerConsumerBuildDir = Join-Path $writerBuildRoot "consumer"
-$pluginSourceDir = Join-Path $repoRoot "plugins"
-$pluginBuildDir = Join-Path $repoRoot "build\plugins"
-$pluginInstallDir = Join-Path $coreInstallDir "bin"
+$driverInstallDir = Join-Path $coreInstallDir "bin"
+# Inside drivers rather than build, whose drivers folder is where the GUI build puts the drivers it runs
+$driverSourceDir = Join-Path $repoRoot "drivers"
+$driverBuildDir = Join-Path $driverSourceDir "build"
 $config = "Release"
 $coreCachePath = Join-Path $coreBuildDir "CMakeCache.txt"
 $guiCachePath = Join-Path $guiBuildDir "CMakeCache.txt"
-$pluginCachePath = Join-Path $pluginBuildDir "CMakeCache.txt"
+$driverCachePath = Join-Path $driverBuildDir "CMakeCache.txt"
 
 $vcpkgConfigureArgs = @()
-$writerVcpkgArgs = @()
 if ($env:OS -eq "Windows_NT") {
-    if (-not $scopeOneVcpkgRoot) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
-    $vcpkgToolchain = Join-Path $scopeOneVcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-    if (-not (Test-Path $vcpkgToolchain)) {
-        throw "Set VCPKG_ROOT to a bootstrapped vcpkg checkout."
-    }
-}
-if ($env:OS -eq "Windows_NT" -and $target -eq "scopewriter") {
-    # Standalone ScopeWriter installs its own vcpkg.json dependencies and ships their DLLs
-    $writerVcpkgArgs = @(
-        "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
-        "-DVCPKG_TARGET_TRIPLET=x64-windows",
-        "-DX_VCPKG_APPLOCAL_DEPS_INSTALL=ON"
-    )
-}
-elseif ($env:OS -eq "Windows_NT") {
+    $vcpkgToolchain = Join-Path (Resolve-Vcpkg) "scripts\buildsystems\vcpkg.cmake"
     $vcpkgConfigureArgs = @(
         "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
         "-DVCPKG_MANIFEST_DIR=$repoRoot",
         "-DVCPKG_INSTALLED_DIR=$(Join-Path $repoRoot 'vcpkg_installed')",
-        "-DVCPKG_TARGET_TRIPLET=x64-windows",
-        "-UTiff_DIR",
-        "-UOpenCV_DIR",
-        "-UQt6*_DIR",
-        "-UWINDEPLOYQT_EXECUTABLE"
+        "-DVCPKG_TARGET_TRIPLET=x64-windows"
     )
 }
 
-if ($clean) {
-    if ($target -eq "scopewriter") {
-        if (Test-Path $writerBuildRoot) {
-            Write-Step "Removing ScopeWriter build directory"
-            Remove-Item -LiteralPath $writerBuildRoot -Recurse -Force
-        }
-        if (Test-Path $writerInstallDir) {
-            Write-Step "Removing ScopeWriter install directory"
-            Remove-Item -LiteralPath $writerInstallDir -Recurse -Force
-        }
+# An installed Qt comes from --qt or SCOPEONE_QT_DIR, and "vcpkg" selects the Qt that vcpkg builds.
+# --qt is saved for the user account, so later builds keep the Qt without it.
+$qtDir = if ($null -ne $qtArgument) { $qtArgument } elseif ($env:SCOPEONE_QT_DIR) { $env:SCOPEONE_QT_DIR } else { "" }
+if ($qtDir -eq "vcpkg") {
+    $qtDir = ""
+}
+if ($qtDir) {
+    $qtDir = [System.IO.Path]::GetFullPath($qtDir).TrimEnd("\", "/")
+    if (-not (Test-Path (Join-Path $qtDir "lib\cmake\Qt6"))) {
+        throw "No Qt 6 in $qtDir (lib\cmake\Qt6 is missing). Pass the MSVC 64-bit Qt directory, such as C:\Qt\6.11.2\msvc2022_64."
     }
+}
+if ($null -ne $qtArgument) {
+    $savedQtDir = if ($qtDir) { $qtDir } else { $null }
+    $env:SCOPEONE_QT_DIR = $savedQtDir
+    [Environment]::SetEnvironmentVariable("SCOPEONE_QT_DIR", $savedQtDir, "User")
+    if ($qtDir) {
+        Write-Host "Using the Qt in $qtDir, saved as SCOPEONE_QT_DIR for your user account."
+    }
+    else {
+        Write-Host "Using the Qt that vcpkg builds, and SCOPEONE_QT_DIR is removed."
+    }
+}
+# Every project takes the Qt from SCOPEONE_QT_DIR, which leaves Qt out of vcpkg when it is set
+if ($env:OS -eq "Windows_NT") {
+    $vcpkgConfigureArgs += "-DSCOPEONE_QT_DIR=$qtDir"
+}
+
+if ($clean) {
     if ($target -in @("all", "gui") -and (Test-Path $guiBuildDir)) {
         Write-Step "Removing GUI build directory"
         Remove-Item -LiteralPath $guiBuildDir -Recurse -Force
     }
-    if ($target -in @("all", "plugins") -and (Test-Path $pluginBuildDir)) {
-        Write-Step "Removing plugin build directory"
-        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
+    if ($target -in @("all", "drivers") -and (Test-Path $driverBuildDir)) {
+        Write-Step "Removing driver build directory"
+        Remove-Item -LiteralPath $driverBuildDir -Recurse -Force
     }
     if ($target -in @("all", "core") -and (Test-Path $coreBuildDir)) {
         Write-Step "Removing ScopeOneCore build directory"
         Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
+    }
+    # The GUI build copies the drivers and libraries of the Core install, and a removed driver or
+    # the CUDA provider of an earlier ONNX Runtime stayed there and kept being copied
+    if ($target -in @("all", "core") -and (Test-Path $coreInstallDir)) {
+        Write-Step "Removing ScopeOneCore install directory"
+        Remove-Item -LiteralPath $coreInstallDir -Recurse -Force
     }
 }
 
 Ensure-Directory $repoRoot
 
 $coreConfigureOptionOverride = $coreConfigureOption.Count -gt 0
-$guiConfigureOptionOverride = $guiConfigureOption.Count -gt 0
 
 $needCoreConfigure = $configure -or $coreConfigureOptionOverride -or -not (Test-Path $coreCachePath)
-$needGuiConfigure = $configure -or $guiConfigureOptionOverride -or -not (Test-Path $guiCachePath)
-$pluginBuildFilesExist = (Test-Path (Join-Path $pluginBuildDir "ALL_BUILD.vcxproj")) -or
-    (Test-Path (Join-Path $pluginBuildDir "build.ninja")) -or
-    (Test-Path (Join-Path $pluginBuildDir "Makefile"))
-$needPluginConfigure = $configure -or $pluginConfigureOption.Count -gt 0 -or -not (Test-Path $pluginCachePath) -or
-    -not $pluginBuildFilesExist
-$pluginCachedInstallPrefix = Normalize-CMakePath (
-    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_INSTALL_PREFIX")
-$pluginCachedSourceDir = Normalize-CMakePath (
-    Get-CMakeCacheValue -CachePath $pluginCachePath -Key "CMAKE_HOME_DIRECTORY")
-if ($pluginCachedSourceDir -and
-    $pluginCachedSourceDir -ne (Normalize-CMakePath $pluginSourceDir)) {
-    $needPluginConfigure = $true
-    if (Test-Path $pluginBuildDir) {
-        Write-Step "Removing stale plugin build directory"
-        Remove-Item -LiteralPath $pluginBuildDir -Recurse -Force
-    }
-}
-if ($pluginCachedInstallPrefix -and
-    $pluginCachedInstallPrefix -ne (Normalize-CMakePath $pluginInstallDir)) {
-    $needPluginConfigure = $true
+$needGuiConfigure = $configure -or -not (Test-Path $guiCachePath)
+$driverBuildFilesExist = (Test-Path (Join-Path $driverBuildDir "ALL_BUILD.vcxproj")) -or
+    (Test-Path (Join-Path $driverBuildDir "build.ninja")) -or
+    (Test-Path (Join-Path $driverBuildDir "Makefile"))
+$needDriverConfigure = $configure -or -not (Test-Path $driverCachePath) -or -not $driverBuildFilesExist
+$driverCachedInstallPrefix = Normalize-CMakePath (
+    Get-CMakeCacheValue -CachePath $driverCachePath -Key "CMAKE_INSTALL_PREFIX")
+if ($driverCachedInstallPrefix -and
+    $driverCachedInstallPrefix -ne (Normalize-CMakePath $driverInstallDir)) {
+    $needDriverConfigure = $true
 }
 
 $installPrefixOverride = Find-ConfigureOverride -Options $coreConfigureOption -Prefix "-DCMAKE_INSTALL_PREFIX="
 
-if ($target -eq "scopewriter") {
-    $writerGeneratorArgs = @()
-    if ($env:OS -eq "Windows_NT") {
-        $writerGeneratorArgs = @("-G", "Visual Studio 17 2022", "-A", "x64")
-    }
-    Invoke-Step `
-        -Label "Configuring standalone ScopeWriter" `
-        -FilePath $cmake `
-        -Arguments (@(
-            "-S", $writerSourceDir,
-            "-B", $writerBuildDir,
-            "-DCMAKE_INSTALL_PREFIX=$writerInstallDir",
-            "-DSCOPEWRITER_BUILD_TESTS=ON"
-        ) + $writerVcpkgArgs + $writerGeneratorArgs) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Building standalone ScopeWriter ($config)" `
-        -FilePath $cmake `
-        -Arguments @(
-            "--build", $writerBuildDir,
-            "--config", $config,
-            "--parallel"
-        ) `
-        -WorkingDirectory $repoRoot
-
-    $ctest = (Get-Command ctest -ErrorAction Stop).Source
-    Invoke-Step `
-        -Label "Testing standalone ScopeWriter ($config)" `
-        -FilePath $ctest `
-        -Arguments @(
-            "--test-dir", $writerBuildDir,
-            "-C", $config,
-            "--output-on-failure"
-        ) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Installing standalone ScopeWriter" `
-        -FilePath $cmake `
-        -Arguments @(
-            "--install", $writerBuildDir,
-            "--config", $config
-        ) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Configuring installed ScopeWriter consumer" `
-        -FilePath $cmake `
-        -Arguments (@(
-            "-S", $writerConsumerSourceDir,
-            "-B", $writerConsumerBuildDir,
-            "-DCMAKE_PREFIX_PATH=$writerInstallDir"
-        ) + $writerGeneratorArgs) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Building installed ScopeWriter consumer ($config)" `
-        -FilePath $cmake `
-        -Arguments @(
-            "--build", $writerConsumerBuildDir,
-            "--config", $config,
-            "--parallel"
-        ) `
-        -WorkingDirectory $repoRoot
-
-    Invoke-Step `
-        -Label "Testing installed ScopeWriter consumer ($config)" `
-        -FilePath $ctest `
-        -Arguments @(
-            "--test-dir", $writerConsumerBuildDir,
-            "-C", $config,
-            "--output-on-failure"
-        ) `
-        -WorkingDirectory $repoRoot
+# A build directory configured with the other Qt is configured again, or one part would keep it
+$qtDirNormalized = [string](Normalize-CMakePath $qtDir)
+if ((Test-Path $coreCachePath) -and
+    [string](Normalize-CMakePath (Get-CMakeCacheValue -CachePath $coreCachePath -Key "SCOPEONE_QT_DIR")) -ne $qtDirNormalized) {
+    $needCoreConfigure = $true
+}
+if ((Test-Path $driverCachePath) -and
+    [string](Normalize-CMakePath (Get-CMakeCacheValue -CachePath $driverCachePath -Key "SCOPEONE_QT_DIR")) -ne $qtDirNormalized) {
+    $needDriverConfigure = $true
+}
+if ((Test-Path $guiCachePath) -and
+    [string](Normalize-CMakePath (Get-CMakeCacheValue -CachePath $guiCachePath -Key "SCOPEONE_QT_DIR")) -ne $qtDirNormalized) {
+    $needGuiConfigure = $true
 }
 
 if (-not $needCoreConfigure -and $target -in @("all", "core")) {
@@ -425,6 +515,37 @@ if (-not $needCoreConfigure -and $target -in @("all", "core")) {
 }
 
 if ($target -in @("all", "core")) {
+    # A clone without --recurse-submodules has an empty ScopeWriter folder and Core failed to
+    # configure. Only an empty checkout is filled, so commits made inside ScopeWriter are kept.
+    if (-not (Test-Path (Join-Path $coreSourceDir "external\ScopeWriter\CMakeLists.txt"))) {
+        Invoke-Step -Label "Fetching the ScopeWriter submodule" -FilePath $git `
+            -Arguments @("submodule", "update", "--init", "--recursive") `
+            -WorkingDirectory $repoRoot
+    }
+    if ($env:OS -eq "Windows_NT") {
+        Ensure-MMCore
+    }
+    if (-not (Test-Path (Join-Path $repoRoot "vcpkg_installed\x64-windows"))) {
+        Write-Host ""
+        if ($qtDir) {
+            Write-Host "The first build compiles OpenCV with vcpkg, which takes 10 to 15 minutes. Later builds reuse the result." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "The first build compiles Qt and OpenCV with vcpkg, which takes a long time. Pass --qt with an installed MSVC Qt to skip Qt. Later builds reuse the result." -ForegroundColor Yellow
+        }
+    }
+
+    # Core builds the CUDA processing modules, which need the CUDA toolset. A generator keeps the
+    # toolset it was first configured with, so a build directory made without it is configured
+    # again from scratch.
+    $coreToolset = if ($env:CUDA_PATH) { "cuda=$env:CUDA_PATH" } else { "" }
+    if ($coreToolset -and (Test-Path $coreCachePath) -and
+        (Get-CMakeCacheValue -CachePath $coreCachePath -Key "CMAKE_GENERATOR_TOOLSET") -ne $coreToolset) {
+        Write-Step "Removing ScopeOneCore build directory configured without the CUDA toolset"
+        Remove-Item -LiteralPath $coreBuildDir -Recurse -Force
+        $needCoreConfigure = $true
+    }
+
     if ($needCoreConfigure) {
         $coreConfigureArgs = @(
             "-S", $coreSourceDir,
@@ -436,6 +557,9 @@ if ($target -in @("all", "core")) {
         }
 
         $coreConfigureArgs += $vcpkgConfigureArgs + $coreConfigureOption
+        if ($coreToolset) {
+            $coreConfigureArgs += @("-T", $coreToolset)
+        }
 
         Invoke-Step `
             -Label "Configuring ScopeOneCore" `
@@ -448,7 +572,7 @@ if ($target -in @("all", "core")) {
         "--build", $coreBuildDir,
         "--config", $config,
         "--parallel"
-    ) + $coreBuildOption
+    )
 
     Invoke-Step `
         -Label "Building ScopeOneCore ($config)" `
@@ -456,62 +580,57 @@ if ($target -in @("all", "core")) {
         -Arguments $coreBuildArgs `
         -WorkingDirectory $repoRoot
 
-    if (-not $skipCoreInstall) {
-        Invoke-Step `
-            -Label "Installing ScopeOneCore into local prefix" `
-            -FilePath $cmake `
-            -Arguments @(
-                "--install", $coreBuildDir,
-                "--config", $config
-            ) `
-            -WorkingDirectory $repoRoot
-    }
+    Invoke-Step `
+        -Label "Installing ScopeOneCore into local prefix" `
+        -FilePath $cmake `
+        -Arguments @(
+            "--install", $coreBuildDir,
+            "--config", $config
+        ) `
+        -WorkingDirectory $repoRoot
 }
 
-if ($target -in @("all", "plugins")) {
+if ($target -in @("all", "drivers")) {
     $coreConfigFile = Join-Path $coreInstallDir "lib\cmake\ScopeOneCore\ScopeOneCoreConfig.cmake"
     if (-not (Test-Path $coreConfigFile)) {
         throw "ScopeOneCore is not installed at $coreInstallDir. Build the core first."
     }
 
-    if ($needPluginConfigure) {
-        $pluginConfigureArgs = @(
-            "-S", $pluginSourceDir,
-            "-B", $pluginBuildDir,
-            "-DScopeOneCore_ROOT=$coreInstallDir",
-            "-DCMAKE_PREFIX_PATH=$coreInstallDir",
-            "-DCMAKE_INSTALL_PREFIX=$pluginInstallDir"
-        )
-        $pluginConfigureArgs += $vcpkgConfigureArgs + $pluginConfigureOption
-        if ($env:CUDA_PATH) {
-            $pluginConfigureArgs += @("-T", "cuda=$env:CUDA_PATH")
-        }
+    if ($needDriverConfigure) {
         Invoke-Step `
-            -Label "Configuring ScopeOne plugins" `
+            -Label "Configuring ScopeOne drivers" `
             -FilePath $cmake `
-            -Arguments $pluginConfigureArgs `
+            -Arguments (@(
+                "-S", $driverSourceDir,
+                "-B", $driverBuildDir,
+                "-DScopeOneCore_ROOT=$coreInstallDir",
+                "-DCMAKE_PREFIX_PATH=$coreInstallDir",
+                "-DCMAKE_INSTALL_PREFIX=$driverInstallDir"
+            ) + $vcpkgConfigureArgs) `
             -WorkingDirectory $repoRoot
     }
 
     Invoke-Step `
-        -Label "Building ScopeOne plugins ($config)" `
+        -Label "Building ScopeOne drivers ($config)" `
         -FilePath $cmake `
         -Arguments @(
-            "--build", $pluginBuildDir,
+            "--build", $driverBuildDir,
             "--config", $config,
             "--parallel"
         ) `
         -WorkingDirectory $repoRoot
 
     Invoke-Step `
-        -Label "Installing ScopeOne plugins" `
+        -Label "Installing ScopeOne drivers" `
         -FilePath $cmake `
         -Arguments @(
-            "--install", $pluginBuildDir,
+            "--install", $driverBuildDir,
             "--config", $config
         ) `
         -WorkingDirectory $repoRoot
 
+    # The GUI decides at configure time whether there is a drivers folder to copy, so it is
+    # configured again once the drivers are installed
     if ($target -eq "all") {
         $needGuiConfigure = $true
     }
@@ -540,7 +659,7 @@ if ($target -in @("all", "gui")) {
             "-S", $guiSourceDir,
             "-B", $guiBuildDir,
             "-DScopeOneCore_ROOT=$coreInstallDir"
-        ) + $vcpkgConfigureArgs + $guiConfigureOption
+        ) + $vcpkgConfigureArgs
 
         Invoke-Step `
             -Label "Configuring ScopeOne GUI" `
@@ -553,7 +672,7 @@ if ($target -in @("all", "gui")) {
         "--build", $guiBuildDir,
         "--config", $config,
         "--parallel"
-    ) + $guiBuildOption
+    )
 
     Invoke-Step `
         -Label "Building ScopeOne GUI ($config)" `
@@ -583,24 +702,35 @@ $packageCandidates = Get-ChildItem -LiteralPath $guiBuildDir -File -ErrorAction 
 Write-Step "Summary"
 Write-Host "Target: $target"
 Write-Host "Config: $config"
-if ($target -eq "scopewriter") {
-    Write-Host "ScopeWriter install: $writerInstallDir"
-}
-else {
-    Write-Host "ScopeOneCore install: $coreInstallDir"
-    if ($target -in @("all", "plugins")) {
-        Write-Host "Plugins: $pluginBuildDir"
-    }
-}
-if ($target -ne "scopewriter") {
-    if (Test-Path $guiExe) {
-        Write-Host "GUI executable: $guiExe"
-    }
-    if ($packageCandidates) {
-        Write-Host "Packages:"
-        foreach ($candidate in $packageCandidates) {
-            Write-Host "  $($candidate.FullName)"
+Write-Host "ScopeOneCore install: $coreInstallDir"
+# Core builds the CUDA and ONNX modules only when it finds their toolkits, so a missing one
+# leaves them out without failing the build
+if (Test-Path $coreCachePath) {
+    foreach ($module in @(@{ Label = "CUDA"; Key = "CUDA" }, @{ Label = "ONNX"; Key = "INFERENCE" })) {
+        Write-Host -NoNewline "$($module.Label): "
+        $reason = Get-CMakeCacheValue -CachePath $coreCachePath -Key "SCOPEONE_$($module.Key)_SKIP_REASON"
+        if ((Get-CMakeCacheValue -CachePath $coreCachePath -Key "SCOPEONE_BUILT_WITH_$($module.Key)") -eq "ON") {
+            Write-Host "on" -ForegroundColor Green
         }
+        elseif ($reason) {
+            Write-Host -NoNewline "off" -ForegroundColor Yellow
+            Write-Host " ($reason)"
+        }
+        else {
+            Write-Host "off" -ForegroundColor Yellow
+        }
+    }
+}
+if ($target -in @("all", "drivers")) {
+    Write-Host "Drivers: $driverBuildDir"
+}
+if (Test-Path $guiExe) {
+    Write-Host "GUI executable: $guiExe"
+}
+if ($packageCandidates) {
+    Write-Host "Packages:"
+    foreach ($candidate in $packageCandidates) {
+        Write-Host "  $($candidate.FullName)"
     }
 }
 

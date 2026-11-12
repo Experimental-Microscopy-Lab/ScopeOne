@@ -759,22 +759,27 @@ namespace scopeone::core::internal
         }
     }
 
-    void registerImageOperationModules(ProcessingModuleRegistry& registry)
+    namespace
     {
-        for (const Spec& spec : specs())
+        void registerImageOperationModules(ProcessingModuleRegistry& registry)
         {
-            QVariantMap defaults;
-            for (const ProcessingParameterDescriptor& parameter : spec.parameters)
+            for (const Spec& spec : specs())
             {
-                defaults.insert(parameter.key, parameter.defaultValue);
+                QVariantMap defaults;
+                for (const ProcessingParameterDescriptor& parameter : spec.parameters)
+                {
+                    defaults.insert(parameter.key, parameter.defaultValue);
+                }
+                const QString id = QString::fromLatin1(spec.id);
+                const QString name = QString::fromLatin1(spec.name);
+                registry.registerBuiltIn({id, name, 1, spec.parameters, spec.resettable},
+                                        [id, name, defaults]()
+                                        {
+                                            return std::make_unique<ImageOperationModule>(id, name, defaults);
+                                        });
             }
-            const QString id = QString::fromLatin1(spec.id);
-            const QString name = QString::fromLatin1(spec.name);
-            registry.registerModule({id, name, 1, spec.parameters, spec.resettable},
-                                    [id, name, defaults]()
-                                    {
-                                        return std::make_unique<ImageOperationModule>(id, name, defaults);
-                                    });
         }
+
+        [[maybe_unused]] const bool registered = addProcessingModuleRegistration(registerImageOperationModules);
     }
 } // namespace scopeone::core::internal

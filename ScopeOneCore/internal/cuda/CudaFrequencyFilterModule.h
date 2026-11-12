@@ -1,0 +1,42 @@
+#pragma once
+
+#include "internal/cuda/CudaModule.h"
+
+#include <cufft.h>
+
+namespace scopeone::core::internal::cuda
+{
+    class CudaFrequencyFilterModule final : public scopeone::core::internal::cuda::CudaModule
+    {
+    public:
+        CudaFrequencyFilterModule();
+        ~CudaFrequencyFilterModule() override;
+
+        QString id() const override;
+        QString name() const override;
+        QVariantMap parameters() const override;
+        void setParameters(const QVariantMap& parameters) override;
+        std::unique_ptr<scopeone::core::ProcessingModule> createRuntime() const override;
+        bool resetState() override;
+
+    protected:
+        bool processDevice(const scopeone::core::internal::cuda::GpuImage& input,
+                           scopeone::core::internal::cuda::GpuImage& output,
+                           int bitDepth) override;
+
+    private:
+        void destroyPlans();
+        void releaseScratch();
+
+        void* m_spectrum{nullptr};
+        cufftHandle m_forwardPlan{0};
+        cufftHandle m_inversePlan{0};
+        int m_planWidth{0};
+        int m_planHeight{0};
+        void* m_minMaxScratch{nullptr};
+        float m_minFeatureSize{2.0f};
+        float m_maxFeatureSize{10.0f};
+        int m_filterKind{0};
+        int m_outputMode{2};
+    };
+}

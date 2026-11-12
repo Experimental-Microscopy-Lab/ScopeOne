@@ -261,7 +261,7 @@ namespace scopeone::core::internal
     bool ImageProcessingManager::removeCameraDefinition(const QString& cameraId)
     {
         QMutexLocker locker(&m_definitionsMutex);
-        return m_cameraDefinitions.remove(cameraId.trimmed()) > 0;
+        return m_cameraDefinitions.remove(cameraId.trimmed());
     }
 
     QStringList ImageProcessingManager::cameraDefinitionIds() const

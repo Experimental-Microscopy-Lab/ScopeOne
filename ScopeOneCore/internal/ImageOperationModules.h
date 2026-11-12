@@ -1,7 +1,6 @@
 #pragma once
 
 #include "internal/ProcessingModule.h"
-#include "internal/ProcessingModuleRegistry.h"
 
 #include <deque>
 #include <opencv2/core.hpp>
@@ -36,5 +35,4 @@ namespace scopeone::core::internal
         int m_windowType{0};
     };
 
-    void registerImageOperationModules(ProcessingModuleRegistry& registry);
 } // namespace scopeone::core::internal

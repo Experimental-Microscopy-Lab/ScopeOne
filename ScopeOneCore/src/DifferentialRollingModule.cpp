@@ -1,5 +1,8 @@
 #include "internal/DifferentialRollingModule.h"
 
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
+
 #include "internal/FrameBufferUtils.h"
 
 #include <limits>
@@ -324,3 +327,15 @@ namespace scopeone::core::internal
         return true;
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        DifferentialRollingModule,
+        QStringLiteral("differential_rolling"),
+        QStringLiteral("Differential Rolling"),
+        1,
+        {integerParameter("batch_size", "Batch size", 16, 1, 256),
+         booleanParameter("normalize", "Normalize by batch 1", true)},
+        true)
+}

@@ -1,4 +1,7 @@
 #include "internal/SpatiotemporalBinningModule.h"
+
+#include "internal/ProcessingModuleRegistry.h"
+#include "internal/ProcessingParameters.h"
 #include "internal/FrameBufferUtils.h"
 
 #include <QtGlobal>
@@ -493,3 +496,20 @@ namespace scopeone::core::internal
         return true;
     }
 } // namespace scopeone::core::internal
+
+namespace scopeone::core::internal
+{
+    SCOPEONE_REGISTER_PROCESSING_MODULE(
+        SpatiotemporalBinningModule,
+        QStringLiteral("spatiotemporal_binning"),
+        QStringLiteral("Spatiotemporal Binning"),
+        1,
+        {integerParameter("spatial_bin_x", "Spatial X", 1, 1, 64),
+         integerParameter("spatial_bin_y", "Spatial Y", 1, 1, 64),
+         integerParameter("temporal_bin", "Temporal", 1, 1, 256),
+         choiceParameter("spatial_mode", "Spatial mode", 0,
+                         {"Mean", "Sum", "Minimum", "Maximum", "Skip"}),
+         choiceParameter("temporal_mode", "Temporal mode", 0,
+                         {"Mean", "Sum", "Minimum", "Maximum", "Skip"})},
+        true)
+}

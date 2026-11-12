@@ -103,7 +103,7 @@ namespace scopeone::core::internal::sharedframe
     {
         QByteArray payload(static_cast<qsizetype>(payloadSize(header)), Qt::Uninitialized);
         std::memcpy(payload.data(), slot + kSharedFrameHeaderSize, static_cast<size_t>(payload.size()));
-        ImageFrame frame = ImageFrame::fromSharedFrame(cameraId, header, payload);
+        ImageFrame frame = imageFrameFromShared(cameraId, header, payload);
         if (!frame.isValid())
         {
             return false;

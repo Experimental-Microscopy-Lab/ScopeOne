@@ -2,23 +2,23 @@
 
 #include <QHash>
 #include <QObject>
-#include <QPointer>
-
-#include <memory>
-#include <vector>
 
 #include "scopeone/DaqDevice.h"
-
-class QPluginLoader;
+#include "scopeone/DaqDevice.h"
+#include "scopeone/Device.h"
 
 namespace scopeone::core::internal
 {
+    class DeviceRegistry;
+
+    // The DAQ devices of the drivers. Their inputs and states arrive on a thread of the
+    // provider and are passed on in this object's thread.
     class DaqDeviceManager final : public QObject
     {
         Q_OBJECT
 
     public:
-        explicit DaqDeviceManager(QObject* parent = nullptr);
+        explicit DaqDeviceManager(DeviceRegistry* registry, QObject* parent = nullptr);
         ~DaqDeviceManager() override;
 
         QList<DaqDeviceDescriptor> devices() const;
@@ -29,6 +29,7 @@ namespace scopeone::core::internal
         QString stateMessage(const QString& deviceId) const;
 
     signals:
+        void devicesChanged();
         void stateChanged(const QString& deviceId,
                           scopeone::core::DaqState state,
                           const QString& message);
@@ -36,15 +37,14 @@ namespace scopeone::core::internal
         void inputDataReady(const scopeone::core::DaqInputChunk& chunk);
 
     private:
-        void loadPlugins();
-        DaqController* controller(const QString& deviceId,
-                                  QString* errorMessage);
+        void refreshProviderDevices();
+        void detachProvider(const DevicePtr& provider);
+        void updateState(const QString& deviceId, DaqState state, const QString& message);
 
-        std::vector<std::unique_ptr<QPluginLoader>> m_loaders;
-        mutable bool m_pluginsLoaded{false};
-        QHash<QString, DaqDevicePlugin*> m_plugins;
+        DeviceRegistry* m_registry{nullptr};
+        QHash<QString, DevicePtr> m_attachedProviders;
+        QHash<QString, DevicePtr> m_providerByDevice;
         QHash<QString, DaqDeviceDescriptor> m_descriptors;
-        QHash<QString, QPointer<DaqController>> m_controllers;
         QHash<QString, DaqState> m_states;
         QHash<QString, QString> m_messages;
     };

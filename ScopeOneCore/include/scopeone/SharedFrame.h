@@ -1,6 +1,12 @@
 #pragma once
 
+#include "scopeone/ImageFrame.h"
+
+#include <QByteArray>
+#include <QString>
 #include <QtGlobal>
+
+#include <limits>
 
 namespace scopeone::core
 {
@@ -81,4 +87,86 @@ namespace scopeone::core
     inline constexpr int kSharedMemoryControlSize = 64;
     inline constexpr int kSharedFrameHeaderSize = static_cast<int>(sizeof(SharedFrameHeader));
     inline constexpr int kSharedFrameSlotStride = kSharedFrameHeaderSize + kSharedFrameMaxBytes;
+
+    // The header of a frame in the DriverHost frame ring
+    inline SharedFrameHeader toSharedFrameHeader(const ImageFrame& frame)
+    {
+        SharedFrameHeader header{};
+        if (!frame.isValid())
+        {
+            return header;
+        }
+
+        header.state = 2;
+        header.width = static_cast<quint32>(frame.width);
+        header.height = static_cast<quint32>(frame.height);
+        header.stride = static_cast<quint32>(frame.stride);
+        header.bitsPerSample = static_cast<quint16>(frame.bitsPerSample);
+        header.channels = 1;
+        header.frameIndex = frame.frameIndex;
+        header.timestampNs = frame.timestampNs;
+        header.pixelFormat = frame.pixelFormat == ImagePixelFormat::Mono16
+                                 ? static_cast<quint32>(SharedPixelFormat::Mono16)
+                                 : static_cast<quint32>(SharedPixelFormat::Mono8);
+        if (frame.hasSourceRoi())
+        {
+            setSharedFrameSourceRoi(header, frame.sourceRoiX, frame.sourceRoiY, frame.sourceRoiWidth, frame.sourceRoiHeight);
+        }
+        return header;
+    }
+
+    // A frame read back from the DriverHost frame ring, or an invalid frame when the header does not fit
+    inline ImageFrame imageFrameFromShared(const QString& cameraId,
+                                           const SharedFrameHeader& header,
+                                           const QByteArray& payload)
+    {
+        if (header.state != 2
+            || header.channels != 1
+            || header.width > static_cast<quint32>((std::numeric_limits<int>::max)())
+            || header.height > static_cast<quint32>((std::numeric_limits<int>::max)())
+            || header.stride > static_cast<quint32>((std::numeric_limits<int>::max)()))
+        {
+            return {};
+        }
+
+        ImageFrame frame;
+        frame.cameraId = cameraId.trimmed();
+        frame.width = static_cast<int>(header.width);
+        frame.height = static_cast<int>(header.height);
+        frame.bitsPerSample = static_cast<int>(header.bitsPerSample);
+        frame.frameIndex = header.frameIndex;
+        frame.timestampNs = header.timestampNs;
+
+        if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono16))
+        {
+            if (header.bitsPerSample == 0 || header.bitsPerSample > 16)
+            {
+                return {};
+            }
+            frame.pixelFormat = ImagePixelFormat::Mono16;
+        }
+        else if (header.pixelFormat == static_cast<quint32>(SharedPixelFormat::Mono8))
+        {
+            if (header.bitsPerSample != 8)
+            {
+                return {};
+            }
+            frame.pixelFormat = ImagePixelFormat::Mono8;
+        }
+        else
+        {
+            return {};
+        }
+
+        frame.stride = static_cast<int>(header.stride);
+        frame.bytes = payload;
+        if (sharedFrameHasSourceRoi(header))
+        {
+            frame.sourceRoiX = static_cast<int>(header.sourceRoiX);
+            frame.sourceRoiY = static_cast<int>(header.sourceRoiY);
+            frame.sourceRoiWidth = static_cast<int>(header.sourceRoiWidth);
+            frame.sourceRoiHeight = static_cast<int>(header.sourceRoiHeight);
+        }
+        return frame.isValid() ? frame : ImageFrame{};
+    }
 }

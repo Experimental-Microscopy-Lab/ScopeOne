@@ -1902,7 +1902,10 @@ namespace scopeone::ui
         painter.save();
         painter.setRenderHint(QPainter::Antialiasing);
 
-        const QFont font(QStringLiteral("Segoe UI"), 9);
+        // A named "Segoe UI" is missing on macOS, where Qt scanned every font family alias before
+        // falling back, so the labels take the system UI font like the scale bar
+        QFont font = painter.font();
+        font.setPointSize(9);
         painter.setFont(font);
         const QFontMetrics fm(font);
         const bool overlay = m_layerLayoutMode == LayerLayoutMode::Overlay

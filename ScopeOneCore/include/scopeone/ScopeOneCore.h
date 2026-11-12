@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QFuture>
 #include <QList>
 #include <QMetaType>
 #include <QMap>
@@ -24,15 +25,14 @@
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/DaqDevice.h"
 #include "scopeone/HardwareTypes.h"
-#include "scopeone/HardwareProvider.h"
+#include "scopeone/Device.h"
 #include "scopeone/ImageFrame.h"
-#include "scopeone/ProcessingPlugin.h"
+#include "scopeone/ProcessingTypes.h"
 #include "scopeone/ProcessingPipeline.h"
 #include "scopeone/RecordingSession.h"
 #include "scopeone/SignalSource.h"
 #include "scopeone/scopeone_core_export.h"
 
-class CMMCore;
 class QThreadPool;
 class QTimer;
 
@@ -232,6 +232,33 @@ namespace scopeone::core
             double m_upperLimit{0.0};
         };
 
+        // One light source channel of the ScopeOneLightSource lines of the cfg file. A role whose
+        // property is empty is not declared, Power always is. Each role names its own device.
+        struct LightSource
+        {
+            QString name;
+            QString enableDevice;
+            QString enableProperty;
+            QString onValue;
+            QString offValue;
+            QString powerDevice;
+            QString powerProperty;
+            QString readingDevice;
+            QString readingProperty;
+        };
+
+        // What one round over the light sources returns, in the order of the list that was passed.
+        // The settings are empty when the round did not ask for them.
+        struct LightSourceState
+        {
+            bool hasLimits{false};
+            double lower{0.0};
+            double upper{0.0};
+            QString enable;
+            QString power;
+            QString reading;
+        };
+
         explicit ScopeOneCore(QObject* parent = nullptr);
         ~ScopeOneCore() override;
         static QString getVersion();
@@ -263,11 +290,8 @@ namespace scopeone::core
         bool setAdditionalDeviceAdapterSearchPaths(const QStringList& paths);
 
         QStringList cameraIds() const { return m_cameraIds; }
+        QString configuredCamera() const;
         QList<HardwareDeviceDescriptor> hardwareDevices() const;
-        bool registerDriverHostProvider(const QString& providerId,
-                                        const QString& modulePath,
-                                        const QVariantMap& options = {},
-                                        QString* errorMessage = nullptr);
         QStringList runningPreviewCameraIds() const;
         double cameraPixelSizeUm(const QString& cameraId) const;
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
@@ -370,12 +394,36 @@ namespace scopeone::core
                             QString* errorMessage = nullptr);
         bool readExposure(const QString& cameraIdOrAll, double& exposureMs) const;
 
+        // The light source channels of the loaded devices in cfg order. Empty during a configuration load
+        // or unload.
+        QList<LightSource> lightSources() const;
+        bool setLightSource(const LightSource& source, QString* errorMessage = nullptr);
+        // Takes the Core roles and the light sources of the loaded cfg file again after it was edited,
+        // without restarting a device
+        bool reloadRoles(QString* errorMessage = nullptr);
+        // Reads the measured power of the light sources on the hardware thread, which also runs the
+        // configuration load and unload. With settings it also reads the switch, the power setting
+        // and the limits of the power.
+        QFuture<QList<LightSourceState>> readLightSources(const QList<LightSource>& sources, bool settings);
+        // Sets a property on the hardware thread. The result is null on success, else the error.
+        QFuture<QString> writeProperty(const QString& deviceLabel, const QString& name, const QString& value);
         QStringList availableConfigGroups() const;
         QStringList availableConfigs(const QString& configGroup) const;
         QString currentConfig(const QString& groupName) const;
+        QList<ConfigSetting> configPresetSettings(const QString& groupName, const QString& presetName) const;
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage = nullptr);
+        bool addConfigGroup(const QString& groupName, QString* errorMessage = nullptr);
+        bool removeConfigGroup(const QString& groupName, QString* errorMessage = nullptr);
+        bool renameConfigGroup(const QString& groupName, const QString& newName, QString* errorMessage = nullptr);
+        bool setConfigPreset(const QString& groupName, const QString& presetName,
+                             const QList<ConfigSetting>& settings, QString* errorMessage = nullptr);
+        bool removeConfigPreset(const QString& groupName, const QString& presetName, QString* errorMessage = nullptr);
+        bool renameConfigPreset(const QString& groupName, const QString& presetName,
+                                const QString& newName, QString* errorMessage = nullptr);
+        bool setConfigGroupProperties(const QString& groupName, const QList<ConfigSetting>& properties,
+                                      QString* errorMessage = nullptr);
 
 
         QStringList loadedDevices() const;
@@ -488,6 +536,9 @@ namespace scopeone::core
         void rawFramesAcquired(const QString& cameraId, quint64 frameCount);
         void previewRawFrameReady(const ImageFrame& frame);
         void previewStateChanged(bool running);
+        // The signal sources or DAQ devices changed as a driver was registered or removed
+        void signalSourcesChanged();
+        void daqDevicesChanged();
         void signalTimeSeriesReady(const TimeSeriesChunk& chunk);
         void signalSourceStateChanged(const QString& sourceId,
                                       SignalSourceState state,
@@ -502,7 +553,6 @@ namespace scopeone::core
         void daqError(const QString& deviceId,
                       const QString& errorMessage);
         void daqInputDataReady(const DaqInputChunk& chunk);
-        void driverHostControlServerListening(const QString& cameraId, const QString& serverName);
         void previewProcessedFrameReady(const ImageFrame& frame);
         void staticFramePublished(const QString& sourceId,
                                   const QString& displayName,
@@ -636,7 +686,10 @@ namespace scopeone::core
         void synchronizeCameraIdsFromRegistry();
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
-        void clearConfigurationRuntime(bool notify, bool shutdownCameraBackend);
+        void clearConfigurationRuntime(bool notify, bool stopCameras);
+        // Stops the DriverHosts of the Micro-Manager cameras and ScopeOne devices on the hardware
+        // thread, as they can take a second to exit, and then calls next
+        void stopDriverHosts(std::function<void()> next, bool applyShutdown = false);
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                const QString& errorMessage);
@@ -644,13 +697,14 @@ namespace scopeone::core
                                               const QString& errorMessage);
         bool canStartConfigurationOperation();
         bool hardwareBusy(QString* errorMessage) const;
+        bool canEditConfiguration(QString* errorMessage) const;
+        bool finishConfigurationEdit(bool success);
         internal::ProcessingPipelineDefinition* editableDefinition(const QString& cameraId) const;
         QHash<QString, double> cameraPixelSizesUm(const QStringList& cameraIds) const;
         void startConfigurationUnloadTask();
         quint64 queueStageMove(
             const QString& deviceLabel,
             std::function<bool(QString*)> command);
-        std::shared_ptr<CMMCore> core() const;
         bool isPropertyPreInit(const QString& deviceLabel, const QString& name) const;
         void ensureSceneLayer(const QString& layerKey,
                               const QString& sourceId,
@@ -739,7 +793,6 @@ namespace scopeone::core
         QHash<QString, quint64> m_layerFrameCounts;
         QMap<QString, double> m_layerFrameRates;
         QSet<const RecordingSessionData*> m_sessionsSaving;
-        QSet<QString> m_pendingProviderRegistrations;
         enum class ConfigurationState
         {
             Unloaded,

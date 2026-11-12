@@ -1,4 +1,5 @@
 #include "ScopeOneLocalApiServer.h"
+#include "scopeone/SharedFrame.h"
 
 #include "scopeone/ImageSceneModel.h"
 #include "PreviewWidget.h"
@@ -698,7 +699,9 @@ namespace scopeone::ui
                 QStringLiteral("camera_ids"), QStringLiteral("loaded_devices"),
                 QStringLiteral("load_config"), QStringLiteral("unload_config"),
                 QStringLiteral("config_groups"), QStringLiteral("configs"),
-                QStringLiteral("current_config"), QStringLiteral("set_config")
+                QStringLiteral("current_config"), QStringLiteral("set_config"),
+                QStringLiteral("set_config_preset"), QStringLiteral("remove_config_preset"),
+                QStringLiteral("set_light_source"), QStringLiteral("light_sources")
             }));
             groups.insert(QStringLiteral("preview"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("start_preview"), QStringLiteral("stop_preview"),
@@ -783,7 +786,9 @@ namespace scopeone::ui
             object.insert(QStringLiteral("hardwareMutationOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("load_config"), QStringLiteral("unload_config"),
                 QStringLiteral("start_preview"), QStringLiteral("stop_preview"),
-                QStringLiteral("set_config"), QStringLiteral("set_property"),
+                QStringLiteral("set_config"), QStringLiteral("set_config_preset"),
+                QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source"),
+                QStringLiteral("set_property"),
                 QStringLiteral("set_exposure"), QStringLiteral("set_roi"), QStringLiteral("set_half_roi"),
                 QStringLiteral("clear_roi"), QStringLiteral("move_xy_relative"),
                 QStringLiteral("move_z_relative"), QStringLiteral("move_xy_to"),
@@ -794,7 +799,8 @@ namespace scopeone::ui
             object.insert(QStringLiteral("filesystemMutationOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("save_experiment"), QStringLiteral("start_experiment"),
                 QStringLiteral("save_frame_mapping"), QStringLiteral("session_save"),
-                QStringLiteral("save_image_window")
+                QStringLiteral("save_image_window"), QStringLiteral("set_config_preset"),
+                QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source")
             }));
             object.insert(QStringLiteral("destructiveOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("unload_config"), QStringLiteral("remove_static_layer"),
@@ -1196,7 +1202,10 @@ namespace scopeone::ui
 #else
         const size_t mappingSize = static_cast<size_t>(
             scopeone::core::kSharedFrameHeaderSize + scopeone::core::kSharedFrameMaxBytes);
-        m_frameShmFd = ::shm_open(kPosixFrameShmName, O_CREAT | O_RDWR, 0600);
+        // A ScopeOne that crashed left its frame memory behind, and macOS sizes a POSIX shared
+        // memory object only once, so resizing the old one failed. A new one is made instead.
+        ::shm_unlink(kPosixFrameShmName);
+        m_frameShmFd = ::shm_open(kPosixFrameShmName, O_CREAT | O_EXCL | O_RDWR, 0600);
         if (m_frameShmFd < 0)
         {
             qWarning().noquote() << QStringLiteral("ScopeOne API frame shm create failed");
@@ -2923,6 +2932,72 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("set_config_preset") || type == QStringLiteral("remove_config_preset"))
+        {
+            const QString group = request.value(QStringLiteral("group")).toString().trimmed();
+            const QString preset = request.value(QStringLiteral("preset")).toString().trimmed();
+            if (group.isEmpty() || preset.isEmpty())
+                return errorResponse(type, QStringLiteral("Missing group or preset"));
+            QString errorMessage;
+            bool ok;
+            if (type == QStringLiteral("set_config_preset"))
+            {
+                const QJsonValue values = request.value(QStringLiteral("settings"));
+                if (!values.isArray()) return errorResponse(type, QStringLiteral("Missing settings array"));
+                QList<scopeone::core::ConfigSetting> settings;
+                for (const auto& value : values.toArray())
+                {
+                    const QJsonObject item = value.toObject();
+                    settings.append({item.value(QStringLiteral("device")).toString(),
+                                     item.value(QStringLiteral("property")).toString(),
+                                     item.value(QStringLiteral("value")).toString()});
+                }
+                ok = m_scopeonecore->setConfigPreset(group, preset, settings, &errorMessage);
+            }
+            else ok = m_scopeonecore->removeConfigPreset(group, preset, &errorMessage);
+            if (!ok) return errorResponse(type, errorMessage);
+            return makeResponse(type, true);
+        }
+
+        if (type == QStringLiteral("light_sources"))
+        {
+            QJsonArray sources;
+            for (const auto& source : m_scopeonecore->lightSources())
+            {
+                QJsonObject item;
+                item.insert(QStringLiteral("name"), source.name);
+                item.insert(QStringLiteral("enableDevice"), source.enableDevice);
+                item.insert(QStringLiteral("enableProperty"), source.enableProperty);
+                item.insert(QStringLiteral("onValue"), source.onValue);
+                item.insert(QStringLiteral("offValue"), source.offValue);
+                item.insert(QStringLiteral("powerDevice"), source.powerDevice);
+                item.insert(QStringLiteral("powerProperty"), source.powerProperty);
+                item.insert(QStringLiteral("readingDevice"), source.readingDevice);
+                item.insert(QStringLiteral("readingProperty"), source.readingProperty);
+                sources.append(item);
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("sources"), sources);
+            return response;
+        }
+
+        if (type == QStringLiteral("set_light_source"))
+        {
+            scopeone::core::ScopeOneCore::LightSource source;
+            source.name = request.value(QStringLiteral("name")).toString();
+            source.enableDevice = request.value(QStringLiteral("enableDevice")).toString();
+            source.enableProperty = request.value(QStringLiteral("enableProperty")).toString();
+            source.onValue = request.value(QStringLiteral("onValue")).toString();
+            source.offValue = request.value(QStringLiteral("offValue")).toString();
+            source.powerDevice = request.value(QStringLiteral("powerDevice")).toString();
+            source.powerProperty = request.value(QStringLiteral("powerProperty")).toString();
+            source.readingDevice = request.value(QStringLiteral("readingDevice")).toString();
+            source.readingProperty = request.value(QStringLiteral("readingProperty")).toString();
+            QString errorMessage;
+            if (!m_scopeonecore->setLightSource(source, &errorMessage)) return errorResponse(type, errorMessage);
+            return makeResponse(type, true);
+        }
+
         if (type == QStringLiteral("remove_static_layer"))
         {
             const QString layerKey = request.value(QStringLiteral("layerKey")).toString().trimmed();
@@ -4039,7 +4114,7 @@ namespace scopeone::ui
             return false;
         }
 
-        scopeone::core::SharedFrameHeader header = frame.toSharedFrameHeader();
+        scopeone::core::SharedFrameHeader header = scopeone::core::toSharedFrameHeader(frame);
         exportedFrame = frame;
         exportedFrame.cameraId = frame.cameraId.trimmed();
         exportedFrame.timestampNs = header.timestampNs;
@@ -4095,7 +4170,7 @@ namespace scopeone::ui
         const QString resolvedCameraId = cameraId.trimmed().isEmpty()
                                              ? m_frameMappingCameraId
                                              : cameraId.trimmed();
-        frame = scopeone::core::ImageFrame::fromSharedFrame(resolvedCameraId, header, payload);
+        frame = scopeone::core::imageFrameFromShared(resolvedCameraId, header, payload);
         if (!frame.isValid())
         {
             errorMessage = QStringLiteral("Frame mapping metadata is invalid");

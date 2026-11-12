@@ -2,9 +2,12 @@
 
 include(CMakeFindDependencyMacro)
 
-find_dependency(Qt6 REQUIRED COMPONENTS Core Gui)
+# Whether this Core has the CUDA modules, which makes the GUI package the GPU package
+set(ScopeOneCore_WITH_CUDA @SCOPEONE_BUILT_WITH_CUDA@)
+
+find_dependency(Qt6 @SCOPEONE_QT_MINIMUM_VERSION@ REQUIRED COMPONENTS Core Gui)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneCoreTargets.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/ScopeOnePlugin.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/ScopeOneDriver.cmake")
 
 check_required_components(ScopeOneCore)

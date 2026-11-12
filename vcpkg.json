@@ -9,34 +9,46 @@
       "features": ["fs", "intrinsics", "jpeg", "png", "thread", "tiff", "webp"]
     },
     {
-      "name": "qtbase",
-      "default-features": false,
-      "features": ["concurrent", "dnslookup", "gui", "harfbuzz", "jpeg", "network", "opengl", "png", "thread", "widgets"]
-    },
-    {
-      "name": "qtsvg",
-      "default-features": false
-    },
-    {
       "name": "tiff",
       "default-features": false,
       "features": ["zip"]
     },
     "zlib",
-    "zstd",
-    {
-      "name": "qtbase",
-      "default-features": false,
-      "features": ["windeployqt"],
-      "platform": "windows"
-    },
-    {
-      "name": "qtbase",
-      "default-features": false,
-      "features": ["egl", "fontconfig", "xcb", "xcb-xlib", "xrender"],
-      "platform": "linux"
-    }
+    "zstd"
   ],
+  "default-features": ["qt"],
+  "features": {
+    "qt": {
+      "description": "Qt built by vcpkg. Turning the default features off uses an installed Qt instead.",
+      "dependencies": [
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": ["concurrent", "dnslookup", "gui", "harfbuzz", "jpeg", "network", "opengl", "png", "thread", "widgets"]
+        },
+        {
+          "name": "qtsvg",
+          "default-features": false
+        },
+        {
+          "name": "qtserialport",
+          "default-features": false
+        },
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": ["windeployqt"],
+          "platform": "windows"
+        },
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": ["egl", "fontconfig", "xcb", "xcb-xlib", "xrender"],
+          "platform": "linux"
+        }
+      ]
+    }
+  },
   "overrides": [
     {
       "name": "opencv4",

@@ -42,7 +42,7 @@ namespace scopeone::ui
         explicit DeviceControlWidget(scopeone::core::ScopeOneCore* core, QWidget* parent = nullptr);
         ~DeviceControlWidget() override = default;
 
-        void setControlTargets(const QStringList& cameraIds);
+        void setControlTargets(const QStringList& cameraIds, const QString& defaultCamera = {});
 
         void setImageWorkspace(ImageWorkspace* workspace);
         void setPreviewWidget(PreviewWidget* previewWidget);
@@ -70,6 +70,8 @@ namespace scopeone::ui
         void controlTargetChanged(const QString& target);
         void snapRequested(const QString& target);
         void stageMoveFailed(const QString& message);
+        void lightSourceFailed(const QString& message);
+        void lightSourceEditRequested();
 
         void requestDrawROI(const QString& cameraId);
         void requestHalfROI(const QString& cameraId);

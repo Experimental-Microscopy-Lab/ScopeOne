@@ -1,4 +1,0 @@
-add_subdirectory(DhmTool)
-add_subdirectory(BrillouinTool)
-add_subdirectory(ScanningDaqTool)
-add_subdirectory(ExampleTool)

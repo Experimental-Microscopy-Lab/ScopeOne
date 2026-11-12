@@ -1,23 +1,22 @@
 #include "scopeone/ScopeOneCore.h"
 #include "scopeone/ImageSceneModel.h"
-#include "scopeone/PluginManifest.h"
-#include "scopeone/ScanImageAssembler.h"
+#include "internal/ScanImageAssembler.h"
 
 #include "internal/AcquisitionEngine.h"
 #include "internal/FrameBufferUtils.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
-#include "internal/DriverHostProviderProxy.h"
+#include "internal/PythonProcessingModule.h"
+#include "internal/DriverHostClient.h"
 #include "internal/HardwareRuntime.h"
-#include "internal/MMCoreManager.h"
 #include "internal/MicroManagerProvider.h"
-#include "internal/CameraManager.h"
+#include "internal/ScopeOneProvider.h"
+#include "internal/CameraFrameDelivery.h"
 #include "internal/ParticleAnalysis.h"
 #include "internal/RecordingManager.h"
 #include "internal/StageMosaicManager.h"
 #include "internal/DaqDeviceManager.h"
 #include "internal/SignalSourceManager.h"
-#include "MMCore.h"
 #include <scopewriter/ScopeWriter.h>
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -348,12 +347,6 @@ namespace
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
     // Display delivery is bounded independently from acquisition and processing throughput
     constexpr qint64 kPreviewRefreshIntervalMs = 16;
-    struct ProviderRegistrationResult
-    {
-        scopeone::core::HardwareProviderPtr provider;
-        QString errorMessage;
-    };
-
     struct OfflineProcessingResult
     {
         QList<scopeone::core::ImageFrame> frames;
@@ -635,7 +628,7 @@ namespace
 
     // Translate manager load results into the public facade result
     scopeone::core::ScopeOneCore::LoadConfigResult toFacadeLoadConfigResult(
-        const scopeone::core::internal::MMCoreManager::LoadConfigResult& result)
+        const scopeone::core::internal::MicroManagerProvider::LoadResult& result)
     {
         scopeone::core::ScopeOneCore::LoadConfigResult facade;
         facade.cameraIds = result.cameraIds;
@@ -651,7 +644,9 @@ namespace
     struct ConfigurationTaskResult
     {
         bool success{false};
-        scopeone::core::internal::MMCoreManager::LoadConfigResult loadResult;
+        scopeone::core::internal::MicroManagerProvider::LoadResult loadResult;
+        QStringList failedCameras;
+        scopeone::core::internal::ScopeOneProvider::LoadResult scopeOneResult;
         QString errorMessage;
     };
 
@@ -727,9 +722,7 @@ namespace scopeone::core
 {
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::HardwareRuntime;
-    using scopeone::core::internal::MMCoreManager;
-    using scopeone::core::internal::CameraManager;
-    using scopeone::core::internal::CameraRuntimeControl;
+    using scopeone::core::internal::MicroManagerCameraSetup;
     using scopeone::core::internal::MicroManagerProvider;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipelineDefinition;
@@ -1132,11 +1125,6 @@ namespace scopeone::core
         };
 
         HardwareRuntime* hardwareRuntime{nullptr};
-        CameraProvider* cameraProvider{nullptr};
-        CameraRuntimeControl* cameraRuntimeControl{nullptr};
-        std::shared_ptr<MicroManagerProvider> microManagerProvider;
-        MMCoreManager* mmcoreManager{nullptr};
-        CameraManager* cameraManager{nullptr};
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
@@ -1149,7 +1137,7 @@ namespace scopeone::core
             QString baseName;
             quint64 lastTimestampNs{0};
         };
-        QHash<QString, std::shared_ptr<ScanImageAssembler>> scanImageAssemblers;
+        QHash<QString, std::shared_ptr<internal::ScanImageAssembler>> scanImageAssemblers;
         QHash<QString, ScanImageSessionState> scanImageSessions;
         QHash<QString, ExperimentDocument> experiments;
         QHash<QString, std::shared_ptr<RecordingSessionData>> sessions;
@@ -1173,71 +1161,13 @@ namespace scopeone::core
     // Return the unified device catalog owned by the hardware runtime
     QList<HardwareDeviceDescriptor> ScopeOneCore::hardwareDevices() const
     {
-        return m_managers->hardwareRuntime->deviceRegistry()->devices();
-    }
-
-    bool ScopeOneCore::registerDriverHostProvider(const QString& providerId,
-                                                  const QString& modulePath,
-                                                  const QVariantMap& options,
-                                                  QString* errorMessage)
-    {
-        if (errorMessage) errorMessage->clear();
-        const QString normalizedId = providerId.trimmed();
-        if (normalizedId.isEmpty()
-            || normalizedId == QStringLiteral("micro-manager")
-            || m_configurationOperationRunning
-            || m_pendingStageCommands > 0
-            || !m_managers->activeExperimentId.isEmpty()
-            || isRecording()
-            || m_pendingProviderRegistrations.contains(normalizedId)
-            || m_managers->hardwareRuntime->deviceRegistry()->provider(normalizedId))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("Provider cannot be registered in the current state");
-            }
-            return false;
-        }
-
-        m_pendingProviderRegistrations.insert(normalizedId);
-        auto* watcher = new QFutureWatcher<ProviderRegistrationResult>(this);
-        connect(watcher, &QFutureWatcher<ProviderRegistrationResult>::finished,
-                this, [this, watcher, normalizedId]()
-                {
-                    ProviderRegistrationResult result = watcher->result();
-                    m_pendingProviderRegistrations.remove(normalizedId);
-                    if (!result.provider)
-                    {
-                        qWarning().noquote() << QStringLiteral("Hardware provider %1: %2")
-                                                    .arg(normalizedId, result.errorMessage);
-                    }
-                    else if (!m_managers->hardwareRuntime->registerProvider(result.provider))
-                    {
-                        qWarning().noquote() << QStringLiteral(
-                            "Hardware provider %1 conflicts with registered hardware").arg(normalizedId);
-                    }
-                    watcher->deleteLater();
-                });
-        const QJsonObject providerOptions = QJsonObject::fromVariantMap(options);
-        watcher->setFuture(QtConcurrent::run(
-            m_hardwareThreadPool.get(),
-            [normalizedId, modulePath, providerOptions]()
-            {
-                ProviderRegistrationResult result;
-                result.provider = internal::createDriverHostProviderProxy(
-                    normalizedId, modulePath, providerOptions, &result.errorMessage);
-                return result;
-            }));
-        return true;
+        return m_managers->hardwareRuntime->devices();
     }
 
     // Return the linked MMCore version
     QString ScopeOneCore::getMMCoreVersion()
     {
-        return QStringLiteral("%1.%2.%3")
-            .arg(CMMCore::getMMCoreVersionMajor())
-            .arg(CMMCore::getMMCoreVersionMinor())
-            .arg(CMMCore::getMMCoreVersionPatch());
+        return HardwareRuntime::microManagerVersion();
     }
 
     // Return the compiled OpenCV version
@@ -1361,16 +1291,19 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        QStringList allProcessingPluginErrors;
-        for (const QString& directory :
-             scopeone::core::pluginDirectories(scopeone::core::PluginKind::Processing))
+        // Python processing modules are scripts in processing/python beside the application and in
+        // the user data directory
+        const QStringList processingDirectories{
+            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("processing")),
+            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                .filePath(QStringLiteral("processing"))};
+        for (const QString& directory : processingDirectories)
         {
-            allProcessingPluginErrors.append(
-                m_managers->processingModuleRegistry->loadPlugins(directory));
-        }
-        for (const QString& error : allProcessingPluginErrors)
-        {
-            qWarning().noquote() << QStringLiteral("Failed to load processing plugin %1").arg(error);
+            for (const QString& error : internal::registerPythonProcessingModules(
+                     *m_managers->processingModuleRegistry, directory))
+            {
+                qWarning().noquote() << QStringLiteral("Failed to load Python processing module %1").arg(error);
+            }
         }
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
@@ -1396,15 +1329,7 @@ namespace scopeone::core
         m_imageSceneModel = new ImageSceneModel(this);
         connect(m_imageSceneModel, &ImageSceneModel::markupsChanged,
                 this, &ScopeOneCore::syncLineProfileFromScene);
-        m_managers->mmcoreManager = new MMCoreManager(this);
-        m_managers->cameraManager = new CameraManager(this);
-        m_managers->microManagerProvider =
-            std::make_shared<MicroManagerProvider>(m_managers->mmcoreManager->getCore(),
-                                                   m_managers->cameraManager,
-                                                   m_managers->cameraManager);
         m_managers->hardwareRuntime = new HardwareRuntime(this);
-        m_managers->cameraProvider = m_managers->hardwareRuntime;
-        m_managers->cameraRuntimeControl = m_managers->hardwareRuntime;
         connect(m_managers->hardwareRuntime, &HardwareRuntime::devicesChanged,
                 this, [this]()
                 {
@@ -1413,19 +1338,18 @@ namespace scopeone::core
                 });
         connect(m_managers->hardwareRuntime, &HardwareRuntime::previewStateChanged,
                 this, &ScopeOneCore::previewStateChanged);
-        m_managers->hardwareRuntime->registerProvider(m_managers->microManagerProvider);
         m_managers->recordingManager = new RecordingManager(this);
-        m_managers->signalSourceManager = new internal::SignalSourceManager(this);
-        m_managers->daqDeviceManager = new internal::DaqDeviceManager(this);
+        m_managers->signalSourceManager = m_managers->hardwareRuntime->signalSourceManager();
+        m_managers->daqDeviceManager = m_managers->hardwareRuntime->daqDeviceManager();
+        connect(m_managers->signalSourceManager, &internal::SignalSourceManager::sourcesChanged,
+                this, &ScopeOneCore::signalSourcesChanged);
+        connect(m_managers->daqDeviceManager, &internal::DaqDeviceManager::devicesChanged,
+                this, &ScopeOneCore::daqDevicesChanged);
         m_managers->imageProcessingManager = new ImageProcessingManager(this);
         m_managers->stageMosaicManager = new StageMosaicManager(this, this);
         m_managers->recordingWriterStatus.reset(
             m_managers->recordingManager->recordedMaxBytes());
-        m_managers->recordingManager->setCameraProvider(m_managers->cameraProvider);
-        m_managers->recordingManager->setStageProvider(m_managers->hardwareRuntime);
-        m_managers->recordingManager->setConfigurationProvider(m_managers->hardwareRuntime);
-        m_managers->recordingManager->setAcquisitionHardware(m_managers->hardwareRuntime);
-        m_managers->recordingManager->setCameraRuntimeControl(m_managers->cameraRuntimeControl);
+        m_managers->recordingManager->setHardwareRuntime(m_managers->hardwareRuntime);
         m_managers->recordingManager->setLatestFrameFetcher(
             [this](const QString& cameraId, ImageFrame& frame)
             {
@@ -1485,37 +1409,23 @@ namespace scopeone::core
                 this,
                 &ScopeOneCore::daqInputDataReady);
 
+        internal::CameraFrameDelivery* const frameDelivery = m_managers->hardwareRuntime->frameDelivery();
         connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
                 this, &ScopeOneCore::handleIncomingRawFrame);
-        connect(m_managers->hardwareRuntime, &HardwareRuntime::frameReady,
-                this, [this](const ImageFrame& frame)
-                {
-                    const HardwareDeviceDescriptor device =
-                        m_managers->hardwareRuntime->deviceRegistry()->device(frame.cameraId);
-                    if (device.providerId == QStringLiteral("micro-manager"))
-                    {
-                        return;
-                    }
-                    recordLayerFrame(rawLayerKey(frame.cameraId));
-                    emit rawFramesAcquired(frame.cameraId, 1);
-                    submitProcessingFrame(frame);
-                    m_managers->recordingManager->onRawFramesReady(QList<ImageFrame>{frame});
-                });
-        connect(m_managers->cameraManager, &CameraManager::processingFrameReady,
+        // Keeps processing input on the thread that delivered the frame
+        connect(frameDelivery, &internal::CameraFrameDelivery::processingFrameReady,
                 this, &ScopeOneCore::submitProcessingFrame,
                 Qt::DirectConnection);
-        connect(m_managers->cameraManager, &CameraManager::rawFramesAcquired,
+        connect(frameDelivery, &internal::CameraFrameDelivery::framesAcquired,
                 this, [this](const QString& cameraId, quint64 frameCount)
                 {
                     recordLayerFrame(rawLayerKey(cameraId), frameCount);
                     emit rawFramesAcquired(cameraId, frameCount);
                 });
-        connect(m_managers->cameraManager, &CameraManager::recordingFramesReady,
+        connect(frameDelivery, &internal::CameraFrameDelivery::recordingFramesReady,
                 m_managers->recordingManager, &RecordingManager::onRawFramesReady);
-        connect(m_managers->cameraManager, &CameraManager::frameDeliveryFailed,
+        connect(frameDelivery, &internal::CameraFrameDelivery::deliveryFailed,
                 m_managers->recordingManager, &RecordingManager::onFrameDeliveryFailed);
-        connect(m_managers->cameraManager, &CameraManager::driverHostControlServerListening,
-                this, &ScopeOneCore::driverHostControlServerListening);
 
         connect(m_managers->recordingManager, &RecordingManager::mdaRawFrameReady,
                 this, [this](const ImageFrame& frame)
@@ -1656,18 +1566,13 @@ namespace scopeone::core
     }
 
     // Expose the native MMCore handle for low level callers
-    std::shared_ptr<CMMCore> ScopeOneCore::core() const
-    {
-        return m_managers->mmcoreManager->getCore();
-    }
-
     // Collect camera ids that currently have active previews
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
         QStringList running;
         for (const QString& cameraId : m_cameraIds)
         {
-            if (m_managers->cameraProvider->isPreviewRunning(cameraId))
+            if (m_managers->hardwareRuntime->isPreviewRunning(cameraId))
             {
                 running.append(cameraId);
             }
@@ -1684,16 +1589,7 @@ namespace scopeone::core
         {
             return overrideIt.value();
         }
-        const HardwareDeviceDescriptor device =
-            m_managers->hardwareRuntime->deviceRegistry()->device(camera);
-        if (device.providerId == QStringLiteral("micro-manager")
-            && !m_managers->cameraManager->usesDriverHostBackend()
-            && m_cameraIds.size() == 1
-            && m_cameraIds.first() == camera)
-        {
-            return core()->getPixelSizeUm();
-        }
-        return 0.0;
+        return m_managers->hardwareRuntime->pixelSizeUm(camera);
     }
 
     // The scales of the cameras that have one
@@ -1733,7 +1629,7 @@ namespace scopeone::core
     // Return external device adapter directories searched after the application directory
     QStringList ScopeOneCore::additionalDeviceAdapterSearchPaths() const
     {
-        return m_managers->mmcoreManager->additionalDeviceAdapterSearchPaths();
+        return m_managers->hardwareRuntime->microManagerAdapterSearchPaths();
     }
 
     // Set external device adapter directories for subsequent configuration loads
@@ -1757,7 +1653,7 @@ namespace scopeone::core
                 normalizedPaths.append(normalizedPath);
             }
         }
-        m_managers->mmcoreManager->setAdditionalDeviceAdapterSearchPaths(normalizedPaths);
+        m_managers->hardwareRuntime->setMicroManagerAdapterSearchPaths(normalizedPaths);
         return true;
     }
 
@@ -1765,11 +1661,9 @@ namespace scopeone::core
     bool ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
                                                 const LoadConfigResult& result)
     {
-        m_managers->microManagerProvider->setDevices(result.devices);
-        if (!m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager")))
+        if (!m_managers->hardwareRuntime->setMicroManagerDevices(result.devices))
         {
-            m_managers->microManagerProvider->setDevices({});
-            m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
+            m_managers->hardwareRuntime->setMicroManagerDevices({});
             return false;
         }
         m_configurationFailedDevices = result.failedDevices;
@@ -1795,7 +1689,7 @@ namespace scopeone::core
     {
         QStringList nextCameraIds;
         for (const HardwareDeviceDescriptor& device
-             : m_managers->hardwareRuntime->deviceRegistry()->devices())
+             : m_managers->hardwareRuntime->devices())
         {
             const QString logicalId = device.logicalId.trimmed();
             if (device.kind == HardwareDeviceKind::Camera
@@ -1840,6 +1734,7 @@ namespace scopeone::core
     void ScopeOneCore::finishConfigurationLoadFailure(const LoadConfigResult& result,
                                                       const QString& errorMessage)
     {
+        m_managers->hardwareRuntime->setConfigurationPath({});
         m_configurationState = ConfigurationState::Failed;
         m_configurationError = errorMessage.isEmpty()
                                    ? QStringLiteral("Failed to load configuration")
@@ -1854,53 +1749,30 @@ namespace scopeone::core
     void ScopeOneCore::unloadConfigurationForShutdown()
     {
         applySystemShutdownPreset();
+        m_managers->hardwareRuntime->applyScopeOneShutdownPreset();
         clearConfigurationRuntime(false, true);
-        auto handle = core();
-        try
-        {
-            handle->unloadAllDevices();
-        }
-        catch (const CMMError&)
-        {
-        }
+        m_managers->hardwareRuntime->unloadMicroManagerDevices();
         m_managers->hardwareRuntime->clear();
     }
 
     // Apply the configured hardware shutdown state before releasing devices
     void ScopeOneCore::applySystemShutdownPreset()
     {
-        m_managers->hardwareRuntime->stopPreviewForProvider(QStringLiteral("micro-manager"));
-        auto handle = core();
-        try
-        {
-            if (!handle->isConfigDefined(
-                    MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown))
-            {
-                return;
-            }
-            m_managers->microManagerProvider->setConfig(
-                MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown, nullptr);
-        }
-        catch (const CMMError& error)
-        {
-            qWarning().noquote()
-                << QString("Failed to inspect System/Shutdown preset: %1")
-                       .arg(QString::fromStdString(error.getMsg()));
-        }
+        m_managers->hardwareRuntime->applyMicroManagerShutdownPreset();
     }
 
     // Stops camera runtime and clears state owned by the facade thread
-    void ScopeOneCore::clearConfigurationRuntime(bool notify, bool shutdownCameraBackend)
+    void ScopeOneCore::clearConfigurationRuntime(bool notify, bool stopCameras)
     {
         ++m_analysisGeneration;
         m_managers->stageMosaicManager->cancel();
         const bool processingWasEnabled = isRealTimeProcessingEnabled();
         m_managers->imageProcessingManager->enableRealTimeProcessing(false);
         const QStringList cameraIds = m_cameraIds;
-        m_managers->hardwareRuntime->stopPreviewForProvider(QStringLiteral("micro-manager"));
-        if (shutdownCameraBackend)
+        m_managers->hardwareRuntime->stopMicroManagerPreview();
+        if (stopCameras)
         {
-            m_managers->cameraManager->shutdownNow();
+            m_managers->hardwareRuntime->takeDriverHosts();
         }
 
         for (const QString& cameraId : cameraIds)
@@ -1911,6 +1783,7 @@ namespace scopeone::core
         clearStaticFrames();
         m_cameraIds.clear();
         m_loadedConfigPath.clear();
+        m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
         m_frameGraph.clear();
         m_previewFlushTimer->stop();
@@ -1919,8 +1792,7 @@ namespace scopeone::core
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
-        m_managers->microManagerProvider->setDevices(QList<HardwareDeviceDescriptor>{});
-        m_managers->hardwareRuntime->refreshProvider(QStringLiteral("micro-manager"));
+        m_managers->hardwareRuntime->setMicroManagerDevices(QList<HardwareDeviceDescriptor>{});
         if (notify && processingWasEnabled)
         {
             emit processingSettingsChanged();
@@ -1937,11 +1809,6 @@ namespace scopeone::core
         if (m_configurationOperationRunning)
         {
             m_configurationError = QStringLiteral("Another configuration operation is running");
-            return false;
-        }
-        if (!m_pendingProviderRegistrations.isEmpty())
-        {
-            m_configurationError = QStringLiteral("A hardware provider is still loading");
             return false;
         }
         if (m_pendingStageCommands > 0)
@@ -1982,20 +1849,11 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        m_managers->cameraManager->shutdown(
-            [this, path](const QString& errorMessage)
-            {
-                if (!errorMessage.isEmpty())
-                {
-                    finishConfigurationLoadFailure({}, errorMessage);
-                    return;
-                }
-                startConfigurationLoadTask(path);
-            });
+        stopDriverHosts([this, path]() { startConfigurationLoadTask(path); }, true);
         return true;
     }
 
-    // Starts MMCore configuration loading after camera teardown
+    // Starts the loading of Micro-Manager and ScopeOne devices after the teardown of the DriverHosts
     void ScopeOneCore::startConfigurationLoadTask(const QString& path)
     {
         auto* watcher = new QFutureWatcher<ConfigurationTaskResult>(this);
@@ -2006,30 +1864,71 @@ namespace scopeone::core
             LoadConfigResult result;
             if (task.success)
             {
-                const bool backendsStarted = m_managers->mmcoreManager->startCameraBackends(
-                    *m_managers->cameraManager, task.loadResult);
-                result = toFacadeLoadConfigResult(task.loadResult);
-                if (!backendsStarted)
+                const QStringList failedCameras = task.failedCameras;
+                for (const MicroManagerCameraSetup& camera : std::as_const(task.loadResult.cameras))
                 {
-                    const QString errorMessage = result.failedDevices.isEmpty()
-                                                     ? QStringLiteral("Failed to initialize camera backend")
-                                                     : QStringLiteral("Failed to initialize camera backend: %1")
-                                                           .arg(result.failedDevices.join(QStringLiteral(", ")));
+                    const bool started = !failedCameras.contains(camera.cameraId);
+                    for (HardwareDeviceDescriptor& device : task.loadResult.devices)
+                    {
+                        if (device.logicalId == camera.cameraId)
+                        {
+                            device.state = started ? HardwareDeviceState::Initialized : HardwareDeviceState::Faulted;
+                        }
+                    }
+                    if (started)
+                    {
+                        task.loadResult.cameraIds.append(camera.cameraId);
+                    }
+                }
+                task.loadResult.failCount += static_cast<int>(failedCameras.size());
+                task.loadResult.failedDevices.append(failedCameras);
+                result = toFacadeLoadConfigResult(task.loadResult);
+                // The ScopeOne devices that failed count with the failed devices of Micro-Manager.
+                // They were left out of the result when the cameras failed to start.
+                result.successCount += task.scopeOneResult.successCount;
+                result.failCount += static_cast<int>(task.scopeOneResult.failedDevices.size());
+                result.failedDevices.append(task.scopeOneResult.failedDevices);
+                if (!failedCameras.isEmpty())
+                {
+                    const QString errorMessage = QStringLiteral("Failed to start the cameras: %1")
+                                                     .arg(failedCameras.join(QStringLiteral(", ")));
                     startConfigurationLoadCleanupTask(result, errorMessage);
                     watcher->deleteLater();
                     return;
                 }
-                if (!applyLoadedConfiguration(path, result))
+                if (!m_managers->hardwareRuntime->registerScopeOneDevices()
+                    || !applyLoadedConfiguration(path, result))
                 {
                     const QString errorMessage =
-                        QStringLiteral("Micro-Manager device catalog conflicts with registered hardware");
+                        QStringLiteral("Device catalog conflicts with registered hardware");
                     startConfigurationLoadCleanupTask(result, errorMessage);
                     watcher->deleteLater();
                     return;
                 }
-                m_configurationOperationRunning = false;
-                emit hardwareConfigurationChanged();
-                emit configurationLoadFinished(true, result, {});
+                for (const HardwareDeviceDescriptor& device : m_managers->hardwareRuntime->devices())
+                {
+                    if (device.kind == HardwareDeviceKind::Camera
+                        && !result.cameraIds.contains(device.logicalId))
+                    {
+                        result.cameraIds.append(device.logicalId);
+                    }
+                }
+                // System/Startup of the ScopeOne devices sets properties over the DriverHosts, which
+                // the hardware thread does while the load stays unfinished
+                auto* startup = new QFutureWatcher<void>(this);
+                connect(startup, &QFutureWatcher<void>::finished, this, [this, startup, result]()
+                {
+                    startup->deleteLater();
+                    m_configurationOperationRunning = false;
+                    emit hardwareConfigurationChanged();
+                    emit configurationLoadFinished(true, result, {});
+                });
+                HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+                startup->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                                     [runtime]() {
+                                                         runtime->applyScopeOneStartupPreset();
+                                                         runtime->applyCoreRoles();
+                                                     }));
             }
             else
             {
@@ -2039,58 +1938,70 @@ namespace scopeone::core
             watcher->deleteLater();
         });
 
-        auto* manager = m_managers->mmcoreManager;
-        const auto future = QtConcurrent::run(m_hardwareThreadPool.get(), [manager, path]()
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        runtime->setConfigurationPath(QFileInfo(path).absoluteFilePath());
+        const auto future = QtConcurrent::run(m_hardwareThreadPool.get(), [runtime, path]()
         {
             ConfigurationTaskResult task;
-            auto handle = manager->getCore();
-            try
+            task.success = runtime->loadMicroManagerConfiguration(path, task.loadResult, task.errorMessage);
+            // The DriverHosts of the cameras take seconds to start, which the GUI thread does not wait for
+            if (task.success)
             {
-                handle->unloadAllDevices();
+                task.failedCameras = runtime->startMicroManagerCameras(task.loadResult.cameras);
+                task.scopeOneResult = runtime->loadScopeOneDevices(path);
             }
-            catch (const CMMError& error)
+            QString cleanupError;
+            if (!task.success && !runtime->unloadMicroManagerDevices(&cleanupError))
             {
-                task.errorMessage = QString::fromStdString(error.getMsg());
-                return task;
-            }
-
-            task.success = manager->loadConfigurationDevices(
-                path, task.loadResult, task.errorMessage);
-            if (!task.success)
-            {
-                try
-                {
-                    handle->unloadAllDevices();
-                }
-                catch (const CMMError& error)
-                {
-                    task.errorMessage = QStringLiteral("%1; cleanup failed: %2")
-                                            .arg(task.errorMessage,
-                                                 QString::fromStdString(error.getMsg()));
-                }
+                task.errorMessage = QStringLiteral("%1; cleanup failed: %2").arg(task.errorMessage, cleanupError);
             }
             return task;
         });
         watcher->setFuture(future);
     }
 
+    // Stops the DriverHosts away from the GUI thread. With applyShutdown, System/Shutdown of the
+    // ScopeOne devices is applied first, as the hosts are taken only after it.
+    void ScopeOneCore::stopDriverHosts(std::function<void()> next, bool applyShutdown)
+    {
+        auto stop = [this, next = std::move(next)]()
+        {
+            auto* watcher = new QFutureWatcher<void>(this);
+            connect(watcher, &QFutureWatcher<void>::finished, this, [watcher, next]()
+            {
+                watcher->deleteLater();
+                next();
+            });
+            watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                                 [hosts = m_managers->hardwareRuntime->takeDriverHosts()]() mutable
+                                                 {
+                                                     hosts.clear();
+                                                 }));
+        };
+        if (!applyShutdown)
+        {
+            stop();
+            return;
+        }
+        auto* shutdown = new QFutureWatcher<void>(this);
+        connect(shutdown, &QFutureWatcher<void>::finished, this, [shutdown, stop]()
+        {
+            shutdown->deleteLater();
+            stop();
+        });
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        shutdown->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
+                                              [runtime]() { runtime->applyScopeOneShutdownPreset(); }));
+    }
+
     // Stops the cameras and removes the devices after a failed configuration load
     void ScopeOneCore::startConfigurationLoadCleanupTask(const LoadConfigResult& result,
                                                          const QString& errorMessage)
     {
-        m_managers->cameraManager->shutdown(
-            [this, result, errorMessage](const QString& shutdownError)
-            {
-                if (!shutdownError.isEmpty())
-                {
-                    finishConfigurationLoadFailure(
-                        result,
-                        QStringLiteral("%1; camera cleanup failed: %2")
-                            .arg(errorMessage, shutdownError));
-                    return;
-                }
-                startDeviceUnloadAfterFailedLoad(result, errorMessage);
-            });
+        stopDriverHosts([this, result, errorMessage]()
+        {
+            startDeviceUnloadAfterFailedLoad(result, errorMessage);
+        });
     }
 
     // Removes the devices of a configuration that failed to load
@@ -2111,18 +2022,11 @@ namespace scopeone::core
             watcher->deleteLater();
         });
 
-        const auto handle = core();
-        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [handle]()
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [runtime]()
         {
             StageTaskResult task;
-            try
-            {
-                handle->unloadAllDevices();
-            }
-            catch (const CMMError& error)
-            {
-                task.errorMessage = QString::fromStdString(error.getMsg());
-            }
+            runtime->unloadMicroManagerDevices(&task.errorMessage);
             return task;
         }));
     }
@@ -2141,20 +2045,7 @@ namespace scopeone::core
         applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
-        m_managers->cameraManager->shutdown(
-            [this](const QString& errorMessage)
-            {
-                if (!errorMessage.isEmpty())
-                {
-                    m_configurationState = ConfigurationState::Failed;
-                    m_configurationError = errorMessage;
-                    m_configurationOperationRunning = false;
-                    emit hardwareConfigurationChanged();
-                    emit configurationUnloadFinished(false, errorMessage);
-                    return;
-                }
-                startConfigurationUnloadTask();
-            });
+        stopDriverHosts([this]() { startConfigurationUnloadTask(); }, true);
         return true;
     }
 
@@ -2184,19 +2075,11 @@ namespace scopeone::core
             watcher->deleteLater();
         });
 
-        const auto handle = core();
-        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [handle]()
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [runtime]()
         {
             StageTaskResult task;
-            try
-            {
-                handle->unloadAllDevices();
-                task.success = true;
-            }
-            catch (const CMMError& error)
-            {
-                task.errorMessage = QString::fromStdString(error.getMsg());
-            }
+            task.success = runtime->unloadMicroManagerDevices(&task.errorMessage);
             return task;
         }));
     }
@@ -2210,10 +2093,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
-        const bool started = all
-                                 ? m_managers->hardwareRuntime->startPreview()
-                                 : m_managers->hardwareRuntime->startPreviewFor(target);
+        const bool started = m_managers->hardwareRuntime->startPreview(target);
         if (started)
         {
             emit previewStateChanged(true);
@@ -2229,10 +2109,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
-        const bool stopped = all
-                                 ? m_managers->hardwareRuntime->stopPreview()
-                                 : m_managers->hardwareRuntime->stopPreviewFor(target);
+        const bool stopped = m_managers->hardwareRuntime->stopPreview(target);
         if (stopped)
         {
             emit previewStateChanged(!runningPreviewCameraIds().isEmpty());
@@ -2248,7 +2125,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->cameraProvider->setExposure(target, exposureMs);
+        const bool ok = m_managers->hardwareRuntime->setExposure(target, exposureMs);
         if (ok)
         {
             emit deviceStateChanged();
@@ -2264,7 +2141,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool ok = m_managers->cameraProvider->setROI(target, x, y, width, height);
+        const bool ok = m_managers->hardwareRuntime->setROI(target, x, y, width, height);
         if (ok)
         {
             clearLiveFrames(target);
@@ -2327,7 +2204,7 @@ namespace scopeone::core
         bool changed = false;
         for (const QString& cameraId : targets)
         {
-            if (!m_managers->cameraProvider->clearROI(cameraId))
+            if (!m_managers->hardwareRuntime->clearROI(cameraId))
             {
                 ok = false;
                 continue;
@@ -2350,10 +2227,10 @@ namespace scopeone::core
         {
             return false;
         }
-        return m_managers->cameraProvider->getROI(target, x, y, width, height);
+        return m_managers->hardwareRuntime->getROI(target, x, y, width, height);
     }
 
-    // List signal sources discovered through external source plugins
+    // List signal sources discovered through drivers
     QList<SignalSourceDescriptor> ScopeOneCore::signalSources() const
     {
         return m_managers->signalSourceManager->sources();
@@ -2364,10 +2241,10 @@ namespace scopeone::core
                                         QString* errorMessage)
     {
         const QString sourceId = config.sourceId.trimmed();
-        std::shared_ptr<ScanImageAssembler> assembler;
+        std::shared_ptr<internal::ScanImageAssembler> assembler;
         if (config.scanImage.enabled)
         {
-            assembler = std::make_shared<ScanImageAssembler>(sourceId, config.scanImage);
+            assembler = std::make_shared<internal::ScanImageAssembler>(sourceId, config.scanImage);
             if (!assembler->isValid())
             {
                 if (errorMessage)
@@ -2703,7 +2580,7 @@ namespace scopeone::core
             processingToken,
             [this, cameraId, processingToken]()
             {
-                return m_managers->cameraRuntimeControl->isProcessingFrameTokenCurrent(
+                return m_managers->hardwareRuntime->isProcessingFrameTokenCurrent(
                     cameraId,
                     processingToken);
             });
@@ -3803,6 +3680,11 @@ namespace scopeone::core
         return devices;
     }
 
+    QString ScopeOneCore::configuredCamera() const
+    {
+        return m_managers->hardwareRuntime->configuredCamera();
+    }
+
     QString ScopeOneCore::currentXYStageDevice() const
     {
         if (m_configurationOperationRunning)
@@ -3954,6 +3836,101 @@ namespace scopeone::core
         return ok;
     }
 
+    // List the light source channels declared in the configuration for the loaded devices
+    QList<ScopeOneCore::LightSource> ScopeOneCore::lightSources() const
+    {
+        QList<LightSource> sources;
+        if (m_configurationOperationRunning)
+        {
+            return sources;
+        }
+        for (const auto& line : m_managers->hardwareRuntime->lightSources())
+        {
+            sources.append({line.name, line.enableDevice, line.enableProperty, line.onValue, line.offValue,
+                            line.powerDevice, line.powerProperty, line.readingDevice, line.readingProperty});
+        }
+        return sources;
+    }
+
+    bool ScopeOneCore::setLightSource(const LightSource& source, QString* errorMessage)
+    {
+        if (!canEditConfiguration(errorMessage)) return false;
+        const QStringList fields{source.name, source.powerDevice, source.powerProperty, source.enableDevice,
+            source.enableProperty, source.onValue, source.offValue, source.readingDevice, source.readingProperty};
+        bool valid = !source.name.isEmpty() && !source.powerDevice.isEmpty() && !source.powerProperty.isEmpty();
+        for (const auto& value : fields) valid = valid && HardwareConfiguration::isValidField(value);
+        valid = valid && (source.enableDevice.isEmpty() == source.enableProperty.isEmpty())
+            && (source.readingDevice.isEmpty() == source.readingProperty.isEmpty());
+        if (!source.enableProperty.isEmpty())
+            valid = valid && !source.onValue.isEmpty() && !source.offValue.isEmpty() && source.onValue != source.offValue;
+        if (!valid)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Invalid light source");
+            return false;
+        }
+        const HardwareConfiguration::LightSource line{source.name, source.enableDevice, source.enableProperty,
+            source.onValue, source.offValue, source.powerDevice, source.powerProperty,
+            source.readingDevice, source.readingProperty};
+        return finishConfigurationEdit(m_managers->hardwareRuntime->setLightSource(line, errorMessage));
+    }
+
+    bool ScopeOneCore::reloadRoles(QString* errorMessage)
+    {
+        // An experiment and a mosaic read the shutter role on their own thread, and changing it
+        // under them raced on the role strings and swapped the shutter they held open
+        if (isRecording() || isStageMosaicRunning())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Roles cannot change while recording or a mosaic runs");
+            return false;
+        }
+        return canEditConfiguration(errorMessage)
+            && finishConfigurationEdit(m_managers->hardwareRuntime->reloadRoles(errorMessage));
+    }
+
+    // Read the light sources on the hardware thread, so the reads are ordered with load and unload
+    QFuture<QList<ScopeOneCore::LightSourceState>> ScopeOneCore::readLightSources(
+        const QList<LightSource>& sources, bool settings)
+    {
+        return QtConcurrent::run(m_hardwareThreadPool.get(), [this, sources, settings]()
+        {
+            QList<LightSourceState> states;
+            for (const LightSource& source : sources)
+            {
+                LightSourceState state;
+                if (settings)
+                {
+                    state.hasLimits = getPropertyLimits(source.powerDevice, source.powerProperty,
+                                                        state.lower, state.upper);
+                    if (!source.enableProperty.isEmpty())
+                    {
+                        state.enable = getPropertyValue(source.enableDevice, source.enableProperty, true);
+                    }
+                    state.power = getPropertyValue(source.powerDevice, source.powerProperty, true);
+                }
+                if (!source.readingProperty.isEmpty())
+                {
+                    state.reading = getPropertyValue(source.readingDevice, source.readingProperty, false);
+                }
+                states.append(state);
+            }
+            return states;
+        });
+    }
+
+    // Set a property on the hardware thread
+    QFuture<QString> ScopeOneCore::writeProperty(const QString& deviceLabel, const QString& name, const QString& value)
+    {
+        return QtConcurrent::run(m_hardwareThreadPool.get(), [this, deviceLabel, name, value]()
+        {
+            QString error;
+            if (setPropertyValue(deviceLabel, name, value, &error))
+            {
+                return QString{};
+            }
+            return error.isEmpty() ? QStringLiteral("failed") : error;
+        });
+    }
+
     // List configuration groups exposed by registered providers
     QStringList ScopeOneCore::availableConfigGroups() const
     {
@@ -3982,6 +3959,33 @@ namespace scopeone::core
             return {};
         }
         return m_managers->hardwareRuntime->currentConfig(groupName);
+    }
+
+    QList<ConfigSetting> ScopeOneCore::configPresetSettings(const QString& groupName, const QString& presetName) const
+    {
+        if (m_configurationOperationRunning) return {};
+        const auto settings = m_managers->hardwareRuntime->configSettings(groupName, presetName);
+        return {settings.cbegin(), settings.cend()};
+    }
+
+    bool ScopeOneCore::canEditConfiguration(QString* errorMessage) const
+    {
+        if (hardwareBusy(errorMessage)) return false;
+        if (m_configurationState == ConfigurationState::Loaded
+            || m_configurationState == ConfigurationState::PartiallyLoaded) return true;
+        if (errorMessage) *errorMessage = QStringLiteral("No configuration is loaded");
+        return false;
+    }
+
+    bool ScopeOneCore::finishConfigurationEdit(bool success)
+    {
+        if (!success) return false;
+        QFile file(m_loadedConfigPath);
+        m_loadedConfigSha256 = file.open(QIODevice::ReadOnly)
+            ? QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex())
+            : QString{};
+        emit hardwareConfigurationChanged();
+        return true;
     }
 
     // Reports whether a configuration load or a stage move keeps the hardware from other changes
@@ -4032,6 +4036,23 @@ namespace scopeone::core
         return ok;
     }
 
+    bool ScopeOneCore::addConfigGroup(const QString& groupName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->addConfigGroup(groupName,errorMessage)); }
+    bool ScopeOneCore::removeConfigGroup(const QString& groupName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->removeConfigGroup(groupName,errorMessage)); }
+    bool ScopeOneCore::renameConfigGroup(const QString& groupName, const QString& newName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->renameConfigGroup(groupName,newName,errorMessage)); }
+    bool ScopeOneCore::setConfigPreset(const QString& groupName, const QString& presetName,
+                                       const QList<ConfigSetting>& settings, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->setConfigPreset(groupName,presetName,{settings.cbegin(),settings.cend()},errorMessage)); }
+    bool ScopeOneCore::removeConfigPreset(const QString& groupName, const QString& presetName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->removeConfigPreset(groupName,presetName,errorMessage)); }
+    bool ScopeOneCore::renameConfigPreset(const QString& groupName, const QString& presetName, const QString& newName, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->renameConfigPreset(groupName,presetName,newName,errorMessage)); }
+
+    bool ScopeOneCore::setConfigGroupProperties(const QString& groupName, const QList<ConfigSetting>& properties, QString* errorMessage)
+    { return canEditConfiguration(errorMessage) && finishConfigurationEdit(m_managers->hardwareRuntime->setConfigGroupProperties(groupName, properties, errorMessage)); }
+
     // Read exposure from the active camera path
     bool ScopeOneCore::readExposure(const QString& cameraIdOrAll, double& exposureMs) const
     {
@@ -4042,7 +4063,7 @@ namespace scopeone::core
             return false;
         }
 
-        return m_managers->cameraProvider->getExposure(target, exposureMs);
+        return m_managers->hardwareRuntime->getExposure(target, exposureMs);
     }
 
     // List devices from the unified registry
@@ -4227,7 +4248,7 @@ namespace scopeone::core
         }
         if (m_managers->imageProcessingManager->isRealTimeProcessingEnabled() == enabled)
         {
-            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+            if (!m_managers->hardwareRuntime->setHighRateFrameDeliveryEnabled(
                     m_cameraIds, enabled))
             {
                 return false;
@@ -4241,7 +4262,7 @@ namespace scopeone::core
         if (enabled)
         {
             m_managers->imageProcessingManager->enableRealTimeProcessing(true);
-            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+            if (!m_managers->hardwareRuntime->setHighRateFrameDeliveryEnabled(
                     m_cameraIds, true))
             {
                 m_managers->imageProcessingManager->enableRealTimeProcessing(false);
@@ -4250,7 +4271,7 @@ namespace scopeone::core
         }
         else
         {
-            if (!m_managers->cameraRuntimeControl->setHighRateFrameDeliveryEnabled(
+            if (!m_managers->hardwareRuntime->setHighRateFrameDeliveryEnabled(
                     m_cameraIds, false))
             {
                 return false;
@@ -5349,6 +5370,12 @@ namespace scopeone::core
             return false;
         }
         m_managers->sessions.remove(id);
+        // The experiment document stayed after its session was closed, so the event and frame
+        // records of every closed recording were kept until ScopeOne exited
+        if (id != m_managers->activeExperimentId)
+        {
+            m_managers->experiments.remove(id);
+        }
         emit recordingSessionClosed(id);
         emit recordingSessionsChanged();
         return true;

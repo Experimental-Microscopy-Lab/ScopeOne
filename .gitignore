@@ -3,14 +3,11 @@
 !/src/**
 !/ScopeOneCore/
 !/ScopeOneCore/**
-!/plugins/
-!/plugins/**
-!/ScopeOneCuda/
-!/ScopeOneCuda/**
-!/ScopeOneInference/
-!/ScopeOneInference/**
+!/drivers/
+!/drivers/**
 /ScopeOneCore/install/
 /ScopeOneCore/build/
+/drivers/build/
 /ScopeOneCore/external/*
 !/ScopeOneCore/external/ScopeWriter/
 !/ScopeOneCore/external/ScopeWriter/**
@@ -29,6 +26,9 @@
 !/config/MMConfig_demo.cfg
 !/config/dual_hamamatsu_897D.cfg
 !/config/MMConfig_demo_dual.cfg
+!/config/ScopeOne_MM_demo.cfg
+!/config/ScopeOne_demo.cfg
+!/config/ScopeOne_Cobolt_Jive.cfg
 
 !/CMakeLists.txt
 !/README.md

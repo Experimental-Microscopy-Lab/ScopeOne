@@ -29,6 +29,14 @@
 #include <QSocketNotifier>
 #include <csignal>
 #include <fcntl.h>
+#ifdef Q_OS_MACOS
+// The file system of macOS ignores case, so <semaphore.h> found the Semaphore.h of MMCore on the
+// include path, and sem_unlink was undeclared. The system header declares it here.
+#include <sys/semaphore.h>
+#else
+#include <semaphore.h>
+#endif
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #ifdef Q_OS_MACOS
@@ -38,66 +46,41 @@
 #endif
 #endif
 
+#ifndef Q_OS_WIN
+// The macOS SDK declares shm_unlink only outside strict POSIX mode, and the build of DriverHost
+// failed there on it. libc has it on every Unix, so it is declared here as the SDK does.
+extern "C" int shm_unlink(const char* name);
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <cstdio>
 
-#include "MMCore.h"
 #include "internal/DriverHostProtocol.h"
+#include "internal/MicroManagerCamera.h"
+#include "internal/HardwareStreamCodec.h"
 #include "internal/SharedFrameRing.h"
-#include "scopeone/CameraProvider.h"
-#include "scopeone/DriverHostProviderPlugin.h"
-#include "scopeone/PluginManifest.h"
+#include "internal/StreamRing.h"
+#include "scopeone/Camera.h"
+#include "scopeone/DaqDevice.h"
+#include "scopeone/Driver.h"
+#include "scopeone/DriverManifest.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
+#include "scopeone/SignalSource.h"
 
 namespace scopeone::core::internal
 {
     using scopeone::core::SharedFrameHeader;
-    using scopeone::core::SharedMemoryControl;
-    using scopeone::core::SharedPixelFormat;
-    using scopeone::core::computeMaxFrameBytes;
-    using scopeone::core::kSharedFrameHeaderSize;
     using scopeone::core::kSharedFrameMaxBytes;
-    using scopeone::core::kSharedFrameNumSlots;
-    using scopeone::core::kSharedFrameSlotStride;
-    using scopeone::core::kSharedMemoryControlSize;
-
-    constexpr int kMinimumPollIntervalMs = 1;
-    constexpr int kMaximumPollIntervalMs = 50;
-    constexpr int kPreviewFrameDeliveryIntervalMs = 16;
-
-    int pollingIntervalFor(double frameIntervalMs)
-    {
-        if (!std::isfinite(frameIntervalMs) || frameIntervalMs <= 0.0)
-        {
-            return kMinimumPollIntervalMs;
-        }
-        return static_cast<int>(std::clamp(frameIntervalMs / 4.0,
-                                           static_cast<double>(kMinimumPollIntervalMs),
-                                           static_cast<double>(kMaximumPollIntervalMs)));
-    }
-
-    // Normalize frame bit depth before publishing shared frame metadata
-    static quint16 normalizedSharedBitDepth(SharedPixelFormat format, int bitsPerSample)
-    {
-        if (format == SharedPixelFormat::Mono8)
-        {
-            return 8;
-        }
-        if (format == SharedPixelFormat::Mono16)
-        {
-            return bitsPerSample >= 1 && bitsPerSample <= 16
-                       ? static_cast<quint16>(bitsPerSample)
-                       : 16;
-        }
-        return 0;
-    }
 
     class ControlConnection final : public QObject
     {
@@ -119,6 +102,11 @@ namespace scopeone::core::internal
             connect(m_socket, &QLocalSocket::errorOccurred, this,
                     [this](QLocalSocket::LocalSocketError socketError)
                     {
+                        // Core closing the connection at a normal unload is no error
+                        if (socketError == QLocalSocket::PeerClosedError)
+                        {
+                            return;
+                        }
                         qWarning().noquote()
                             << QString("DriverHost control socket error (%1) on connection %2")
                                .arg(static_cast<int>(socketError))
@@ -215,31 +203,54 @@ namespace scopeone::core::internal
         QByteArray m_readBuffer;
     };
 
-    class DriverHostRuntime : public QObject
+    // Runs one device of a driver or one Micro-Manager camera, and answers the requests of
+    // ScopeOne on a thread of its own
+    class DriverRuntime final : public QObject
     {
         Q_OBJECT
 
     public:
-        using QObject::QObject;
-        virtual bool initializeRuntime() = 0;
-        virtual QString lastError() const = 0;
-        virtual void publishHello() = 0;
-        virtual void handleRequest(quint64 connectionId,
-                                   quint64 requestId,
-                                   const QString& type,
-                                   const QJsonObject& message) = 0;
-        virtual void stopForExit() = 0;
+        // A Micro-Manager camera is run when cameraSetup is set, the driver at driverPath otherwise
+        DriverRuntime(QString driverPath,
+                      std::optional<MicroManagerCameraSetup> cameraSetup,
+                      QString providerId,
+                      QString hostKey,
+                      QString deviceName,
+                      QVariantMap preInitProperties,
+                      QObject* parent = nullptr)
+            : QObject(parent)
+              , m_driverPath(std::move(driverPath))
+              , m_cameraSetup(std::move(cameraSetup))
+              , m_providerId(std::move(providerId))
+              , m_hostKey(std::move(hostKey))
+              , m_deviceName(std::move(deviceName))
+              , m_preInitProperties(std::move(preInitProperties))
+        {
+        }
+
+        ~DriverRuntime() override
+        {
+            stopForExit();
+        }
+
+        bool initializeRuntime();
+        QString lastError() const { return m_lastError; }
+        void publishHello();
+        void handleRequest(quint64 connectionId,
+                           quint64 requestId,
+                           const QString& type,
+                           const QJsonObject& message);
+        void stopForExit();
 
     signals:
         void responseReady(quint64 connectionId, const QJsonObject& response);
         void eventReady(const QJsonObject& event);
         void shutdownRequested();
 
-    protected:
+    private:
         static QJsonObject makeResponse(const QString& type, quint64 requestId, bool ok)
         {
-            QJsonObject response =
-                driverhost::makeEnvelope(driverhost::kMessageKindResponse, type, requestId);
+            QJsonObject response = driverhost::makeEnvelope(driverhost::kMessageKindResponse, type, requestId);
             response.insert(QStringLiteral("ok"), ok);
             return response;
         }
@@ -250,1208 +261,8 @@ namespace scopeone::core::internal
             response.insert(QStringLiteral("error"), error);
             return response;
         }
-    };
 
-    class MicroManagerDriverRuntime final : public DriverHostRuntime
-    {
-        Q_OBJECT
-
-    public:
-        // Store launch settings for one camera runtime
-        MicroManagerDriverRuntime(QString providerId,
-                          QString cameraId,
-                          QString adapter,
-                          QString device,
-                          QString shmKey,
-                          QStringList preInitProperties,
-                          QStringList properties,
-                          double exposureMs,
-                          bool autoPreview,
-                          QObject* parent = nullptr)
-            : DriverHostRuntime(parent)
-              , m_providerId(std::move(providerId))
-              , m_cameraId(std::move(cameraId))
-              , m_adapter(std::move(adapter))
-              , m_device(std::move(device))
-              , m_shmKey(std::move(shmKey))
-              , m_preInitProperties(std::move(preInitProperties))
-              , m_properties(std::move(properties))
-              , m_exposureMs(exposureMs)
-              , m_autoPreview(autoPreview)
-        {
-        }
-
-        QString lastError() const override
-        {
-            return m_lastError;
-        }
-
-        // Initialize MMCore camera state and shared memory transport
-        bool initializeRuntime() override
-        {
-            m_lastError.clear();
-            setState(State::Starting);
-
-            m_timer = new QTimer(this);
-            m_timer->setTimerType(Qt::PreciseTimer);
-            connect(m_timer, &QTimer::timeout,
-                    this, &MicroManagerDriverRuntime::pollAndWrite);
-
-            try
-            {
-                m_mmcore = std::make_unique<CMMCore>();
-                const std::string label = m_cameraId.toStdString();
-                const std::string adapter = m_adapter.toStdString();
-                const std::string device = m_device.toStdString();
-
-                m_mmcore->loadDevice(label.c_str(), adapter.c_str(), device.c_str());
-                QString preInitError;
-                if (!applyProperties(m_preInitProperties, label, QStringLiteral("pre-init property"), &preInitError))
-                {
-                    m_lastError = preInitError;
-                    setState(State::Error, m_lastError);
-                    return false;
-                }
-                m_mmcore->initializeDevice(label.c_str());
-                m_mmcore->setCameraDevice(label.c_str());
-
-                QString propertyError;
-                if (!applyProperties(m_properties, label, QStringLiteral("property"), &propertyError))
-                {
-                    m_lastError = propertyError;
-                    setState(State::Error, m_lastError);
-                    return false;
-                }
-
-                try
-                {
-                    m_mmcore->setCircularBufferMemoryFootprint(2048);
-                }
-                catch (const CMMError&)
-                {
-                }
-
-                double finalExposure = 0.0;
-                if (m_exposureMs > 0.0)
-                {
-                    m_mmcore->setExposure(m_exposureMs);
-                }
-                m_mmcore->waitForDevice(label.c_str());
-                finalExposure = m_mmcore->getExposure();
-                if (finalExposure <= 0.0)
-                {
-                    m_lastError = QStringLiteral("Camera reported an invalid exposure");
-                    setState(State::Error, m_lastError);
-                    return false;
-                }
-                m_exposureMs = finalExposure;
-            }
-            catch (const CMMError& error)
-            {
-                m_lastError = QString::fromStdString(error.getMsg());
-                setState(State::Error, m_lastError);
-                return false;
-            }
-
-            m_shm = std::make_unique<QSharedMemory>();
-            m_shm->setNativeKey(m_shmKey);
-            QString shmError;
-            if (!sharedframe::createRing(*m_shm, &shmError))
-            {
-                m_lastError = shmError;
-                setState(State::Error, m_lastError);
-                return false;
-            }
-
-            if (m_autoPreview)
-            {
-                QString error;
-                if (!startPreviewInternal(&error))
-                {
-                    m_lastError = error;
-                    setState(State::Error, m_lastError);
-                    return false;
-                }
-            }
-            else
-            {
-                setState(State::Idle);
-            }
-
-            return true;
-        }
-
-        void publishHello() override;
-        void handleRequest(quint64 connectionId,
-                           quint64 requestId,
-                           const QString& type,
-                           const QJsonObject& message) override;
-        void stopForExit() override;
-
-    private:
-        // Runtime state is mirrored to control clients
-        enum class State
-        {
-            Starting,
-            Idle,
-            Previewing,
-            Error,
-            ShuttingDown
-        };
-
-        enum class FrameDeliveryMode
-        {
-            PreviewLatest,
-            LatestOnly,
-            AllFrames
-        };
-
-        // Frame layout describes one shared memory payload shape
-        struct FrameLayout
-        {
-            unsigned width{0};
-            unsigned height{0};
-            unsigned bytesPerPixel{0};
-            SharedPixelFormat format{SharedPixelFormat::Mono8};
-            unsigned stride{0};
-            quint64 byteCount{0};
-            quint16 bitDepth{8};
-            quint16 channels{1};
-        };
-
-        // Answers one request with what fill adds to a success response, or with the error
-        // MMCore throws while it runs
-        template <typename Fill>
-        void answer(quint64 connectionId, const QString& type, quint64 requestId, Fill&& fill)
-        {
-            try
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                fill(response);
-                emit responseReady(connectionId, response);
-            }
-            catch (const CMMError& error)
-            {
-                emit responseReady(connectionId,
-                                   makeErrorResponse(type, requestId, QString::fromStdString(error.getMsg())));
-            }
-        }
-
-        bool previewRunning() const;
-        void setState(State state, const QString& error = QString());
-        QJsonObject makeEvent(const QString& type) const;
-        bool applyProperties(const QStringList& encodedProperties,
-                             const std::string& label,
-                             const QString& propertyKind,
-                             QString* errorMessage);
-        void emitPreviewStateEvent();
-        void emitDriverHostErrorEvent(const QString& error);
-        void emitFrameAvailableEvent(quint64 frameIndex);
-        bool startPreviewInternal(QString* errorMessage);
-        bool stopPreviewInternal(QString* errorMessage);
-        bool captureEventFrameInternal(quint64& frameIndex, QString* errorMessage);
-        bool writeFrameToSharedMemory(const void* pixels,
-                                      quint64 frameAdvance = 1,
-                                      quint64* frameIndexOut = nullptr);
-        void pollAndWrite();
-        void updatePollingInterval(quint64 frameCount);
-        bool ensureFrameLayout(unsigned width, unsigned height, unsigned bytesPerPixel);
-        void refreshSourceRoi();
-
-        QString m_providerId;
-        QString m_cameraId;
-        QString m_adapter;
-        QString m_device;
-        QString m_shmKey;
-        QStringList m_preInitProperties;
-        QStringList m_properties;
-        double m_exposureMs{10.0};
-        bool m_autoPreview{false};
-
-        QString m_lastError;
-        State m_state{State::Starting};
-
-        std::unique_ptr<CMMCore> m_mmcore;
-        std::unique_ptr<QSharedMemory> m_shm;
-        QTimer* m_timer{nullptr};
-        QElapsedTimer m_frameIntervalTimer;
-        QElapsedTimer m_deliveryTimer;
-        double m_observedFrameIntervalMs{0.0};
-
-        FrameLayout m_frameLayout{};
-        bool m_frameLayoutValid{false};
-        bool m_loggedOversizedFrame{false};
-        bool m_loggedUnsupportedFormat{false};
-        int m_sourceRoiX{0};
-        int m_sourceRoiY{0};
-        int m_sourceRoiWidth{0};
-        int m_sourceRoiHeight{0};
-
-        quint64 m_frameIndex{0};
-        quint64 m_pendingFrameAdvance{0};
-        int m_nextWriteSlot{0};
-        FrameDeliveryMode m_frameDeliveryMode{FrameDeliveryMode::PreviewLatest};
-    };
-
-    // Publish the initial hello event to connected clients
-    void MicroManagerDriverRuntime::publishHello()
-    {
-        QJsonObject event = makeEvent(driverhost::kEventHello);
-        event.insert(driverhost::kProviderIdField, m_providerId);
-        event.insert(driverhost::kDeviceIdField, m_cameraId);
-        event.insert(driverhost::kDeviceKindField, driverhost::kCapabilityCamera);
-        event.insert(driverhost::kCapabilitiesField,
-                     QJsonArray{driverhost::kCapabilityCamera,
-                                driverhost::kCapabilityProperties});
-        emit eventReady(event);
-    }
-
-    // Replay encoded cfg properties into the DriverHost MMCore instance
-    bool MicroManagerDriverRuntime::applyProperties(const QStringList& encodedProperties,
-                                       const std::string& label,
-                                       const QString& propertyKind,
-                                       QString* errorMessage)
-    {
-        for (const QString& encodedProperty : encodedProperties)
-        {
-            if (encodedProperty.isEmpty())
-            {
-                continue;
-            }
-
-            QJsonParseError parseError;
-            const QJsonDocument doc = QJsonDocument::fromJson(encodedProperty.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Invalid %1 payload for '%2'")
-                        .arg(propertyKind, m_cameraId);
-                }
-                return false;
-            }
-
-            const QJsonObject property = doc.object();
-            const QString propertyName = property.value(QStringLiteral("name")).toString().trimmed();
-            const QString propertyValue = property.value(QStringLiteral("value")).toString();
-            if (propertyName.isEmpty())
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Missing %1 name for '%2'")
-                        .arg(propertyKind, m_cameraId);
-                }
-                return false;
-            }
-
-            try
-            {
-                m_mmcore->setProperty(label.c_str(),
-                                      propertyName.toStdString().c_str(),
-                                      propertyValue.toStdString().c_str());
-            }
-            catch (const CMMError& mmError)
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QString("Failed to apply %1 '%2': %3")
-                        .arg(propertyKind, propertyName, QString::fromStdString(mmError.getMsg()));
-                }
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    // Dispatch one control request and emit a matching response
-    void MicroManagerDriverRuntime::handleRequest(quint64 connectionId,
-                                     quint64 requestId,
-                                     const QString& type,
-                                     const QJsonObject& message)
-    {
-        if (requestId == 0 || type.isEmpty())
-        {
-            return;
-        }
-
-        if (!m_mmcore && type != driverhost::kCommandShutdown)
-        {
-            emit responseReady(connectionId,
-                               makeErrorResponse(type,
-                                                 requestId,
-                                                 QStringLiteral("DriverHost runtime not initialized")));
-            return;
-        }
-
-        if (type == driverhost::kCommandDescribe)
-        {
-            QJsonObject response = makeResponse(type, requestId, true);
-            response.insert(driverhost::kProviderIdField, m_providerId);
-            response.insert(driverhost::kDeviceIdField, m_cameraId);
-            response.insert(driverhost::kDeviceKindField, driverhost::kCapabilityCamera);
-            response.insert(driverhost::kCapabilitiesField,
-                            QJsonArray{driverhost::kCapabilityCamera,
-                                       driverhost::kCapabilityProperties});
-            emit responseReady(connectionId, response);
-            return;
-        }
-
-        if (type == driverhost::kCommandStartPreview)
-        {
-            QString error;
-            const bool ok = startPreviewInternal(&error);
-            emit responseReady(connectionId,
-                               ok
-                                   ? makeResponse(type, requestId, true)
-                                   : makeErrorResponse(type, requestId, error));
-            return;
-        }
-
-        if (type == driverhost::kCommandStopPreview)
-        {
-            QString error;
-            const bool ok = stopPreviewInternal(&error);
-            emit responseReady(connectionId,
-                               ok
-                                   ? makeResponse(type, requestId, true)
-                                   : makeErrorResponse(type, requestId, error));
-            return;
-        }
-
-        if (type == driverhost::kCommandSetFrameDeliveryMode)
-        {
-            const QString mode = message.value(QStringLiteral("mode")).toString();
-            if (mode == driverhost::kFrameDeliveryModePreviewLatest)
-            {
-                m_frameDeliveryMode = FrameDeliveryMode::PreviewLatest;
-                m_deliveryTimer.invalidate();
-            }
-            else if (mode == driverhost::kFrameDeliveryModeLatestOnly)
-            {
-                m_frameDeliveryMode = FrameDeliveryMode::LatestOnly;
-            }
-            else if (mode == driverhost::kFrameDeliveryModeAllFrames)
-            {
-                m_frameDeliveryMode = FrameDeliveryMode::AllFrames;
-                m_pendingFrameAdvance = 0;
-                m_deliveryTimer.invalidate();
-            }
-            else
-            {
-                emit responseReady(connectionId,
-                                   makeErrorResponse(type,
-                                                     requestId,
-                                                     QStringLiteral("Unknown frame delivery mode")));
-                return;
-            }
-
-            QJsonObject response = makeResponse(type, requestId, true);
-            response.insert(QStringLiteral("mode"), mode);
-            emit responseReady(connectionId, response);
-            return;
-        }
-
-        const std::string camera = m_cameraId.toStdString();
-
-        if (type == driverhost::kCommandGetExposure)
-        {
-            answer(connectionId, type, requestId, [this](QJsonObject& response)
-            {
-                m_exposureMs = m_mmcore->getExposure();
-                response.insert(QStringLiteral("exposureMs"), m_exposureMs);
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandSetExposure)
-        {
-            const double exposureMs = message.value(QStringLiteral("value")).toDouble(-1.0);
-            if (exposureMs <= 0.0)
-            {
-                emit responseReady(connectionId,
-                                   makeErrorResponse(type, requestId, QStringLiteral("Invalid exposure value")));
-                return;
-            }
-            answer(connectionId, type, requestId, [this, exposureMs](QJsonObject& response)
-            {
-                m_mmcore->setExposure(exposureMs);
-                m_exposureMs = m_mmcore->getExposure();
-                response.insert(QStringLiteral("exposureMs"), m_exposureMs);
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandListProperties)
-        {
-            answer(connectionId, type, requestId, [this, &camera](QJsonObject& response)
-            {
-                QJsonArray properties;
-                for (const auto& name : m_mmcore->getDevicePropertyNames(camera.c_str()))
-                {
-                    properties.append(QString::fromStdString(name));
-                }
-                response.insert(QStringLiteral("properties"), properties);
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandGetProperty)
-        {
-            const QString name = message.value(QStringLiteral("name")).toString();
-            const bool fromCache = message.value(QStringLiteral("fromCache")).toBool(false);
-            const std::string property = name.toStdString();
-            QString value;
-            QString propertyType = QStringLiteral("Unknown");
-            bool readOnly = true;
-            bool preInit = false;
-            QJsonArray allowedValues;
-            bool hasLimits = false;
-            double lowerLimit = 0.0;
-            double upperLimit = 0.0;
-            QString error;
-            bool ok = true;
-
-            try
-            {
-                value = QString::fromStdString(
-                    fromCache
-                        ? m_mmcore->getPropertyFromCache(camera.c_str(), property.c_str())
-                        : m_mmcore->getProperty(camera.c_str(), property.c_str()));
-
-                try
-                {
-                    switch (m_mmcore->getPropertyType(camera.c_str(), property.c_str()))
-                    {
-                    case MM::String:
-                        propertyType = QStringLiteral("String");
-                        break;
-                    case MM::Float:
-                        propertyType = QStringLiteral("Float");
-                        break;
-                    case MM::Integer:
-                        propertyType = QStringLiteral("Integer");
-                        break;
-                    default:
-                        propertyType = QStringLiteral("Unknown");
-                        break;
-                    }
-                }
-                catch (const CMMError&)
-                {
-                }
-
-                try
-                {
-                    preInit = m_mmcore->isPropertyPreInit(camera.c_str(), property.c_str());
-                }
-                catch (const CMMError&)
-                {
-                }
-
-                try
-                {
-                    readOnly = m_mmcore->isPropertyReadOnly(camera.c_str(), property.c_str());
-                }
-                catch (const CMMError&)
-                {
-                }
-
-                try
-                {
-                    const auto values =
-                        m_mmcore->getAllowedPropertyValues(camera.c_str(), property.c_str());
-                    for (const auto& allowedValue : values)
-                    {
-                        allowedValues.append(QString::fromStdString(allowedValue));
-                    }
-                }
-                catch (const CMMError&)
-                {
-                }
-
-                try
-                {
-                    hasLimits = m_mmcore->hasPropertyLimits(camera.c_str(), property.c_str());
-                    if (hasLimits)
-                    {
-                        lowerLimit = m_mmcore->getPropertyLowerLimit(camera.c_str(), property.c_str());
-                        upperLimit = m_mmcore->getPropertyUpperLimit(camera.c_str(), property.c_str());
-                    }
-                }
-                catch (const CMMError&)
-                {
-                    hasLimits = false;
-                }
-            }
-            catch (const CMMError& mmError)
-            {
-                ok = false;
-                error = QString::fromStdString(mmError.getMsg());
-            }
-
-            if (ok)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("value"), value);
-                response.insert(QStringLiteral("propertyType"), propertyType);
-                response.insert(QStringLiteral("readOnly"), readOnly);
-                response.insert(QStringLiteral("preInit"), preInit);
-                response.insert(QStringLiteral("allowedValues"), allowedValues);
-                response.insert(QStringLiteral("hasLimits"), hasLimits);
-                response.insert(QStringLiteral("lowerLimit"), lowerLimit);
-                response.insert(QStringLiteral("upperLimit"), upperLimit);
-                emit responseReady(connectionId, response);
-            }
-            else
-            {
-                emit responseReady(connectionId, makeErrorResponse(type, requestId, error));
-            }
-            return;
-        }
-
-        if (type == driverhost::kCommandSetProperty)
-        {
-            const std::string name = message.value(QStringLiteral("name")).toString().toStdString();
-            const std::string value = message.value(QStringLiteral("value")).toString().toStdString();
-            answer(connectionId, type, requestId, [this, &camera, &name, &value](QJsonObject&)
-            {
-                m_mmcore->setProperty(camera.c_str(), name.c_str(), value.c_str());
-                m_mmcore->waitForDevice(camera.c_str());
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandSetRoi)
-        {
-            const int x = message.value(QStringLiteral("x")).toInt(0);
-            const int y = message.value(QStringLiteral("y")).toInt(0);
-            const int width = message.value(QStringLiteral("width")).toInt(0);
-            const int height = message.value(QStringLiteral("height")).toInt(0);
-            answer(connectionId, type, requestId, [this, &camera, x, y, width, height](QJsonObject&)
-            {
-                m_mmcore->setROI(camera.c_str(), x, y, width, height);
-                m_mmcore->waitForDevice(camera.c_str());
-                refreshSourceRoi();
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandClearRoi)
-        {
-            answer(connectionId, type, requestId, [this, &camera](QJsonObject&)
-            {
-                m_mmcore->setCameraDevice(camera.c_str());
-                m_mmcore->clearROI();
-                m_mmcore->waitForDevice(camera.c_str());
-                refreshSourceRoi();
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandGetRoi)
-        {
-            answer(connectionId, type, requestId, [this, &camera](QJsonObject& response)
-            {
-                int x = 0;
-                int y = 0;
-                int width = 0;
-                int height = 0;
-                m_mmcore->getROI(camera.c_str(), x, y, width, height);
-                response.insert(QStringLiteral("x"), x);
-                response.insert(QStringLiteral("y"), y);
-                response.insert(QStringLiteral("width"), width);
-                response.insert(QStringLiteral("height"), height);
-            });
-            return;
-        }
-
-        if (type == driverhost::kCommandCaptureEvent)
-        {
-            QString error;
-            quint64 frameIndex = 0;
-            const bool ok = captureEventFrameInternal(frameIndex, &error);
-            if (ok)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-                emit responseReady(connectionId, response);
-            }
-            else
-            {
-                emit responseReady(connectionId, makeErrorResponse(type, requestId, error));
-            }
-            return;
-        }
-
-        if (type == driverhost::kCommandShutdown)
-        {
-            stopPreviewInternal(nullptr);
-            setState(State::ShuttingDown);
-            emit responseReady(connectionId, makeResponse(type, requestId, true));
-            QTimer::singleShot(50, this, [this]() { emit shutdownRequested(); });
-            return;
-        }
-
-        emit responseReady(connectionId,
-                           makeErrorResponse(type,
-                                             requestId,
-                                             QStringLiteral("Unknown control command")));
-    }
-
-    // Stop preview before the runtime thread exits
-    void MicroManagerDriverRuntime::stopForExit()
-    {
-        stopPreviewInternal(nullptr);
-        setState(State::ShuttingDown);
-    }
-
-    // Check whether the runtime is currently previewing
-    bool MicroManagerDriverRuntime::previewRunning() const
-    {
-        return m_state == State::Previewing;
-    }
-
-    // Update runtime state and publish state changes
-    void MicroManagerDriverRuntime::setState(State state, const QString& error)
-    {
-        const bool changed = (m_state != state);
-        m_state = state;
-        if (!error.isEmpty())
-        {
-            m_lastError = error;
-        }
-        if (changed && (state == State::Previewing
-            || state == State::Idle
-            || state == State::Error
-            || state == State::ShuttingDown))
-        {
-            emitPreviewStateEvent();
-        }
-        if (!error.isEmpty())
-        {
-            emitDriverHostErrorEvent(error);
-        }
-    }
-
-    // Build a protocol event envelope
-    QJsonObject MicroManagerDriverRuntime::makeEvent(const QString& type) const
-    {
-        return driverhost::makeEnvelope(driverhost::kMessageKindEvent, type);
-    }
-
-    // Publish current preview state to clients
-    void MicroManagerDriverRuntime::emitPreviewStateEvent()
-    {
-        QJsonObject event = makeEvent(driverhost::kEventPreviewState);
-        event.insert(QStringLiteral("running"), previewRunning());
-        emit eventReady(event);
-    }
-
-    // Publish a DriverHost error event to clients
-    void MicroManagerDriverRuntime::emitDriverHostErrorEvent(const QString& error)
-    {
-        QJsonObject event = makeEvent(driverhost::kEventDriverHostError);
-        event.insert(QStringLiteral("error"), error);
-        emit eventReady(event);
-    }
-
-    // Publish the newest shared memory frame index
-    void MicroManagerDriverRuntime::emitFrameAvailableEvent(quint64 frameIndex)
-    {
-        QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
-        event.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
-        emit eventReady(event);
-    }
-
-    // Start continuous acquisition and polling
-    bool MicroManagerDriverRuntime::startPreviewInternal(QString* errorMessage)
-    {
-        if (m_state == State::ShuttingDown || m_state == State::Error)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("DriverHost is not in a runnable state");
-            }
-            return false;
-        }
-        if (previewRunning())
-        {
-            return true;
-        }
-
-        try
-        {
-            while (m_mmcore->getRemainingImageCount() > 0)
-            {
-                m_mmcore->popNextImage();
-            }
-            refreshSourceRoi();
-            if (!ensureFrameLayout(m_mmcore->getImageWidth(),
-                                   m_mmcore->getImageHeight(),
-                                   m_mmcore->getBytesPerPixel()))
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Unsupported frame format");
-                }
-                return false;
-            }
-            m_mmcore->startContinuousSequenceAcquisition(0.0);
-            m_observedFrameIntervalMs = 0.0;
-            m_pendingFrameAdvance = 0;
-            m_frameIntervalTimer.restart();
-            m_deliveryTimer.invalidate();
-            m_timer->setInterval(pollingIntervalFor(m_exposureMs));
-            m_timer->start();
-            setState(State::Previewing);
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QString::fromStdString(error.getMsg());
-            }
-            return false;
-        }
-    }
-
-    // Stop continuous acquisition and polling
-    bool MicroManagerDriverRuntime::stopPreviewInternal(QString* errorMessage)
-    {
-        if (!m_mmcore)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QStringLiteral("MMCore not available");
-            }
-            return false;
-        }
-
-        try
-        {
-            if (m_mmcore->isSequenceRunning())
-            {
-                m_mmcore->stopSequenceAcquisition();
-            }
-            if (m_timer)
-            {
-                m_timer->stop();
-            }
-            m_frameIntervalTimer.invalidate();
-            m_deliveryTimer.invalidate();
-            m_observedFrameIntervalMs = 0.0;
-            m_pendingFrameAdvance = 0;
-            if (m_state != State::ShuttingDown && m_state != State::Error)
-            {
-                setState(State::Idle);
-            }
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QString::fromStdString(error.getMsg());
-            }
-            return false;
-        }
-    }
-
-    // Capture one frame for recording or API requests
-    bool MicroManagerDriverRuntime::captureEventFrameInternal(quint64& frameIndex, QString* errorMessage)
-    {
-        frameIndex = 0;
-        try
-        {
-            const void* pixels = nullptr;
-            if (previewRunning())
-            {
-                QElapsedTimer waitTimer;
-                waitTimer.start();
-                while (m_mmcore->getRemainingImageCount() <= 0 && waitTimer.elapsed() < 2000)
-                {
-                    QThread::msleep(1);
-                }
-                if (m_mmcore->getRemainingImageCount() > 0)
-                {
-                    pixels = m_mmcore->popNextImage();
-                }
-                else if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("No frame available from running sequence");
-                }
-            }
-            else
-            {
-                m_mmcore->snapImage();
-                pixels = m_mmcore->getImage();
-            }
-
-            if (!pixels)
-            {
-                if (errorMessage && errorMessage->isEmpty())
-                {
-                    *errorMessage = QStringLiteral("Empty image buffer");
-                }
-                return false;
-            }
-
-            const unsigned width = m_mmcore->getImageWidth();
-            const unsigned height = m_mmcore->getImageHeight();
-            const unsigned bytesPerPixel = m_mmcore->getBytesPerPixel();
-            if (!ensureFrameLayout(width, height, bytesPerPixel))
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Unsupported frame format");
-                }
-                return false;
-            }
-
-            const quint64 frameAdvance = m_pendingFrameAdvance + 1;
-            m_pendingFrameAdvance = 0;
-            if (!writeFrameToSharedMemory(pixels, frameAdvance, &frameIndex))
-            {
-                if (errorMessage)
-                {
-                    *errorMessage = QStringLiteral("Shared memory unavailable");
-                }
-                return false;
-            }
-
-            if (m_frameDeliveryMode == FrameDeliveryMode::PreviewLatest)
-            {
-                m_deliveryTimer.restart();
-            }
-
-            emitFrameAvailableEvent(frameIndex);
-            return true;
-        }
-        catch (const CMMError& error)
-        {
-            if (errorMessage)
-            {
-                *errorMessage = QString::fromStdString(error.getMsg());
-            }
-            return false;
-        }
-    }
-
-    // Copy one camera frame into the shared memory ring buffer
-    bool MicroManagerDriverRuntime::writeFrameToSharedMemory(const void* pixels,
-                                                quint64 frameAdvance,
-                                                quint64* frameIndexOut)
-    {
-        // A frame that finds no free slot still counts, so readers see it as dropped
-        m_frameIndex += (std::max)(quint64{1}, frameAdvance);
-        if (frameIndexOut)
-        {
-            *frameIndexOut = m_frameIndex;
-        }
-        SharedFrameHeader header{};
-        header.width = m_frameLayout.width;
-        header.height = m_frameLayout.height;
-        header.stride = m_frameLayout.stride;
-        header.pixelFormat = static_cast<quint32>(m_frameLayout.format);
-        header.bitsPerSample = m_frameLayout.bitDepth;
-        header.channels = m_frameLayout.channels;
-        header.frameIndex = m_frameIndex;
-        header.timestampNs =
-            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
-        setSharedFrameSourceRoi(header,
-                                m_sourceRoiX,
-                                m_sourceRoiY,
-                                m_sourceRoiWidth,
-                                m_sourceRoiHeight);
-        return sharedframe::writeFrame(static_cast<uchar*>(m_shm->data()),
-                                       m_nextWriteSlot,
-                                       header,
-                                       pixels,
-                                       static_cast<std::size_t>(m_frameLayout.byteCount));
-    }
-
-    // Drain camera frames into shared memory and publish the newest index
-    void MicroManagerDriverRuntime::pollAndWrite()
-    {
-        try
-        {
-            long remaining = m_mmcore->getRemainingImageCount();
-
-            if (remaining <= 0)
-            {
-                return;
-            }
-
-            quint64 newestFrameIndex = 0;
-            quint64 acquiredFrameCount = 0;
-            if (m_frameDeliveryMode != FrameDeliveryMode::AllFrames)
-            {
-                const bool previewRateLimited =
-                    m_frameDeliveryMode == FrameDeliveryMode::PreviewLatest;
-                const bool publishFrame = !previewRateLimited
-                    || !m_deliveryTimer.isValid()
-                    || m_deliveryTimer.elapsed() >= kPreviewFrameDeliveryIntervalMs;
-                while (remaining-- > 0)
-                {
-                    const void* pixels = m_mmcore->popNextImage();
-                    if (!pixels)
-                    {
-                        break;
-                    }
-                    ++acquiredFrameCount;
-                    ++m_pendingFrameAdvance;
-                    if (remaining > 0)
-                    {
-                        continue;
-                    }
-                    if (publishFrame && m_frameLayoutValid)
-                    {
-                        quint64 writtenFrameIndex = 0;
-                        const bool written = writeFrameToSharedMemory(
-                            pixels,
-                            m_pendingFrameAdvance,
-                            &writtenFrameIndex);
-                        m_pendingFrameAdvance = 0;
-                        if (previewRateLimited)
-                        {
-                            m_deliveryTimer.restart();
-                        }
-                        if (written)
-                        {
-                            newestFrameIndex = writtenFrameIndex;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                while (remaining-- > 0)
-                {
-                    const void* pixels = m_mmcore->popNextImage();
-                    if (!pixels)
-                    {
-                        break;
-                    }
-                    ++acquiredFrameCount;
-
-                    if (!m_frameLayoutValid)
-                    {
-                        break;
-                    }
-
-                    quint64 writtenFrameIndex = 0;
-                    if (!writeFrameToSharedMemory(pixels, 1, &writtenFrameIndex))
-                    {
-                        break;
-                    }
-                    newestFrameIndex = writtenFrameIndex;
-                }
-            }
-
-            if (newestFrameIndex != 0)
-            {
-                emitFrameAvailableEvent(newestFrameIndex);
-            }
-            updatePollingInterval(acquiredFrameCount);
-        }
-        catch (const CMMError& error)
-        {
-            const QString message =
-                QStringLiteral("DriverHost capture error: %1")
-                .arg(QString::fromStdString(error.getMsg()));
-            setState(State::Error, message);
-        }
-    }
-
-    // Adapts MMCore polling to the observed camera frame interval
-    void MicroManagerDriverRuntime::updatePollingInterval(quint64 frameCount)
-    {
-        if (frameCount == 0 || !m_frameIntervalTimer.isValid())
-        {
-            return;
-        }
-
-        const double elapsedMs = static_cast<double>(m_frameIntervalTimer.nsecsElapsed()) / 1000000.0;
-        m_frameIntervalTimer.restart();
-        const double measuredIntervalMs = elapsedMs / static_cast<double>(frameCount);
-        if (!std::isfinite(measuredIntervalMs) || measuredIntervalMs <= 0.0)
-        {
-            return;
-        }
-
-        m_observedFrameIntervalMs = m_observedFrameIntervalMs > 0.0
-                                        ? 0.75 * m_observedFrameIntervalMs
-                                              + 0.25 * measuredIntervalMs
-                                        : measuredIntervalMs;
-        const int intervalMs = pollingIntervalFor(m_observedFrameIntervalMs);
-        if (m_timer->interval() != intervalMs)
-        {
-            m_timer->setInterval(intervalMs);
-        }
-    }
-
-    // Validate and cache the current frame memory layout
-    bool MicroManagerDriverRuntime::ensureFrameLayout(unsigned width, unsigned height, unsigned bytesPerPixel)
-    {
-        const auto logOversized = [this](quint64 byteCount)
-        {
-            if (!m_loggedOversizedFrame)
-            {
-                qWarning().noquote()
-                    << QString("[DriverHost %1] Frame payload (%2 bytes) exceeds shared memory slot capacity (%3 bytes)")
-                       .arg(m_cameraId)
-                       .arg(static_cast<qulonglong>(byteCount))
-                       .arg(kSharedFrameMaxBytes);
-                m_loggedOversizedFrame = true;
-            }
-        };
-
-        if (bytesPerPixel != 1 && bytesPerPixel != 2)
-        {
-            if (!m_loggedUnsupportedFormat)
-            {
-                qWarning().noquote()
-                    << QString("[DriverHost %1] Unsupported bytes-per-pixel (%2). Only Mono8/Mono16 are supported.")
-                       .arg(m_cameraId)
-                       .arg(bytesPerPixel);
-                m_loggedUnsupportedFormat = true;
-            }
-            return false;
-        }
-        m_loggedUnsupportedFormat = false;
-
-        const bool geometryChanged =
-            !m_frameLayoutValid
-            || m_frameLayout.width != width
-            || m_frameLayout.height != height
-            || m_frameLayout.bytesPerPixel != bytesPerPixel;
-
-        if (!geometryChanged)
-        {
-            if (m_frameLayout.byteCount == 0
-                || m_frameLayout.byteCount > static_cast<quint64>(kSharedFrameMaxBytes))
-            {
-                logOversized(m_frameLayout.byteCount);
-                return false;
-            }
-            if (m_sourceRoiWidth <= 0 || m_sourceRoiHeight <= 0)
-            {
-                refreshSourceRoi();
-            }
-            m_loggedOversizedFrame = false;
-            return true;
-        }
-
-        m_frameLayoutValid = false;
-
-        FrameLayout updated;
-        updated.width = width;
-        updated.height = height;
-        updated.bytesPerPixel = bytesPerPixel;
-        updated.format =
-            (bytesPerPixel == 2) ? SharedPixelFormat::Mono16 : SharedPixelFormat::Mono8;
-        updated.channels = 1;
-        const quint64 stride = static_cast<quint64>(width) * bytesPerPixel;
-        if (stride == 0 || stride > (std::numeric_limits<unsigned>::max)())
-        {
-            logOversized(stride);
-            return false;
-        }
-        updated.stride = static_cast<unsigned>(stride);
-        updated.byteCount = computeMaxFrameBytes(width, height, updated.format);
-
-        if (updated.byteCount == 0
-            || updated.byteCount > static_cast<quint64>(kSharedFrameMaxBytes))
-        {
-            logOversized(updated.byteCount);
-            return false;
-        }
-
-        int bitDepth = updated.format == SharedPixelFormat::Mono16 ? 16 : 8;
-        try
-        {
-            bitDepth = static_cast<int>(m_mmcore->getImageBitDepth());
-        }
-        catch (const CMMError&)
-        {
-        }
-        updated.bitDepth = normalizedSharedBitDepth(updated.format, bitDepth);
-
-        m_frameLayout = updated;
-        m_frameLayoutValid = true;
-        refreshSourceRoi();
-        m_loggedOversizedFrame = false;
-        return true;
-    }
-
-    // Read the active camera ROI used by following frame metadata
-    void MicroManagerDriverRuntime::refreshSourceRoi()
-    {
-        int x = 0;
-        int y = 0;
-        int width = 0;
-        int height = 0;
-        try
-        {
-            m_mmcore->getROI(m_cameraId.toStdString().c_str(), x, y, width, height);
-        }
-        catch (const CMMError&)
-        {
-            width = static_cast<int>(m_frameLayout.width);
-            height = static_cast<int>(m_frameLayout.height);
-        }
-
-        if (width <= 0 || height <= 0)
-        {
-            width = static_cast<int>(m_frameLayout.width);
-            height = static_cast<int>(m_frameLayout.height);
-        }
-
-        m_sourceRoiX = x;
-        m_sourceRoiY = y;
-        m_sourceRoiWidth = width;
-        m_sourceRoiHeight = height;
-    }
-
-    class ProviderDriverRuntime final : public DriverHostRuntime
-    {
-    public:
-        ProviderDriverRuntime(QString pluginPath,
-                              QString providerId,
-                              QString hostKey,
-                              QJsonObject options,
-                              QObject* parent = nullptr)
-            : DriverHostRuntime(parent)
-              , m_pluginPath(std::move(pluginPath))
-              , m_providerId(std::move(providerId))
-              , m_hostKey(std::move(hostKey))
-              , m_options(std::move(options))
-        {
-        }
-
-        ~ProviderDriverRuntime() override
-        {
-            stopForExit();
-        }
-
-        bool initializeRuntime() override;
-        QString lastError() const override { return m_lastError; }
-        void publishHello() override;
-        void handleRequest(quint64 connectionId,
-                           quint64 requestId,
-                           const QString& type,
-                           const QJsonObject& message) override;
-        void stopForExit() override;
-
-    private:
-        enum class FrameDeliveryMode
-        {
-            PreviewLatest,
-            LatestOnly,
-            AllFrames
-        };
+        bool createDevice();
 
         struct CameraTransport
         {
@@ -1459,13 +270,13 @@ namespace scopeone::core::internal
             QString shmKey;
             std::unique_ptr<QSharedMemory> shm;
             std::atomic<FrameDeliveryMode> deliveryMode{FrameDeliveryMode::PreviewLatest};
-            QMutex frameMutex;
+            std::atomic_bool paused{false};
             QMutex writeMutex;
-            ImageFrame latestFrame;
-            bool latestDispatchQueued{false};
-            ImageFrame previewFrame;
-            QTimer* previewTimer{nullptr};
             QElapsedTimer deliveryTimer;
+            // The newest frame the live view has not been told about, and the timer that tells it
+            quint64 pendingNotice{0};
+            QTimer* noticeTimer{nullptr};
+            std::atomic_bool noticeQueued{false};
             quint64 frameIndex{0};
             int nextWriteSlot{0};
             bool previewRunning{false};
@@ -1479,118 +290,204 @@ namespace scopeone::core::internal
         const HardwareDeviceDescriptor* requestedDevice(const QJsonObject& message) const;
         std::shared_ptr<CameraTransport> cameraTransport(const QString& deviceId) const;
         bool createSharedMemory(CameraTransport& transport);
-        void enqueueFrame(const ImageFrame& frame);
-        void dispatchLatestFrame(const QString& deviceId);
-        void publishAllFrame(const QString& deviceId, const ImageFrame& frame);
-        void publishFrame(const QString& deviceId, const ImageFrame& frame);
-        void flushPreviewFrame(const QString& deviceId);
+        void writeCameraFrame(const ImageFrame& frame);
+        void releaseSharedMemoryName(const QString& key);
+        void sendPendingNotice(const QString& deviceId);
         bool writeFrame(CameraTransport& transport,
                         const ImageFrame& frame,
                         quint64* frameIndexOut = nullptr);
         void emitPreviewStateEvent(const QString& deviceId, bool running);
         void emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex);
 
-        QString m_pluginPath;
+        // The ring a signal source or a DAQ device writes its chunks to while it runs
+        struct StreamTransport
+        {
+            QString streamId;
+            QString shmKey;
+            QSharedMemory shm;
+            streamring::Writer writer;
+            QMutex writeMutex;
+            std::atomic_bool notifyQueued{false};
+            bool stopRequested{false};
+        };
+
+        void installStreamSinks();
+        bool handleStreamRequest(quint64 requestId,
+                                 const QString& type,
+                                 const QJsonObject& message,
+                                 const std::function<void(const QJsonObject&)>& reply);
+        std::shared_ptr<StreamTransport> openStream(const QString& streamId,
+                                                    qsizetype capacity,
+                                                    QString* errorMessage);
+        void closeStream(const QString& streamId);
+        void markStreamStopped(const QString& streamId);
+        void releaseEndedStream(const QString& streamId, bool failed);
+        void writeStream(const QString& streamId, streamring::RecordType type, const QByteArray& payload);
+        qsizetype signalStreamCapacity(const SignalAcquisitionConfig& config) const;
+        static qsizetype daqStreamCapacity(const DaqSessionConfig& config);
+
+        QString m_driverPath;
+        std::optional<MicroManagerCameraSetup> m_cameraSetup;
         QString m_providerId;
         QString m_hostKey;
-        QJsonObject m_options;
+        QString m_deviceName;
+        QVariantMap m_preInitProperties;
         QString m_lastError;
         HardwareProviderDescriptor m_descriptor;
         QList<HardwareDeviceDescriptor> m_devices;
         QHash<QString, HardwareDeviceDescriptor> m_devicesById;
+        HardwareDeviceDescriptor m_rootDevice;
         QHash<QString, std::shared_ptr<CameraTransport>> m_cameraTransports;
         mutable QReadWriteLock m_cameraTransportsLock;
-        std::unique_ptr<QPluginLoader> m_pluginLoader;
-        HardwareProviderPtr m_provider;
-        CameraProvider* m_camera{nullptr};
-        DevicePropertyProvider* m_properties{nullptr};
-        StageProvider* m_stage{nullptr};
-        ShutterProvider* m_shutter{nullptr};
-        StateProvider* m_state{nullptr};
-        ConfigurationProvider* m_configuration{nullptr};
+        std::unique_ptr<QPluginLoader> m_driverLoader;
+        DevicePtr m_device;
+        std::shared_ptr<MicroManagerCamera> m_microManagerCamera;
+        Camera* m_camera{nullptr};
+        Device* m_properties{nullptr};
+        XYStage* m_xyStage{nullptr};
+        ZStage* m_zStage{nullptr};
+        Shutter* m_shutter{nullptr};
+        Autofocus* m_autofocus{nullptr};
+        StateDevice* m_state{nullptr};
+        SignalSource* m_signals{nullptr};
+        Daq* m_daq{nullptr};
+        QList<SignalSourceDescriptor> m_signalSources;
+        QList<DaqDeviceDescriptor> m_daqDevices;
+        QHash<QString, std::shared_ptr<StreamTransport>> m_streams;
+        QMutex m_streamsMutex;
+        quint64 m_nextStreamIndex{0};
+        // The images of the last sequence of each camera, until SendSequenceFrames has written them
+        QHash<QString, std::vector<ImageFrame>> m_sequences;
         std::atomic_bool m_acceptFrames{false};
+        std::atomic_bool m_acceptStreams{false};
     };
 
-    bool ProviderDriverRuntime::initializeRuntime()
+    // A Micro-Manager camera is built into DriverHost, a device of a driver comes from its library
+    bool DriverRuntime::createDevice()
     {
-        m_lastError.clear();
-        m_pluginLoader = std::make_unique<QPluginLoader>(m_pluginPath);
-        PluginManifest manifest;
-        if (!parsePluginManifest(
-                m_pluginLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
-                PluginKind::Hardware,
+        if (m_cameraSetup)
+        {
+            m_microManagerCamera = MicroManagerCamera::load(*m_cameraSetup, true, &m_lastError);
+            m_device = m_microManagerCamera;
+            return m_device != nullptr;
+        }
+        m_driverLoader = std::make_unique<QPluginLoader>(m_driverPath);
+        DriverManifest manifest;
+        if (!parseDriverManifest(
+                m_driverLoader->metaData().value(QStringLiteral("MetaData")).toObject(),
                 manifest,
                 &m_lastError))
         {
             return false;
         }
-        if (manifest.id != m_providerId
-            || manifest.metadata.value(QStringLiteral("providerId")).toString().trimmed()
-                   != m_providerId)
-        {
-            m_lastError = QStringLiteral("Provider manifest identity mismatch");
-            return false;
-        }
-        QObject* const instance = m_pluginLoader->instance();
+        QObject* const instance = m_driverLoader->instance();
         if (!instance)
         {
-            m_lastError = m_pluginLoader->errorString();
+            m_lastError = m_driverLoader->errorString();
             return false;
         }
 
-        auto* const factory = qobject_cast<DriverHostProviderPlugin*>(instance);
+        auto* const factory = qobject_cast<Driver*>(instance);
         if (!factory)
         {
-            m_lastError = QStringLiteral("Module does not implement DriverHostProviderPlugin");
+            m_lastError = QStringLiteral("Module does not implement Driver");
             return false;
         }
-        if (factory->providerId() != m_providerId)
+        if (factory->driverId() != manifest.id)
         {
-            m_lastError = QStringLiteral("Provider module identity mismatch");
+            m_lastError = QStringLiteral("Driver identity mismatch");
             return false;
         }
 
-        m_options.insert(QStringLiteral("providerId"), m_providerId);
-        m_provider = factory->createProvider(m_options, &m_lastError);
-        if (!m_provider)
+        const QStringList deviceNames = factory->deviceNames();
+        const QString deviceName = m_deviceName.isEmpty() && !deviceNames.isEmpty()
+                                       ? deviceNames.first()
+                                       : m_deviceName;
+        // A driver that lists no names checks the name in createDevice itself
+        if (!deviceNames.isEmpty() && !deviceNames.contains(deviceName))
+        {
+            m_lastError = QStringLiteral("The driver has no device %1").arg(deviceName);
+            return false;
+        }
+        m_device = factory->createDevice(deviceName, m_preInitProperties, &m_lastError);
+        if (!m_device)
         {
             if (m_lastError.isEmpty())
             {
-                m_lastError = QStringLiteral("Provider module returned no provider");
+                m_lastError = QStringLiteral("The driver returned no device");
             }
             return false;
         }
-        m_descriptor = m_provider->descriptor();
-        if (m_descriptor.id != m_providerId
-            || m_descriptor.id != m_descriptor.id.trimmed())
+        return true;
+    }
+
+    bool DriverRuntime::initializeRuntime()
+    {
+        m_lastError.clear();
+        if (!createDevice())
         {
-            m_lastError = QStringLiteral("Provider descriptor identity mismatch");
             return false;
         }
+        // ScopeOne names the provider, which is the cfg label of a driver device
+        m_descriptor = m_device->descriptor();
+        m_descriptor.id = m_providerId;
 
-        HardwareProvider* const provider = m_provider.get();
-        m_camera = dynamic_cast<CameraProvider*>(provider);
-        m_properties = dynamic_cast<DevicePropertyProvider*>(provider);
-        m_stage = dynamic_cast<StageProvider*>(provider);
-        m_shutter = dynamic_cast<ShutterProvider*>(provider);
-        m_state = dynamic_cast<StateProvider*>(provider);
-        m_configuration = dynamic_cast<ConfigurationProvider*>(provider);
+        Device* const provider = m_device.get();
+        m_camera = dynamic_cast<Camera*>(provider);
+        m_properties = provider;
+        m_xyStage = dynamic_cast<XYStage*>(provider);
+        m_zStage = dynamic_cast<ZStage*>(provider);
+        m_shutter = dynamic_cast<Shutter*>(provider);
+        m_autofocus = dynamic_cast<Autofocus*>(provider);
+        m_state = dynamic_cast<StateDevice*>(provider);
+        m_signals = dynamic_cast<SignalSource*>(provider);
+        m_daq = dynamic_cast<Daq*>(provider);
+        // A device without peripherals is one device under its label, and its kind follows its
+        // capability. Only a shutter was recognized before, so a single camera, stage, filter wheel
+        // or autofocus had to list itself as the one peripheral of a hub to be used as one.
+        const QList<HardwareDeviceDescriptor> peripherals = m_device->devices();
+        m_rootDevice.name = m_providerId;
+        m_rootDevice.kind = m_camera ? HardwareDeviceKind::Camera
+                          : m_xyStage ? HardwareDeviceKind::XYStage
+                          : m_zStage ? HardwareDeviceKind::ZStage
+                          : m_shutter ? HardwareDeviceKind::Shutter
+                          : m_state ? HardwareDeviceKind::State
+                          : m_autofocus ? HardwareDeviceKind::AutoFocus
+                                        : HardwareDeviceKind::Generic;
+        m_rootDevice.state = HardwareDeviceState::Initialized;
+
+        int cameraIndex = 0;
+        const auto addCameraTransport = [&](const QString& deviceId)
+        {
+            auto transport = std::make_shared<CameraTransport>();
+            transport->deviceId = deviceId;
+            transport->shmKey = driverhost::sharedMemoryKey(m_hostKey, cameraIndex++);
+            transport->noticeTimer = new QTimer(this);
+            transport->noticeTimer->setSingleShot(true);
+            transport->noticeTimer->setTimerType(Qt::PreciseTimer);
+            connect(transport->noticeTimer, &QTimer::timeout, this,
+                    [this, deviceId]() { sendPendingNotice(deviceId); });
+            if (!createSharedMemory(*transport))
+            {
+                return false;
+            }
+            m_cameraTransports.insert(deviceId, std::move(transport));
+            return true;
+        };
 
         QSet<QString> logicalIds;
-        int cameraIndex = 0;
-        for (HardwareDeviceDescriptor device : m_provider->devices())
+        for (HardwareDeviceDescriptor device : peripherals)
         {
             const QString logicalId = device.logicalId.trimmed();
             const bool capabilityAvailable =
                 (device.kind != HardwareDeviceKind::Camera || m_camera)
-                && ((device.kind != HardwareDeviceKind::XYStage
-                     && device.kind != HardwareDeviceKind::ZStage)
-                    || m_stage)
+                && (device.kind != HardwareDeviceKind::XYStage || m_xyStage)
+                && (device.kind != HardwareDeviceKind::ZStage || m_zStage)
                 && (device.kind != HardwareDeviceKind::Shutter || m_shutter)
-                && (device.kind != HardwareDeviceKind::State || m_state);
+                && (device.kind != HardwareDeviceKind::State || m_state)
+                && (device.kind != HardwareDeviceKind::AutoFocus || m_autofocus);
             if (logicalId.isEmpty()
                 || device.logicalId != logicalId
-                || device.providerId != m_providerId
                 || logicalIds.contains(logicalId)
                 || !capabilityAvailable)
             {
@@ -1598,44 +495,314 @@ namespace scopeone::core::internal
                 return false;
             }
             logicalIds.insert(logicalId);
+            device.providerId = m_providerId;
             device.endpoint = HardwareEndpointKind::DriverHost;
             m_devices.append(device);
             m_devicesById.insert(logicalId, device);
 
-            if (device.kind == HardwareDeviceKind::Camera)
+            if (device.kind == HardwareDeviceKind::Camera && !addCameraTransport(logicalId))
             {
-                auto transport = std::make_shared<CameraTransport>();
-                transport->deviceId = logicalId;
-                transport->shmKey = driverhost::sharedMemoryKey(m_hostKey, cameraIndex++);
-                transport->previewTimer = new QTimer(this);
-                transport->previewTimer->setSingleShot(true);
-                transport->previewTimer->setTimerType(Qt::PreciseTimer);
-                connect(transport->previewTimer, &QTimer::timeout, this,
-                        [this, logicalId]() { flushPreviewFrame(logicalId); });
-                if (!createSharedMemory(*transport))
-                {
-                    return false;
-                }
-                m_cameraTransports.insert(logicalId, std::move(transport));
+                return false;
             }
+        }
+        // The camera of a device without peripherals has the empty device id, as all its calls
+        if (peripherals.isEmpty() && m_rootDevice.kind == HardwareDeviceKind::Camera
+            && !addCameraTransport(QString{}))
+        {
+            return false;
         }
 
         if (m_camera && !m_cameraTransports.isEmpty())
         {
             m_acceptFrames.store(true, std::memory_order_release);
-            m_camera->setFrameSink([this](const ImageFrame& frame) { enqueueFrame(frame); });
+            m_camera->setFrameSink([this](const ImageFrame& frame) { writeCameraFrame(frame); });
         }
+        if (m_microManagerCamera)
+        {
+            const QString cameraId = m_microManagerCamera->cameraId();
+            m_microManagerCamera->setErrorSink([this, cameraId](const QString& error)
+            {
+                QMetaObject::invokeMethod(this, [this, cameraId, error]()
+                {
+                    if (const auto transport = cameraTransport(cameraId))
+                    {
+                        transport->previewRunning = false;
+                    }
+                    emitPreviewStateEvent(cameraId, false);
+                    QJsonObject event = makeEvent(driverhost::kEventDriverHostError);
+                    event.insert(QStringLiteral("error"), error);
+                    emit eventReady(event);
+                }, Qt::QueuedConnection);
+            });
+        }
+        installStreamSinks();
         return true;
     }
 
-    QJsonObject ProviderDriverRuntime::makeEvent(const QString& type) const
+    void DriverRuntime::installStreamSinks()
+    {
+        if (m_signals)
+        {
+            m_signalSources = m_signals->signalSources();
+            m_signals->setSignalSinks(
+                [this](const TimeSeriesChunk& chunk)
+                {
+                    writeStream(QStringLiteral("signal:") + chunk.sourceId,
+                                streamring::RecordType::TimeSeries, hardwarestream::encode(chunk));
+                },
+                [this](const TimestampedEventChunk& chunk)
+                {
+                    writeStream(QStringLiteral("signal:") + chunk.sourceId,
+                                streamring::RecordType::TimestampedEvents, hardwarestream::encode(chunk));
+                },
+                [this](const QString& sourceId, SignalSourceState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(this, [this, sourceId, state, message]()
+                    {
+                        QJsonObject event = makeEvent(driverhost::kEventSignalState);
+                        event.insert(driverhost::kSourceIdField, sourceId);
+                        event.insert(driverhost::kStateField, static_cast<int>(state));
+                        event.insert(driverhost::kStateMessageField, message);
+                        emit eventReady(event);
+                        if (state == SignalSourceState::Idle || state == SignalSourceState::Error)
+                        {
+                            releaseEndedStream(QStringLiteral("signal:") + sourceId,
+                                               state == SignalSourceState::Error);
+                        }
+                    }, Qt::QueuedConnection);
+                });
+        }
+        if (m_daq)
+        {
+            m_daqDevices = m_daq->daqDevices();
+            m_daq->setDaqSinks(
+                [this](const DaqInputChunk& chunk)
+                {
+                    writeStream(QStringLiteral("daq:") + chunk.deviceId,
+                                streamring::RecordType::DaqInput, hardwarestream::encode(chunk));
+                },
+                [this](const QString& deviceId, DaqState state, const QString& message)
+                {
+                    QMetaObject::invokeMethod(this, [this, deviceId, state, message]()
+                    {
+                        QJsonObject event = makeEvent(driverhost::kEventDaqState);
+                        event.insert(driverhost::kDeviceIdField, deviceId);
+                        event.insert(driverhost::kStateField, static_cast<int>(state));
+                        event.insert(driverhost::kStateMessageField, message);
+                        emit eventReady(event);
+                        if (state == DaqState::Idle || state == DaqState::Error)
+                        {
+                            releaseEndedStream(QStringLiteral("daq:") + deviceId, state == DaqState::Error);
+                        }
+                    }, Qt::QueuedConnection);
+                });
+        }
+        m_acceptStreams.store(m_signals || m_daq, std::memory_order_release);
+    }
+
+    std::shared_ptr<DriverRuntime::StreamTransport> DriverRuntime::openStream(
+        const QString& streamId,
+        qsizetype capacity,
+        QString* errorMessage)
+    {
+        auto stream = std::make_shared<StreamTransport>();
+        stream->streamId = streamId;
+        stream->shmKey = driverhost::streamSharedMemoryKey(m_hostKey, m_nextStreamIndex++);
+        if (!streamring::createSharedRing(stream->shm, driverhost::sharedMemoryNativeKey(stream->shmKey),
+                                          capacity, errorMessage))
+        {
+            return {};
+        }
+        stream->writer = streamring::Writer(stream->shm.data());
+        QMutexLocker locker(&m_streamsMutex);
+        m_streams.insert(streamId, stream);
+        return stream;
+    }
+
+    void DriverRuntime::closeStream(const QString& streamId)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        m_streams.remove(streamId);
+    }
+
+    void DriverRuntime::markStreamStopped(const QString& streamId)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        if (const auto stream = m_streams.value(streamId))
+        {
+            stream->stopRequested = true;
+        }
+    }
+
+    // A stopped stream kept its ring until the next start of the same source, up to 256 MB in
+    // each process per source. The ring goes once the source has ended, and only the ring that
+    // was stopped, as the end of an earlier run can arrive after the next start.
+    void DriverRuntime::releaseEndedStream(const QString& streamId, bool failed)
+    {
+        QMutexLocker locker(&m_streamsMutex);
+        const auto stream = m_streams.value(streamId);
+        if (stream && (stream->stopRequested || failed))
+        {
+            m_streams.remove(streamId);
+        }
+    }
+
+    void DriverRuntime::writeStream(const QString& streamId,
+                                            streamring::RecordType type,
+                                            const QByteArray& payload)
+    {
+        if (!m_acceptStreams.load(std::memory_order_acquire))
+        {
+            return;
+        }
+        std::shared_ptr<StreamTransport> stream;
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            stream = m_streams.value(streamId);
+        }
+        if (!stream)
+        {
+            return;
+        }
+        {
+            QMutexLocker locker(&stream->writeMutex);
+            stream->writer.write(type, payload.constData(), static_cast<std::size_t>(payload.size()));
+        }
+        // One notice stands for every record written until it is sent, as the reader drains the ring
+        if (!stream->notifyQueued.exchange(true))
+        {
+            QMetaObject::invokeMethod(this, [this, stream]()
+            {
+                stream->notifyQueued.store(false);
+                QJsonObject event = makeEvent(driverhost::kEventStreamAvailable);
+                event.insert(driverhost::kStreamIdField, stream->streamId);
+                emit eventReady(event);
+            }, Qt::QueuedConnection);
+        }
+    }
+
+    // Two seconds of the stream. Photon events have no fixed rate, so their rings are sized for
+    // bright scans instead.
+    qsizetype DriverRuntime::signalStreamCapacity(const SignalAcquisitionConfig& config) const
+    {
+        constexpr qsizetype kMinimum = 4 * 1024 * 1024;
+        constexpr qsizetype kEvents = 64 * 1024 * 1024;
+        constexpr qsizetype kMaximum = 256 * 1024 * 1024;
+        const auto source = std::find_if(m_signalSources.cbegin(), m_signalSources.cend(),
+                                         [&config](const SignalSourceDescriptor& descriptor)
+                                         {
+                                             return descriptor.id == config.sourceId;
+                                         });
+        if (config.scanImage.enabled || config.publishTimestampedEvents
+            || (source != m_signalSources.cend() && source->streamType == SignalStreamType::TimestampedEvents))
+        {
+            return kEvents;
+        }
+        const double bytesPerSecond = sizeof(double) / (std::max)(config.sampleIntervalSeconds, 1.0e-9);
+        return std::clamp(static_cast<qsizetype>(2.0 * std::min(bytesPerSecond, 1.0e12)), kMinimum, kMaximum);
+    }
+
+    qsizetype DriverRuntime::daqStreamCapacity(const DaqSessionConfig& config)
+    {
+        constexpr qsizetype kMinimum = 4 * 1024 * 1024;
+        constexpr qsizetype kMaximum = 256 * 1024 * 1024;
+        double bytesPerSecond = 0.0;
+        for (const DaqAnalogTaskConfig& task : config.analogTasks)
+        {
+            if (task.direction == DaqTaskDirection::Input)
+            {
+                bytesPerSecond += task.timing.sampleRateHz * task.channels.size() * sizeof(double);
+            }
+        }
+        for (const DaqDigitalTaskConfig& task : config.digitalTasks)
+        {
+            if (task.direction == DaqTaskDirection::Input)
+            {
+                bytesPerSecond += task.timing.sampleRateHz * sizeof(quint32);
+            }
+        }
+        return std::clamp(static_cast<qsizetype>(2.0 * std::min(bytesPerSecond, 1.0e12)), kMinimum, kMaximum);
+    }
+
+    bool DriverRuntime::handleStreamRequest(quint64 requestId,
+                                                    const QString& type,
+                                                    const QJsonObject& message,
+                                                    const std::function<void(const QJsonObject&)>& reply)
+    {
+        const bool signalCommand = type == driverhost::kCommandStartSignal
+            || type == driverhost::kCommandStopSignal;
+        const bool daqCommand = type == driverhost::kCommandStartDaq || type == driverhost::kCommandStopDaq;
+        if (!signalCommand && !daqCommand)
+        {
+            return false;
+        }
+        if ((signalCommand && !m_signals) || (daqCommand && !m_daq))
+        {
+            reply(makeErrorResponse(type, requestId, QStringLiteral("Provider does not support %1")
+                                                         .arg(signalCommand ? QStringLiteral("signal sources")
+                                                                            : QStringLiteral("DAQ devices"))));
+            return true;
+        }
+        if (type == driverhost::kCommandStopSignal)
+        {
+            const QString sourceId = message.value(driverhost::kSourceIdField).toString();
+            markStreamStopped(QStringLiteral("signal:") + sourceId);
+            m_signals->stopSignal(sourceId);
+            reply(makeResponse(type, requestId, true));
+            return true;
+        }
+        if (type == driverhost::kCommandStopDaq)
+        {
+            const QString deviceId = message.value(driverhost::kDeviceIdField).toString();
+            markStreamStopped(QStringLiteral("daq:") + deviceId);
+            m_daq->stopDaq(deviceId);
+            reply(makeResponse(type, requestId, true));
+            return true;
+        }
+
+        const QJsonObject configObject = message.value(driverhost::kConfigField).toObject();
+        QString streamId;
+        qsizetype capacity = 0;
+        SignalAcquisitionConfig signalConfig;
+        DaqSessionConfig daqConfig;
+        if (signalCommand)
+        {
+            signalConfig = hardwarestream::signalAcquisitionConfigFromJson(configObject);
+            streamId = QStringLiteral("signal:") + signalConfig.sourceId;
+            capacity = signalStreamCapacity(signalConfig);
+        }
+        else
+        {
+            daqConfig = hardwarestream::daqSessionConfigFromJson(configObject);
+            streamId = QStringLiteral("daq:") + daqConfig.deviceId;
+            capacity = daqStreamCapacity(daqConfig);
+        }
+        QString error;
+        const auto stream = openStream(streamId, capacity, &error);
+        const bool started = stream
+            && (signalCommand ? m_signals->startSignal(signalConfig, &error)
+                              : m_daq->startDaq(daqConfig, &error));
+        if (!started)
+        {
+            closeStream(streamId);
+            reply(makeErrorResponse(type, requestId, error.isEmpty() ? QStringLiteral("Start failed") : error));
+            return true;
+        }
+        QJsonObject response = makeResponse(type, requestId, true);
+        response.insert(driverhost::kStreamIdField, streamId);
+        response.insert(driverhost::kSharedMemoryKeyField, stream->shmKey);
+        reply(response);
+        return true;
+    }
+
+    QJsonObject DriverRuntime::makeEvent(const QString& type) const
     {
         QJsonObject event = driverhost::makeEnvelope(driverhost::kMessageKindEvent, type);
         event.insert(driverhost::kProviderIdField, m_providerId);
         return event;
     }
 
-    QJsonArray ProviderDriverRuntime::capabilities(
+    QJsonArray DriverRuntime::capabilities(
         const HardwareDeviceDescriptor& device) const
     {
         QJsonArray result;
@@ -1644,11 +811,13 @@ namespace scopeone::core::internal
             result.append(driverhost::kCapabilityCamera);
         }
         if (m_properties) result.append(driverhost::kCapabilityProperties);
-        if (m_stage
-            && (device.kind == HardwareDeviceKind::XYStage
-                || device.kind == HardwareDeviceKind::ZStage))
+        if (m_xyStage && device.kind == HardwareDeviceKind::XYStage)
         {
-            result.append(driverhost::kCapabilityStage);
+            result.append(driverhost::kCapabilityXYStage);
+        }
+        if (m_zStage && device.kind == HardwareDeviceKind::ZStage)
+        {
+            result.append(driverhost::kCapabilityZStage);
         }
         if (m_shutter && device.kind == HardwareDeviceKind::Shutter)
         {
@@ -1658,18 +827,21 @@ namespace scopeone::core::internal
         {
             result.append(driverhost::kCapabilityState);
         }
-        if (m_configuration) result.append(driverhost::kCapabilityConfiguration);
+        if (m_autofocus && device.kind == HardwareDeviceKind::AutoFocus)
+        {
+            result.append(driverhost::kCapabilityAutofocus);
+        }
         return result;
     }
 
-    bool ProviderDriverRuntime::supportsCapability(
+    bool DriverRuntime::supportsCapability(
         const HardwareDeviceDescriptor& device,
         const QString& capability) const
     {
         return capabilities(device).contains(QJsonValue(capability));
     }
 
-    QJsonObject ProviderDriverRuntime::deviceDescription(
+    QJsonObject DriverRuntime::deviceDescription(
         const HardwareDeviceDescriptor& device) const
     {
         QJsonObject object;
@@ -1685,39 +857,48 @@ namespace scopeone::core::internal
         if (const auto transport = cameraTransport(device.logicalId))
         {
             object.insert(driverhost::kSharedMemoryKeyField, transport->shmKey);
+            object.insert(driverhost::kSequenceField, m_camera->supportsSequence(device.logicalId));
         }
         return object;
     }
 
-    const HardwareDeviceDescriptor* ProviderDriverRuntime::requestedDevice(
+    const HardwareDeviceDescriptor* DriverRuntime::requestedDevice(
         const QJsonObject& message) const
     {
         const QString deviceId = message.value(driverhost::kDeviceIdField)
                                      .toString().trimmed();
+        // A request without a device id addresses the Device itself, whose properties a driver
+        // with no peripherals has. It was answered as an unknown device before.
+        if (deviceId.isEmpty())
+        {
+            return &m_rootDevice;
+        }
         const auto it = m_devicesById.constFind(deviceId);
         return it == m_devicesById.cend() ? nullptr : &it.value();
     }
 
-    std::shared_ptr<ProviderDriverRuntime::CameraTransport>
-    ProviderDriverRuntime::cameraTransport(const QString& deviceId) const
+    std::shared_ptr<DriverRuntime::CameraTransport>
+    DriverRuntime::cameraTransport(const QString& deviceId) const
     {
         QReadLocker locker(&m_cameraTransportsLock);
         return m_cameraTransports.value(deviceId.trimmed());
     }
 
-    void ProviderDriverRuntime::publishHello()
+    void DriverRuntime::publishHello()
     {
         emit eventReady(makeEvent(driverhost::kEventHello));
     }
 
-    bool ProviderDriverRuntime::createSharedMemory(CameraTransport& transport)
+    bool DriverRuntime::createSharedMemory(CameraTransport& transport)
     {
-        transport.shm = std::make_unique<QSharedMemory>();
-        transport.shm->setNativeKey(transport.shmKey);
+        transport.shm = std::make_unique<QSharedMemory>(driverhost::sharedMemoryNativeKey(transport.shmKey));
         return sharedframe::createRing(*transport.shm, &m_lastError);
     }
 
-    void ProviderDriverRuntime::enqueueFrame(const ImageFrame& frame)
+    // A frame may point into a buffer of the driver, so it is written to shared memory before the
+    // call returns. The live view is told about new frames at most every 16 ms, and the notice it
+    // would miss comes from a timer, so the last frame of a burst is shown too.
+    void DriverRuntime::writeCameraFrame(const ImageFrame& frame)
     {
         if (!m_acceptFrames.load(std::memory_order_acquire))
         {
@@ -1725,105 +906,103 @@ namespace scopeone::core::internal
         }
         const QString deviceId = frame.cameraId.trimmed();
         const auto transport = cameraTransport(deviceId);
+        if (!transport || transport->paused.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+        quint64 frameIndex = 0;
+        int noticeDelayMs = 0;
+        {
+            QMutexLocker locker(&transport->writeMutex);
+            if (!writeFrame(*transport, frame, &frameIndex))
+            {
+                return;
+            }
+            if (transport->deliveryMode.load(std::memory_order_relaxed) == FrameDeliveryMode::PreviewLatest
+                && transport->deliveryTimer.isValid())
+            {
+                noticeDelayMs = kPreviewFrameIntervalMs - static_cast<int>(transport->deliveryTimer.elapsed());
+            }
+            if (noticeDelayMs > 0)
+            {
+                transport->pendingNotice = frameIndex;
+            }
+            else
+            {
+                transport->pendingNotice = 0;
+                transport->deliveryTimer.restart();
+            }
+        }
+        if (noticeDelayMs <= 0)
+        {
+            emitFrameAvailableEvent(deviceId, frameIndex);
+        }
+        else if (!transport->noticeQueued.exchange(true))
+        {
+            QTimer* const timer = transport->noticeTimer;
+            QMetaObject::invokeMethod(timer, [timer, noticeDelayMs]() { timer->start(noticeDelayMs); },
+                                      Qt::QueuedConnection);
+        }
+    }
+
+    // Removes the name of a ring of this host. Qt never removes the name of POSIX shared memory,
+    // which then outlived a crash of both processes; removed once ScopeOne has attached, it goes
+    // away with the last mapping.
+    void DriverRuntime::releaseSharedMemoryName(const QString& key)
+    {
+#ifndef Q_OS_WIN
+        bool owned = false;
+        {
+            QReadLocker locker(&m_cameraTransportsLock);
+            for (const auto& transport : std::as_const(m_cameraTransports))
+            {
+                owned = owned || transport->shmKey == key;
+            }
+        }
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            for (const auto& stream : std::as_const(m_streams))
+            {
+                owned = owned || stream->shmKey == key;
+            }
+        }
+        if (owned)
+        {
+            // Qt guards the memory with a POSIX semaphore of the same name, whose name stays too
+            const QByteArray name = driverhost::sharedMemoryNativeKey(key).nativeKey().toLocal8Bit();
+            ::shm_unlink(name.constData());
+            ::sem_unlink(name.constData());
+        }
+#else
+        (void)key;
+#endif
+    }
+
+    void DriverRuntime::sendPendingNotice(const QString& deviceId)
+    {
+        const auto transport = cameraTransport(deviceId);
         if (!transport)
         {
             return;
         }
-        if (transport->deliveryMode.load(std::memory_order_relaxed)
-            == FrameDeliveryMode::AllFrames)
-        {
-            publishAllFrame(deviceId, frame);
-            return;
-        }
-
-        {
-            QMutexLocker locker(&transport->frameMutex);
-            transport->latestFrame = frame;
-            if (transport->latestDispatchQueued)
-            {
-                return;
-            }
-            transport->latestDispatchQueued = true;
-        }
-        QMetaObject::invokeMethod(this,
-                                  [this, deviceId]() { dispatchLatestFrame(deviceId); },
-                                  Qt::QueuedConnection);
-    }
-
-    void ProviderDriverRuntime::dispatchLatestFrame(const QString& deviceId)
-    {
-        const auto transport = cameraTransport(deviceId);
-        if (!transport) return;
-        ImageFrame frame;
-        {
-            QMutexLocker locker(&transport->frameMutex);
-            frame = transport->latestFrame;
-            transport->latestDispatchQueued = false;
-        }
-        publishFrame(deviceId, frame);
-    }
-
-    void ProviderDriverRuntime::publishAllFrame(const QString& deviceId,
-                                                const ImageFrame& frame)
-    {
-        const auto transport = cameraTransport(deviceId);
-        if (!transport) return;
+        transport->noticeQueued = false;
         quint64 frameIndex = 0;
-        if (!writeFrame(*transport, frame, &frameIndex)) return;
-
-        emitFrameAvailableEvent(deviceId, frameIndex);
-    }
-
-    void ProviderDriverRuntime::publishFrame(const QString& deviceId,
-                                             const ImageFrame& frame)
-    {
-        const auto transport = cameraTransport(deviceId);
-        if (!transport) return;
-        if (transport->deliveryMode.load(std::memory_order_relaxed)
-            == FrameDeliveryMode::PreviewLatest)
         {
-            transport->previewFrame = frame;
-            const int remaining = transport->deliveryTimer.isValid()
-                                      ? kPreviewFrameDeliveryIntervalMs
-                                            - static_cast<int>(transport->deliveryTimer.elapsed())
-                                      : 0;
-            if (remaining > 0)
-            {
-                if (!transport->previewTimer->isActive())
-                {
-                    transport->previewTimer->start(remaining);
-                }
-                return;
-            }
-        }
-
-        quint64 frameIndex = 0;
-        if (writeFrame(*transport, frame, &frameIndex))
-        {
-            if (transport->deliveryMode.load(std::memory_order_relaxed)
-                == FrameDeliveryMode::PreviewLatest)
+            QMutexLocker locker(&transport->writeMutex);
+            frameIndex = std::exchange(transport->pendingNotice, 0);
+            if (frameIndex != 0)
             {
                 transport->deliveryTimer.restart();
             }
-            emitFrameAvailableEvent(deviceId, frameIndex);
         }
-    }
-
-    void ProviderDriverRuntime::flushPreviewFrame(const QString& deviceId)
-    {
-        const auto transport = cameraTransport(deviceId);
-        if (!transport) return;
-        const ImageFrame frame = transport->previewFrame;
-        transport->previewFrame = {};
-        quint64 frameIndex = 0;
-        if (writeFrame(*transport, frame, &frameIndex))
+        if (frameIndex != 0)
         {
-            transport->deliveryTimer.restart();
             emitFrameAvailableEvent(deviceId, frameIndex);
         }
     }
 
-    bool ProviderDriverRuntime::writeFrame(CameraTransport& transport,
+    // The caller holds the write mutex of the transport
+    bool DriverRuntime::writeFrame(CameraTransport& transport,
                                            const ImageFrame& frame,
                                            quint64* frameIndexOut)
     {
@@ -1833,9 +1012,8 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        QMutexLocker writeLocker(&transport.writeMutex);
         transport.frameIndex = (std::max)(transport.frameIndex + 1, frame.frameIndex);
-        SharedFrameHeader header = frame.toSharedFrameHeader();
+        SharedFrameHeader header = toSharedFrameHeader(frame);
         header.frameIndex = transport.frameIndex;
         if (header.timestampNs == 0)
         {
@@ -1857,7 +1035,7 @@ namespace scopeone::core::internal
         return true;
     }
 
-    void ProviderDriverRuntime::emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex)
+    void DriverRuntime::emitFrameAvailableEvent(const QString& deviceId, quint64 frameIndex)
     {
         QJsonObject event = makeEvent(driverhost::kEventFrameAvailable);
         event.insert(driverhost::kDeviceIdField, deviceId);
@@ -1865,7 +1043,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
-    void ProviderDriverRuntime::emitPreviewStateEvent(const QString& deviceId, bool running)
+    void DriverRuntime::emitPreviewStateEvent(const QString& deviceId, bool running)
     {
         QJsonObject event = makeEvent(driverhost::kEventPreviewState);
         event.insert(driverhost::kDeviceIdField, deviceId);
@@ -1873,7 +1051,7 @@ namespace scopeone::core::internal
         emit eventReady(event);
     }
 
-    void ProviderDriverRuntime::handleRequest(quint64 connectionId,
+    void DriverRuntime::handleRequest(quint64 connectionId,
                                               quint64 requestId,
                                               const QString& type,
                                               const QJsonObject& message)
@@ -1900,13 +1078,33 @@ namespace scopeone::core::internal
             {
                 devices.append(deviceDescription(device));
             }
-            response.insert(driverhost::kDevicesField, devices);
-            if (m_stage)
+            if (m_devices.isEmpty() && !m_microManagerCamera)
             {
-                response.insert(driverhost::kDefaultXYStageField, m_stage->defaultXYStage());
-                response.insert(driverhost::kDefaultZStageField, m_stage->defaultZStage());
+                devices.append(deviceDescription(m_rootDevice));
             }
+            response.insert(driverhost::kDevicesField, devices);
+            QJsonArray signalSources;
+            for (const SignalSourceDescriptor& source : m_signalSources)
+            {
+                signalSources.append(hardwarestream::toJson(source));
+            }
+            response.insert(driverhost::kSignalSourcesField, signalSources);
+            QJsonArray daqDevices;
+            for (const DaqDeviceDescriptor& daqDevice : m_daqDevices)
+            {
+                daqDevices.append(hardwarestream::toJson(daqDevice));
+            }
+            response.insert(driverhost::kDaqDevicesField, daqDevices);
             reply(response);
+            return;
+        }
+        if (type == driverhost::kCommandReleaseSharedMemory)
+        {
+            for (const QJsonValue& value : message.value(driverhost::kKeysField).toArray())
+            {
+                releaseSharedMemoryName(value.toString());
+            }
+            reply(makeResponse(type, requestId, true));
             return;
         }
         if (type == driverhost::kCommandShutdown)
@@ -1916,20 +1114,18 @@ namespace scopeone::core::internal
             QTimer::singleShot(50, this, [this]() { emit shutdownRequested(); });
             return;
         }
-        if (!m_provider)
+        if (!m_device)
         {
             reply(makeErrorResponse(type, requestId, QStringLiteral("Provider is not initialized")));
             return;
         }
+        if (handleStreamRequest(requestId, type, message, reply))
+        {
+            return;
+        }
 
-        const bool configurationCommand =
-            type == driverhost::kCommandListConfigGroups
-            || type == driverhost::kCommandListConfigs
-            || type == driverhost::kCommandGetCurrentConfig
-            || type == driverhost::kCommandSetConfig;
-        const HardwareDeviceDescriptor* const device =
-            configurationCommand ? nullptr : requestedDevice(message);
-        if (!configurationCommand && !device)
+        const HardwareDeviceDescriptor* const device = requestedDevice(message);
+        if (!device)
         {
             reply(makeErrorResponse(type, requestId, QStringLiteral("Unknown provider device")));
             return;
@@ -1951,35 +1147,48 @@ namespace scopeone::core::internal
                 return;
             }
             const QString mode = message.value(QStringLiteral("mode")).toString();
-            if (mode == driverhost::kFrameDeliveryModePreviewLatest)
+            FrameDeliveryMode deliveryMode = FrameDeliveryMode::PreviewLatest;
+            if (mode == driverhost::kFrameDeliveryModeLatestOnly)
             {
-                transport->deliveryMode.store(FrameDeliveryMode::PreviewLatest,
-                                              std::memory_order_relaxed);
-            }
-            else if (mode == driverhost::kFrameDeliveryModeLatestOnly)
-            {
-                transport->deliveryMode.store(FrameDeliveryMode::LatestOnly,
-                                              std::memory_order_relaxed);
-                transport->previewTimer->stop();
-                transport->previewFrame = {};
+                deliveryMode = FrameDeliveryMode::LatestOnly;
             }
             else if (mode == driverhost::kFrameDeliveryModeAllFrames)
             {
-                transport->deliveryMode.store(FrameDeliveryMode::AllFrames,
-                                              std::memory_order_relaxed);
-                transport->previewTimer->stop();
-                transport->previewFrame = {};
+                deliveryMode = FrameDeliveryMode::AllFrames;
             }
-            else
+            else if (mode != driverhost::kFrameDeliveryModePreviewLatest)
             {
                 reply(makeErrorResponse(type,
                                         requestId,
                                         QStringLiteral("Unknown frame delivery mode")));
                 return;
             }
+            transport->deliveryMode.store(deliveryMode, std::memory_order_relaxed);
+            if (m_microManagerCamera)
+            {
+                m_microManagerCamera->setFrameDeliveryMode(deliveryMode);
+            }
             QJsonObject response = makeResponse(type, requestId, true);
             response.insert(QStringLiteral("mode"), mode);
             reply(response);
+            return;
+        }
+
+        if (type == driverhost::kCommandSetFrameDeliveryPaused)
+        {
+            const auto transport = cameraTransport(deviceId);
+            if (!transport)
+            {
+                unsupported(driverhost::kCapabilityCamera);
+                return;
+            }
+            const bool paused = message.value(QStringLiteral("paused")).toBool();
+            transport->paused.store(paused, std::memory_order_relaxed);
+            if (m_microManagerCamera)
+            {
+                m_microManagerCamera->setFrameDeliveryPaused(paused);
+            }
+            reply(makeResponse(type, requestId, true));
             return;
         }
 
@@ -1992,9 +1201,11 @@ namespace scopeone::core::internal
                 return;
             }
             const bool start = type == driverhost::kCommandStartPreview;
+            // Images of a sequence the client gave up on would otherwise stay in memory
+            m_sequences.remove(deviceId);
             const bool ok = start
-                                ? m_camera->startPreviewFor(deviceId)
-                                : m_camera->stopPreviewFor(deviceId);
+                                ? m_camera->startPreview(deviceId)
+                                : m_camera->stopPreview(deviceId);
             if (!ok)
             {
                 reply(makeErrorResponse(type,
@@ -2108,8 +1319,9 @@ namespace scopeone::core::internal
             return;
         }
 
-        if (type == driverhost::kCommandCaptureEvent)
+        if (type == driverhost::kCommandSnap)
         {
+            m_sequences.remove(deviceId);
             if (!supportsCapability(*device, driverhost::kCapabilityCamera))
             {
                 unsupported(driverhost::kCapabilityCamera);
@@ -2120,9 +1332,14 @@ namespace scopeone::core::internal
             const auto transport = cameraTransport(deviceId);
             const int timeoutMs = (std::max)(1,
                 message.value(QStringLiteral("timeoutMs")).toInt(1500));
+            const auto writeSnapFrame = [&]()
+            {
+                QMutexLocker locker(&transport->writeMutex);
+                return writeFrame(*transport, frame, &frameIndex);
+            };
             if (!transport
-                || !m_camera->captureEventFrame(deviceId, frame, timeoutMs)
-                || !writeFrame(*transport, frame, &frameIndex))
+                || !m_camera->snap(deviceId, frame, timeoutMs)
+                || !writeSnapFrame())
             {
                 reply(makeErrorResponse(type,
                                         requestId,
@@ -2133,6 +1350,143 @@ namespace scopeone::core::internal
             QJsonObject response = makeResponse(type, requestId, true);
             response.insert(QStringLiteral("frameIndex"), driverhost::encodeUInt64(frameIndex));
             reply(response);
+            return;
+        }
+
+        if (type == driverhost::kCommandSnapSequence
+            || type == driverhost::kCommandSendSequenceFrames)
+        {
+            const auto transport = cameraTransport(deviceId);
+            if (!transport || !supportsCapability(*device, driverhost::kCapabilityCamera))
+            {
+                unsupported(driverhost::kCapabilityCamera);
+                return;
+            }
+            if (type == driverhost::kCommandSnapSequence)
+            {
+                std::vector<ImageFrame> frames;
+                const int count = message.value(QStringLiteral("count")).toInt();
+                const int timeoutMs = (std::max)(1, message.value(QStringLiteral("timeoutMs")).toInt(10000));
+                if (!m_camera->snapSequence(deviceId, count, frames, timeoutMs)
+                    || static_cast<int>(frames.size()) != count)
+                {
+                    reply(makeErrorResponse(type, requestId,
+                                            QStringLiteral("Provider failed to capture an image sequence")));
+                    return;
+                }
+                m_sequences.insert(deviceId, std::move(frames));
+                reply(makeResponse(type, requestId, true));
+                return;
+            }
+            const int first = message.value(QStringLiteral("first")).toInt();
+            const int count = message.value(QStringLiteral("count")).toInt();
+            const auto frames = m_sequences.find(deviceId);
+            if (frames == m_sequences.end() || first < 0 || count < 1
+                || first + count > static_cast<int>(frames->size()))
+            {
+                reply(makeErrorResponse(type, requestId, QStringLiteral("No such images of the sequence")));
+                return;
+            }
+            {
+                QMutexLocker locker(&transport->writeMutex);
+                for (int index = first; index < first + count; ++index)
+                {
+                    quint64 frameIndex = 0;
+                    if (!writeFrame(*transport, (*frames)[static_cast<std::size_t>(index)], &frameIndex))
+                    {
+                        reply(makeErrorResponse(type, requestId,
+                                                QStringLiteral("Failed to write an image of the sequence")));
+                        return;
+                    }
+                }
+            }
+            if (first + count == static_cast<int>(frames->size()))
+            {
+                m_sequences.erase(frames);
+            }
+            reply(makeResponse(type, requestId, true));
+            return;
+        }
+
+        if (type == driverhost::kCommandGetPropertySequenceCapacity
+            || type == driverhost::kCommandStartPropertySequence
+            || type == driverhost::kCommandStopPropertySequence)
+        {
+            if (!supportsCapability(*device, driverhost::kCapabilityProperties))
+            {
+                unsupported(driverhost::kCapabilityProperties);
+                return;
+            }
+            const QString name = message.value(QStringLiteral("name")).toString();
+            if (type == driverhost::kCommandGetPropertySequenceCapacity)
+            {
+                QJsonObject response = makeResponse(type, requestId, true);
+                response.insert(QStringLiteral("capacity"),
+                                static_cast<double>(m_properties->propertySequenceCapacity(deviceId, name)));
+                reply(response);
+                return;
+            }
+            if (type == driverhost::kCommandStopPropertySequence)
+            {
+                m_properties->stopPropertySequence(deviceId, name);
+                reply(makeResponse(type, requestId, true));
+                return;
+            }
+            QStringList values;
+            for (const QJsonValue& value : message.value(QStringLiteral("values")).toArray())
+            {
+                values.append(value.toString());
+            }
+            QString error;
+            const bool ok = m_properties->startPropertySequence(deviceId, name, values, &error);
+            reply(ok ? makeResponse(type, requestId, true) : makeErrorResponse(type, requestId, error));
+            return;
+        }
+
+        if (type == driverhost::kCommandGetStageSequenceCapacity
+            || type == driverhost::kCommandStartStageSequence
+            || type == driverhost::kCommandStopStageSequence)
+        {
+            if (!supportsCapability(*device, driverhost::kCapabilityZStage))
+            {
+                unsupported(driverhost::kCapabilityZStage);
+                return;
+            }
+            if (type == driverhost::kCommandGetStageSequenceCapacity)
+            {
+                QJsonObject response = makeResponse(type, requestId, true);
+                response.insert(QStringLiteral("capacity"),
+                                static_cast<double>(m_zStage->stageSequenceCapacity(deviceId)));
+                reply(response);
+                return;
+            }
+            if (type == driverhost::kCommandStopStageSequence)
+            {
+                m_zStage->stopStageSequence(deviceId);
+                reply(makeResponse(type, requestId, true));
+                return;
+            }
+            std::vector<double> positions;
+            for (const QJsonValue& value : message.value(QStringLiteral("positions")).toArray())
+            {
+                positions.push_back(value.toDouble());
+            }
+            QString error;
+            const bool ok = m_zStage->startStageSequence(deviceId, positions, &error);
+            reply(ok ? makeResponse(type, requestId, true) : makeErrorResponse(type, requestId, error));
+            return;
+        }
+
+        if (type == driverhost::kCommandRunAutofocus)
+        {
+            if (!supportsCapability(*device, driverhost::kCapabilityAutofocus))
+            {
+                unsupported(driverhost::kCapabilityAutofocus);
+                return;
+            }
+            QString error;
+            const bool ok = m_autofocus->runAutofocus(deviceId, &error);
+            reply(ok ? makeResponse(type, requestId, true) : makeErrorResponse(type, requestId, error));
             return;
         }
 
@@ -2205,9 +1559,13 @@ namespace scopeone::core::internal
             || type == driverhost::kCommandSetXYPosition
             || type == driverhost::kCommandSetZPosition)
         {
-            if (!supportsCapability(*device, driverhost::kCapabilityStage))
+            const bool xy = type == driverhost::kCommandGetXYPosition
+                         || type == driverhost::kCommandSetRelativeXYPosition
+                         || type == driverhost::kCommandSetXYPosition;
+            const QString capability = xy ? driverhost::kCapabilityXYStage : driverhost::kCapabilityZStage;
+            if (!supportsCapability(*device, capability))
             {
-                unsupported(driverhost::kCapabilityStage);
+                unsupported(capability);
                 return;
             }
             QString error;
@@ -2215,7 +1573,7 @@ namespace scopeone::core::internal
             {
                 double x = 0.0;
                 double y = 0.0;
-                if (!m_stage->getXYPosition(deviceId, x, y, &error))
+                if (!m_xyStage->getXYPosition(deviceId, x, y, &error))
                 {
                     reply(makeErrorResponse(type, requestId, error));
                     return;
@@ -2229,7 +1587,7 @@ namespace scopeone::core::internal
             if (type == driverhost::kCommandGetZPosition)
             {
                 double z = 0.0;
-                if (!m_stage->getZPosition(deviceId, z, &error))
+                if (!m_zStage->getZPosition(deviceId, z, &error))
                 {
                     reply(makeErrorResponse(type, requestId, error));
                     return;
@@ -2243,7 +1601,7 @@ namespace scopeone::core::internal
             bool ok = false;
             if (type == driverhost::kCommandSetRelativeXYPosition)
             {
-                ok = m_stage->setRelativeXYPosition(
+                ok = m_xyStage->setRelativeXYPosition(
                     deviceId,
                     message.value(QStringLiteral("x")).toDouble(),
                     message.value(QStringLiteral("y")).toDouble(),
@@ -2251,14 +1609,14 @@ namespace scopeone::core::internal
             }
             else if (type == driverhost::kCommandSetRelativeZPosition)
             {
-                ok = m_stage->setRelativeZPosition(
+                ok = m_zStage->setRelativeZPosition(
                     deviceId,
                     message.value(QStringLiteral("z")).toDouble(),
                     &error);
             }
             else if (type == driverhost::kCommandSetXYPosition)
             {
-                ok = m_stage->setXYPosition(
+                ok = m_xyStage->setXYPosition(
                     deviceId,
                     message.value(QStringLiteral("x")).toDouble(),
                     message.value(QStringLiteral("y")).toDouble(),
@@ -2266,7 +1624,7 @@ namespace scopeone::core::internal
             }
             else
             {
-                ok = m_stage->setZPosition(
+                ok = m_zStage->setZPosition(
                     deviceId,
                     message.value(QStringLiteral("z")).toDouble(),
                     &error);
@@ -2347,103 +1705,66 @@ namespace scopeone::core::internal
             return;
         }
 
-        if (type == driverhost::kCommandListConfigGroups
-            || type == driverhost::kCommandListConfigs
-            || type == driverhost::kCommandGetCurrentConfig
-            || type == driverhost::kCommandSetConfig)
-        {
-            if (!m_configuration)
-            {
-                unsupported(driverhost::kCapabilityConfiguration);
-                return;
-            }
-            if (type == driverhost::kCommandListConfigGroups)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("groups"),
-                                QJsonArray::fromStringList(
-                                    m_configuration->availableConfigGroups()));
-                reply(response);
-                return;
-            }
-            const QString group = message.value(QStringLiteral("group")).toString();
-            if (type == driverhost::kCommandListConfigs)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("configs"),
-                                QJsonArray::fromStringList(
-                                    m_configuration->availableConfigs(group)));
-                reply(response);
-                return;
-            }
-            if (type == driverhost::kCommandGetCurrentConfig)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("config"),
-                                m_configuration->currentConfig(group));
-                reply(response);
-                return;
-            }
-            QString error;
-            const bool ok = m_configuration->setConfig(
-                group,
-                message.value(QStringLiteral("config")).toString(),
-                &error);
-            reply(ok ? makeResponse(type, requestId, true)
-                     : makeErrorResponse(type, requestId, error));
-            return;
-        }
-
         reply(makeErrorResponse(type, requestId, QStringLiteral("Unknown control command")));
     }
 
-    void ProviderDriverRuntime::stopForExit()
+    void DriverRuntime::stopForExit()
     {
         m_acceptFrames.store(false, std::memory_order_release);
-        for (const auto& transport : m_cameraTransports)
+        m_acceptStreams.store(false, std::memory_order_release);
+        if (m_signals)
         {
-            if (transport && transport->previewTimer)
+            for (const SignalSourceDescriptor& source : std::as_const(m_signalSources))
             {
-                transport->previewTimer->stop();
+                m_signals->stopSignal(source.id);
             }
+            m_signals->setSignalSinks({}, {}, {});
         }
+        if (m_daq)
+        {
+            for (const DaqDeviceDescriptor& daqDevice : std::as_const(m_daqDevices))
+            {
+                m_daq->stopDaq(daqDevice.id);
+            }
+            m_daq->setDaqSinks({}, {});
+        }
+        {
+            QMutexLocker locker(&m_streamsMutex);
+            m_streams.clear();
+        }
+        m_signals = nullptr;
+        m_daq = nullptr;
         if (m_camera)
         {
             for (const auto& transport : m_cameraTransports)
             {
                 if (transport && transport->previewRunning)
                 {
-                    m_camera->stopPreviewFor(transport->deviceId);
+                    m_camera->stopPreview(transport->deviceId);
                     transport->previewRunning = false;
                 }
             }
             m_camera->setFrameSink({});
         }
-        for (const auto& transport : m_cameraTransports)
-        {
-            if (!transport) continue;
-            QMutexLocker locker(&transport->frameMutex);
-            transport->latestFrame = {};
-            transport->latestDispatchQueued = false;
-            transport->previewFrame = {};
-        }
         m_camera = nullptr;
+        m_microManagerCamera.reset();
         m_properties = nullptr;
-        m_stage = nullptr;
+        m_xyStage = nullptr;
+        m_zStage = nullptr;
         m_shutter = nullptr;
+        m_autofocus = nullptr;
         m_state = nullptr;
-        m_configuration = nullptr;
-        m_provider.reset();
+        m_device.reset();
         {
             QWriteLocker locker(&m_cameraTransportsLock);
             m_cameraTransports.clear();
         }
         m_devicesById.clear();
         m_devices.clear();
-        if (m_pluginLoader)
+        if (m_driverLoader)
         {
-            m_pluginLoader->unload();
-            m_pluginLoader.reset();
+            m_driverLoader->unload();
+            m_driverLoader.reset();
         }
     }
 
@@ -2454,7 +1775,7 @@ namespace scopeone::core::internal
     public:
         // Create the control server wrapper for one isolated runtime
         DriverHost(QString hostKey,
-                   DriverHostRuntime* runtime,
+                   DriverRuntime* runtime,
                    QObject* parent = nullptr)
             : QObject(parent)
               , m_hostKey(std::move(hostKey))
@@ -2487,7 +1808,7 @@ namespace scopeone::core::internal
 
         std::unique_ptr<QLocalServer> m_ctrlServer;
         QThread m_runtimeThread;
-        DriverHostRuntime* m_runtime{nullptr};
+        DriverRuntime* m_runtime{nullptr};
         quint64 m_nextConnectionId{1};
         QHash<quint64, ControlConnection*> m_connections;
     };
@@ -2502,11 +1823,11 @@ namespace scopeone::core::internal
         m_runtime->moveToThread(&m_runtimeThread);
         connect(&m_runtimeThread, &QThread::finished,
                 m_runtime, &QObject::deleteLater);
-        connect(m_runtime, &DriverHostRuntime::responseReady,
+        connect(m_runtime, &DriverRuntime::responseReady,
                 this, &DriverHost::onRuntimeResponse);
-        connect(m_runtime, &DriverHostRuntime::eventReady,
+        connect(m_runtime, &DriverRuntime::eventReady,
                 this, &DriverHost::broadcastEvent);
-        connect(m_runtime, &DriverHostRuntime::shutdownRequested, this,
+        connect(m_runtime, &DriverRuntime::shutdownRequested, this,
                 []() { QCoreApplication::quit(); });
 
         m_runtimeThread.start();
@@ -2565,12 +1886,12 @@ namespace scopeone::core::internal
             m_connections.insert(connectionId, connection);
 
             connect(connection, &ControlConnection::requestReceived,
-                    m_runtime, &DriverHostRuntime::handleRequest,
+                    m_runtime, &DriverRuntime::handleRequest,
                     Qt::QueuedConnection);
             connect(connection, &ControlConnection::connectionClosed,
                     this, &DriverHost::onConnectionClosed);
 
-            DriverHostRuntime* const runtime = m_runtime;
+            DriverRuntime* const runtime = m_runtime;
             QMetaObject::invokeMethod(runtime,
                                       [runtime]() { runtime->publishHello(); },
                                       Qt::QueuedConnection);
@@ -2614,7 +1935,7 @@ namespace scopeone::core::internal
             return;
         }
 
-        DriverHostRuntime* const runtime = m_runtime;
+        DriverRuntime* const runtime = m_runtime;
         QMetaObject::invokeMethod(runtime,
                                   [runtime]() { runtime->stopForExit(); },
                                   Qt::BlockingQueuedConnection);
@@ -2703,7 +2024,7 @@ namespace scopeone::core::internal
     }
 } // namespace scopeone::core::internal
 
-// Launch one provider in an isolated DriverHost process
+// Runs one provider in a process of its own: a driver, or one camera of a Micro-Manager configuration
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
@@ -2715,56 +2036,69 @@ int main(int argc, char* argv[])
     QCommandLineOption optProvider(QStringLiteral("provider"),
                                    QStringLiteral("Hardware provider ID"),
                                    QStringLiteral("id"));
-    QCommandLineOption optDeviceId(QStringLiteral("deviceId"),
-                                   QStringLiteral("Provider device ID"),
-                                   QStringLiteral("id"));
-    QCommandLineOption optPlugin(QStringLiteral("plugin"),
-                                 QStringLiteral("Provider module path"),
+    QCommandLineOption optDriver(QStringLiteral("driver"),
+                                 QStringLiteral("Driver library path"),
                                  QStringLiteral("path"));
+    QCommandLineOption optCamera(QStringLiteral("micromanagerCamera"),
+                                 QStringLiteral("JSON setup of a Micro-Manager camera"),
+                                 QStringLiteral("json"));
     QCommandLineOption optHostKey(QStringLiteral("hostKey"),
                                   QStringLiteral("DriverHost instance key"),
                                   QStringLiteral("key"));
-    QCommandLineOption optProviderOption(QStringLiteral("option"),
-                                         QStringLiteral("JSON provider options"),
-                                         QStringLiteral("json"));
-    QCommandLineOption optAdapter(QStringLiteral("adapter"),
-                                  QStringLiteral("MM adapter"),
-                                  QStringLiteral("adapter"));
-    QCommandLineOption optDevice(QStringLiteral("device"),
-                                 QStringLiteral("MM device"),
-                                 QStringLiteral("device"));
-    QCommandLineOption optShm(QStringLiteral("shm"),
-                              QStringLiteral("Shared memory key"),
-                              QStringLiteral("key"));
-    QCommandLineOption optExp(QStringLiteral("exposure"),
-                              QStringLiteral("Exposure ms"),
-                              QStringLiteral("ms"));
-    QCommandLineOption optPreInit(QStringLiteral("preinit"),
-                                  QStringLiteral("JSON-encoded pre-init property"),
-                                  QStringLiteral("json"));
-    QCommandLineOption optProperty(QStringLiteral("property"),
-                                   QStringLiteral("JSON-encoded initialized property"),
-                                   QStringLiteral("json"));
-    QCommandLineOption optAuto(QStringLiteral("autoPreview"),
-                               QStringLiteral("Start preview immediately"));
+    QCommandLineOption optDeviceName(QStringLiteral("device"),
+                                     QStringLiteral("Device name in the driver, the first one by default"),
+                                     QStringLiteral("name"));
+    QCommandLineOption optProperties(QStringLiteral("properties"),
+                                     QStringLiteral("JSON pre-init properties of the device"),
+                                     QStringLiteral("json"));
     QCommandLineOption optLauncherPid(QStringLiteral("launcherPid"),
                                       QStringLiteral("Process ID of the launching app"),
                                       QStringLiteral("pid"));
+    QCommandLineOption optDescribe(QStringLiteral("describe"), QStringLiteral("Describe a driver and exit"));
 
     parser.addOption(optProvider);
-    parser.addOption(optDeviceId);
-    parser.addOption(optPlugin);
+    parser.addOption(optDriver);
+    parser.addOption(optCamera);
     parser.addOption(optHostKey);
-    parser.addOption(optProviderOption);
-    parser.addOption(optAdapter);
-    parser.addOption(optDevice);
-    parser.addOption(optShm);
-    parser.addOption(optExp);
-    parser.addOption(optPreInit);
-    parser.addOption(optProperty);
-    parser.addOption(optAuto);
+    parser.addOption(optDeviceName);
+    parser.addOption(optProperties);
     parser.addOption(optLauncherPid);
+    parser.addOption(optDescribe);
     parser.process(app);
+
+    if (parser.isSet(optDescribe))
+    {
+        QPluginLoader loader(parser.value(optDriver));
+        scopeone::core::DriverManifest manifest;
+        QString error;
+        if (!scopeone::core::parseDriverManifest(loader.metaData().value(QStringLiteral("MetaData")).toObject(), manifest, &error))
+        {
+            qCritical().noquote() << error;
+            return 2;
+        }
+        auto* driver = qobject_cast<scopeone::core::Driver*>(loader.instance());
+        if (!driver)
+        {
+            qCritical().noquote() << loader.errorString();
+            return 2;
+        }
+        if (driver->driverId() != manifest.id)
+        {
+            qCritical().noquote() << "Driver identity mismatch";
+            return 2;
+        }
+        QJsonArray names = QJsonArray::fromStringList(driver->deviceNames());
+        QJsonArray properties;
+        const QVariantMap values = QJsonDocument::fromJson(parser.value(optProperties).toUtf8()).object().toVariantMap();
+        for (const auto& property : driver->preInitProperties(parser.value(optDeviceName), values))
+            properties.append(QJsonObject{{QStringLiteral("name"), property.name},
+                                          {QStringLiteral("defaultValue"), property.defaultValue},
+                                          {QStringLiteral("allowedValues"), QJsonArray::fromStringList(property.allowedValues)}});
+        const QByteArray json = QJsonDocument(QJsonObject{{QStringLiteral("devices"), names},
+                                                         {QStringLiteral("properties"), properties}}).toJson(QJsonDocument::Compact);
+        std::fwrite(json.constData(), 1, static_cast<size_t>(json.size()), stdout);
+        return 0;
+    }
 
     if (!parser.isSet(optLauncherPid)
         || !scopeone::core::internal::quitWithLauncher(app, parser.value(optLauncherPid).toLongLong()))
@@ -2773,87 +2107,56 @@ int main(int argc, char* argv[])
         return 2;
     }
 
-    if (!parser.isSet(optProvider))
-    {
-        qCritical().noquote()
-            << "Missing required argument: --provider";
-        return 2;
-    }
-
     const QString providerId = parser.value(optProvider).trimmed();
-    const QString deviceId = parser.value(optDeviceId).trimmed();
-    if (providerId.isEmpty())
+    const QString hostKey = parser.value(optHostKey).trimmed();
+    const QString driverPath = parser.value(optDriver).trimmed();
+    if (providerId.isEmpty() || hostKey.isEmpty() || driverPath.isEmpty() == !parser.isSet(optCamera))
     {
-        qCritical().noquote() << "Provider ID cannot be empty";
+        qCritical().noquote() << "DriverHost requires --provider, --hostKey and either --driver or --micromanagerCamera";
         return 2;
     }
 
-    const double exposureMs = parser.isSet(optExp)
-                                  ? parser.value(optExp).toDouble()
-                                  : 0.0;
-    scopeone::core::internal::DriverHostRuntime* runtime = nullptr;
-    if (providerId == QStringLiteral("micro-manager"))
+    const auto parseObject = [](const QString& text, QJsonObject& object)
     {
-        if (deviceId.isEmpty()
-            || !parser.isSet(optAdapter)
-            || !parser.isSet(optDevice)
-            || !parser.isSet(optShm))
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject())
         {
-            qCritical().noquote()
-                << "Micro-Manager requires --deviceId, --adapter, --device and --shm";
+            qCritical().noquote() << QStringLiteral("Invalid JSON argument: %1").arg(parseError.errorString());
+            return false;
+        }
+        object = document.object();
+        return true;
+    };
+
+    std::optional<scopeone::core::internal::MicroManagerCameraSetup> cameraSetup;
+    if (parser.isSet(optCamera))
+    {
+        QJsonObject object;
+        if (!parseObject(parser.value(optCamera), object))
+        {
             return 2;
         }
-        runtime = new scopeone::core::internal::MicroManagerDriverRuntime(
-            providerId,
-            deviceId,
-            parser.value(optAdapter),
-            parser.value(optDevice),
-            parser.value(optShm),
-            parser.values(optPreInit),
-            parser.values(optProperty),
-            exposureMs,
-            parser.isSet(optAuto));
+        cameraSetup = scopeone::core::internal::MicroManagerCameraSetup::fromJson(object);
     }
-    else
+    QJsonObject preInitProperties;
+    for (const QString& encodedOptions : parser.values(optProperties))
     {
-        const QString pluginPath = parser.value(optPlugin).trimmed();
-        const QString hostKey = parser.value(optHostKey).trimmed();
-        if (pluginPath.isEmpty() || hostKey.isEmpty())
+        QJsonObject object;
+        if (!parseObject(encodedOptions, object))
         {
-            qCritical().noquote() << "External providers require --plugin and --hostKey";
             return 2;
         }
-
-        QJsonObject providerOptions;
-        for (const QString& encodedOptions : parser.values(optProviderOption))
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it)
         {
-            QJsonParseError parseError;
-            const QJsonDocument document =
-                QJsonDocument::fromJson(encodedOptions.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !document.isObject())
-            {
-                qCritical().noquote() << QStringLiteral("Invalid --option JSON: %1")
-                                            .arg(parseError.errorString());
-                return 2;
-            }
-            const QJsonObject object = document.object();
-            for (auto it = object.constBegin(); it != object.constEnd(); ++it)
-            {
-                providerOptions.insert(it.key(), it.value());
-            }
+            preInitProperties.insert(it.key(), it.value());
         }
-
-        runtime = new scopeone::core::internal::ProviderDriverRuntime(
-            pluginPath,
-            providerId,
-            hostKey,
-            providerOptions);
     }
 
-    const QString serverKey = providerId == QStringLiteral("micro-manager")
-                                  ? deviceId
-                                  : parser.value(optHostKey).trimmed();
-    scopeone::core::internal::DriverHost driverHost(serverKey, runtime);
+    auto* runtime = new scopeone::core::internal::DriverRuntime(
+        driverPath, std::move(cameraSetup), providerId, hostKey,
+        parser.value(optDeviceName).trimmed(), preInitProperties.toVariantMap());
+    scopeone::core::internal::DriverHost driverHost(hostKey, runtime);
     if (!driverHost.start())
     {
         return 2;

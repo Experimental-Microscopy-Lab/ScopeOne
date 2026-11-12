@@ -1,7 +1,7 @@
 #include "internal/MDAManager.h"
 
-#include "scopeone/CameraProvider.h"
-#include "scopeone/HardwareCapabilities.h"
+#include "internal/HardwareRuntime.h"
+#include "scopeone/ConfigSetting.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -37,25 +37,10 @@ namespace scopeone::core::internal
         cancelAndWait();
     }
 
-    // Connects MDA capture to the active camera backend
-    void MDAManager::setCameraProvider(CameraProvider* cameraProvider)
+    // Connects MDA capture to the cameras
+    void MDAManager::setHardwareRuntime(HardwareRuntime* hardwareRuntime)
     {
-        m_cameraProvider = cameraProvider;
-    }
-
-    void MDAManager::setStageProvider(StageProvider* stageProvider)
-    {
-        m_stageProvider = stageProvider;
-    }
-
-    void MDAManager::setConfigurationProvider(ConfigurationProvider* configurationProvider)
-    {
-        m_configurationProvider = configurationProvider;
-    }
-
-    void MDAManager::setAcquisitionHardware(AcquisitionHardware* hardware)
-    {
-        m_acquisitionHardware = hardware;
+        m_hardwareRuntime = hardwareRuntime;
     }
 
     // Starts one immutable acquisition event sequence
@@ -209,21 +194,21 @@ namespace scopeone::core::internal
         }
         if (usesXY)
         {
-            const QString stage = m_stageProvider->defaultXYStage();
+            const QString stage = m_hardwareRuntime->defaultXYStage();
             state.hasInitialXY = !stage.isEmpty()
-                && m_stageProvider->getXYPosition(stage, state.initialX, state.initialY);
+                && m_hardwareRuntime->getXYPosition(stage, state.initialX, state.initialY);
         }
         if (usesZ)
         {
-            const QString focus = m_stageProvider->defaultZStage();
+            const QString focus = m_hardwareRuntime->defaultZStage();
             state.hasInitialZ = !focus.isEmpty()
-                && m_stageProvider->getZPosition(focus, state.initialZ);
+                && m_hardwareRuntime->getZPosition(focus, state.initialZ);
             state.zReference = state.initialZ;
         }
         if (!channelGroup.isEmpty())
         {
             state.initialChannelGroup = channelGroup;
-            state.initialChannelPreset = m_configurationProvider->currentConfig(channelGroup);
+            state.initialChannelPreset = m_hardwareRuntime->currentConfig(channelGroup);
         }
         // Like Micro-Manager, only take over the shutter when the core controls it
         const bool wantsShutter = std::any_of(events.begin(), events.end(),
@@ -231,9 +216,8 @@ namespace scopeone::core::internal
                                               {
                                                   return event.openShutterBefore;
                                               });
-        bool autoShutterOn = false;
-        state.holdShutter = wantsShutter
-            && m_acquisitionHardware->autoShutter(autoShutterOn) && autoShutterOn;
+        state.holdShutter = wantsShutter && m_hardwareRuntime->autoShutter()
+            && !m_hardwareRuntime->defaultShutter().isEmpty();
     }
 
     // Opens the shutter at the start of a block of events and keeps it open until the block ends
@@ -246,14 +230,14 @@ namespace scopeone::core::internal
             return true;
         }
         QString error;
-        if (!m_acquisitionHardware->setAutoShutter(false, &error)
-            || !m_acquisitionHardware->setCoreShutterOpen(true, &error))
+        m_hardwareRuntime->setAutoShutter(false);
+        if (!m_hardwareRuntime->setDefaultShutterOpen(true, &error))
         {
             if (errorMessage)
             {
                 *errorMessage = QStringLiteral("Failed to open the shutter: %1").arg(error);
             }
-            m_acquisitionHardware->setAutoShutter(true);
+            m_hardwareRuntime->setAutoShutter(true);
             return false;
         }
         state.shutterOpen = true;
@@ -268,11 +252,11 @@ namespace scopeone::core::internal
             return;
         }
         QString error;
-        if (!m_acquisitionHardware->setCoreShutterOpen(false, &error))
+        if (!m_hardwareRuntime->setDefaultShutterOpen(false, &error))
         {
             qWarning().noquote() << "Failed to close the shutter:" << error;
         }
-        m_acquisitionHardware->setAutoShutter(true);
+        m_hardwareRuntime->setAutoShutter(true);
         state.shutterOpen = false;
     }
 
@@ -282,30 +266,30 @@ namespace scopeone::core::internal
         QString error;
         if (state.holdShutter && state.shutterOpen)
         {
-            m_acquisitionHardware->setCoreShutterOpen(false);
-            m_acquisitionHardware->setAutoShutter(true);
+            m_hardwareRuntime->setDefaultShutterOpen(false);
+            m_hardwareRuntime->setAutoShutter(true);
         }
         if (state.hasInitialXY)
         {
-            const QString stage = m_stageProvider->defaultXYStage();
+            const QString stage = m_hardwareRuntime->defaultXYStage();
             if (!stage.isEmpty()
-                && !m_stageProvider->setXYPosition(stage, state.initialX, state.initialY, &error))
+                && !m_hardwareRuntime->setXYPosition(stage, state.initialX, state.initialY, &error))
             {
                 qWarning().noquote() << "Failed to restore the XY position:" << error;
             }
         }
         if (state.hasInitialZ)
         {
-            const QString focus = m_stageProvider->defaultZStage();
+            const QString focus = m_hardwareRuntime->defaultZStage();
             if (!focus.isEmpty()
-                && !m_stageProvider->setZPosition(focus, state.initialZ, &error))
+                && !m_hardwareRuntime->setZPosition(focus, state.initialZ, &error))
             {
                 qWarning().noquote() << "Failed to restore the Z position:" << error;
             }
         }
         if (!state.initialChannelPreset.isEmpty()
             && state.initialChannelPreset != state.channelPreset
-            && !m_configurationProvider->setConfig(state.initialChannelGroup,
+            && !m_hardwareRuntime->setConfig(state.initialChannelGroup,
                                                    state.initialChannelPreset,
                                                    &error))
         {
@@ -388,7 +372,7 @@ namespace scopeone::core::internal
             return true;
         }
         QString error;
-        if (!m_configurationProvider->setConfig(event.channelGroup, event.channelPreset, &error))
+        if (!m_hardwareRuntime->setConfig(event.channelGroup, event.channelPreset, &error))
         {
             if (errorMessage)
             {
@@ -435,12 +419,12 @@ namespace scopeone::core::internal
                                   SequenceState& state,
                                   QString* errorMessage)
     {
-        if (!m_acquisitionHardware->hasAutofocus())
+        if (!m_hardwareRuntime->hasAutofocus())
         {
             if (errorMessage) *errorMessage = QStringLiteral("No autofocus device is available");
             return false;
         }
-        const QString focus = m_stageProvider->defaultZStage();
+        const QString focus = m_hardwareRuntime->defaultZStage();
         if (focus.isEmpty())
         {
             if (errorMessage) *errorMessage = QStringLiteral("No focus device configured");
@@ -456,19 +440,19 @@ namespace scopeone::core::internal
                 return false;
             }
         }
-        else if (!m_stageProvider->getZPosition(focus, before, errorMessage))
+        else if (!m_hardwareRuntime->getZPosition(focus, before, errorMessage))
         {
             return false;
         }
 
         QString error;
-        if (!m_acquisitionHardware->runAutofocus(&error))
+        if (!m_hardwareRuntime->runAutofocus(&error))
         {
             if (errorMessage) *errorMessage = QStringLiteral("Autofocus failed: %1").arg(error);
             return false;
         }
         double after = 0.0;
-        if (!m_stageProvider->getZPosition(focus, after, errorMessage))
+        if (!m_hardwareRuntime->getZPosition(focus, after, errorMessage))
         {
             return false;
         }
@@ -495,7 +479,7 @@ namespace scopeone::core::internal
         const AcquisitionEvent& head = events.at(first);
         if (!head.hardwareSequencing || !head.hasZ || head.autofocusBefore
             || head.cameraIds.size() != 1
-            || !m_cameraProvider->supportsEventSequence(head.cameraIds.first()))
+            || !m_hardwareRuntime->supportsSequence(head.cameraIds.first()))
         {
             return 1;
         }
@@ -519,8 +503,8 @@ namespace scopeone::core::internal
         {
             return 1;
         }
-        const QString focus = m_stageProvider->defaultZStage();
-        const long capacity = focus.isEmpty() ? 0 : m_acquisitionHardware->focusSequenceCapacity(focus);
+        const QString focus = m_hardwareRuntime->defaultZStage();
+        const long capacity = focus.isEmpty() ? 0 : m_hardwareRuntime->focusSequenceCapacity(focus);
         return capacity >= length ? length : 1;
     }
 
@@ -534,7 +518,7 @@ namespace scopeone::core::internal
                                           QString* errorMessage)
     {
         const AcquisitionEvent& head = events.at(first);
-        const QString focus = m_stageProvider->defaultZStage();
+        const QString focus = m_hardwareRuntime->defaultZStage();
 
         // Moves everything but the slices into place, and the focus to the first slice
         if (!setupEvent(head, state, errorMessage))
@@ -555,9 +539,9 @@ namespace scopeone::core::internal
             events, first, count, state, outputs,
             [&](QString* error)
             {
-                return m_acquisitionHardware->startFocusSequence(focus, positions, error);
+                return m_hardwareRuntime->startFocusSequence(focus, positions, error);
             },
-            [&]() { m_acquisitionHardware->stopFocusSequence(focus); },
+            [&]() { m_hardwareRuntime->stopFocusSequence(focus); },
             errorMessage);
         if (!captured)
         {
@@ -582,7 +566,7 @@ namespace scopeone::core::internal
         const AcquisitionEvent& head = events.at(first);
         if (!head.hardwareSequencing || head.channelPreset.isEmpty() || head.autofocusBefore
             || head.cameraIds.size() != 1
-            || !m_cameraProvider->supportsEventSequence(head.cameraIds.first()))
+            || !m_hardwareRuntime->supportsSequence(head.cameraIds.first()))
         {
             return 1;
         }
@@ -612,7 +596,7 @@ namespace scopeone::core::internal
         std::vector<std::vector<scopeone::core::ConfigSetting>> presets;
         for (int index = 0; index < length; ++index)
         {
-            presets.push_back(m_configurationProvider->configSettings(
+            presets.push_back(m_hardwareRuntime->configSettings(
                 head.channelGroup, events.at(first + index).channelPreset));
             if (presets.back().size() != presets.front().size())
             {
@@ -645,7 +629,7 @@ namespace scopeone::core::internal
             }
             // The core and the camera cannot be stepped by triggers
             if (reference.device == QLatin1String("Core")
-                || m_acquisitionHardware->propertySequenceCapacity(reference.device, reference.property) < length)
+                || m_hardwareRuntime->propertySequenceCapacity(reference.device, reference.property) < length)
             {
                 return 1;
             }
@@ -674,8 +658,8 @@ namespace scopeone::core::internal
         }
         const bool captured = captureSequencedBlock(
             events, first, count, state, outputs,
-            [&](QString* error) { return m_acquisitionHardware->startPropertySequences(sequences, error); },
-            [&]() { m_acquisitionHardware->stopPropertySequences(sequences); },
+            [&](QString* error) { return m_hardwareRuntime->startPropertySequences(sequences, error); },
+            [&]() { m_hardwareRuntime->stopPropertySequences(sequences); },
             errorMessage);
         // The properties are left on the last channel or have wrapped around, so the next
         // event applies its preset again
@@ -715,7 +699,7 @@ namespace scopeone::core::internal
         }
         std::vector<ImageFrame> frames;
         const int timeoutMs = static_cast<int>((std::max)(10000.0, head.exposureMs * count * 4.0 + 5000.0));
-        const bool captured = m_cameraProvider->captureEventSequence(cameraId, count, frames, timeoutMs)
+        const bool captured = m_hardwareRuntime->snapSequence(cameraId, count, frames, timeoutMs)
             && static_cast<int>(frames.size()) == count;
         disarm();
         closeShutter(last, state);
@@ -777,7 +761,7 @@ namespace scopeone::core::internal
             {
                 CaptureResult result;
                 result.cameraId = cameraId;
-                if (!m_cameraProvider->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
+                if (!m_hardwareRuntime->snap(cameraId, result.frame, captureTimeoutMs))
                 {
                     result.error = QStringLiteral("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;
@@ -813,7 +797,7 @@ namespace scopeone::core::internal
     {
         for (const QString& cameraId : cameraIds)
         {
-            if (!m_cameraProvider->setExposure(cameraId, exposureMs))
+            if (!m_hardwareRuntime->setExposure(cameraId, exposureMs))
             {
                 if (errorMessage)
                 {
@@ -829,24 +813,24 @@ namespace scopeone::core::internal
     // Moves the active XY stage to an event position
     bool MDAManager::moveXY(double x, double y, QString* errorMessage)
     {
-        const QString stage = m_stageProvider->defaultXYStage();
+        const QString stage = m_hardwareRuntime->defaultXYStage();
         if (stage.isEmpty())
         {
             if (errorMessage) *errorMessage = QStringLiteral("No XY stage device configured");
             return false;
         }
-        return m_stageProvider->setXYPosition(stage, x, y, errorMessage);
+        return m_hardwareRuntime->setXYPosition(stage, x, y, errorMessage);
     }
 
     // Moves the active focus device to an event position
     bool MDAManager::moveZ(double z, QString* errorMessage)
     {
-        const QString focus = m_stageProvider->defaultZStage();
+        const QString focus = m_hardwareRuntime->defaultZStage();
         if (focus.isEmpty())
         {
             if (errorMessage) *errorMessage = QStringLiteral("No focus device configured");
             return false;
         }
-        return m_stageProvider->setZPosition(focus, z, errorMessage);
+        return m_hardwareRuntime->setZPosition(focus, z, errorMessage);
     }
 } // namespace scopeone::core::internal

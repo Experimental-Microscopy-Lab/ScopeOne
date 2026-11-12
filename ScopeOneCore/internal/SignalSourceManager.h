@@ -2,23 +2,23 @@
 
 #include <QHash>
 #include <QObject>
-#include <QPointer>
 
-#include <memory>
-#include <vector>
-
+#include "scopeone/Device.h"
 #include "scopeone/SignalSource.h"
-
-class QPluginLoader;
+#include "scopeone/SignalSource.h"
 
 namespace scopeone::core::internal
 {
+    class DeviceRegistry;
+
+    // The signal sources of the drivers under one list. Their chunks arrive on a thread of
+    // the provider and are passed on in this object's thread.
     class SignalSourceManager final : public QObject
     {
         Q_OBJECT
 
     public:
-        explicit SignalSourceManager(QObject* parent = nullptr);
+        explicit SignalSourceManager(DeviceRegistry* registry, QObject* parent = nullptr);
         ~SignalSourceManager() override;
 
         QList<SignalSourceDescriptor> sources() const;
@@ -29,6 +29,7 @@ namespace scopeone::core::internal
         QString stateMessage(const QString& sourceId) const;
 
     signals:
+        void sourcesChanged();
         void timeSeriesReady(const scopeone::core::TimeSeriesChunk& chunk);
         void timestampedEventsReady(const scopeone::core::TimestampedEventChunk& chunk);
         void sourceStateChanged(const QString& sourceId,
@@ -37,14 +38,14 @@ namespace scopeone::core::internal
         void sourceError(const QString& sourceId, const QString& errorMessage);
 
     private:
-        void loadPlugins();
-        SignalSource* sourceInstance(const QString& sourceId,
-                                     QString* errorMessage);
+        void refreshProviderSources();
+        void detachProvider(const DevicePtr& provider);
+        void updateState(const QString& sourceId, SignalSourceState state, const QString& message);
 
-        std::vector<std::unique_ptr<QPluginLoader>> m_loaders;
-        QHash<QString, SignalSourcePlugin*> m_plugins;
+        DeviceRegistry* m_registry{nullptr};
+        QHash<QString, DevicePtr> m_providerBySource;
+        QHash<QString, DevicePtr> m_attachedProviders;
         QHash<QString, SignalSourceDescriptor> m_descriptors;
-        QHash<QString, QPointer<SignalSource>> m_sources;
         QHash<QString, SignalSourceState> m_states;
         QHash<QString, QString> m_messages;
     };

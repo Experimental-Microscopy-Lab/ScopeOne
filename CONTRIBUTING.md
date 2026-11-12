@@ -1,8 +1,26 @@
 # Development guidelines
 
-These rules apply to everyone who changes ScopeOne. The README explains how to build; this file
-explains how the code is meant to be written. Each rule says why. When a rule and its reason
+These rules apply to everyone who changes ScopeOne. The README explains how to build: on Windows,
+`powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 --run` after installing Git and the
+Visual Studio Build Tools, and on Linux and macOS `./scripts/build.sh`. This file explains
+how the code is meant to be written. Each rule says why. When a rule and its reason
 disagree in a specific case, follow the reason and say so in the review.
+
+## Philosophy
+
+**C++ and Python.** The parts that drive the hardware and handle every frame are written in C++:
+acquisition, recording, display, and processing that has to keep up with the camera. They have to be
+fast and predictable, and Qt lets the same code run on Windows, Linux and macOS. Python is for the
+methods researchers write themselves: a processing step, an analysis of recorded data, or a script
+that runs an experiment through the Local API. Each Python module runs in its own process, so a slow
+or broken script cannot hold up the microscope. When a Python method turns out to be needed at the
+full frame rate, it is rewritten in C++.
+
+**One place for processing.** Frames from every camera end up in the same pipeline, whatever the
+platform and whatever the hardware. A processing step can be a C++ module on the CPU, a CUDA module
+on an NVIDIA GPU, an ONNX model, or a Python function, and it plugs in the same way. Whoever adds a
+method gets the live view, recording and the Local API with it, and the person at the microscope
+just picks the method.
 
 ## Boundaries
 
@@ -10,24 +28,38 @@ disagree in a specific case, follow the reason and say so in the review.
 
 | Part | Folder | Namespace | May use |
 |---|---|---|---|
-| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops` | Qt Core, OpenCV, MMCore, ScopeWriter. No Qt Widgets. |
+| Core | `ScopeOneCore` | `scopeone::core`, `core::internal`, `core::imageops`, `core::internal::cuda` and `core::internal::inference` for the CUDA and ONNX modules | Qt Core, OpenCV, MMCore, ScopeWriter, and CUDA and ONNX Runtime when they are built. No Qt Widgets. |
 | Application | `src` | `scopeone::ui` | Core, Qt Widgets |
 | MCP server | `src/ScopeOneMcpServer.cpp` | | Qt Core, Qt Network and the Local API protocol. Not Core. |
-| Plugins | `plugins`, `ScopeOneCuda`, `ScopeOneInference` | their own | `scopeone::PluginSDK` |
+| Drivers | `drivers` | their own | `scopeone::DriverSDK` |
 | Python package | `ScopeOneCore/python/scopeone` | `scopeone` | the Local API protocol |
 
-A lower layer never knows about a higher one. Core does not include from `src`, and plugins do
-not include Core internals. This keeps each part buildable and usable without the ones above it.
+A lower layer never knows about a higher one. Core does not include from `src`, and drivers do not include
+Core internals. This keeps each part buildable and usable without the ones above it.
 
 **Entry points.** Code outside Core enters through the public headers in
 `ScopeOneCore/include/scopeone` and the `ScopeOneCore` facade. `ScopeOneCore/internal` is for Core
-alone. Plugins see only the SDK headers; a tool plugin gets `ScopeOneToolCore`, not the Core.
+alone. Drivers see only `ScopeOneCore/sdk`, enforced by the build.
 A narrow entry point is what lets Core change its insides without breaking callers.
 
 **Decide the layer first.** Before writing a feature, decide where it belongs. Anything that
 must work without a window (acquisition, hardware, processing, recording, data) goes into Core
 and is reachable through the Local API before it gets a widget. Anything that only changes what
-is shown goes into `src`. Hardware and optional processing go into plugins.
+is shown goes into `src`. Hardware goes into drivers.
+
+**Tools.** A window of the Tools menu, with its own state and workflow, goes into its own folder
+under `src/tools`. It uses only the public Core headers and `ToolContext` from
+`src/tools/ToolContext.h`, and registers itself with `SCOPEONE_REGISTER_TOOL` at the end of its
+source file, so adding a tool changes neither `MainWindow` nor CMake. Its algorithm belongs in Core.
+A command that takes an image and parameters and returns a result is not a tool; it belongs in the
+image menus.
+
+**Extension boundary.** Drivers and Python processing modules are the only public
+extension points, and both run outside the ScopeOne process. Every other processing method
+belongs in Core, with its window in `src`. The CUDA and ONNX modules are in Core too, under
+`src/cuda` and `src/inference`, and `SCOPEONE_ENABLE_CUDA` builds Core without CUDA. The
+messages between ScopeOne and `ScopeOne_DriverHost` are internal too and are described in
+`ScopeOneCore/DRIVERHOST_PROTOCOL.md`.
 
 **Python API.** The `ScopeOne` client controls a running ScopeOne and moves frames in and out as
 numpy arrays. It does not reimplement analysis that numpy already does. `scopeone.processing`
@@ -125,7 +157,7 @@ not send style-only changes.
 - Constant strings use `QStringLiteral`; text the user sees goes through `tr()`.
 - Our own code does not throw. MMCore, OpenCV and ONNX Runtime do, so catch their exceptions at
   the call site and turn them into an error value or a log message.
-- Casts: `qobject_cast` for QObjects, `static_cast` otherwise. `dynamic_cast` only across plugin
+- Casts: `qobject_cast` for QObjects, `static_cast` otherwise. `dynamic_cast` only across library
   interfaces.
 - Logging: `qWarning` for real problems. Do not leave `qDebug` behind.
 
@@ -182,7 +214,7 @@ with a slash.
 and moving code are separate changes, because they hide the real change in review. Do not touch
 lines you are not changing.
 
-**Build everything you touched.** Core, the application and the plugins all build before you
+**Build everything you touched.** Core, the drivers and the application all build before you
 send a change, with no new warnings. A change in a header builds every part that includes it.
 
 **Run what you changed.** A change to behavior is run in the application, with a configuration
@@ -202,12 +234,15 @@ in only some of them is a bug.
 the existing dependencies cannot meet, a licence that allows redistribution with ScopeOne, and
 a pinned version in `vcpkg.json`.
 
+**Qt version.** ScopeOne supports Qt 6.8 and later, so code does not use Qt API added after 6.8.
+A newer API that is worth it is a reason to raise the minimum; open an issue to discuss it.
+
 ## Versions
 
 **Core.** The version is `MAJOR.MINOR.MMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
 the date of the last commit. Raise `MINOR` whenever a public SDK header changes. ScopeOne loads
-a plugin only when its Core `MAJOR.MINOR` matches, and each plugin kind has its own
-`scopeOneApi` contract version.
+a driver only when its Core `MAJOR.MINOR` matches, and drivers have their own `scopeOneApi`
+contract version.
 
 **Dependencies are pinned.** vcpkg packages, Python (`==3.14.*`) and Python packages
 (`numpy==2.5.3`) use exact versions. Upgrade them together, on purpose.

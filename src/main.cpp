@@ -7,7 +7,6 @@
 #include "ConsoleWidget.h"
 #include "Appearance.h"
 #include "MainWindow.h"
-#include "PluginManagerDialog.h"
 
 int main(int argc, char *argv[])
 {
@@ -28,10 +27,6 @@ int main(int argc, char *argv[])
     scopeone::ui::ConsoleWidget::installQtMessageHandler();
 
     auto scopeOneCore = std::make_unique<scopeone::core::ScopeOneCore>();
-    for (const QString& error : scopeone::ui::loadConfiguredHardwarePlugins(*scopeOneCore))
-    {
-        qWarning().noquote() << QStringLiteral("Failed to load hardware plugin %1").arg(error);
-    }
     scopeone::ui::MainWindow window(scopeOneCore.get());
     window.show();
     return app.exec();

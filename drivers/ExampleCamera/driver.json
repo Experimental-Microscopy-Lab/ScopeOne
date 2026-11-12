@@ -1,0 +1,7 @@
+{
+  "id": "example.camera",
+  "name": "Example Camera",
+  "version": "1.0.0",
+  "scopeOneApi": 4,
+  "kind": "driver"
+}

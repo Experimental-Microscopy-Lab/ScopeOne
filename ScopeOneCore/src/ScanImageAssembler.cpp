@@ -1,11 +1,11 @@
-#include "scopeone/ScanImageAssembler.h"
+#include "internal/ScanImageAssembler.h"
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
 #include <utility>
 
-namespace scopeone::core
+namespace scopeone::core::internal
 {
     namespace
     {

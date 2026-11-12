@@ -1,6 +1,5 @@
 #include "internal/RecordingManager.h"
 
-#include "scopeone/CameraProvider.h"
 #include <scopewriter/ScopeWriter.h>
 
 #include <QDateTime>
@@ -1384,7 +1383,7 @@ namespace scopeone::core::internal
 
         for (ChannelSetting& channel : plan.channels)
         {
-            channel.presetSettings = m_configurationProvider->configSettings(plan.channelGroup,
+            channel.presetSettings = m_hardwareRuntime->configSettings(plan.channelGroup,
                                                                              channel.preset);
         }
 
@@ -1410,8 +1409,8 @@ namespace scopeone::core::internal
         if (!usesMda)
         {
             primeLastFrameIndices();
-            if (m_cameraRuntimeControl
-                && !m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+            if (m_hardwareRuntime
+                && !m_hardwareRuntime->setRecordingFrameDeliveryEnabled(
                     m_captureState.activeCameraIds, true))
             {
                 if (plan.streamToDisk)
@@ -1441,9 +1440,9 @@ namespace scopeone::core::internal
         {
             if (!startStreamingOutputs(plan))
             {
-                if (m_cameraRuntimeControl)
+                if (m_hardwareRuntime)
                 {
-                    m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(
+                    m_hardwareRuntime->setRecordingFrameDeliveryEnabled(
                         m_captureState.activeCameraIds, false);
                 }
                 const QString writerError = writerErrorSnapshot();
@@ -1513,17 +1512,17 @@ namespace scopeone::core::internal
         emit recordingStateChanged(false);
         emitProgress(true);
 
-        if (m_cameraRuntimeControl)
+        if (m_hardwareRuntime)
         {
-            m_cameraRuntimeControl->setRecordingFrameDeliveryEnabled(activeCameraIds, false);
+            m_hardwareRuntime->setRecordingFrameDeliveryEnabled(activeCameraIds, false);
         }
         if (m_mdaState.usingMda && m_mdaState.manager && m_mdaState.manager->isRunning())
         {
             m_mdaState.manager->requestCancel();
         }
-        if (m_cameraRuntimeControl)
+        if (m_hardwareRuntime)
         {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(activeCameraIds, false);
+            m_hardwareRuntime->setFrameDeliveryPaused(activeCameraIds, false);
         }
 
         qInfo().noquote() << "Recording stopped";
@@ -2081,14 +2080,11 @@ namespace scopeone::core::internal
         {
             m_mdaState.manager = new MDAManager(this);
         }
-        m_mdaState.manager->setCameraProvider(m_cameraProvider);
-        m_mdaState.manager->setStageProvider(m_stageProvider);
-        m_mdaState.manager->setConfigurationProvider(m_configurationProvider);
-        m_mdaState.manager->setAcquisitionHardware(m_acquisitionHardware);
+        m_mdaState.manager->setHardwareRuntime(m_hardwareRuntime);
 
-        if (m_cameraRuntimeControl)
+        if (m_hardwareRuntime)
         {
-            m_cameraRuntimeControl->setFrameDeliveryPaused(
+            m_hardwareRuntime->setFrameDeliveryPaused(
                 m_captureState.activeCameraIds, true);
         }
 

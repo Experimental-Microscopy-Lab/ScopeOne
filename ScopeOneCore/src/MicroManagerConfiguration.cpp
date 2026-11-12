@@ -1,0 +1,579 @@
+// The loading of a Micro-Manager configuration by MicroManagerProvider
+#include "internal/MicroManagerProvider.h"
+
+#include "MMCore.h"
+#include "scopeone/HardwareConfiguration.h"
+#include <QFile>
+#include <QDebug>
+#include <QCoreApplication>
+#include <QDir>
+#include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QList>
+#include <QTextStream>
+#include <QTemporaryFile>
+#include <algorithm>
+#include <vector>
+#ifdef Q_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <cwctype>
+#endif
+
+namespace scopeone::core::internal
+{
+    namespace
+    {
+        scopeone::core::HardwareDeviceKind hardwareDeviceKind(MM::DeviceType type)
+        {
+            switch (type)
+            {
+            case MM::CameraDevice:
+                return scopeone::core::HardwareDeviceKind::Camera;
+            case MM::XYStageDevice:
+                return scopeone::core::HardwareDeviceKind::XYStage;
+            case MM::StageDevice:
+                return scopeone::core::HardwareDeviceKind::ZStage;
+            case MM::ShutterDevice:
+                return scopeone::core::HardwareDeviceKind::Shutter;
+            case MM::StateDevice:
+                return scopeone::core::HardwareDeviceKind::State;
+            case MM::HubDevice:
+                return scopeone::core::HardwareDeviceKind::Hub;
+            case MM::SerialDevice:
+                return scopeone::core::HardwareDeviceKind::Serial;
+            case MM::GenericDevice:
+                return scopeone::core::HardwareDeviceKind::Generic;
+            case MM::AutoFocusDevice:
+                return scopeone::core::HardwareDeviceKind::AutoFocus;
+            case MM::ImageProcessorDevice:
+                return scopeone::core::HardwareDeviceKind::ImageProcessor;
+            case MM::SignalIODevice:
+                return scopeone::core::HardwareDeviceKind::SignalIO;
+            case MM::MagnifierDevice:
+                return scopeone::core::HardwareDeviceKind::Magnifier;
+            case MM::SLMDevice:
+                return scopeone::core::HardwareDeviceKind::SLM;
+            case MM::GalvoDevice:
+                return scopeone::core::HardwareDeviceKind::Galvo;
+            case MM::PressurePumpDevice:
+                return scopeone::core::HardwareDeviceKind::PressurePump;
+            case MM::VolumetricPumpDevice:
+                return scopeone::core::HardwareDeviceKind::VolumetricPump;
+            default:
+                return scopeone::core::HardwareDeviceKind::Unknown;
+            }
+        }
+
+        struct DevicePropertyState
+        {
+            QJsonArray preInitProperties;
+            QJsonArray properties;
+        };
+
+        struct ConfigProperty
+        {
+            QString name;
+            QString value;
+        };
+
+#ifdef Q_OS_WIN
+        // Lets Windows find the libraries that a device adapter depends on, such as the runtime of
+        // a camera vendor, in the folder of the adapter. MMCore loads an adapter by its full path,
+        // and Windows looks for the libraries it needs in the folder of the application and in
+        // PATH, not in the folder of the adapter. Micro-Manager works without this because its
+        // adapters sit beside its executable.
+        void addAdapterDirectoriesToLibraryPath(const QStringList& directories)
+        {
+            const DWORD capacity = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+            std::wstring current(capacity > 0 ? capacity : 0, L'\0');
+            if (capacity > 0)
+            {
+                const DWORD length = GetEnvironmentVariableW(L"PATH", current.data(), capacity);
+                current.resize(length);
+            }
+            std::wstring added;
+            for (const QString& directory : directories)
+            {
+                const std::wstring native = QDir::toNativeSeparators(directory).toStdWString();
+                // A directory that is already in PATH is not added again
+                const std::wstring entry = L";" + native + L";";
+                std::wstring haystack = L";" + current + L";";
+                std::transform(haystack.begin(), haystack.end(), haystack.begin(), ::towlower);
+                std::wstring needle = entry;
+                std::transform(needle.begin(), needle.end(), needle.begin(), ::towlower);
+                if (!native.empty() && haystack.find(needle) == std::wstring::npos
+                    && added.find(native) == std::wstring::npos)
+                {
+                    added += native + L";";
+                }
+            }
+            if (!added.empty())
+            {
+                SetEnvironmentVariableW(L"PATH", (added + current).c_str());
+            }
+        }
+#endif
+
+        // Sets adapter search paths relative to the application directory
+        void configureAdapterSearchPaths(CMMCore& core, const QStringList& additionalPaths)
+        {
+            const QString appDir = QCoreApplication::applicationDirPath();
+            QStringList paths{appDir};
+            for (const QString& path : additionalPaths)
+            {
+                const QString normalizedPath = QDir::cleanPath(path.trimmed());
+                if (!normalizedPath.isEmpty() && !paths.contains(normalizedPath, Qt::CaseInsensitive))
+                {
+                    paths.append(normalizedPath);
+                }
+            }
+
+#ifdef Q_OS_WIN
+            // The folder of the application is searched anyway
+            QStringList libraryDirectories = paths;
+            libraryDirectories.removeAll(appDir);
+            addAdapterDirectoriesToLibraryPath(libraryDirectories);
+#endif
+
+            std::vector<std::string> searchPaths;
+            searchPaths.reserve(static_cast<size_t>(paths.size()));
+            for (const QString& path : paths)
+            {
+                searchPaths.push_back(path.toStdString());
+            }
+            core.setDeviceAdapterSearchPaths(searchPaths);
+        }
+
+        QJsonObject propertySetting(const QString& name, const QString& value)
+        {
+            return QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("value"), value}};
+        }
+
+        struct ConfigPropertyReplay
+        {
+            QHash<QString, QList<ConfigProperty>> explicitProperties;
+            QHash<QString, QList<ConfigProperty>> startupProperties;
+        };
+
+        // Read camera property entries that must be replayed by DriverHost processes
+        ConfigPropertyReplay configPropertyReplay(const QString& configPath)
+        {
+            ConfigPropertyReplay replay;
+            const HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
+            for (const ConfigSetting& property : document.propertyLines())
+            {
+                if (!property.device.isEmpty() && !property.property.isEmpty())
+                {
+                    replay.explicitProperties[property.device].append(
+                        ConfigProperty{property.property, property.value});
+                }
+            }
+            for (const HardwareConfiguration::Group& group : document.configGroups())
+            {
+                if (group.name != QString::fromLatin1(MM::g_CFGGroup_System))
+                {
+                    continue;
+                }
+                for (const HardwareConfiguration::Preset& preset : group.presets)
+                {
+                    if (preset.name != QString::fromLatin1(MM::g_CFGGroup_System_Startup))
+                    {
+                        continue;
+                    }
+                    for (const HardwareConfiguration::PresetSetting& setting : preset.settings)
+                    {
+                        if (setting.source == HardwareConfiguration::Source::MicroManager
+                            && !setting.device.isEmpty() && !setting.property.isEmpty())
+                        {
+                            replay.startupProperties[setting.device].append(
+                                ConfigProperty{setting.property, setting.value});
+                        }
+                    }
+                }
+            }
+            return replay;
+        }
+
+        // Separates replayable config properties by initialization phase
+        DevicePropertyState prepareConfigPropertyReplay(CMMCore& core,
+                                                        const QString& deviceLabel,
+                                                        const QList<ConfigProperty>& properties)
+        {
+            DevicePropertyState state;
+            const QString trimmedLabel = deviceLabel.trimmed();
+            if (trimmedLabel.isEmpty() || properties.isEmpty())
+            {
+                return state;
+            }
+
+            const std::string label = trimmedLabel.toStdString();
+            try
+            {
+                for (const ConfigProperty& configProperty : properties)
+                {
+                    const QString propertyName = configProperty.name.trimmed();
+                    const QString propertyValue = configProperty.value.trimmed();
+
+                    if (propertyName.isEmpty())
+                    {
+                        continue;
+                    }
+
+                    const std::string property = propertyName.toStdString();
+                    bool preInit = false;
+                    try
+                    {
+                        preInit = core.isPropertyPreInit(label.c_str(), property.c_str());
+                    }
+                    catch (const CMMError&)
+                    {
+                    }
+
+                    bool readOnly = false;
+                    try
+                    {
+                        readOnly = core.isPropertyReadOnly(label.c_str(), property.c_str());
+                    }
+                    catch (const CMMError&)
+                    {
+                    }
+
+                    if (!preInit && readOnly)
+                    {
+                        continue;
+                    }
+
+                    const QJsonObject encodedProperty = propertySetting(propertyName, propertyValue);
+                    if (preInit)
+                    {
+                        state.preInitProperties.append(encodedProperty);
+                    }
+                    else
+                    {
+                        state.properties.append(encodedProperty);
+                    }
+                }
+            }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote()
+                    << QString("Failed to prepare cfg property replay for '%1': %2")
+                    .arg(trimmedLabel, QString::fromStdString(error.getMsg()));
+            }
+
+            return state;
+        }
+
+    // Loads one config file into MMCore
+    bool loadConfigurationFile(CMMCore& core,
+                               const QString& configPath,
+                               const QStringList& additionalPaths,
+                               QString* errorMessage)
+    {
+        if (configPath.trimmed().isEmpty())
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("Configuration path is empty");
+            }
+            return false;
+        }
+
+        try
+        {
+            configureAdapterSearchPaths(core, additionalPaths);
+            auto document = HardwareConfiguration::read(configPath, errorMessage);
+            const bool filtered = document.removeScopeOneCoreRoles();
+            QTemporaryFile filteredFile;
+            QString loadPath = configPath;
+            if (filtered)
+            {
+                if (!filteredFile.open() || filteredFile.write(document.toByteArray()) < 0 || !filteredFile.flush())
+                {
+                    if (errorMessage) *errorMessage = filteredFile.errorString();
+                    return false;
+                }
+                loadPath = filteredFile.fileName();
+            }
+            core.loadSystemConfiguration(loadPath.toStdString().c_str());
+            return true;
+        }
+        catch (const CMMError& e)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QString::fromStdString(e.getMsg());
+            }
+            return false;
+        }
+    }
+
+    // Reads labels for devices currently loaded in MMCore
+    QStringList loadedDeviceLabels(CMMCore& core, QString* errorMessage)
+    {
+        try
+        {
+            QStringList loadedDevices;
+            const std::vector<std::string> loaded = core.getLoadedDevices();
+            for (const auto& dev : loaded)
+            {
+                loadedDevices.append(QString::fromStdString(dev));
+            }
+            return loadedDevices;
+        }
+        catch (const CMMError& e)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QString::fromStdString(e.getMsg());
+            }
+            return {};
+        }
+    }
+
+    // Reads camera metadata before backend startup
+    QList<MicroManagerCameraSetup> loadedCameraInfos(
+        CMMCore& core,
+        const QStringList& loadedDevices,
+        const ConfigPropertyReplay& replay)
+    {
+        QList<MicroManagerCameraSetup> cameras;
+        cameras.reserve(loadedDevices.size());
+        for (const QString& deviceName : loadedDevices)
+        {
+            try
+            {
+                const MM::DeviceType deviceType = core.getDeviceType(deviceName.toStdString().c_str());
+                if (deviceType != MM::CameraDevice)
+                {
+                    continue;
+                }
+
+                MicroManagerCameraSetup info;
+                info.cameraId = deviceName;
+                try
+                {
+                    info.adapter = QString::fromStdString(core.getDeviceLibrary(deviceName.toStdString().c_str()));
+                }
+                catch (const CMMError&)
+                {
+                }
+                try
+                {
+                    info.device = QString::fromStdString(core.getDeviceName(deviceName.toStdString().c_str()));
+                }
+                catch (const CMMError&)
+                {
+                }
+                try
+                {
+                    core.setCameraDevice(deviceName.toStdString().c_str());
+                    const double exposure = core.getExposure();
+                    if (exposure > 0.0)
+                    {
+                        info.exposureMs = exposure;
+                    }
+                }
+                catch (const CMMError&)
+                {
+                }
+                const DevicePropertyState propertyState = prepareConfigPropertyReplay(
+                    core,
+                    deviceName,
+                    replay.explicitProperties.value(deviceName));
+                info.preInitProperties = propertyState.preInitProperties;
+                info.properties = propertyState.properties;
+                for (const ConfigProperty& property : replay.startupProperties.value(deviceName))
+                {
+                    info.properties.append(propertySetting(property.name, property.value));
+                }
+
+                cameras.append(std::move(info));
+            }
+            catch (const CMMError&)
+            {
+            }
+        }
+        return cameras;
+    }
+    } // namespace
+
+    // Loads and initializes the devices, but does not start the cameras. The devices of an
+    // earlier configuration are unloaded first.
+    bool MicroManagerProvider::loadConfiguration(const QString& configPath,
+                                                 LoadResult& result,
+                                                 QString& errorMessage)
+    {
+        result = LoadResult{};
+        if (!unloadDevices(&errorMessage))
+        {
+            return false;
+        }
+        if (!loadConfigurationFile(*m_core, configPath, m_adapterSearchPaths, &errorMessage))
+        {
+            return false;
+        }
+
+        QString listError;
+        const QStringList loadedDevices = loadedDeviceLabels(*m_core, &listError);
+        if (!listError.isEmpty())
+        {
+            errorMessage = QString("Failed to query loaded devices: %1").arg(listError);
+            return false;
+        }
+        const ConfigPropertyReplay propertyReplay = configPropertyReplay(configPath);
+        const QList<MicroManagerCameraSetup> cameraInfos =
+            loadedCameraInfos(*m_core, loadedDevices, propertyReplay);
+        const bool useSingleCamera = cameraInfos.size() == 1;
+
+        int successCount = 0;
+        int failCount = 0;
+        int skippedCameraCount = 0;
+        for (const QString& deviceName : loadedDevices)
+        {
+            try
+            {
+                const std::string label = deviceName.toStdString();
+                const MM::DeviceType deviceType = m_core->getDeviceType(label.c_str());
+                if (deviceType == MM::CoreDevice)
+                {
+                    continue;
+                }
+
+                scopeone::core::HardwareDeviceDescriptor descriptor;
+                descriptor.logicalId = deviceName;
+                descriptor.providerId = QStringLiteral("micro-manager");
+                descriptor.providerDeviceId = deviceName;
+                descriptor.name = deviceName;
+                descriptor.kind = hardwareDeviceKind(deviceType);
+                descriptor.state = scopeone::core::HardwareDeviceState::Discovered;
+                descriptor.endpoint = deviceType == MM::CameraDevice && !useSingleCamera
+                                          ? scopeone::core::HardwareEndpointKind::DriverHost
+                                          : scopeone::core::HardwareEndpointKind::InProcess;
+                try
+                {
+                    descriptor.hardwareId = QString::fromStdString(
+                        m_core->getDeviceName(label.c_str()));
+                }
+                catch (const CMMError&)
+                {
+                }
+
+                if (deviceType == MM::CameraDevice && !useSingleCamera)
+                {
+                    result.devices.append(descriptor);
+                    skippedCameraCount++;
+                    continue;
+                }
+
+                const DeviceInitializationState state = m_core->getDeviceInitializationState(label.c_str());
+                if (state != InitializedSuccessfully)
+                {
+                    try
+                    {
+                        m_core->initializeDevice(label.c_str());
+                        descriptor.state = scopeone::core::HardwareDeviceState::Initialized;
+                        successCount++;
+                    }
+                    catch (const CMMError& error)
+                    {
+                        failCount++;
+                        descriptor.state = scopeone::core::HardwareDeviceState::Faulted;
+                        result.failedDevices.append(deviceName);
+                        qWarning().noquote()
+                            << QString("Failed to initialize device '%1': %2")
+                            .arg(deviceName, QString::fromStdString(error.getMsg()));
+                    }
+                }
+                else
+                {
+                    descriptor.state = scopeone::core::HardwareDeviceState::Initialized;
+                    successCount++;
+                }
+                result.devices.append(descriptor);
+            }
+            catch (const CMMError& error)
+            {
+                failCount++;
+                result.failedDevices.append(deviceName);
+                qWarning().noquote()
+                    << QString("Failed to inspect device '%1': %2")
+                    .arg(deviceName, QString::fromStdString(error.getMsg()));
+            }
+        }
+
+        if (!useSingleCamera)
+        {
+            for (const auto& ci : cameraInfos)
+            {
+                try
+                {
+                    const std::vector<std::string> current = m_core->getLoadedDevices();
+                    const bool stillLoaded =
+                        std::find(current.begin(), current.end(), ci.cameraId.toStdString()) != current.end();
+                    if (stillLoaded)
+                    {
+                        m_core->unloadDevice(ci.cameraId.toStdString().c_str());
+                    }
+                }
+                catch (const CMMError&)
+                {
+                }
+            }
+        }
+
+        result.cameras = cameraInfos;
+        result.successCount = successCount;
+        result.failCount = failCount;
+        result.skippedCameraCount = skippedCameraCount;
+        result.foundCamera = !cameraInfos.isEmpty();
+        result.useSingleCamera = useSingleCamera;
+        return true;
+    }
+
+    bool MicroManagerProvider::unloadDevices(QString* errorMessage)
+    {
+        try
+        {
+            m_core->unloadAllDevices();
+            return true;
+        }
+        catch (const CMMError& error)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QString::fromStdString(error.getMsg());
+            }
+            return false;
+        }
+    }
+
+    // Applies the System/Shutdown preset of the configuration, which puts the hardware in a
+    // safe state before the devices are released
+    void MicroManagerProvider::applyShutdownPreset()
+    {
+        try
+        {
+            if (!m_core->isConfigDefined(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown))
+            {
+                return;
+            }
+        }
+        catch (const CMMError& error)
+        {
+            qWarning().noquote() << QStringLiteral("Failed to inspect System/Shutdown preset: %1")
+                                        .arg(QString::fromStdString(error.getMsg()));
+            return;
+        }
+        setConfig(MM::g_CFGGroup_System, MM::g_CFGGroup_System_Shutdown, nullptr);
+    }
+
+} // namespace scopeone::core::internal
