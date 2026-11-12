@@ -324,6 +324,15 @@ namespace scopeone::ui
                         index == 1 ? PreviewWidget::LayerLayoutMode::Overlay
                                    : PreviewWidget::LayerLayoutMode::SideBySide);
                 });
+        m_linkAction = m_viewerToolbar->addAction(tr("Link"));
+        m_linkAction->setCheckable(true);
+        m_linkAction->setToolTip(tr("Zoom, move and step through the slices of all tiles of Grid View together"));
+        connect(m_linkAction, &QAction::toggled, this,
+                [this](bool linked)
+                {
+                    m_livePreviewWidget->setViewLinked(linked);
+                    updateViewerToolbar();
+                });
 
         m_viewerToolbar->addSeparator();
         m_dimensionAction = m_viewerToolbar->addAction(tr("3D Surface"));
@@ -370,6 +379,12 @@ namespace scopeone::ui
             const QSignalBlocker blocker(m_layoutCombo);
             m_layoutCombo->setCurrentIndex(
                 preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::Overlay ? 1 : 0);
+        }
+        {
+            const QSignalBlocker blocker(m_linkAction);
+            m_linkAction->setChecked(preview->isViewLinked());
+            m_linkAction->setEnabled(
+                preview->layerLayoutMode() == PreviewWidget::LayerLayoutMode::SideBySide);
         }
         {
             const QSignalBlocker blocker(m_dimensionAction);

@@ -75,6 +75,9 @@ namespace scopeone::ui
         void setLayerFrameRates(const QMap<QString, double>& frameRates);
         void setLayerLayoutMode(LayerLayoutMode mode);
         LayerLayoutMode layerLayoutMode() const;
+        // In Grid View, linked tiles share one zoom, position and slice and show the cursor of each other
+        void setViewLinked(bool linked);
+        bool isViewLinked() const { return m_viewLinked; }
         void setAvailableCameraIds(const QStringList& cameraIds);
         QString setGraphStaticLayerFrame(const QString& layerId,
                                          const scopeone::core::ImageFrame& frame);
@@ -284,6 +287,8 @@ signals:
         QSet<QString> m_staticSourceIds;
         QSet<QString> m_toolSourceIds;
         LayerLayoutMode m_layerLayoutMode{LayerLayoutMode::SideBySide};
+        bool m_viewLinked{true};
+        ViewportState m_linkedViewportState;
         QMap<QString, double> m_layerFps;
         QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
@@ -331,6 +336,8 @@ signals:
         QCheckBox* m_compositeCheck{nullptr};
         bool activeStackShape(scopeone::core::StackShape& shape) const;
         void onAxisSliderChanged();
+        QString sliceAxes(const QString& layerKey, int sizes[3]) const;
+        void followActiveSlice();
         QSlider* m_axisSliders[3]{nullptr, nullptr, nullptr};
         QLabel* m_axisLabels[3]{nullptr, nullptr, nullptr};
         float m_zScale{1.0f};
@@ -434,6 +441,7 @@ signals:
         void drawActiveInteractionMarkup(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawScaleBar(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         void drawTileLabelsAndBadges(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
+        void drawLinkedCursor(QPainter& painter, const std::vector<RenderItem>& renderItems) const;
         bool markupAtWidgetPosition(const QPoint& widgetPos,
                                     ImageSceneModel::Markup& outMarkup,
                                     PreviewInteractionTarget& outTarget,

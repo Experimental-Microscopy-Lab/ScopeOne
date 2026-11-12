@@ -160,6 +160,7 @@ namespace scopeone::ui
         QAction* m_dimensionAction{nullptr};
         QAction* m_reset3dAction{nullptr};
         QComboBox* m_layoutCombo{nullptr};
+        QAction* m_linkAction{nullptr};
         QComboBox* m_zoomCombo{nullptr};
         PreviewWidget* m_livePreviewWidget{nullptr};
         std::vector<std::unique_ptr<Document>> m_documents;

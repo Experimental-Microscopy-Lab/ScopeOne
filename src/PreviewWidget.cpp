@@ -3,6 +3,7 @@
 
 #include "scopeone/ImageSceneModel.h"
 #include "scopeone/ScopeOneCore.h"
+#include <QCursor>
 #include <QDebug>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -330,6 +331,7 @@ namespace scopeone::ui
                     m_layerSliceIndices[m_activeLayerKey] = index;
                     m_sliceLabel->setText(sliceLabelText(index + 1, m_sliceBar->width() < 260));
                     emit layerSliceIndexRequested(m_activeLayerKey, index);
+                    followActiveSlice();
                 });
         connect(m_slicePlayButton, &QPushButton::toggled,
                 this, [this](bool enabled)
@@ -483,6 +485,31 @@ namespace scopeone::ui
         return m_layerLayoutMode;
     }
 
+    void PreviewWidget::setViewLinked(bool linked)
+    {
+        if (m_viewLinked == linked)
+        {
+            return;
+        }
+        // The active tile keeps its view: linking starts all tiles from it, unlinking leaves each
+        // tile where the linked view was
+        const QString controlKey = viewportControlLayerKey();
+        if (linked)
+        {
+            m_linkedViewportState = m_viewportStates.value(controlKey);
+        }
+        else
+        {
+            for (const QString& key : visibleLayerKeys())
+            {
+                m_viewportStates[key] = m_linkedViewportState;
+            }
+        }
+        m_viewLinked = linked;
+        followActiveSlice();
+        update();
+    }
+
     // Replaces the available camera list and keeps valid visible layers
     void PreviewWidget::setAvailableCameraIds(const QStringList& cameraIds)
     {
@@ -619,6 +646,84 @@ namespace scopeone::ui
         }
         m_layerSliceIndices[m_activeLayerKey] = index;
         emit layerSliceIndexRequested(m_activeLayerKey, index);
+        followActiveSlice();
+    }
+
+    // The sizes of the axes C, Z and T of a layer and their order from the slowest to the fastest.
+    // A layer whose shape is not known is taken as a series in time.
+    QString PreviewWidget::sliceAxes(const QString& layerKey, int sizes[3]) const
+    {
+        const int sliceCount = m_layerSliceCounts.value(layerKey, 1);
+        const auto found = m_layerStackShapes.constFind(layerKey);
+        if (found != m_layerStackShapes.constEnd()
+            && found->channels * found->slices * found->frames == sliceCount)
+        {
+            sizes[0] = found->channels;
+            sizes[1] = found->slices;
+            sizes[2] = found->frames;
+            return found->order;
+        }
+        sizes[0] = 1;
+        sizes[1] = 1;
+        sizes[2] = sliceCount;
+        return QStringLiteral("T");
+    }
+
+    // With linked tiles, the other stacks go to the channel, Z and time of the active layer on
+    // each axis that both have
+    void PreviewWidget::followActiveSlice()
+    {
+        if (!m_viewLinked || m_layerLayoutMode != LayerLayoutMode::SideBySide)
+        {
+            return;
+        }
+        const auto axisOf = [](QChar letter)
+        {
+            return letter == QLatin1Char('C') ? 0 : (letter == QLatin1Char('Z') ? 1 : 2);
+        };
+        const auto split = [&axisOf](const QString& order, const int sizes[3], int index, int position[3])
+        {
+            for (int i = order.size() - 1; i >= 0; --i)
+            {
+                const int axis = axisOf(order.at(i));
+                position[axis] = index % sizes[axis];
+                index /= sizes[axis];
+            }
+        };
+
+        int sizes[3];
+        const QString order = sliceAxes(m_activeLayerKey, sizes);
+        int position[3]{0, 0, 0};
+        split(order, sizes, m_layerSliceIndices.value(m_activeLayerKey), position);
+        for (const QString& key : visibleLayerKeys())
+        {
+            if (key == m_activeLayerKey || m_layerSliceCounts.value(key, 1) <= 1)
+            {
+                continue;
+            }
+            int targetSizes[3];
+            const QString targetOrder = sliceAxes(key, targetSizes);
+            int target[3]{0, 0, 0};
+            split(targetOrder, targetSizes, m_layerSliceIndices.value(key), target);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                if (sizes[axis] > 1 && targetSizes[axis] > 1)
+                {
+                    target[axis] = std::min(position[axis], targetSizes[axis] - 1);
+                }
+            }
+            int index = 0;
+            for (const QChar letter : targetOrder)
+            {
+                const int axis = axisOf(letter);
+                index = index * targetSizes[axis] + target[axis];
+            }
+            if (index != m_layerSliceIndices.value(key))
+            {
+                m_layerSliceIndices[key] = index;
+                emit layerSliceIndexRequested(key, index);
+            }
+        }
     }
 
     void PreviewWidget::setLayerSliceCount(const QString& layerKey, int sliceCount)
@@ -1003,6 +1108,10 @@ namespace scopeone::ui
         {
             return m_overlayViewportState;
         }
+        if (m_viewLinked)
+        {
+            return m_linkedViewportState;
+        }
         return m_viewportStates[layerKey];
     }
 
@@ -1011,6 +1120,10 @@ namespace scopeone::ui
         if (m_layerLayoutMode == LayerLayoutMode::Overlay)
         {
             return m_overlayViewportState;
+        }
+        if (m_viewLinked)
+        {
+            return m_linkedViewportState;
         }
         return m_viewportStates.value(layerKey);
     }
@@ -1890,6 +2003,73 @@ namespace scopeone::ui
             painter.restore();
             drawnAreas.insert(item.area);
         }
+    }
+
+    // Marks, in the other linked tiles, the image pixel under the cursor
+    void PreviewWidget::drawLinkedCursor(QPainter& painter, const std::vector<RenderItem>& renderItems) const
+    {
+        if (!m_viewLinked || m_layerLayoutMode != LayerLayoutMode::SideBySide || !underMouse())
+        {
+            return;
+        }
+        struct Tile
+        {
+            QRect area;
+            QRect displayRect;
+            QSize imageSize;
+        };
+        std::vector<Tile> tiles;
+        for (const RenderItem& item : renderItems)
+        {
+            Tile tile{item.area, {}, {}};
+            if (resolveDisplayGeometry(*item.info->frameState, item.processed, item.layerKey,
+                                       item.area, tile.displayRect, tile.imageSize))
+            {
+                tiles.push_back(tile);
+            }
+        }
+        const QPoint cursor = mapFromGlobal(QCursor::pos());
+        const auto hovered = std::find_if(tiles.begin(), tiles.end(), [&cursor](const Tile& tile)
+        {
+            return tile.area.contains(cursor) && tile.displayRect.contains(cursor);
+        });
+        if (hovered == tiles.end())
+        {
+            return;
+        }
+        const QPointF pixel(
+            (cursor.x() - hovered->displayRect.x()) * hovered->imageSize.width()
+                / static_cast<double>(hovered->displayRect.width()),
+            (cursor.y() - hovered->displayRect.y()) * hovered->imageSize.height()
+                / static_cast<double>(hovered->displayRect.height()));
+
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        for (const Tile& tile : tiles)
+        {
+            if (tile.area == hovered->area)
+            {
+                continue;
+            }
+            const QPoint mark(
+                tile.displayRect.x() + qRound(pixel.x() * tile.displayRect.width() / tile.imageSize.width()),
+                tile.displayRect.y() + qRound(pixel.y() * tile.displayRect.height() / tile.imageSize.height()));
+            if (!tile.area.contains(mark))
+            {
+                continue;
+            }
+            painter.setClipRect(tile.area);
+            for (const QColor& color : {QColor(0, 0, 0, 160), QColor(0, 200, 255)})
+            {
+                const int width = color.alpha() == 255 ? 1 : 3;
+                painter.setPen(QPen(color, width));
+                painter.drawLine(mark.x() - 10, mark.y(), mark.x() - 3, mark.y());
+                painter.drawLine(mark.x() + 3, mark.y(), mark.x() + 10, mark.y());
+                painter.drawLine(mark.x(), mark.y() - 10, mark.x(), mark.y() - 3);
+                painter.drawLine(mark.x(), mark.y() + 3, mark.x(), mark.y() + 10);
+            }
+        }
+        painter.restore();
     }
 
     // Draws tile names and active border outlines in Grid View
@@ -2976,6 +3156,7 @@ namespace scopeone::ui
                     drawScaleBar(p, flatItems);
                 }
                 drawTileLabelsAndBadges(p, flatItems);
+                drawLinkedCursor(p, flatItems);
                 drawSurfaceTileLabels(p, surfaceItems, tr("3D: %1"));
                 if (m_threeDimensionalColorbarVisible)
                 {
@@ -3066,6 +3247,7 @@ namespace scopeone::ui
                 drawScaleBar(p, renderItems);
             }
             drawTileLabelsAndBadges(p, renderItems);
+            drawLinkedCursor(p, renderItems);
             return;
         }
 
