@@ -7,6 +7,7 @@
 #include <QReadWriteLock>
 #include <QString>
 
+#include <atomic>
 #include <memory>
 
 #include "scopeone/Device.h"
@@ -74,10 +75,9 @@ namespace scopeone::core::internal
     public:
         explicit HardwareRuntime(QObject* parent = nullptr);
 
-        bool startPreview();
-        bool stopPreview();
-        bool startPreviewFor(const QString& cameraId);
-        bool stopPreviewFor(const QString& cameraId);
+        // One camera, or all cameras for "All"
+        bool startPreview(const QString& cameraIdOrAll);
+        bool stopPreview(const QString& cameraIdOrAll);
         bool isPreviewRunning(const QString& cameraId) const;
         bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;
         bool setExposure(const QString& cameraIdOrAll, double exposureMs);
@@ -104,14 +104,14 @@ namespace scopeone::core::internal
                     int& y,
                     int& width,
                     int& height);
-        bool captureEventFrame(const QString& cameraId,
-                               ImageFrame& frame,
-                               int timeoutMs = 1500);
-        bool supportsEventSequence(const QString& cameraId) const;
-        bool captureEventSequence(const QString& cameraId,
-                                  int count,
-                                  std::vector<ImageFrame>& frames,
-                                  int timeoutMs = 10000);
+        bool snap(const QString& cameraId,
+                  ImageFrame& frame,
+                  int timeoutMs = 1500);
+        bool supportsSequence(const QString& cameraId) const;
+        bool snapSequence(const QString& cameraId,
+                          int count,
+                          std::vector<ImageFrame>& frames,
+                          int timeoutMs = 10000);
         void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused);
         bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
                                               bool enabled);
@@ -179,10 +179,13 @@ namespace scopeone::core::internal
         bool setConfigGroupProperties(const QString& group, const QList<ConfigSetting>& properties,
                                       QString* errorMessage = nullptr);
         void applyScopeOneStartupPreset();
-        void applyScopeOneAutoShutter();
+        // Sets the roles of MMCore after a load. Core opens and closes the shutter around the
+        // images itself, so the AutoShutter of MMCore is off.
+        void applyCoreRoles();
 
-        bool autoShutter(bool& enabled, QString* errorMessage = nullptr) const;
-        bool setAutoShutter(bool enabled, QString* errorMessage = nullptr);
+        bool autoShutter() const { return m_autoShutter; }
+        void setAutoShutter(bool enabled) { m_autoShutter = enabled; }
+        QString defaultShutter() const;
         // Opens or closes the shutter that lights the sample for the cameras
         bool setDefaultShutterOpen(bool open, QString* errorMessage = nullptr);
         bool hasAutofocus() const;
@@ -250,9 +253,13 @@ namespace scopeone::core::internal
                                    QString* errorMessage) const;
         Camera* cameraForDevice(const QString& logicalId) const;
         Device* propertyDeviceForDevice(const QString& logicalId) const;
-        Stage* stageForDevice(const QString& logicalId) const;
+        XYStage* xyStageForDevice(const QString& logicalId) const;
+        ZStage* zStageForDevice(const QString& logicalId) const;
         Shutter* shutterForDevice(const QString& logicalId) const;
         Shutter* configuredShutter(QString* deviceId) const;
+        Autofocus* configuredAutofocus(QString* deviceId) const;
+        QString roleDevice(const QString& role, const QString& configured, HardwareDeviceKind kind) const;
+        bool anyCameraRunning() const;
         StateDevice* stateDeviceForDevice(const QString& logicalId) const;
         std::vector<ScopeOneConfigGroupLine> scopeOneConfigLines() const;
         bool applyScopeOnePreset(const QString& groupName, const QString& configName, QString* errorMessage);
@@ -265,10 +272,11 @@ namespace scopeone::core::internal
         ScopeOneProvider m_scopeOne;
         QString m_configurationPath;
         QString m_cameraRole;
+        QString m_xyStageRole;
         QString m_focusRole;
         QString m_shutterRole;
-        QString m_autoShutterRole;
-        bool m_scopeOneShutter{false};
+        QString m_autofocusRole;
+        std::atomic<bool> m_autoShutter{true};
         SignalSourceManager* m_signalSourceManager{nullptr};
         DaqDeviceManager* m_daqDeviceManager{nullptr};
 

@@ -8,7 +8,8 @@ namespace scopeone::core
 {
     Device::~Device() = default;
     Hub::~Hub() = default;
-    Stage::~Stage() = default;
+    XYStage::~XYStage() = default;
+    ZStage::~ZStage() = default;
     Shutter::~Shutter() = default;
     Autofocus::~Autofocus() = default;
     StateDevice::~StateDevice() = default;

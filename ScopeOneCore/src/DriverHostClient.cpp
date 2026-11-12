@@ -338,8 +338,8 @@ namespace scopeone::core::internal
                 daqDevices.append(daq);
             }
             // Everything downstream of the description reads logical ids. The cameras kept the ids
-            // of the driver here, so the event sequence and pixel size of a renamed camera were
-            // looked up under the wrong id.
+            // of the driver here, so the sequence acquisition of a renamed camera was looked up
+            // under the wrong id.
             QJsonArray logicalDevices;
             for (const QJsonValue& value : deviceArray)
             {
@@ -349,11 +349,6 @@ namespace scopeone::core::internal
                 logicalDevices.append(object);
             }
             response.insert(driverhost::kDevicesField, logicalDevices);
-            for (const QString& field : {driverhost::kDefaultXYStageField, driverhost::kDefaultZStageField,
-                                         driverhost::kDefaultShutterField, driverhost::kDefaultAutofocusField})
-            {
-                response.insert(field, m_devices.toLogical(response.value(field).toString()));
-            }
             // The camera rings are attached now, so DriverHost can remove their names
             QStringList keys;
             for (const auto& reader : std::as_const(m_readers))
@@ -389,10 +384,10 @@ namespace scopeone::core::internal
 
         // The images wait in DriverHost and come over a part at a time, as the frame ring holds
         // fewer images than a sequence can have
-        bool captureEventSequence(const QString& cameraId,
-                                  int count,
-                                  std::vector<ImageFrame>& frames,
-                                  int timeoutMs)
+        bool snapSequence(const QString& cameraId,
+                          int count,
+                          std::vector<ImageFrame>& frames,
+                          int timeoutMs)
         {
             constexpr int kImagesPerPart = 16;
             auto it = m_readers.find(cameraId);
@@ -402,7 +397,7 @@ namespace scopeone::core::internal
             }
             QList<ImageFrame> discarded;
             readLatest(*it.value(), discarded);
-            QJsonObject request{{driverhost::kMessageTypeField, driverhost::kCommandCaptureEventSequence},
+            QJsonObject request{{driverhost::kMessageTypeField, driverhost::kCommandSnapSequence},
                                 {driverhost::kDeviceIdField, cameraId},
                                 {QStringLiteral("count"), count},
                                 {QStringLiteral("timeoutMs"), timeoutMs}};
@@ -417,7 +412,7 @@ namespace scopeone::core::internal
             for (int first = 0; first < count; first += kImagesPerPart)
             {
                 const int partCount = (std::min)(kImagesPerPart, count - first);
-                QJsonObject part{{driverhost::kMessageTypeField, driverhost::kCommandSendEventFrames},
+                QJsonObject part{{driverhost::kMessageTypeField, driverhost::kCommandSendSequenceFrames},
                                  {driverhost::kDeviceIdField, cameraId},
                                  {QStringLiteral("first"), first},
                                  {QStringLiteral("count"), partCount}};
@@ -612,10 +607,10 @@ namespace scopeone::core::internal
             }
         }
 
-        bool captureEventFrame(const QString& cameraId,
-                               ImageFrame& frame,
-                               int timeoutMs,
-                               QString* errorMessage)
+        bool snap(const QString& cameraId,
+                  ImageFrame& frame,
+                  int timeoutMs,
+                  QString* errorMessage)
         {
             auto it = m_readers.find(cameraId);
             if (it == m_readers.end() || !ensureSharedMemory(*it.value()))
@@ -628,7 +623,7 @@ namespace scopeone::core::internal
             const quint64 previousIndex = it.value()->lastFrameIndex;
 
             QJsonObject request;
-            request.insert(driverhost::kMessageTypeField, driverhost::kCommandCaptureEvent);
+            request.insert(driverhost::kMessageTypeField, driverhost::kCommandSnap);
             request.insert(driverhost::kDeviceIdField, cameraId);
             QJsonObject response;
             const int waitMs = (std::max)(1, timeoutMs);
@@ -979,15 +974,14 @@ namespace scopeone::core::internal
             QHash<QString, QString> toDriverId;
             QHash<QString, QString> toLogicalId;
 
-            // An empty logical id keeps the id of the driver
+            // An empty logical id keeps the id of the driver. A device without peripherals has the
+            // empty id, which is mapped too, as the frame notices and preview states of its camera
+            // carry it and were otherwise not matched to the camera.
             QString add(const QString& driverId, const QString& name)
             {
                 const QString logicalId = name.isEmpty() ? driverId : name;
                 toDriverId.insert(logicalId, driverId);
-                if (!driverId.isEmpty())
-                {
-                    toLogicalId.insert(driverId, logicalId);
-                }
+                toLogicalId.insert(driverId, logicalId);
                 return logicalId;
             }
             QString toDriver(const QString& id) const { return toDriverId.value(id, id); }
@@ -1106,7 +1100,8 @@ namespace scopeone::core::internal
     class DriverHostClient final : public QObject,
                                    public Device,
                                    public Camera,
-                                   public Stage,
+                                   public XYStage,
+                                   public ZStage,
                                    public Shutter,
                                    public Autofocus,
                                    public StateDevice,
@@ -1180,21 +1175,13 @@ namespace scopeone::core::internal
                                                      m_daqDevices,
                                                      description,
                                                      &error);
-                    m_defaultXYStage = description.value(driverhost::kDefaultXYStageField).toString();
-                    m_defaultZStage = description.value(driverhost::kDefaultZStageField).toString();
-                    m_defaultShutter = description.value(driverhost::kDefaultShutterField).toString();
-                    m_defaultAutofocus = description.value(driverhost::kDefaultAutofocusField).toString();
                     for (const QJsonValue& value : description.value(driverhost::kDevicesField).toArray())
                     {
                         const QJsonObject device = value.toObject();
                         const QString deviceId = device.value(driverhost::kDeviceIdField).toString();
-                        if (device.value(driverhost::kEventSequenceField).toBool())
+                        if (device.value(driverhost::kSequenceField).toBool())
                         {
                             m_sequenceCameras.insert(deviceId);
-                        }
-                        if (device.contains(driverhost::kPixelSizeField))
-                        {
-                            m_pixelSizes.insert(deviceId, device.value(driverhost::kPixelSizeField).toDouble());
                         }
                     }
                 },
@@ -1291,7 +1278,7 @@ namespace scopeone::core::internal
             m_previewStateSink = std::move(sink);
         }
 
-        bool startPreviewFor(const QString& cameraId) override
+        bool startPreview(const QString& cameraId) override
         {
             if (!isCamera(cameraId)) return false;
             if (isPreviewRunning(cameraId)) return true;
@@ -1305,7 +1292,7 @@ namespace scopeone::core::internal
             return true;
         }
 
-        bool stopPreviewFor(const QString& cameraId) override
+        bool stopPreview(const QString& cameraId) override
         {
             if (!isCamera(cameraId)) return false;
             if (!isPreviewRunning(cameraId)) return true;
@@ -1417,10 +1404,6 @@ namespace scopeone::core::internal
                 QMutexLocker locker(&m_stateMutex);
                 m_propertyValues.insert(deviceId.trimmed() + QLatin1Char('\n') + name, value);
             }
-            if (ok && isCamera(deviceId))
-            {
-                refreshPixelSizes({deviceId.trimmed()});
-            }
             return ok;
         }
 
@@ -1475,23 +1458,13 @@ namespace scopeone::core::internal
             fields.insert(QStringLiteral("width"), width);
             fields.insert(QStringLiteral("height"), height);
             QJsonObject response;
-            const bool ok = request(driverhost::kCommandSetRoi, cameraId, fields, response, nullptr);
-            if (ok)
-            {
-                refreshPixelSizes({cameraId.trimmed()});
-            }
-            return ok;
+            return request(driverhost::kCommandSetRoi, cameraId, fields, response, nullptr);
         }
 
         bool clearROI(const QString& cameraId) override
         {
             QJsonObject response;
-            const bool ok = request(driverhost::kCommandClearRoi, cameraId, {}, response, nullptr);
-            if (ok)
-            {
-                refreshPixelSizes({cameraId.trimmed()});
-            }
-            return ok;
+            return request(driverhost::kCommandClearRoi, cameraId, {}, response, nullptr);
         }
 
         bool getROI(const QString& cameraId,
@@ -1516,29 +1489,29 @@ namespace scopeone::core::internal
             return true;
         }
 
-        bool captureEventFrame(const QString& cameraId,
-                               ImageFrame& frame,
-                               int timeoutMs) override
+        bool snap(const QString& cameraId,
+                  ImageFrame& frame,
+                  int timeoutMs) override
         {
             QMutexLocker requestLocker(&m_requestMutex);
             bool ok = false;
             DriverHostTransport* const worker = m_worker;
             runOnWorker([worker, &ok, &frame, cameraId, timeoutMs]()
             {
-                ok = worker->captureEventFrame(cameraId, frame, (std::max)(1, timeoutMs), nullptr);
+                ok = worker->snap(cameraId, frame, (std::max)(1, timeoutMs), nullptr);
             });
             return ok;
         }
 
-        bool supportsEventSequence(const QString& cameraId) const override
+        bool supportsSequence(const QString& cameraId) const override
         {
             return m_sequenceCameras.contains(cameraId.trimmed());
         }
 
-        bool captureEventSequence(const QString& cameraId,
-                                  int count,
-                                  std::vector<ImageFrame>& frames,
-                                  int timeoutMs) override
+        bool snapSequence(const QString& cameraId,
+                          int count,
+                          std::vector<ImageFrame>& frames,
+                          int timeoutMs) override
         {
             QMutexLocker requestLocker(&m_requestMutex);
             bool ok = false;
@@ -1546,16 +1519,9 @@ namespace scopeone::core::internal
             const QString id = cameraId.trimmed();
             runOnWorker([worker, &ok, &frames, id, count, timeoutMs]()
             {
-                ok = worker->captureEventSequence(id, count, frames, (std::max)(1, timeoutMs));
+                ok = worker->snapSequence(id, count, frames, (std::max)(1, timeoutMs));
             });
             return ok;
-        }
-
-        // Read on the GUI thread whenever the scale bar is drawn, so it never waits for DriverHost
-        double pixelSizeUm(const QString& cameraId) const override
-        {
-            QMutexLocker locker(&m_stateMutex);
-            return m_pixelSizes.value(cameraId.trimmed());
         }
 
         long propertySequenceCapacity(const QString& deviceId, const QString& name) override
@@ -1586,9 +1552,6 @@ namespace scopeone::core::internal
                     {{QStringLiteral("name"), name}}, response, nullptr);
         }
 
-        QString defaultXYStage() const override { return m_defaultXYStage; }
-        QString defaultZStage() const override { return m_defaultZStage; }
-
         long stageSequenceCapacity(const QString& deviceId) const override
         {
             QJsonObject response;
@@ -1616,24 +1579,6 @@ namespace scopeone::core::internal
             QJsonObject response;
             request(driverhost::kCommandStopStageSequence, deviceId, {}, response, nullptr);
         }
-
-        QString defaultShutter() const override { return m_defaultShutter; }
-
-        bool autoShutter() const override
-        {
-            QJsonObject response;
-            return request(driverhost::kCommandGetAutoShutter, {}, {}, response, nullptr)
-                && response.value(QStringLiteral("enabled")).toBool();
-        }
-
-        bool setAutoShutter(bool enabled, QString* errorMessage) override
-        {
-            QJsonObject response;
-            return request(driverhost::kCommandSetAutoShutter, {},
-                           {{QStringLiteral("enabled"), enabled}}, response, errorMessage);
-        }
-
-        QString defaultAutofocus() const override { return m_defaultAutofocus; }
 
         // An autofocus can search for longer than a usual request may take
         bool runAutofocus(const QString& deviceId, QString* errorMessage) override
@@ -1787,12 +1732,7 @@ namespace scopeone::core::internal
             QJsonObject fields;
             fields.insert(QStringLiteral("state"), static_cast<double>(state));
             QJsonObject response;
-            const bool ok = request(driverhost::kCommandSetState, deviceId, fields, response, errorMessage);
-            if (ok)
-            {
-                refreshPixelSizes(cameraIds());
-            }
-            return ok;
+            return request(driverhost::kCommandSetState, deviceId, fields, response, errorMessage);
         }
 
         QString stateLabel(const QString& deviceId, long state) const override
@@ -1877,31 +1817,6 @@ namespace scopeone::core::internal
             QMutexLocker locker(&m_stateMutex);
             m_propertyDetails.insert(key, response);
             return response;
-        }
-
-        QStringList cameraIds() const
-        {
-            QStringList result;
-            for (const HardwareDeviceDescriptor& device : m_devices)
-            {
-                if (device.kind == HardwareDeviceKind::Camera) result.append(device.logicalId);
-            }
-            return result;
-        }
-
-        // A setting such as the binning or the objective changes the pixel size, which is read
-        // again after it
-        void refreshPixelSizes(const QStringList& cameraIds)
-        {
-            for (const QString& cameraId : cameraIds)
-            {
-                QJsonObject response;
-                if (request(driverhost::kCommandGetPixelSize, cameraId, {}, response, nullptr))
-                {
-                    QMutexLocker locker(&m_stateMutex);
-                    m_pixelSizes.insert(cameraId, response.value(driverhost::kPixelSizeField).toDouble());
-                }
-            }
         }
 
         void clearPropertyDetails()
@@ -2010,10 +1925,6 @@ namespace scopeone::core::internal
         QStringList m_arguments;
         HardwareProviderDescriptor m_descriptor;
         QList<HardwareDeviceDescriptor> m_devices;
-        QString m_defaultXYStage;
-        QString m_defaultZStage;
-        QString m_defaultShutter;
-        QString m_defaultAutofocus;
         QSet<QString> m_sequenceCameras;
         QThread m_workerThread;
         DriverHostTransport* m_worker{nullptr};
@@ -2031,7 +1942,6 @@ namespace scopeone::core::internal
         QSet<QString> m_runningCameras;
         QHash<QString, QJsonObject> m_propertyDetails;
         QHash<QString, QString> m_propertyValues;
-        QHash<QString, double> m_pixelSizes;
     };
 
     DevicePtr createScopeOneDevice(const QString& label,

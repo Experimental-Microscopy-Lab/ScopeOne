@@ -346,7 +346,9 @@ namespace scopeone::ui
         const QList<std::pair<QString, HardwareDeviceKind>> deviceRoles{
             {QStringLiteral("Camera"), HardwareDeviceKind::Camera},
             {QStringLiteral("Shutter"), HardwareDeviceKind::Shutter},
-            {QStringLiteral("Focus"), HardwareDeviceKind::ZStage}};
+            {QStringLiteral("Focus"), HardwareDeviceKind::ZStage},
+            {QStringLiteral("XYStage"), HardwareDeviceKind::XYStage},
+            {QStringLiteral("AutoFocus"), HardwareDeviceKind::AutoFocus}};
         for (const auto& [role, kind] : deviceRoles)
         {
             auto* combo = new QComboBox(roles);

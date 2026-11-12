@@ -471,7 +471,7 @@ namespace scopeone::core::internal
         return cameraId.trimmed() == m_cameraId;
     }
 
-    bool MicroManagerCamera::startPreviewFor(const QString& cameraId)
+    bool MicroManagerCamera::startPreview(const QString& cameraId)
     {
         if (!matches(cameraId))
         {
@@ -489,7 +489,7 @@ namespace scopeone::core::internal
         return true;
     }
 
-    bool MicroManagerCamera::stopPreviewFor(const QString& cameraId)
+    bool MicroManagerCamera::stopPreview(const QString& cameraId)
     {
         if (!matches(cameraId))
         {
@@ -637,7 +637,7 @@ namespace scopeone::core::internal
         return frame.isValid();
     }
 
-    bool MicroManagerCamera::captureEventFrame(const QString& cameraId, ImageFrame& frame, int)
+    bool MicroManagerCamera::snap(const QString& cameraId, ImageFrame& frame, int)
     {
         if (!matches(cameraId))
         {
@@ -657,7 +657,7 @@ namespace scopeone::core::internal
         }
     }
 
-    bool MicroManagerCamera::supportsEventSequence(const QString& cameraId) const
+    bool MicroManagerCamera::supportsSequence(const QString& cameraId) const
     {
         return matches(cameraId);
     }
@@ -665,10 +665,10 @@ namespace scopeone::core::internal
     // Takes a series of images in one sequence acquisition of the camera. The images come from the
     // circular buffer of the core, so the camera times them itself and can trigger a stage that
     // steps through a sequence of positions.
-    bool MicroManagerCamera::captureEventSequence(const QString& cameraId,
-                                                  int count,
-                                                  std::vector<ImageFrame>& frames,
-                                                  int timeoutMs)
+    bool MicroManagerCamera::snapSequence(const QString& cameraId,
+                                          int count,
+                                          std::vector<ImageFrame>& frames,
+                                          int timeoutMs)
     {
         frames.clear();
         if (!matches(cameraId) || count < 1)
@@ -779,12 +779,12 @@ namespace scopeone::core::internal
     static bool applyStopped(MicroManagerCamera& camera, Change&& change)
     {
         const bool wasRunning = camera.isPreviewRunning(camera.cameraId());
-        if (wasRunning && !camera.stopPreviewFor(camera.cameraId()))
+        if (wasRunning && !camera.stopPreview(camera.cameraId()))
         {
             return false;
         }
         const bool ok = change();
-        if (wasRunning && !camera.startPreviewFor(camera.cameraId()))
+        if (wasRunning && !camera.startPreview(camera.cameraId()))
         {
             return false;
         }

@@ -1927,7 +1927,7 @@ namespace scopeone::core
                 startup->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
                                                      [runtime]() {
                                                          runtime->applyScopeOneStartupPreset();
-                                                         runtime->applyScopeOneAutoShutter();
+                                                         runtime->applyCoreRoles();
                                                      }));
             }
             else
@@ -2093,10 +2093,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
-        const bool started = all
-                                 ? m_managers->hardwareRuntime->startPreview()
-                                 : m_managers->hardwareRuntime->startPreviewFor(target);
+        const bool started = m_managers->hardwareRuntime->startPreview(target);
         if (started)
         {
             emit previewStateChanged(true);
@@ -2112,10 +2109,7 @@ namespace scopeone::core
         {
             return false;
         }
-        const bool all = target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0;
-        const bool stopped = all
-                                 ? m_managers->hardwareRuntime->stopPreview()
-                                 : m_managers->hardwareRuntime->stopPreviewFor(target);
+        const bool stopped = m_managers->hardwareRuntime->stopPreview(target);
         if (stopped)
         {
             emit previewStateChanged(!runningPreviewCameraIds().isEmpty());

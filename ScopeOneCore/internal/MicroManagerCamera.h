@@ -68,20 +68,20 @@ namespace scopeone::core::internal
         // an event capture stopped
         void setFrameDeliveryPaused(bool paused);
 
-        bool startPreviewFor(const QString& cameraId) override;
-        bool stopPreviewFor(const QString& cameraId) override;
+        bool startPreview(const QString& cameraId) override;
+        bool stopPreview(const QString& cameraId) override;
         bool isPreviewRunning(const QString& cameraId) const override;
         bool getExposure(const QString& cameraId, double& exposureMs) const override;
         bool setExposure(const QString& cameraId, double exposureMs) override;
         bool setROI(const QString& cameraId, int x, int y, int width, int height) override;
         bool clearROI(const QString& cameraId) override;
         bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height) override;
-        bool captureEventFrame(const QString& cameraId, ImageFrame& frame, int timeoutMs) override;
-        bool supportsEventSequence(const QString& cameraId) const override;
-        bool captureEventSequence(const QString& cameraId,
-                                  int count,
-                                  std::vector<ImageFrame>& frames,
-                                  int timeoutMs) override;
+        bool snap(const QString& cameraId, ImageFrame& frame, int timeoutMs) override;
+        bool supportsSequence(const QString& cameraId) const override;
+        bool snapSequence(const QString& cameraId,
+                          int count,
+                          std::vector<ImageFrame>& frames,
+                          int timeoutMs) override;
 
         QStringList listProperties(const QString& deviceId) override;
         QString getProperty(const QString& deviceId, const QString& name, bool fromCache) override;

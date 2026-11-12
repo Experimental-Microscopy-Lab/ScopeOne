@@ -51,9 +51,7 @@ and carry `providerId`.
 ## Describe and shutdown
 
 `Describe` returns `providerId`, `providerName`, `providerVersion`, `devices`, `signalSources`
-and `daqDevices`, for a provider with stages `defaultXYStage` and `defaultZStage`, for one with
-shutters `defaultShutter`, the shutter that lights the sample for its cameras, and for one with an
-autofocus `defaultAutofocus`.
+and `daqDevices`.
 `signalSources` and `daqDevices` hold the JSON form of `SignalSourceDescriptor` and
 `DaqDeviceDescriptor`, written by `ScopeOneCore/src/HardwareStreamCodec.cpp`. Each device is an object with
 
@@ -66,8 +64,7 @@ autofocus `defaultAutofocus`.
 | `deviceProperties` | an object of fixed device information |
 | `capabilities` | the capability names below that the device supports |
 | `sharedMemoryKey` | cameras only, the key of the frame ring |
-| `eventSequence` | cameras only, whether the camera takes a series of images in one sequence acquisition |
-| `pixelSizeUm` | cameras only, the size of a pixel in the sample, 0 when unknown; `GetPixelSize` reads it again after a setting changed |
+| `sequence` | cameras only, whether the camera takes a series of images in one sequence acquisition |
 
 A driver without peripherals describes one device with an empty `deviceId`, and a request without a
 `deviceId` addresses that device. With several devices, ScopeOne names them in the order of `devices`:
@@ -92,27 +89,24 @@ capability the device lacks is answered with `ok` false.
 | | `SetExposure` | `value` in ms | `exposureMs`, the value the camera took |
 | | `SetROI` | `x`, `y`, `width`, `height` | `x`, `y`, `width`, `height` |
 | | `ClearROI`, `GetROI` | | `x`, `y`, `width`, `height` |
-| | `CaptureEvent` | `timeoutMs`, default 1500 | `frameIndex` |
-| | `CaptureEventSequence` | `count`, `timeoutMs`; the images wait in the host | |
-| | `SendEventFrames` | `first`, `count`; writes these images of the last sequence to the frame ring, as it holds fewer than a sequence can have | |
-| | `GetPixelSize` | | `pixelSizeUm`, 0 when unknown |
+| | `Snap` | `timeoutMs`, default 1500 | `frameIndex` |
+| | `SnapSequence` | `count`, `timeoutMs`; the images wait in the host | |
+| | `SendSequenceFrames` | `first`, `count`; writes these images of the last sequence to the frame ring, as it holds fewer than a sequence can have | |
 | `Properties` | `ListProperties` | | `properties` |
 | | `GetProperty` | `name`, `fromCache` | `value`, `propertyType`, `readOnly`, `preInit`, `allowedValues`, `hasLimits`, `lowerLimit`, `upperLimit` |
 | | `SetProperty` | `name`, `value` | |
 | | `GetPropertySequenceCapacity` | `name` | `capacity`, 0 when it cannot be sequenced |
 | | `StartPropertySequence` | `name`, `values` | |
 | | `StopPropertySequence` | `name` | |
-| `Stage` | `GetXYPosition` | | `x`, `y` |
-| | `GetZPosition` | | `z` |
+| `XYStage` | `GetXYPosition` | | `x`, `y` |
 | | `SetXYPosition`, `SetRelativeXYPosition` | `x`, `y` | |
+| `ZStage` | `GetZPosition` | | `z` |
 | | `SetZPosition`, `SetRelativeZPosition` | `z` | |
 | | `GetStageSequenceCapacity` | | `capacity`, 0 when it cannot be sequenced |
 | | `StartStageSequence` | `positions` | |
 | | `StopStageSequence` | | |
 | `Shutter` | `GetShutterOpen` | | `open` |
 | | `SetShutterOpen` | `open` | |
-| | `GetAutoShutter`, provider wide | | `enabled` |
-| | `SetAutoShutter`, provider wide | `enabled` | |
 | `Autofocus` | `RunAutofocus` | | |
 | `State` | `GetState` | | `state`, `label` |
 | | `SetState` | `state` | |

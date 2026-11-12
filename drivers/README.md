@@ -23,7 +23,8 @@ capability interfaces that fit it:
 | Interface | Device |
 |---|---|
 | `Camera` | frames, exposure, ROI and events |
-| `Stage` | XY or Z position, with optional sequences |
+| `XYStage` | XY position |
+| `ZStage` | Z position, with optional sequences |
 | `Shutter` | open and close |
 | `StateDevice` | positions with labels, such as a filter wheel |
 | `Autofocus` | a run of the autofocus |
@@ -31,7 +32,11 @@ capability interfaces that fit it:
 | `Daq` | timed tasks of a DAQ session and the inputs they read |
 
 A device that also implements `Hub` lists its peripherals in `peripherals()`, which `devices()`
-returns, and every call names one of them by `deviceId`. A device without peripherals is one device, and its calls leave `deviceId` empty.
+returns, and every call names one of them by `deviceId`. A device without peripherals is one device
+under its label, a camera, XY stage, Z stage, shutter, state device or autofocus after the interface
+it implements, and its calls and frames leave `deviceId` empty. A single camera such as
+`ExampleCamera` implements `Camera` alone, and `Hub` is for a device that holds several, such as a
+DAQ board.
 
 The SDK interfaces are in `ScopeOneCore/sdk/include/scopeone`, and `DriverSDK.h` includes all of
 them. Driver API version 4 is `ScopeOneDriverApiVersion` in `scopeone/DriverManifest.h`.
@@ -65,7 +70,7 @@ ScopeOneProperty,Laser 488,BaudRate,115200
 ScopeOneConfigGroup,Laser,Off,Laser 488,Laser,Off
 ScopeOneConfigGroup,Laser,On,Laser 488,Laser,On
 ScopeOneDevice,Example Camera,example.camera,Example Camera
-ScopeOneConfigGroup,Channel,FITC,Example Camera.1,Pattern,Gradient
+ScopeOneConfigGroup,Channel,FITC,Example Camera,Pattern,Gradient
 ```
 
 The `ScopeOneLightSource` lines declare a channel of the Light Sources group in the Control dock, one
@@ -85,11 +90,12 @@ Only the devices in the file are loaded. `config/ScopeOne_MM_demo.cfg` has Micro
 
 In ScopeOne, Tools > Hardware Configuration opens the configuration editor. The Devices page adds
 and removes ScopeOne devices and sets their pre-init properties; Micro-Manager devices are shown
-there but are edited with Micro-Manager. Roles selects the default devices and auto shutter, and
-assigns each light source its Power and optional Enable and Reading properties, whose lists show
-the current values. Apply shows the changes and writes them. A change of the devices reloads the
-configuration, while roles and light sources take effect without restarting a device. The same
-editor can create a new configuration. The edit button on the Light Sources panel opens Roles.
+there but are edited with Micro-Manager. Roles sets the Core roles of Micro-Manager, the Camera,
+Shutter, Focus, XYStage and AutoFocus devices and AutoShutter, and assigns each light source its
+Power and optional Enable and Reading properties, whose lists show the current values. Apply shows
+the changes and writes them. A change of the devices reloads the configuration, while roles and
+light sources take effect without restarting a device. The same editor can create a new
+configuration. The edit button on the Light Sources panel opens Roles.
 
 The preset editor in the Control dock creates and edits groups and presets. A group selects device
 properties; a new preset starts with their current values. Changes are saved to the current

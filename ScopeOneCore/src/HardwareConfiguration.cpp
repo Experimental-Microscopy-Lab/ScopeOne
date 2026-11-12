@@ -306,8 +306,6 @@ namespace scopeone::core
 
     bool HardwareConfiguration::removeScopeOneCoreRoles()
     {
-        const auto isScopeOne = [this](const QString& value) { return namesScopeOneDevice(value); };
-        const bool scopeOneShutter = isScopeOne(coreRole(QStringLiteral("Shutter")));
         bool removed = false;
         // MMCore cannot resolve ScopeOne role values before those devices are registered.
         removeLines([&](const Line& line)
@@ -323,9 +321,7 @@ namespace scopeone::core
             {
                 role = line.fields[4]; value = line.fields[5];
             }
-            const bool match = ((role == QStringLiteral("Camera") || role == QStringLiteral("Shutter")
-                                 || role == QStringLiteral("Focus")) && isScopeOne(value))
-                               || (scopeOneShutter && role == QStringLiteral("AutoShutter"));
+            const bool match = namesScopeOneDevice(value);
             removed = removed || match;
             return match;
         });

@@ -344,7 +344,8 @@ namespace scopeone::core::internal
         std::shared_ptr<MicroManagerCamera> m_microManagerCamera;
         Camera* m_camera{nullptr};
         Device* m_properties{nullptr};
-        Stage* m_stage{nullptr};
+        XYStage* m_xyStage{nullptr};
+        ZStage* m_zStage{nullptr};
         Shutter* m_shutter{nullptr};
         Autofocus* m_autofocus{nullptr};
         StateDevice* m_state{nullptr};
@@ -355,8 +356,8 @@ namespace scopeone::core::internal
         QHash<QString, std::shared_ptr<StreamTransport>> m_streams;
         QMutex m_streamsMutex;
         quint64 m_nextStreamIndex{0};
-        // The images of the last sequence of each camera, until SendEventFrames has written them
-        QHash<QString, std::vector<ImageFrame>> m_eventSequences;
+        // The images of the last sequence of each camera, until SendSequenceFrames has written them
+        QHash<QString, std::vector<ImageFrame>> m_sequences;
         std::atomic_bool m_acceptFrames{false};
         std::atomic_bool m_acceptStreams{false};
     };
@@ -434,27 +435,54 @@ namespace scopeone::core::internal
         Device* const provider = m_device.get();
         m_camera = dynamic_cast<Camera*>(provider);
         m_properties = provider;
-        m_stage = dynamic_cast<Stage*>(provider);
+        m_xyStage = dynamic_cast<XYStage*>(provider);
+        m_zStage = dynamic_cast<ZStage*>(provider);
         m_shutter = dynamic_cast<Shutter*>(provider);
         m_autofocus = dynamic_cast<Autofocus*>(provider);
         m_state = dynamic_cast<StateDevice*>(provider);
         m_signals = dynamic_cast<SignalSource*>(provider);
         m_daq = dynamic_cast<Daq*>(provider);
-        // A device without peripherals is one device under its label, and its kind follows its capability
+        // A device without peripherals is one device under its label, and its kind follows its
+        // capability. Only a shutter was recognized before, so a single camera, stage, filter wheel
+        // or autofocus had to list itself as the one peripheral of a hub to be used as one.
+        const QList<HardwareDeviceDescriptor> peripherals = m_device->devices();
         m_rootDevice.name = m_providerId;
-        m_rootDevice.kind = m_shutter ? HardwareDeviceKind::Shutter : HardwareDeviceKind::Generic;
+        m_rootDevice.kind = m_camera ? HardwareDeviceKind::Camera
+                          : m_xyStage ? HardwareDeviceKind::XYStage
+                          : m_zStage ? HardwareDeviceKind::ZStage
+                          : m_shutter ? HardwareDeviceKind::Shutter
+                          : m_state ? HardwareDeviceKind::State
+                          : m_autofocus ? HardwareDeviceKind::AutoFocus
+                                        : HardwareDeviceKind::Generic;
         m_rootDevice.state = HardwareDeviceState::Initialized;
 
-        QSet<QString> logicalIds;
         int cameraIndex = 0;
-        for (HardwareDeviceDescriptor device : m_device->devices())
+        const auto addCameraTransport = [&](const QString& deviceId)
+        {
+            auto transport = std::make_shared<CameraTransport>();
+            transport->deviceId = deviceId;
+            transport->shmKey = driverhost::sharedMemoryKey(m_hostKey, cameraIndex++);
+            transport->noticeTimer = new QTimer(this);
+            transport->noticeTimer->setSingleShot(true);
+            transport->noticeTimer->setTimerType(Qt::PreciseTimer);
+            connect(transport->noticeTimer, &QTimer::timeout, this,
+                    [this, deviceId]() { sendPendingNotice(deviceId); });
+            if (!createSharedMemory(*transport))
+            {
+                return false;
+            }
+            m_cameraTransports.insert(deviceId, std::move(transport));
+            return true;
+        };
+
+        QSet<QString> logicalIds;
+        for (HardwareDeviceDescriptor device : peripherals)
         {
             const QString logicalId = device.logicalId.trimmed();
             const bool capabilityAvailable =
                 (device.kind != HardwareDeviceKind::Camera || m_camera)
-                && ((device.kind != HardwareDeviceKind::XYStage
-                     && device.kind != HardwareDeviceKind::ZStage)
-                    || m_stage)
+                && (device.kind != HardwareDeviceKind::XYStage || m_xyStage)
+                && (device.kind != HardwareDeviceKind::ZStage || m_zStage)
                 && (device.kind != HardwareDeviceKind::Shutter || m_shutter)
                 && (device.kind != HardwareDeviceKind::State || m_state)
                 && (device.kind != HardwareDeviceKind::AutoFocus || m_autofocus);
@@ -472,22 +500,16 @@ namespace scopeone::core::internal
             m_devices.append(device);
             m_devicesById.insert(logicalId, device);
 
-            if (device.kind == HardwareDeviceKind::Camera)
+            if (device.kind == HardwareDeviceKind::Camera && !addCameraTransport(logicalId))
             {
-                auto transport = std::make_shared<CameraTransport>();
-                transport->deviceId = logicalId;
-                transport->shmKey = driverhost::sharedMemoryKey(m_hostKey, cameraIndex++);
-                transport->noticeTimer = new QTimer(this);
-                transport->noticeTimer->setSingleShot(true);
-                transport->noticeTimer->setTimerType(Qt::PreciseTimer);
-                connect(transport->noticeTimer, &QTimer::timeout, this,
-                        [this, logicalId]() { sendPendingNotice(logicalId); });
-                if (!createSharedMemory(*transport))
-                {
-                    return false;
-                }
-                m_cameraTransports.insert(logicalId, std::move(transport));
+                return false;
             }
+        }
+        // The camera of a device without peripherals has the empty device id, as all its calls
+        if (peripherals.isEmpty() && m_rootDevice.kind == HardwareDeviceKind::Camera
+            && !addCameraTransport(QString{}))
+        {
+            return false;
         }
 
         if (m_camera && !m_cameraTransports.isEmpty())
@@ -789,11 +811,13 @@ namespace scopeone::core::internal
             result.append(driverhost::kCapabilityCamera);
         }
         if (m_properties) result.append(driverhost::kCapabilityProperties);
-        if (m_stage
-            && (device.kind == HardwareDeviceKind::XYStage
-                || device.kind == HardwareDeviceKind::ZStage))
+        if (m_xyStage && device.kind == HardwareDeviceKind::XYStage)
         {
-            result.append(driverhost::kCapabilityStage);
+            result.append(driverhost::kCapabilityXYStage);
+        }
+        if (m_zStage && device.kind == HardwareDeviceKind::ZStage)
+        {
+            result.append(driverhost::kCapabilityZStage);
         }
         if (m_shutter && device.kind == HardwareDeviceKind::Shutter)
         {
@@ -833,8 +857,7 @@ namespace scopeone::core::internal
         if (const auto transport = cameraTransport(device.logicalId))
         {
             object.insert(driverhost::kSharedMemoryKeyField, transport->shmKey);
-            object.insert(driverhost::kEventSequenceField, m_camera->supportsEventSequence(device.logicalId));
-            object.insert(driverhost::kPixelSizeField, m_camera->pixelSizeUm(device.logicalId));
+            object.insert(driverhost::kSequenceField, m_camera->supportsSequence(device.logicalId));
         }
         return object;
     }
@@ -1072,19 +1095,6 @@ namespace scopeone::core::internal
                 daqDevices.append(hardwarestream::toJson(daqDevice));
             }
             response.insert(driverhost::kDaqDevicesField, daqDevices);
-            if (m_stage)
-            {
-                response.insert(driverhost::kDefaultXYStageField, m_stage->defaultXYStage());
-                response.insert(driverhost::kDefaultZStageField, m_stage->defaultZStage());
-            }
-            if (m_shutter)
-            {
-                response.insert(driverhost::kDefaultShutterField, m_shutter->defaultShutter());
-            }
-            if (m_autofocus)
-            {
-                response.insert(driverhost::kDefaultAutofocusField, m_autofocus->defaultAutofocus());
-            }
             reply(response);
             return;
         }
@@ -1111,26 +1121,6 @@ namespace scopeone::core::internal
         }
         if (handleStreamRequest(requestId, type, message, reply))
         {
-            return;
-        }
-
-        if (type == driverhost::kCommandGetAutoShutter || type == driverhost::kCommandSetAutoShutter)
-        {
-            if (!m_shutter)
-            {
-                unsupported(driverhost::kCapabilityShutter);
-                return;
-            }
-            if (type == driverhost::kCommandGetAutoShutter)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(QStringLiteral("enabled"), m_shutter->autoShutter());
-                reply(response);
-                return;
-            }
-            QString error;
-            const bool ok = m_shutter->setAutoShutter(message.value(QStringLiteral("enabled")).toBool(), &error);
-            reply(ok ? makeResponse(type, requestId, true) : makeErrorResponse(type, requestId, error));
             return;
         }
 
@@ -1212,10 +1202,10 @@ namespace scopeone::core::internal
             }
             const bool start = type == driverhost::kCommandStartPreview;
             // Images of a sequence the client gave up on would otherwise stay in memory
-            m_eventSequences.remove(deviceId);
+            m_sequences.remove(deviceId);
             const bool ok = start
-                                ? m_camera->startPreviewFor(deviceId)
-                                : m_camera->stopPreviewFor(deviceId);
+                                ? m_camera->startPreview(deviceId)
+                                : m_camera->stopPreview(deviceId);
             if (!ok)
             {
                 reply(makeErrorResponse(type,
@@ -1329,9 +1319,9 @@ namespace scopeone::core::internal
             return;
         }
 
-        if (type == driverhost::kCommandCaptureEvent)
+        if (type == driverhost::kCommandSnap)
         {
-            m_eventSequences.remove(deviceId);
+            m_sequences.remove(deviceId);
             if (!supportsCapability(*device, driverhost::kCapabilityCamera))
             {
                 unsupported(driverhost::kCapabilityCamera);
@@ -1342,14 +1332,14 @@ namespace scopeone::core::internal
             const auto transport = cameraTransport(deviceId);
             const int timeoutMs = (std::max)(1,
                 message.value(QStringLiteral("timeoutMs")).toInt(1500));
-            const auto writeEventFrame = [&]()
+            const auto writeSnapFrame = [&]()
             {
                 QMutexLocker locker(&transport->writeMutex);
                 return writeFrame(*transport, frame, &frameIndex);
             };
             if (!transport
-                || !m_camera->captureEventFrame(deviceId, frame, timeoutMs)
-                || !writeEventFrame())
+                || !m_camera->snap(deviceId, frame, timeoutMs)
+                || !writeSnapFrame())
             {
                 reply(makeErrorResponse(type,
                                         requestId,
@@ -1363,9 +1353,8 @@ namespace scopeone::core::internal
             return;
         }
 
-        if (type == driverhost::kCommandCaptureEventSequence
-            || type == driverhost::kCommandSendEventFrames
-            || type == driverhost::kCommandGetPixelSize)
+        if (type == driverhost::kCommandSnapSequence
+            || type == driverhost::kCommandSendSequenceFrames)
         {
             const auto transport = cameraTransport(deviceId);
             if (!transport || !supportsCapability(*device, driverhost::kCapabilityCamera))
@@ -1373,33 +1362,26 @@ namespace scopeone::core::internal
                 unsupported(driverhost::kCapabilityCamera);
                 return;
             }
-            if (type == driverhost::kCommandGetPixelSize)
-            {
-                QJsonObject response = makeResponse(type, requestId, true);
-                response.insert(driverhost::kPixelSizeField, m_camera->pixelSizeUm(deviceId));
-                reply(response);
-                return;
-            }
-            if (type == driverhost::kCommandCaptureEventSequence)
+            if (type == driverhost::kCommandSnapSequence)
             {
                 std::vector<ImageFrame> frames;
                 const int count = message.value(QStringLiteral("count")).toInt();
                 const int timeoutMs = (std::max)(1, message.value(QStringLiteral("timeoutMs")).toInt(10000));
-                if (!m_camera->captureEventSequence(deviceId, count, frames, timeoutMs)
+                if (!m_camera->snapSequence(deviceId, count, frames, timeoutMs)
                     || static_cast<int>(frames.size()) != count)
                 {
                     reply(makeErrorResponse(type, requestId,
                                             QStringLiteral("Provider failed to capture an image sequence")));
                     return;
                 }
-                m_eventSequences.insert(deviceId, std::move(frames));
+                m_sequences.insert(deviceId, std::move(frames));
                 reply(makeResponse(type, requestId, true));
                 return;
             }
             const int first = message.value(QStringLiteral("first")).toInt();
             const int count = message.value(QStringLiteral("count")).toInt();
-            const auto frames = m_eventSequences.find(deviceId);
-            if (frames == m_eventSequences.end() || first < 0 || count < 1
+            const auto frames = m_sequences.find(deviceId);
+            if (frames == m_sequences.end() || first < 0 || count < 1
                 || first + count > static_cast<int>(frames->size()))
             {
                 reply(makeErrorResponse(type, requestId, QStringLiteral("No such images of the sequence")));
@@ -1420,7 +1402,7 @@ namespace scopeone::core::internal
             }
             if (first + count == static_cast<int>(frames->size()))
             {
-                m_eventSequences.erase(frames);
+                m_sequences.erase(frames);
             }
             reply(makeResponse(type, requestId, true));
             return;
@@ -1465,22 +1447,22 @@ namespace scopeone::core::internal
             || type == driverhost::kCommandStartStageSequence
             || type == driverhost::kCommandStopStageSequence)
         {
-            if (!supportsCapability(*device, driverhost::kCapabilityStage))
+            if (!supportsCapability(*device, driverhost::kCapabilityZStage))
             {
-                unsupported(driverhost::kCapabilityStage);
+                unsupported(driverhost::kCapabilityZStage);
                 return;
             }
             if (type == driverhost::kCommandGetStageSequenceCapacity)
             {
                 QJsonObject response = makeResponse(type, requestId, true);
                 response.insert(QStringLiteral("capacity"),
-                                static_cast<double>(m_stage->stageSequenceCapacity(deviceId)));
+                                static_cast<double>(m_zStage->stageSequenceCapacity(deviceId)));
                 reply(response);
                 return;
             }
             if (type == driverhost::kCommandStopStageSequence)
             {
-                m_stage->stopStageSequence(deviceId);
+                m_zStage->stopStageSequence(deviceId);
                 reply(makeResponse(type, requestId, true));
                 return;
             }
@@ -1490,7 +1472,7 @@ namespace scopeone::core::internal
                 positions.push_back(value.toDouble());
             }
             QString error;
-            const bool ok = m_stage->startStageSequence(deviceId, positions, &error);
+            const bool ok = m_zStage->startStageSequence(deviceId, positions, &error);
             reply(ok ? makeResponse(type, requestId, true) : makeErrorResponse(type, requestId, error));
             return;
         }
@@ -1577,9 +1559,13 @@ namespace scopeone::core::internal
             || type == driverhost::kCommandSetXYPosition
             || type == driverhost::kCommandSetZPosition)
         {
-            if (!supportsCapability(*device, driverhost::kCapabilityStage))
+            const bool xy = type == driverhost::kCommandGetXYPosition
+                         || type == driverhost::kCommandSetRelativeXYPosition
+                         || type == driverhost::kCommandSetXYPosition;
+            const QString capability = xy ? driverhost::kCapabilityXYStage : driverhost::kCapabilityZStage;
+            if (!supportsCapability(*device, capability))
             {
-                unsupported(driverhost::kCapabilityStage);
+                unsupported(capability);
                 return;
             }
             QString error;
@@ -1587,7 +1573,7 @@ namespace scopeone::core::internal
             {
                 double x = 0.0;
                 double y = 0.0;
-                if (!m_stage->getXYPosition(deviceId, x, y, &error))
+                if (!m_xyStage->getXYPosition(deviceId, x, y, &error))
                 {
                     reply(makeErrorResponse(type, requestId, error));
                     return;
@@ -1601,7 +1587,7 @@ namespace scopeone::core::internal
             if (type == driverhost::kCommandGetZPosition)
             {
                 double z = 0.0;
-                if (!m_stage->getZPosition(deviceId, z, &error))
+                if (!m_zStage->getZPosition(deviceId, z, &error))
                 {
                     reply(makeErrorResponse(type, requestId, error));
                     return;
@@ -1615,7 +1601,7 @@ namespace scopeone::core::internal
             bool ok = false;
             if (type == driverhost::kCommandSetRelativeXYPosition)
             {
-                ok = m_stage->setRelativeXYPosition(
+                ok = m_xyStage->setRelativeXYPosition(
                     deviceId,
                     message.value(QStringLiteral("x")).toDouble(),
                     message.value(QStringLiteral("y")).toDouble(),
@@ -1623,14 +1609,14 @@ namespace scopeone::core::internal
             }
             else if (type == driverhost::kCommandSetRelativeZPosition)
             {
-                ok = m_stage->setRelativeZPosition(
+                ok = m_zStage->setRelativeZPosition(
                     deviceId,
                     message.value(QStringLiteral("z")).toDouble(),
                     &error);
             }
             else if (type == driverhost::kCommandSetXYPosition)
             {
-                ok = m_stage->setXYPosition(
+                ok = m_xyStage->setXYPosition(
                     deviceId,
                     message.value(QStringLiteral("x")).toDouble(),
                     message.value(QStringLiteral("y")).toDouble(),
@@ -1638,7 +1624,7 @@ namespace scopeone::core::internal
             }
             else
             {
-                ok = m_stage->setZPosition(
+                ok = m_zStage->setZPosition(
                     deviceId,
                     message.value(QStringLiteral("z")).toDouble(),
                     &error);
@@ -1754,7 +1740,7 @@ namespace scopeone::core::internal
             {
                 if (transport && transport->previewRunning)
                 {
-                    m_camera->stopPreviewFor(transport->deviceId);
+                    m_camera->stopPreview(transport->deviceId);
                     transport->previewRunning = false;
                 }
             }
@@ -1763,7 +1749,8 @@ namespace scopeone::core::internal
         m_camera = nullptr;
         m_microManagerCamera.reset();
         m_properties = nullptr;
-        m_stage = nullptr;
+        m_xyStage = nullptr;
+        m_zStage = nullptr;
         m_shutter = nullptr;
         m_autofocus = nullptr;
         m_state = nullptr;

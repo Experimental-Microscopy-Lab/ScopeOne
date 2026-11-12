@@ -23,11 +23,7 @@
 namespace example_camera
 {
     using scopeone::core::Camera;
-    using scopeone::core::HardwareDeviceDescriptor;
-    using scopeone::core::HardwareDeviceKind;
-    using scopeone::core::HardwareDeviceState;
     using scopeone::core::Device;
-    using scopeone::core::Hub;
     using scopeone::core::HardwareProviderDescriptor;
     using scopeone::core::ImageFrame;
     using scopeone::core::ImagePixelFormat;
@@ -36,7 +32,7 @@ namespace example_camera
     constexpr double kMinimumExposureMs = 1.0;
     constexpr double kMaximumExposureMs = 1000.0;
 
-    // One camera. It stands in for the handle a vendor SDK gives out for each camera it finds.
+    // One camera. It stands in for the handle a vendor SDK gives out for a camera.
     class ExampleCamera
     {
     public:
@@ -253,22 +249,16 @@ namespace example_camera
         std::thread m_thread;
     };
 
-    // One device that offers several cameras, as the driver of a camera maker does when its SDK
-    // finds several. It is a hub, and ScopeOne addresses each camera by its id.
-    class ExampleCameraDevice final : public Device, public Hub, public Camera
+    // One camera per device, and a second camera is a second device line of the cfg. A device
+    // without peripherals is addressed with an empty device id, so the ids of the calls are not
+    // looked at.
+    class ExampleCameraDevice final : public Device, public Camera
     {
     public:
-        ExampleCameraDevice(const QString& driverId, int cameraCount, int width, int height)
+        ExampleCameraDevice(const QString& driverId, int width, int height)
             : m_driverId(driverId)
+              , m_camera(QString{}, std::make_shared<const TestPatterns>(width, height), width, height)
         {
-            const auto patterns = std::make_shared<const TestPatterns>(width, height);
-            for (int index = 0; index < cameraCount; ++index)
-            {
-                const QString id = cameraCount == 1
-                                       ? QStringLiteral("camera.example")
-                                       : QStringLiteral("camera.example.%1").arg(index + 1);
-                m_cameras.push_back(std::make_unique<ExampleCamera>(id, patterns, width, height));
-            }
         }
 
         HardwareProviderDescriptor descriptor() const override
@@ -276,30 +266,9 @@ namespace example_camera
             return {m_driverId, QStringLiteral("Example Camera"), QStringLiteral("1")};
         }
 
-        QList<HardwareDeviceDescriptor> peripherals() const override
-        {
-            QList<HardwareDeviceDescriptor> result;
-            for (size_t index = 0; index < m_cameras.size(); ++index)
-            {
-                HardwareDeviceDescriptor device;
-                device.logicalId = m_cameras[index]->id();
-                device.providerDeviceId = m_cameras[index]->id();
-                device.hardwareId = QStringLiteral("EX-%1").arg(1000 + index);
-                device.name = QStringLiteral("Example Camera %1").arg(index + 1);
-                device.kind = HardwareDeviceKind::Camera;
-                device.state = HardwareDeviceState::Initialized;
-                result.append(device);
-            }
-            return result;
-        }
-
-        // The frames carry the id of the camera that made them, so one sink serves all of them
         void setFrameSink(FrameSink sink) override
         {
-            for (auto& camera : m_cameras)
-            {
-                camera->setFrameSink(sink);
-            }
+            m_camera.setFrameSink(std::move(sink));
         }
 
         void setPreviewStateSink(PreviewStateSink sink) override
@@ -308,110 +277,78 @@ namespace example_camera
             m_previewStateSink = std::move(sink);
         }
 
-        bool startPreviewFor(const QString& cameraId) override
+        bool startPreview(const QString&) override
         {
-            ExampleCamera* camera = find(cameraId);
-            if (!camera)
-            {
-                return false;
-            }
-            camera->start();
+            m_camera.start();
             reportPreviewState();
             return true;
         }
 
-        bool stopPreviewFor(const QString& cameraId) override
+        bool stopPreview(const QString&) override
         {
-            ExampleCamera* camera = find(cameraId);
-            if (!camera)
-            {
-                return false;
-            }
-            camera->stop();
+            m_camera.stop();
             reportPreviewState();
             return true;
         }
 
-        bool isPreviewRunning(const QString& cameraId) const override
+        bool isPreviewRunning(const QString&) const override
         {
-            const ExampleCamera* camera = find(cameraId);
-            return camera && camera->isRunning();
+            return m_camera.isRunning();
         }
 
-        bool getExposure(const QString& cameraId, double& exposureMs) const override
+        bool getExposure(const QString&, double& exposureMs) const override
         {
-            const ExampleCamera* camera = find(cameraId);
-            if (!camera)
-            {
-                return false;
-            }
-            exposureMs = camera->exposureMs();
+            exposureMs = m_camera.exposureMs();
             return true;
         }
 
-        bool setExposure(const QString& cameraId, double exposureMs) override
+        bool setExposure(const QString&, double exposureMs) override
         {
-            ExampleCamera* camera = find(cameraId);
-            return camera && camera->setExposureMs(exposureMs);
+            return m_camera.setExposureMs(exposureMs);
         }
 
-        bool setROI(const QString& cameraId, int x, int y, int width, int height) override
+        bool setROI(const QString&, int x, int y, int width, int height) override
         {
-            ExampleCamera* camera = find(cameraId);
-            return camera && camera->setRoi(x, y, width, height);
+            return m_camera.setRoi(x, y, width, height);
         }
 
-        bool clearROI(const QString& cameraId) override
+        bool clearROI(const QString&) override
         {
-            ExampleCamera* camera = find(cameraId);
-            return camera && camera->clearRoi();
+            return m_camera.clearRoi();
         }
 
-        bool getROI(const QString& cameraId, int& x, int& y, int& width, int& height) override
+        bool getROI(const QString&, int& x, int& y, int& width, int& height) override
         {
-            ExampleCamera* camera = find(cameraId);
-            if (!camera)
-            {
-                return false;
-            }
-            camera->roi(x, y, width, height);
+            m_camera.roi(x, y, width, height);
             return true;
         }
 
         // A software trigger: one exposure, read out while the caller waits
-        bool captureEventFrame(const QString& cameraId, ImageFrame& frame, int timeoutMs) override
+        bool snap(const QString&, ImageFrame& frame, int timeoutMs) override
         {
-            ExampleCamera* camera = find(cameraId);
-            if (!camera || camera->isRunning() || camera->exposureMs() > timeoutMs)
+            if (m_camera.isRunning() || m_camera.exposureMs() > timeoutMs)
             {
                 return false;
             }
-            frame = camera->expose();
+            frame = m_camera.expose();
             return true;
         }
 
-        // Each camera has a gain and a test pattern the user can set, and a sensor temperature it reports
-        QStringList listProperties(const QString& deviceId) override
+        // The camera has a gain and a test pattern the user can set, and a sensor temperature it reports
+        QStringList listProperties(const QString&) override
         {
-            return find(deviceId) ? QStringList{QStringLiteral("Gain"), QStringLiteral("Pattern"),
-                                                QStringLiteral("SensorTemperature")}
-                                  : QStringList{};
+            return {QStringLiteral("Gain"), QStringLiteral("Pattern"), QStringLiteral("SensorTemperature")};
         }
 
-        QString getProperty(const QString& deviceId, const QString& name, bool) override
+        QString getProperty(const QString&, const QString& name, bool) override
         {
-            ExampleCamera* camera = find(deviceId);
-            if (!camera)
-            {
-                return {};
-            }
             if (name == QStringLiteral("Gain"))
             {
-                return QString::number(camera->gain());
+                return QString::number(m_camera.gain());
             }
             if (name == QStringLiteral("Pattern"))
             {
-                return testPatternName(camera->pattern());
+                return testPatternName(m_camera.pattern());
             }
             if (name == QStringLiteral("SensorTemperature"))
             {
@@ -420,40 +357,34 @@ namespace example_camera
             return {};
         }
 
-        bool setProperty(const QString& deviceId,
+        bool setProperty(const QString&,
                          const QString& name,
                          const QString& value,
                          QString* errorMessage) override
         {
-            ExampleCamera* camera = find(deviceId);
             TestPattern pattern = TestPattern::MovingSpot;
-            if (camera && name == QStringLiteral("Pattern") && testPatternFromName(value, pattern))
+            if (name == QStringLiteral("Pattern") && testPatternFromName(value, pattern))
             {
-                camera->setPattern(pattern);
+                m_camera.setPattern(pattern);
                 return true;
             }
             bool numeric = false;
             const int gain = value.toInt(&numeric);
-            if (camera && name == QStringLiteral("Gain") && numeric && camera->setGain(gain))
+            if (name == QStringLiteral("Gain") && numeric && m_camera.setGain(gain))
             {
                 return true;
             }
             if (errorMessage)
             {
-                *errorMessage = !camera ? QStringLiteral("Unknown camera")
-                              : name == QStringLiteral("Gain") ? QStringLiteral("Gain must be an integer from 1 to 16")
+                *errorMessage = name == QStringLiteral("Gain") ? QStringLiteral("Gain must be an integer from 1 to 16")
                               : name == QStringLiteral("Pattern") ? QStringLiteral("Unknown pattern %1").arg(value)
                                                                   : QStringLiteral("%1 cannot be set").arg(name);
             }
             return false;
         }
 
-        QString getPropertyType(const QString& deviceId, const QString& name) override
+        QString getPropertyType(const QString&, const QString& name) override
         {
-            if (!find(deviceId))
-            {
-                return {};
-            }
             return name == QStringLiteral("Gain") ? QStringLiteral("Integer")
                  : name == QStringLiteral("Pattern") ? QStringLiteral("String")
                                                      : QStringLiteral("Float");
@@ -490,23 +421,9 @@ namespace example_camera
         }
 
     private:
-        ExampleCamera* find(const QString& cameraId) const
-        {
-            for (const auto& camera : m_cameras)
-            {
-                if (camera->id() == cameraId)
-                {
-                    return camera.get();
-                }
-            }
-            return nullptr;
-        }
-
-        // The provider is previewing while any of its cameras is
         void reportPreviewState()
         {
-            const bool running = std::any_of(m_cameras.begin(), m_cameras.end(),
-                                              [](const auto& camera) { return camera->isRunning(); });
+            const bool running = m_camera.isRunning();
             PreviewStateSink sink;
             {
                 QMutexLocker locker(&m_mutex);
@@ -524,7 +441,7 @@ namespace example_camera
         }
 
         QString m_driverId;
-        std::vector<std::unique_ptr<ExampleCamera>> m_cameras;
+        ExampleCamera m_camera;
         QMutex m_mutex;
         PreviewStateSink m_previewStateSink;
         bool m_lastPreviewState{false};
@@ -548,8 +465,7 @@ namespace example_camera
             return {QStringLiteral("Example Camera")};
         }
 
-        // Pre-init properties: width and height of the sensor, and cameraCount, the number of
-        // cameras (2 by default)
+        // Pre-init properties: width and height of the sensor
         scopeone::core::DevicePtr createDevice(const QString& name,
                                                const QVariantMap& preInitProperties,
                                                QString* errorMessage) override
@@ -560,17 +476,15 @@ namespace example_camera
             }
             const int width = preInitProperties.value(QStringLiteral("width"), 512).toInt();
             const int height = preInitProperties.value(QStringLiteral("height"), 512).toInt();
-            const int cameraCount = preInitProperties.value(QStringLiteral("cameraCount"), 2).toInt();
-            if (name != deviceNames().first()
-                || width <= 0 || height <= 0 || cameraCount < 1 || cameraCount > 8)
+            if (name != deviceNames().first() || width <= 0 || height <= 0)
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("width and height must be positive and cameraCount from 1 to 8");
+                    *errorMessage = QStringLiteral("width and height must be positive");
                 }
                 return {};
             }
-            return std::make_shared<ExampleCameraDevice>(driverId(), cameraCount, width, height);
+            return std::make_shared<ExampleCameraDevice>(driverId(), width, height);
         }
     };
 }

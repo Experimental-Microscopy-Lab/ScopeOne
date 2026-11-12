@@ -25,7 +25,8 @@ namespace scopeone::core::internal
     // DriverHost of its own, so two cameras of the same model do not share one vendor library.
     class MicroManagerProvider final : public Device,
                                        public Camera,
-                                       public Stage,
+                                       public XYStage,
+                                       public ZStage,
                                        public Shutter,
                                        public Autofocus,
                                        public StateDevice,
@@ -75,8 +76,8 @@ namespace scopeone::core::internal
 
         void setFrameSink(FrameSink sink) override;
         void setPreviewStateSink(PreviewStateSink sink) override;
-        bool startPreviewFor(const QString& cameraId) override;
-        bool stopPreviewFor(const QString& cameraId) override;
+        bool startPreview(const QString& cameraId) override;
+        bool stopPreview(const QString& cameraId) override;
         bool isPreviewRunning(const QString& cameraId) const override;
         bool getExposure(const QString& cameraId, double& exposureMs) const override;
         bool setExposure(const QString& cameraId, double exposureMs) override;
@@ -103,16 +104,14 @@ namespace scopeone::core::internal
                     int& y,
                     int& width,
                     int& height) override;
-        bool captureEventFrame(const QString& cameraId,
-                               scopeone::core::ImageFrame& frame,
-                               int timeoutMs) override;
-        bool supportsEventSequence(const QString& cameraId) const override;
-        bool captureEventSequence(const QString& cameraId,
-                                  int count,
-                                  std::vector<scopeone::core::ImageFrame>& frames,
-                                  int timeoutMs) override;
-        QString defaultXYStage() const override;
-        QString defaultZStage() const override;
+        bool snap(const QString& cameraId,
+                  scopeone::core::ImageFrame& frame,
+                  int timeoutMs) override;
+        bool supportsSequence(const QString& cameraId) const override;
+        bool snapSequence(const QString& cameraId,
+                          int count,
+                          std::vector<scopeone::core::ImageFrame>& frames,
+                          int timeoutMs) override;
         bool getXYPosition(const QString& deviceId,
                            double& x,
                            double& y,
@@ -167,10 +166,6 @@ namespace scopeone::core::internal
         bool renameConfig(const QString& groupName, const QString& configName,
                           const QString& newName, QString* errorMessage = nullptr);
 
-        QString defaultShutter() const override;
-        bool autoShutter() const override;
-        bool setAutoShutter(bool enabled, QString* errorMessage) override;
-        QString defaultAutofocus() const override;
         bool runAutofocus(const QString& deviceId, QString* errorMessage) override;
         long stageSequenceCapacity(const QString& deviceId) const override;
         bool startStageSequence(const QString& deviceId,
@@ -183,7 +178,9 @@ namespace scopeone::core::internal
                                    const QStringList& values,
                                    QString* errorMessage) override;
         void stopPropertySequence(const QString& deviceId, const QString& name) override;
-        double pixelSizeUm(const QString& cameraId) const override;
+        double pixelSizeUm(const QString& cameraId) const;
+        // The pixel size of the current pixel size configuration without the binning of a camera
+        double calibratedPixelSizeUm() const;
 
     private:
         struct CameraEntry

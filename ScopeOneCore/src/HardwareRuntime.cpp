@@ -51,46 +51,6 @@ namespace scopeone::core::internal
             return call(*provider);
         }
 
-        // The device of the given kind that exactly one provider names as its default, such as
-        // the focus stage or the shutter, and that provider. None when two providers disagree.
-        template <class Provider>
-        Provider* uniqueDefault(const DeviceRegistry& registry,
-                                QString (Provider::*defaultDevice)() const,
-                                HardwareDeviceKind kind,
-                                QString* deviceId)
-        {
-            Provider* match = nullptr;
-            QString matchId;
-            for (const HardwareProviderDescriptor& descriptor : registry.providers())
-            {
-                auto* provider = dynamic_cast<Provider*>(registry.provider(descriptor.id).get());
-                const QString id = provider ? (provider->*defaultDevice)().trimmed() : QString{};
-                const HardwareDeviceDescriptor device = registry.device(id);
-                if (id.isEmpty() || device.providerId != descriptor.id || device.kind != kind)
-                {
-                    continue;
-                }
-                if (match)
-                {
-                    return nullptr;
-                }
-                match = provider;
-                matchId = id;
-            }
-            *deviceId = matchId;
-            return match;
-        }
-
-        Shutter* defaultShutter(const DeviceRegistry& registry, QString* shutter)
-        {
-            return uniqueDefault(registry, &Shutter::defaultShutter, HardwareDeviceKind::Shutter, shutter);
-        }
-
-        Autofocus* defaultAutofocus(const DeviceRegistry& registry, QString* device)
-        {
-            return uniqueDefault(registry, &Autofocus::defaultAutofocus, HardwareDeviceKind::AutoFocus, device);
-        }
-
         void stopCameras(const DeviceRegistry& registry, const QString& providerId)
         {
             const DevicePtr provider = registry.provider(providerId);
@@ -103,7 +63,7 @@ namespace scopeone::core::internal
             {
                 if (device.providerId == providerId && device.kind == HardwareDeviceKind::Camera)
                 {
-                    cameraProvider->stopPreviewFor(device.logicalId);
+                    cameraProvider->stopPreview(device.logicalId);
                 }
             }
         }
@@ -312,10 +272,16 @@ namespace scopeone::core::internal
         return dynamic_cast<Device*>(provider.get());
     }
 
-    Stage* HardwareRuntime::stageForDevice(const QString& logicalId) const
+    XYStage* HardwareRuntime::xyStageForDevice(const QString& logicalId) const
     {
         const DevicePtr provider = m_registry.providerForDevice(logicalId);
-        return dynamic_cast<Stage*>(provider.get());
+        return dynamic_cast<XYStage*>(provider.get());
+    }
+
+    ZStage* HardwareRuntime::zStageForDevice(const QString& logicalId) const
+    {
+        const DevicePtr provider = m_registry.providerForDevice(logicalId);
+        return dynamic_cast<ZStage*>(provider.get());
     }
 
     Shutter* HardwareRuntime::shutterForDevice(const QString& logicalId) const
@@ -330,24 +296,19 @@ namespace scopeone::core::internal
         return dynamic_cast<StateDevice*>(provider.get());
     }
 
-    bool HardwareRuntime::startPreview()
+    // AutoShutter as in MMCore, the shutter of the Shutter role is open while a camera takes images
+    bool HardwareRuntime::startPreview(const QString& cameraIdOrAll)
     {
-        return m_acquisitionEngine.start(QStringLiteral("All"));
+        const bool openShutter = m_autoShutter && !anyCameraRunning();
+        if (openShutter) setDefaultShutterOpen(true);
+        const bool started = m_acquisitionEngine.start(cameraIdOrAll);
+        if (openShutter && !started) setDefaultShutterOpen(false);
+        return started;
     }
 
-    bool HardwareRuntime::stopPreview()
+    bool HardwareRuntime::stopPreview(const QString& cameraIdOrAll)
     {
-        return m_acquisitionEngine.stop(QStringLiteral("All"));
-    }
-
-    bool HardwareRuntime::startPreviewFor(const QString& cameraId)
-    {
-        return m_acquisitionEngine.start(cameraId);
-    }
-
-    bool HardwareRuntime::stopPreviewFor(const QString& cameraId)
-    {
-        return m_acquisitionEngine.stop(cameraId);
+        return m_acquisitionEngine.stop(cameraIdOrAll);
     }
 
     bool HardwareRuntime::isPreviewRunning(const QString& cameraId) const
@@ -507,27 +468,37 @@ namespace scopeone::core::internal
         return provider && provider->getROI(cameraId, x, y, width, height);
     }
 
-    bool HardwareRuntime::captureEventFrame(const QString& cameraId,
-                                            ImageFrame& frame,
-                                            int timeoutMs)
+    bool HardwareRuntime::snap(const QString& cameraId,
+                               ImageFrame& frame,
+                               int timeoutMs)
     {
         Camera* provider = cameraForDevice(cameraId);
-        return provider && provider->captureEventFrame(cameraId, frame, timeoutMs);
+        if (!provider) return false;
+        const bool openShutter = m_autoShutter && !anyCameraRunning();
+        if (openShutter) setDefaultShutterOpen(true);
+        const bool ok = provider->snap(cameraId, frame, timeoutMs);
+        if (openShutter) setDefaultShutterOpen(false);
+        return ok;
     }
 
-    bool HardwareRuntime::supportsEventSequence(const QString& cameraId) const
+    bool HardwareRuntime::supportsSequence(const QString& cameraId) const
     {
         Camera* provider = cameraForDevice(cameraId);
-        return provider && provider->supportsEventSequence(cameraId);
+        return provider && provider->supportsSequence(cameraId);
     }
 
-    bool HardwareRuntime::captureEventSequence(const QString& cameraId,
-                                               int count,
-                                               std::vector<ImageFrame>& frames,
-                                               int timeoutMs)
+    bool HardwareRuntime::snapSequence(const QString& cameraId,
+                                       int count,
+                                       std::vector<ImageFrame>& frames,
+                                       int timeoutMs)
     {
         Camera* provider = cameraForDevice(cameraId);
-        return provider && provider->captureEventSequence(cameraId, count, frames, timeoutMs);
+        if (!provider) return false;
+        const bool openShutter = m_autoShutter && !anyCameraRunning();
+        if (openShutter) setDefaultShutterOpen(true);
+        const bool ok = provider->snapSequence(cameraId, count, frames, timeoutMs);
+        if (openShutter) setDefaultShutterOpen(false);
+        return ok;
     }
 
     QList<QPair<CameraFrameSource*, QStringList>> HardwareRuntime::frameSourcesFor(
@@ -651,17 +622,12 @@ namespace scopeone::core::internal
 
     QString HardwareRuntime::defaultXYStage() const
     {
-        QString stage;
-        uniqueDefault(m_registry, &Stage::defaultXYStage, HardwareDeviceKind::XYStage, &stage);
-        return stage;
+        return roleDevice(QStringLiteral("XYStage"), m_xyStageRole, HardwareDeviceKind::XYStage);
     }
 
     QString HardwareRuntime::defaultZStage() const
     {
-        if (!m_focusRole.isEmpty()) return m_registry.device(m_focusRole).kind == HardwareDeviceKind::ZStage ? m_focusRole : QString{};
-        QString stage;
-        uniqueDefault(m_registry, &Stage::defaultZStage, HardwareDeviceKind::ZStage, &stage);
-        return stage;
+        return roleDevice(QStringLiteral("Focus"), m_focusRole, HardwareDeviceKind::ZStage);
     }
 
     bool HardwareRuntime::getXYPosition(const QString& deviceId,
@@ -669,8 +635,8 @@ namespace scopeone::core::internal
                                         double& y,
                                         QString* errorMessage) const
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(xyStageForDevice(deviceId), "XY stage provider not available", errorMessage,
+                       [&](XYStage& provider)
                        {
                            return provider.getXYPosition(deviceId, x, y, errorMessage);
                        });
@@ -680,8 +646,8 @@ namespace scopeone::core::internal
                                        double& z,
                                        QString* errorMessage) const
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(zStageForDevice(deviceId), "Z stage provider not available", errorMessage,
+                       [&](ZStage& provider)
                        {
                            return provider.getZPosition(deviceId, z, errorMessage);
                        });
@@ -692,8 +658,8 @@ namespace scopeone::core::internal
                                                 double dy,
                                                 QString* errorMessage)
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(xyStageForDevice(deviceId), "XY stage provider not available", errorMessage,
+                       [&](XYStage& provider)
                        {
                            return provider.setRelativeXYPosition(deviceId, dx, dy, errorMessage);
                        });
@@ -703,8 +669,8 @@ namespace scopeone::core::internal
                                                double dz,
                                                QString* errorMessage)
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(zStageForDevice(deviceId), "Z stage provider not available", errorMessage,
+                       [&](ZStage& provider)
                        {
                            return provider.setRelativeZPosition(deviceId, dz, errorMessage);
                        });
@@ -715,8 +681,8 @@ namespace scopeone::core::internal
                                         double y,
                                         QString* errorMessage)
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(xyStageForDevice(deviceId), "XY stage provider not available", errorMessage,
+                       [&](XYStage& provider)
                        {
                            return provider.setXYPosition(deviceId, x, y, errorMessage);
                        });
@@ -726,8 +692,8 @@ namespace scopeone::core::internal
                                        double z,
                                        QString* errorMessage)
     {
-        return forward(stageForDevice(deviceId), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(zStageForDevice(deviceId), "Z stage provider not available", errorMessage,
+                       [&](ZStage& provider)
                        {
                            return provider.setZPosition(deviceId, z, errorMessage);
                        });
@@ -840,17 +806,14 @@ namespace scopeone::core::internal
         // A role that moved to a ScopeOne device is cleared in MMCore, which had kept driving the
         // earlier Micro-Manager device beside the new one
         const QStringList mmLabels = document.microManagerDeviceLabels();
-        for (const QString& role : {QStringLiteral("Camera"), QStringLiteral("Shutter"), QStringLiteral("Focus")})
+        for (const QString& role : {QStringLiteral("Camera"), QStringLiteral("Shutter"), QStringLiteral("Focus"),
+                                    QStringLiteral("XYStage"), QStringLiteral("AutoFocus")})
         {
             const QString value = document.coreRole(role);
             if (!m_microManager->setProperty(QStringLiteral("Core"), role,
                                              mmLabels.contains(value) ? value : QString{}, errorMessage)) return false;
         }
-        // An AutoShutter removed from the cfg is the default of MMCore, which is on
-        const QString autoShutter = document.coreRole(QStringLiteral("AutoShutter"));
-        if (!m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"),
-                                         autoShutter.isEmpty() ? QStringLiteral("1") : autoShutter, errorMessage)) return false;
-        applyScopeOneAutoShutter();
+        applyCoreRoles();
         return true;
     }
 
@@ -1304,31 +1267,49 @@ namespace scopeone::core::internal
         }
     }
 
-    void HardwareRuntime::applyScopeOneAutoShutter()
+    // MMCore loads the cfg without the role lines that name ScopeOne devices and gives those
+    // roles to a Micro-Manager device it loads, which then took the role over from the ScopeOne
+    // device. They are cleared here. The shutter of a ScopeOne device was asked to open around
+    // the images by itself, which it cannot, as the cameras run in other DriverHosts.
+    void HardwareRuntime::applyCoreRoles()
     {
-        if (!m_scopeOneShutter) return;
         QString error;
-        if (!setAutoShutter(m_autoShutterRole != QStringLiteral("0"), &error))
+        if (!m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"), QStringLiteral("0"), &error))
             qWarning().noquote() << QStringLiteral("AutoShutter failed: %1").arg(error);
-    }
-
-    bool HardwareRuntime::autoShutter(bool& enabled, QString* errorMessage) const
-    {
-        QString shutter;
-        Shutter* const provider = configuredShutter(&shutter);
-        enabled = provider && provider->autoShutter();
-        if (!provider && errorMessage)
+        const auto document = HardwareConfiguration::read(m_configurationPath, nullptr);
+        const std::pair<QString, QString*> roles[]{{QStringLiteral("Shutter"), &m_shutterRole},
+                                                   {QStringLiteral("Focus"), &m_focusRole},
+                                                   {QStringLiteral("XYStage"), &m_xyStageRole},
+                                                   {QStringLiteral("AutoFocus"), &m_autofocusRole}};
+        for (const auto& [role, value] : roles)
         {
-            *errorMessage = QStringLiteral("No shutter lights the cameras");
+            if (document.namesScopeOneDevice(*value))
+                m_microManager->setProperty(QStringLiteral("Core"), role, QString{}, nullptr);
         }
-        return provider != nullptr;
     }
 
-    bool HardwareRuntime::setAutoShutter(bool enabled, QString* errorMessage)
+    bool HardwareRuntime::anyCameraRunning() const
     {
-        QString shutter;
-        return forward(configuredShutter(&shutter), "No shutter lights the cameras", errorMessage,
-                       [&](Shutter& provider) { return provider.setAutoShutter(enabled, errorMessage); });
+        const QList<HardwareDeviceDescriptor> devices = m_registry.devices();
+        return std::any_of(devices.cbegin(), devices.cend(), [this](const HardwareDeviceDescriptor& device)
+        {
+            return device.kind == HardwareDeviceKind::Camera && isPreviewRunning(device.logicalId);
+        });
+    }
+
+    // The device of a Core role. MMCore holds a Micro-Manager device, which presets may change, as
+    // a channel that switches the shutter. A ScopeOne device comes from the cfg. Otherwise the
+    // first device of the kind takes the role, as MMCore gives a role to a device it loads.
+    QString HardwareRuntime::roleDevice(const QString& role, const QString& configured, HardwareDeviceKind kind) const
+    {
+        QString id = m_microManager->getProperty(QStringLiteral("Core"), role, false);
+        if (id.isEmpty()) id = configured;
+        if (id.isEmpty())
+        {
+            for (const HardwareDeviceDescriptor& device : m_registry.devices())
+                if (device.kind == kind) return device.logicalId;
+        }
+        return m_registry.device(id).kind == kind ? id : QString{};
     }
 
     bool HardwareRuntime::setDefaultShutterOpen(bool open, QString* errorMessage)
@@ -1338,12 +1319,23 @@ namespace scopeone::core::internal
                        [&](Shutter& provider) { return provider.setShutterOpen(shutter, open, errorMessage); });
     }
 
+    QString HardwareRuntime::defaultShutter() const
+    {
+        QString shutter;
+        configuredShutter(&shutter);
+        return shutter;
+    }
+
     Shutter* HardwareRuntime::configuredShutter(QString* deviceId) const
     {
-        if (m_shutterRole.isEmpty()) return defaultShutter(m_registry, deviceId);
-        if (m_registry.device(m_shutterRole).kind != HardwareDeviceKind::Shutter) return nullptr;
-        *deviceId = m_shutterRole;
-        return shutterForDevice(m_shutterRole);
+        *deviceId = roleDevice(QStringLiteral("Shutter"), m_shutterRole, HardwareDeviceKind::Shutter);
+        return deviceId->isEmpty() ? nullptr : shutterForDevice(*deviceId);
+    }
+
+    Autofocus* HardwareRuntime::configuredAutofocus(QString* deviceId) const
+    {
+        *deviceId = roleDevice(QStringLiteral("AutoFocus"), m_autofocusRole, HardwareDeviceKind::AutoFocus);
+        return deviceId->isEmpty() ? nullptr : dynamic_cast<Autofocus*>(m_registry.providerForDevice(*deviceId).get());
     }
 
     void HardwareRuntime::setConfigurationPath(const QString& path)
@@ -1355,28 +1347,29 @@ namespace scopeone::core::internal
     void HardwareRuntime::applyRoles(const HardwareConfiguration& document)
     {
         m_cameraRole = document.coreRole(QStringLiteral("Camera"));
+        m_xyStageRole = document.coreRole(QStringLiteral("XYStage"));
         m_focusRole = document.coreRole(QStringLiteral("Focus"));
         m_shutterRole = document.coreRole(QStringLiteral("Shutter"));
-        m_autoShutterRole = document.coreRole(QStringLiteral("AutoShutter"));
-        m_scopeOneShutter = document.namesScopeOneDevice(m_shutterRole);
+        m_autofocusRole = document.coreRole(QStringLiteral("AutoFocus"));
+        m_autoShutter = document.coreRole(QStringLiteral("AutoShutter")) != QStringLiteral("0");
     }
 
     bool HardwareRuntime::hasAutofocus() const
     {
         QString device;
-        return defaultAutofocus(m_registry, &device) != nullptr;
+        return configuredAutofocus(&device) != nullptr;
     }
 
     bool HardwareRuntime::runAutofocus(QString* errorMessage)
     {
         QString device;
-        return forward(defaultAutofocus(m_registry, &device), "Autofocus is not available", errorMessage,
+        return forward(configuredAutofocus(&device), "Autofocus is not available", errorMessage,
                        [&](Autofocus& provider) { return provider.runAutofocus(device, errorMessage); });
     }
 
     long HardwareRuntime::focusSequenceCapacity(const QString& focusDevice) const
     {
-        Stage* provider = stageForDevice(focusDevice);
+        ZStage* provider = zStageForDevice(focusDevice);
         return provider ? provider->stageSequenceCapacity(focusDevice) : 0;
     }
 
@@ -1384,8 +1377,8 @@ namespace scopeone::core::internal
                                              const std::vector<double>& positions,
                                              QString* errorMessage)
     {
-        return forward(stageForDevice(focusDevice), "Stage provider not available", errorMessage,
-                       [&](Stage& provider)
+        return forward(zStageForDevice(focusDevice), "Z stage provider not available", errorMessage,
+                       [&](ZStage& provider)
                        {
                            return provider.startStageSequence(focusDevice, positions, errorMessage);
                        });
@@ -1393,7 +1386,7 @@ namespace scopeone::core::internal
 
     void HardwareRuntime::stopFocusSequence(const QString& focusDevice)
     {
-        if (Stage* provider = stageForDevice(focusDevice))
+        if (ZStage* provider = zStageForDevice(focusDevice))
         {
             provider->stopStageSequence(focusDevice);
         }
@@ -1441,8 +1434,17 @@ namespace scopeone::core::internal
 
     double HardwareRuntime::pixelSizeUm(const QString& cameraId) const
     {
-        Camera* provider = cameraForDevice(cameraId);
-        return provider ? provider->pixelSizeUm(cameraId) : 0.0;
+        if (m_registry.device(cameraId).providerId == m_microManager->descriptor().id)
+        {
+            return m_microManager->pixelSizeUm(cameraId);
+        }
+        // The camera of a driver takes the pixel size calibration of the cfg as well, which is
+        // scaled by its binning, as in Micro-Manager. Cameras name their binning "2" or "2x2".
+        Device* const device = propertyDeviceForDevice(cameraId);
+        const int binning = device ? device->getProperty(cameraId, QStringLiteral("Binning"), true)
+                                         .section(QLatin1Char('x'), 0, 0).toInt()
+                                   : 0;
+        return m_microManager->calibratedPixelSizeUm() * (std::max)(binning, 1);
     }
 
     QStringList HardwareRuntime::microManagerAdapterSearchPaths() const
@@ -1554,7 +1556,8 @@ namespace scopeone::core::internal
             return false;
         }
         auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
-        auto* stageProvider = dynamic_cast<Stage*>(provider.get());
+        auto* xyStageProvider = dynamic_cast<XYStage*>(provider.get());
+        auto* zStageProvider = dynamic_cast<ZStage*>(provider.get());
         auto* shutterProvider = dynamic_cast<Shutter*>(provider.get());
         auto* stateProvider = dynamic_cast<StateDevice*>(provider.get());
         const QList<HardwareDeviceDescriptor> providerDevices = provider->devices();
@@ -1562,9 +1565,8 @@ namespace scopeone::core::internal
         {
             const bool supported =
                 (device.kind != HardwareDeviceKind::Camera || cameraProvider)
-                && ((device.kind != HardwareDeviceKind::XYStage
-                     && device.kind != HardwareDeviceKind::ZStage)
-                    || stageProvider)
+                && (device.kind != HardwareDeviceKind::XYStage || xyStageProvider)
+                && (device.kind != HardwareDeviceKind::ZStage || zStageProvider)
                 && (device.kind != HardwareDeviceKind::Shutter || shutterProvider)
                 && (device.kind != HardwareDeviceKind::State || stateProvider)
                 && (device.kind != HardwareDeviceKind::AutoFocus
@@ -1598,16 +1600,9 @@ namespace scopeone::core::internal
             {
                 const auto publishState = [this]()
                 {
-                    bool running = false;
-                    for (const HardwareDeviceDescriptor& device : m_registry.devices())
-                    {
-                        if (device.kind == HardwareDeviceKind::Camera
-                            && isPreviewRunning(device.logicalId))
-                        {
-                            running = true;
-                            break;
-                        }
-                    }
+                    const bool running = anyCameraRunning();
+                    // Also a camera that stopped by itself closes the shutter
+                    if (!running && m_autoShutter) setDefaultShutterOpen(false);
                     emit previewStateChanged(running);
                 };
                 if (QThread::currentThread() == thread()) publishState();

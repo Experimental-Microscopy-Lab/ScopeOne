@@ -12,7 +12,7 @@
 namespace scopeone::core
 {
     // What a driver creates by device name. A device implements the capability interfaces that
-    // fit it, such as Camera or Stage, next to this class, and ScopeOne finds them by casting.
+    // fit it, such as Camera or ZStage, next to this class, and ScopeOne finds them by casting.
     // Every call that names a deviceId means one of the devices() of the object, which tells
     // the peripherals of a hub apart. The property methods default to a device without
     // properties.

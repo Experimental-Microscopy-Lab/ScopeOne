@@ -81,13 +81,8 @@ namespace scopeone::core::internal::driverhost
     inline const QString kDeviceStateField = QStringLiteral("deviceState");
     inline const QString kDevicePropertiesField = QStringLiteral("deviceProperties");
     inline const QString kSharedMemoryKeyField = QStringLiteral("sharedMemoryKey");
-    inline const QString kDefaultXYStageField = QStringLiteral("defaultXYStage");
-    inline const QString kDefaultZStageField = QStringLiteral("defaultZStage");
-    inline const QString kDefaultShutterField = QStringLiteral("defaultShutter");
-    inline const QString kDefaultAutofocusField = QStringLiteral("defaultAutofocus");
     // Whether a camera takes a series of images in one sequence acquisition
-    inline const QString kEventSequenceField = QStringLiteral("eventSequence");
-    inline const QString kPixelSizeField = QStringLiteral("pixelSizeUm");
+    inline const QString kSequenceField = QStringLiteral("sequence");
     inline const QString kSignalSourcesField = QStringLiteral("signalSources");
     inline const QString kDaqDevicesField = QStringLiteral("daqDevices");
     inline const QString kSourceIdField = QStringLiteral("sourceId");
@@ -115,12 +110,11 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandListProperties = QStringLiteral("ListProperties");
     inline const QString kCommandGetProperty = QStringLiteral("GetProperty");
     inline const QString kCommandSetProperty = QStringLiteral("SetProperty");
-    inline const QString kCommandCaptureEvent = QStringLiteral("CaptureEvent");
-    // The images of a sequence wait in DriverHost, and SendEventFrames writes them to the frame
+    inline const QString kCommandSnap = QStringLiteral("Snap");
+    // The images of a sequence wait in DriverHost, and SendSequenceFrames writes them to the frame
     // ring a part at a time, as the ring holds fewer images than a sequence can have
-    inline const QString kCommandCaptureEventSequence = QStringLiteral("CaptureEventSequence");
-    inline const QString kCommandSendEventFrames = QStringLiteral("SendEventFrames");
-    inline const QString kCommandGetPixelSize = QStringLiteral("GetPixelSize");
+    inline const QString kCommandSnapSequence = QStringLiteral("SnapSequence");
+    inline const QString kCommandSendSequenceFrames = QStringLiteral("SendSequenceFrames");
     inline const QString kCommandSetRoi = QStringLiteral("SetROI");
     inline const QString kCommandClearRoi = QStringLiteral("ClearROI");
     inline const QString kCommandGetRoi = QStringLiteral("GetROI");
@@ -136,8 +130,6 @@ namespace scopeone::core::internal::driverhost
     inline const QString kCommandGetPropertySequenceCapacity = QStringLiteral("GetPropertySequenceCapacity");
     inline const QString kCommandStartPropertySequence = QStringLiteral("StartPropertySequence");
     inline const QString kCommandStopPropertySequence = QStringLiteral("StopPropertySequence");
-    inline const QString kCommandGetAutoShutter = QStringLiteral("GetAutoShutter");
-    inline const QString kCommandSetAutoShutter = QStringLiteral("SetAutoShutter");
     inline const QString kCommandRunAutofocus = QStringLiteral("RunAutofocus");
     inline const QString kCommandGetShutterOpen = QStringLiteral("GetShutterOpen");
     inline const QString kCommandSetShutterOpen = QStringLiteral("SetShutterOpen");
@@ -151,7 +143,8 @@ namespace scopeone::core::internal::driverhost
 
     inline const QString kCapabilityCamera = QStringLiteral("Camera");
     inline const QString kCapabilityProperties = QStringLiteral("Properties");
-    inline const QString kCapabilityStage = QStringLiteral("Stage");
+    inline const QString kCapabilityXYStage = QStringLiteral("XYStage");
+    inline const QString kCapabilityZStage = QStringLiteral("ZStage");
     inline const QString kCapabilityShutter = QStringLiteral("Shutter");
     inline const QString kCapabilityState = QStringLiteral("State");
     inline const QString kCapabilityAutofocus = QStringLiteral("Autofocus");

@@ -38,9 +38,9 @@ namespace scopeone::core
         virtual void setFrameSink(FrameSink sink) = 0;
         virtual void setPreviewStateSink(PreviewStateSink sink) = 0;
         // Starts the continuous acquisition of a camera. Starting a running camera succeeds.
-        virtual bool startPreviewFor(const QString& cameraId) = 0;
+        virtual bool startPreview(const QString& cameraId) = 0;
         // Once it returns, the camera hands no further frame to the sink
-        virtual bool stopPreviewFor(const QString& cameraId) = 0;
+        virtual bool stopPreview(const QString& cameraId) = 0;
         virtual bool isPreviewRunning(const QString& cameraId) const = 0;
         virtual bool getExposure(const QString& cameraId, double& exposureMs) const = 0;
         virtual bool setExposure(const QString& cameraId, double exposureMs) = 0;
@@ -55,29 +55,22 @@ namespace scopeone::core
         // instead of handing it to the sink. A running acquisition may be stopped for it.
         // timeoutMs is how long ScopeOne waits for the image; a device that waits for the camera
         // itself should give up after it.
-        virtual bool captureEventFrame(const QString& cameraId,
-                                       ImageFrame& frame,
-                                       int timeoutMs = 1500) = 0;
-        // The size of a pixel in the sample in micrometers, with the current objective and
-        // binning, or 0 when the device does not know it
-        virtual double pixelSizeUm(const QString& cameraId) const
-        {
-            (void)cameraId;
-            return 0.0;
-        }
+        virtual bool snap(const QString& cameraId,
+                          ImageFrame& frame,
+                          int timeoutMs = 1500) = 0;
         // Whether the camera can take a series of images in one sequence acquisition, which
         // lets the hardware time the images, for example while a stage steps through a
         // sequence of positions
-        virtual bool supportsEventSequence(const QString& cameraId) const
+        virtual bool supportsSequence(const QString& cameraId) const
         {
             (void)cameraId;
             return false;
         }
         // Takes count images in one sequence acquisition of the camera
-        virtual bool captureEventSequence(const QString& cameraId,
-                                          int count,
-                                          std::vector<ImageFrame>& frames,
-                                          int timeoutMs = 10000)
+        virtual bool snapSequence(const QString& cameraId,
+                                  int count,
+                                  std::vector<ImageFrame>& frames,
+                                  int timeoutMs = 10000)
         {
             (void)cameraId;
             (void)count;

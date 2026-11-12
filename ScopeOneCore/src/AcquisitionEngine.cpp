@@ -39,7 +39,7 @@ namespace scopeone::core::internal
                 {
                     for (auto it = startedCameras.crbegin(); it != startedCameras.crend(); ++it)
                     {
-                        it->provider->stopPreviewFor(it->cameraId);
+                        it->provider->stopPreview(it->cameraId);
                     }
                     return false;
                 }
@@ -47,11 +47,11 @@ namespace scopeone::core::internal
                 {
                     continue;
                 }
-                if (!cameraProvider->startPreviewFor(device.logicalId))
+                if (!cameraProvider->startPreview(device.logicalId))
                 {
                     for (auto it = startedCameras.crbegin(); it != startedCameras.crend(); ++it)
                     {
-                        it->provider->stopPreviewFor(it->cameraId);
+                        it->provider->stopPreview(it->cameraId);
                     }
                     return false;
                 }
@@ -61,7 +61,7 @@ namespace scopeone::core::internal
         }
         const DevicePtr provider = m_deviceRegistry.providerForDevice(target);
         auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
-        return cameraProvider && cameraProvider->startPreviewFor(target);
+        return cameraProvider && cameraProvider->startPreview(target);
     }
 
     bool AcquisitionEngine::stop(const QString& cameraIdOrAll)
@@ -91,13 +91,13 @@ namespace scopeone::core::internal
                 }
                 if (cameraProvider->isPreviewRunning(device.logicalId))
                 {
-                    stopped = cameraProvider->stopPreviewFor(device.logicalId) && stopped;
+                    stopped = cameraProvider->stopPreview(device.logicalId) && stopped;
                 }
             }
             return found && stopped;
         }
         const DevicePtr provider = m_deviceRegistry.providerForDevice(target);
         auto* cameraProvider = dynamic_cast<Camera*>(provider.get());
-        return cameraProvider && cameraProvider->stopPreviewFor(target);
+        return cameraProvider && cameraProvider->stopPreview(target);
     }
 }

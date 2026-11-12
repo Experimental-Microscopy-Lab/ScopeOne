@@ -9,36 +9,44 @@
 
 namespace scopeone::core
 {
-    class SCOPEONE_SDK_EXPORT Stage
+    // XYStage and ZStage are separate devices, as in Micro-Manager, so a device without
+    // peripherals is either kind after the interface it implements. Which stage, shutter or
+    // autofocus the acquisitions use are Core roles of the cfg file, not chosen by a device.
+    class SCOPEONE_SDK_EXPORT XYStage
     {
     public:
-        virtual ~Stage();
+        virtual ~XYStage();
 
-        virtual QString defaultXYStage() const = 0;
-        virtual QString defaultZStage() const = 0;
         virtual bool getXYPosition(const QString& deviceId,
                                    double& x,
                                    double& y,
                                    QString* errorMessage = nullptr) const = 0;
-        virtual bool getZPosition(const QString& deviceId,
-                                  double& z,
-                                  QString* errorMessage = nullptr) const = 0;
         virtual bool setRelativeXYPosition(const QString& deviceId,
                                            double dx,
                                            double dy,
                                            QString* errorMessage = nullptr) = 0;
-        virtual bool setRelativeZPosition(const QString& deviceId,
-                                          double dz,
-                                          QString* errorMessage = nullptr) = 0;
         virtual bool setXYPosition(const QString& deviceId,
                                    double x,
                                    double y,
                                    QString* errorMessage = nullptr) = 0;
+    };
+
+    class SCOPEONE_SDK_EXPORT ZStage
+    {
+    public:
+        virtual ~ZStage();
+
+        virtual bool getZPosition(const QString& deviceId,
+                                  double& z,
+                                  QString* errorMessage = nullptr) const = 0;
+        virtual bool setRelativeZPosition(const QString& deviceId,
+                                          double dz,
+                                          QString* errorMessage = nullptr) = 0;
         virtual bool setZPosition(const QString& deviceId,
                                   double z,
                                   QString* errorMessage = nullptr) = 0;
 
-        // A stage sequence steps a Z stage through a list of positions, one position on each
+        // A stage sequence steps the stage through a list of positions, one position on each
         // trigger of the camera. The capacity is the longest list the stage takes, 0 when it
         // cannot be sequenced.
         virtual long stageSequenceCapacity(const QString& deviceId) const
@@ -73,22 +81,6 @@ namespace scopeone::core
         virtual bool setShutterOpen(const QString& deviceId,
                                     bool open,
                                     QString* errorMessage = nullptr) = 0;
-
-        // The shutter that lights the sample while a camera of the device takes an image
-        virtual QString defaultShutter() const
-        {
-            return {};
-        }
-        // Whether the device opens the default shutter around each image by itself
-        virtual bool autoShutter() const
-        {
-            return false;
-        }
-        virtual bool setAutoShutter(bool enabled, QString* errorMessage = nullptr)
-        {
-            if (errorMessage && enabled) *errorMessage = QStringLiteral("The device has no automatic shutter");
-            return !enabled;
-        }
     };
 
     class SCOPEONE_SDK_EXPORT Autofocus
@@ -96,7 +88,6 @@ namespace scopeone::core
     public:
         virtual ~Autofocus();
 
-        virtual QString defaultAutofocus() const = 0;
         // Focuses with the autofocus device and returns once the focus has settled
         virtual bool runAutofocus(const QString& deviceId, QString* errorMessage = nullptr) = 0;
     };

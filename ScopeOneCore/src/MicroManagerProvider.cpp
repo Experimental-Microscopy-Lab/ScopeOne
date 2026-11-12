@@ -233,16 +233,16 @@ namespace scopeone::core::internal
         }
     }
 
-    bool MicroManagerProvider::startPreviewFor(const QString& cameraId)
+    bool MicroManagerProvider::startPreview(const QString& cameraId)
     {
         const CameraRef provider = camera(cameraId);
-        return provider && provider->startPreviewFor(cameraId.trimmed());
+        return provider && provider->startPreview(cameraId.trimmed());
     }
 
-    bool MicroManagerProvider::stopPreviewFor(const QString& cameraId)
+    bool MicroManagerProvider::stopPreview(const QString& cameraId)
     {
         const CameraRef provider = camera(cameraId);
-        return provider && provider->stopPreviewFor(cameraId.trimmed());
+        return provider && provider->stopPreview(cameraId.trimmed());
     }
 
     bool MicroManagerProvider::isPreviewRunning(const QString& cameraId) const
@@ -426,37 +426,27 @@ namespace scopeone::core::internal
         return provider && provider->getROI(cameraId.trimmed(), x, y, width, height);
     }
 
-    bool MicroManagerProvider::captureEventFrame(const QString& cameraId,
-                                                 scopeone::core::ImageFrame& frame,
-                                                 int timeoutMs)
+    bool MicroManagerProvider::snap(const QString& cameraId,
+                                    scopeone::core::ImageFrame& frame,
+                                    int timeoutMs)
     {
         const CameraRef provider = camera(cameraId);
-        return provider && provider->captureEventFrame(cameraId.trimmed(), frame, timeoutMs);
+        return provider && provider->snap(cameraId.trimmed(), frame, timeoutMs);
     }
 
-    bool MicroManagerProvider::supportsEventSequence(const QString& cameraId) const
+    bool MicroManagerProvider::supportsSequence(const QString& cameraId) const
     {
         const CameraRef provider = camera(cameraId);
-        return provider && provider->supportsEventSequence(cameraId.trimmed());
+        return provider && provider->supportsSequence(cameraId.trimmed());
     }
 
-    bool MicroManagerProvider::captureEventSequence(const QString& cameraId,
-                                                    int count,
-                                                    std::vector<scopeone::core::ImageFrame>& frames,
-                                                    int timeoutMs)
+    bool MicroManagerProvider::snapSequence(const QString& cameraId,
+                                            int count,
+                                            std::vector<scopeone::core::ImageFrame>& frames,
+                                            int timeoutMs)
     {
         const CameraRef provider = camera(cameraId);
-        return provider && provider->captureEventSequence(cameraId.trimmed(), count, frames, timeoutMs);
-    }
-
-    QString MicroManagerProvider::defaultXYStage() const
-    {
-        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getXYStageDevice()); });
-    }
-
-    QString MicroManagerProvider::defaultZStage() const
-    {
-        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getFocusDevice()); });
+        return provider && provider->snapSequence(cameraId.trimmed(), count, frames, timeoutMs);
     }
 
     bool MicroManagerProvider::getXYPosition(const QString& deviceId,
@@ -763,26 +753,6 @@ namespace scopeone::core::internal
         return succeeds(errorMessage, [&] { m_core->renameConfig(name8(groupName).c_str(), name8(configName).c_str(), name8(newName).c_str()); });
     }
 
-    QString MicroManagerProvider::defaultShutter() const
-    {
-        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getShutterDevice()); });
-    }
-
-    bool MicroManagerProvider::autoShutter() const
-    {
-        return orElse(false, [&] { return m_core->getAutoShutter(); });
-    }
-
-    bool MicroManagerProvider::setAutoShutter(bool enabled, QString* errorMessage)
-    {
-        return succeeds(errorMessage, [&] { m_core->setAutoShutter(enabled); });
-    }
-
-    QString MicroManagerProvider::defaultAutofocus() const
-    {
-        return orElse(QString{}, [&] { return QString::fromStdString(m_core->getAutoFocusDevice()); });
-    }
-
     // The core focuses with the autofocus device it currently uses
     bool MicroManagerProvider::runAutofocus(const QString& deviceId, QString* errorMessage)
     {
@@ -871,6 +841,15 @@ namespace scopeone::core::internal
         }
         QReadLocker locker(&m_camerasLock);
         return pixelSizeUm * m_binnings.value(cameraId.trimmed(), 1);
+    }
+
+    double MicroManagerProvider::calibratedPixelSizeUm() const
+    {
+        return orElse(0.0, [&]
+        {
+            const std::string config = m_core->getCurrentPixelSizeConfig(true);
+            return config.empty() ? 0.0 : m_core->getPixelSizeUmByID(config.c_str()) / m_core->getMagnificationFactor();
+        });
     }
 
     void MicroManagerProvider::readBinning(const QString& cameraId)

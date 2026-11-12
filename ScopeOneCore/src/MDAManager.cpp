@@ -216,9 +216,8 @@ namespace scopeone::core::internal
                                               {
                                                   return event.openShutterBefore;
                                               });
-        bool autoShutterOn = false;
-        state.holdShutter = wantsShutter
-            && m_hardwareRuntime->autoShutter(autoShutterOn) && autoShutterOn;
+        state.holdShutter = wantsShutter && m_hardwareRuntime->autoShutter()
+            && !m_hardwareRuntime->defaultShutter().isEmpty();
     }
 
     // Opens the shutter at the start of a block of events and keeps it open until the block ends
@@ -231,8 +230,8 @@ namespace scopeone::core::internal
             return true;
         }
         QString error;
-        if (!m_hardwareRuntime->setAutoShutter(false, &error)
-            || !m_hardwareRuntime->setDefaultShutterOpen(true, &error))
+        m_hardwareRuntime->setAutoShutter(false);
+        if (!m_hardwareRuntime->setDefaultShutterOpen(true, &error))
         {
             if (errorMessage)
             {
@@ -480,7 +479,7 @@ namespace scopeone::core::internal
         const AcquisitionEvent& head = events.at(first);
         if (!head.hardwareSequencing || !head.hasZ || head.autofocusBefore
             || head.cameraIds.size() != 1
-            || !m_hardwareRuntime->supportsEventSequence(head.cameraIds.first()))
+            || !m_hardwareRuntime->supportsSequence(head.cameraIds.first()))
         {
             return 1;
         }
@@ -567,7 +566,7 @@ namespace scopeone::core::internal
         const AcquisitionEvent& head = events.at(first);
         if (!head.hardwareSequencing || head.channelPreset.isEmpty() || head.autofocusBefore
             || head.cameraIds.size() != 1
-            || !m_hardwareRuntime->supportsEventSequence(head.cameraIds.first()))
+            || !m_hardwareRuntime->supportsSequence(head.cameraIds.first()))
         {
             return 1;
         }
@@ -700,7 +699,7 @@ namespace scopeone::core::internal
         }
         std::vector<ImageFrame> frames;
         const int timeoutMs = static_cast<int>((std::max)(10000.0, head.exposureMs * count * 4.0 + 5000.0));
-        const bool captured = m_hardwareRuntime->captureEventSequence(cameraId, count, frames, timeoutMs)
+        const bool captured = m_hardwareRuntime->snapSequence(cameraId, count, frames, timeoutMs)
             && static_cast<int>(frames.size()) == count;
         disarm();
         closeShutter(last, state);
@@ -762,7 +761,7 @@ namespace scopeone::core::internal
             {
                 CaptureResult result;
                 result.cameraId = cameraId;
-                if (!m_hardwareRuntime->captureEventFrame(cameraId, result.frame, captureTimeoutMs))
+                if (!m_hardwareRuntime->snap(cameraId, result.frame, captureTimeoutMs))
                 {
                     result.error = QStringLiteral("Failed to capture frame from camera: %1").arg(cameraId);
                     return result;
