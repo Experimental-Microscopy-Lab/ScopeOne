@@ -1835,8 +1835,10 @@ namespace scopeone::core::internal
                 const auto publishState = [this]()
                 {
                     const bool running = anyCameraRunning();
-                    // Also a camera that stopped by itself closes the shutter
-                    if (!running && m_autoShutter) setDefaultShutterOpen(false);
+                    // The shutter follows the cameras both ways, as MMCore opens it when a sequence
+                    // starts and closes it when one stops. Only closing it left it closed after a
+                    // camera restarted its live view around a change of the exposure.
+                    if (m_autoShutter) setDefaultShutterOpen(running);
                     emit previewStateChanged(running);
                 };
                 if (QThread::currentThread() == thread()) publishState();
