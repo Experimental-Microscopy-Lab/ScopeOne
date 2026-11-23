@@ -357,7 +357,7 @@ namespace scopeone::core
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
 
         bool startPreview(const QString& cameraIdOrAll);
-        bool stopPreview(const QString& cameraIdOrAll);
+        bool stopPreview(const QString& cameraIdOrAll, QString* errorMessage = nullptr);
         bool setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage = nullptr);
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
         bool setHalfROI(const QString& cameraId);
@@ -787,6 +787,7 @@ namespace scopeone::core
         void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
         void synchronizeCameraIdsFromRegistry();
+        void logConfigurationLoaded(const LoadConfigResult& result) const;
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool stopCameras);
@@ -925,6 +926,7 @@ namespace scopeone::core
         // Counts setTriggers calls, so a trigger loop sees when an action replaced the triggers
         quint64 m_triggerGeneration{0};
         // Set while a trigger action runs
+        QString m_lastProcessingError;
         bool m_runningTrigger{false};
         static constexpr qsizetype kActionLogSize = 10000;
         QList<ActionLogEntry> m_actionLog;

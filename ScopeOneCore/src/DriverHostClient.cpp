@@ -10,6 +10,7 @@
 #include "scopeone/SignalSource.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
+#include "scopeone/Log.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -24,6 +25,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSharedMemory>
 #include <QThread>
@@ -143,18 +145,18 @@ namespace scopeone::core::internal
             connect(m_process.get(), &QProcess::readyReadStandardOutput,
                     this, [this]()
                     {
-                        const QString output = QString::fromUtf8(
-                            m_process->readAllStandardOutput()).trimmed();
-                        if (!output.isEmpty())
+                        QStringList lines;
+                        while (m_process->canReadLine())
                         {
-                            m_lastHostLine = output.split(QLatin1Char('\n')).last();
-                            qInfo().noquote()
-                                << QString("[DriverHost %1] %2").arg(m_providerId, output);
+                            lines.append(QString::fromUtf8(m_process->readLine()));
                         }
+                        logHostOutput(lines);
                     });
             connect(m_process.get(), &QProcess::finished,
                     this, [this](int, QProcess::ExitStatus)
                     {
+                        // A last line without its newline was still waiting for one
+                        logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                         m_lastError = QStringLiteral("DriverHost process exited");
                         for (const QString& cameraId : m_cameraIds)
                         {
@@ -178,6 +180,14 @@ namespace scopeone::core::internal
             // Windows GUI is, to the debugger, so the host's reasons never reached the log there
             QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
             environment.insert(QStringLiteral("QT_FORCE_STDERR_LOGGING"), QStringLiteral("1"));
+            // Each message starts with its level, which the merged output had lost: a warning of a
+            // driver reached the log as INFO
+            environment.insert(QStringLiteral("QT_MESSAGE_PATTERN"), QStringLiteral("%{type}|%{message}"));
+            // Where a Micro-Manager camera writes its CoreLog
+            if (!Log::directory().isEmpty())
+            {
+                environment.insert(QStringLiteral("SCOPEONE_LOG_DIRECTORY"), Log::directory());
+            }
             m_process->setProcessEnvironment(environment);
             m_process->setProgram(driverHostPath);
             m_process->setArguments(arguments);
@@ -204,14 +214,9 @@ namespace scopeone::core::internal
                 if (m_process->waitForFinished(0))
                 {
                     exited = true;
-                    const QString rest = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
-                    if (!rest.isEmpty())
-                    {
-                        // The last output was read here and not logged, so a host that exited
-                        // at start left nothing of its reason in the log
-                        m_lastHostLine = rest.split(QLatin1Char('\n')).last().trimmed();
-                        qInfo().noquote() << QString("[DriverHost %1] %2").arg(m_providerId, rest);
-                    }
+                    // The last output was read here and not logged, so a host that exited at
+                    // start left nothing of its reason in the log
+                    logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                     break;
                 }
             }
@@ -1090,6 +1095,62 @@ namespace scopeone::core::internal
         QString m_lastError;
         // The last line the DriverHost printed, which is its reason when it exits at start
         QString m_lastHostLine;
+
+        // Writes what the DriverHost printed to the log with the level of each message: Qt messages
+        // start with their type, and lines without it, which a vendor library prints, are INFO or
+        // continue the message before them
+        void logHostOutput(const QStringList& lines)
+        {
+            static const QRegularExpression qtMessage(
+                QStringLiteral("^(debug|info|warning|critical|fatal)\\|(.*)$"));
+            QString source = QStringLiteral("driverhost:%1").arg(m_providerId);
+            // The Micro-Manager cameras share one provider, so the host of each is named by its camera
+            const qsizetype camera = m_arguments.indexOf(QStringLiteral("--micromanagerCamera"));
+            if (camera >= 0)
+            {
+                source += QLatin1Char('/') + QJsonDocument::fromJson(m_arguments.value(camera + 1).toUtf8())
+                                                  .object().value(QStringLiteral("cameraId")).toString();
+            }
+            QString level;
+            QString message;
+            const auto flush = [&]()
+            {
+                if (!message.isEmpty())
+                {
+                    Log::write(level, source, message);
+                }
+                message.clear();
+            };
+            for (QString line : lines)
+            {
+                line = line.trimmed();
+                if (line.isEmpty())
+                {
+                    continue;
+                }
+                if (const QRegularExpressionMatch match = qtMessage.match(line); match.hasMatch())
+                {
+                    flush();
+                    const QString type = match.captured(1);
+                    level = type == QStringLiteral("debug") ? QStringLiteral("DEBUG")
+                          : type == QStringLiteral("info") ? QStringLiteral("INFO")
+                          : type == QStringLiteral("warning") ? QStringLiteral("WARNING")
+                                                             : QStringLiteral("ERROR");
+                    message = match.captured(2);
+                }
+                else if (!message.isEmpty())
+                {
+                    message += QLatin1Char('\n') + line;
+                }
+                else
+                {
+                    level = QStringLiteral("INFO");
+                    message = line;
+                }
+                m_lastHostLine = message.section(QLatin1Char('\n'), -1);
+            }
+            flush();
+        }
         quint64 m_nextRequestId{1};
         quint64 m_waitingRequestId{0};
         bool m_cleanedUp{false};

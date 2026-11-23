@@ -558,11 +558,6 @@ namespace scopeone::ui
                     updateRunButtons();
                     syncProcessingState();
                 });
-        connect(core, &scopeone::core::ScopeOneCore::processingError,
-                this, [](const QString& error)
-                {
-                    qWarning().noquote() << QStringLiteral("Processing error: %1").arg(error);
-                });
         connect(core, &scopeone::core::ScopeOneCore::hardwareDevicesChanged,
                 this, &ImageProcessingWidget::refreshSources);
         connect(core, &scopeone::core::ScopeOneCore::recordingSessionsChanged,

@@ -186,6 +186,17 @@ namespace
                                    QStringLiteral("ISO 8601 time; only entries at or after it"))}
                 })),
             makeTool(
+                QStringLiteral("log"),
+                QStringLiteral(
+                    "Read the log of ScopeOne, the messages its console shows, oldest first: warnings, errors "
+                    "and what the drivers and Python modules printed. Each entry has time, level (DEBUG, "
+                    "INFO, WARNING or ERROR), source and message"),
+                inputProperties({
+                    {QStringLiteral("since"),
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("ISO 8601 time; only entries at or after it"))}
+                })),
+            makeTool(
                 QStringLiteral("wait_event"),
                 QStringLiteral(
                     "Wait for the next ScopeOne event, such as experiment_state when an experiment ends, "

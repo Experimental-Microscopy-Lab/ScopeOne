@@ -34,12 +34,10 @@ namespace scopeone::ui
 
         void addMessage(const QString& message,
                         const QString& type = "INFO",
-                        const QDateTime& timestamp = QDateTime::currentDateTime());
+                        const QDateTime& timestamp = QDateTime::currentDateTime(),
+                        const QString& source = QString());
 
         void clearMessages();
-
-        static void installAsQtMessageSink(ConsoleWidget* sink);
-        static void installQtMessageHandler();
 
         void setShowTimestamps(bool show);
         void setAutoScroll(bool autoScroll);
@@ -53,6 +51,7 @@ namespace scopeone::ui
             QString message;
             QString type;
             QDateTime timestamp;
+            QString source;
         };
 
         void setupUI();
@@ -72,6 +71,7 @@ namespace scopeone::ui
         QCheckBox* m_showTimestampsCheckBox{nullptr};
         QCheckBox* m_autoScrollCheckBox{nullptr};
         QComboBox* m_filterComboBox{nullptr};
+        QComboBox* m_sourceComboBox{nullptr};
         QLabel* m_messageCountLabel{nullptr};
         QLineEdit* m_searchInput{nullptr};
         QLineEdit* m_commandInput{nullptr};

@@ -1236,6 +1236,12 @@ class ScopeOne:
             request["since"] = since
         return list(self._request(request)["entries"])
 
+    def log(self, since: str | None = None) -> list[dict]:
+        request = {"type": "log"}
+        if since is not None:
+            request["since"] = since
+        return list(self._request(request)["entries"])
+
     def experiment_document(self) -> dict:
         response = self._request({"type": "experiment_document"})
         return dict(response["document"])

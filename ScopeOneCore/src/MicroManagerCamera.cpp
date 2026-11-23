@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QMetaObject>
 #include <QMutexLocker>
@@ -351,6 +352,13 @@ namespace scopeone::core::internal
                                                                  QString* errorMessage)
     {
         auto core = std::make_shared<CMMCore>();
+        // Micro-Manager keeps its own log, as in the main process, one file for each camera
+        const QString logDirectory = qEnvironmentVariable("SCOPEONE_LOG_DIRECTORY");
+        if (!logDirectory.isEmpty())
+        {
+            const QString path = QDir(logDirectory).filePath(QStringLiteral("CoreLog-%1.txt").arg(setup.cameraId));
+            core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
+        }
         const std::string label = setup.cameraId.toStdString();
         try
         {

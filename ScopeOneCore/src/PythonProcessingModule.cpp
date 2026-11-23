@@ -1,4 +1,5 @@
 #include "internal/PythonProcessingModule.h"
+#include "scopeone/Log.h"
 
 #include "internal/ProcessingModuleRegistry.h"
 
@@ -225,7 +226,8 @@ namespace scopeone::core::internal
                 const QByteArray printed = m_process->readAllStandardError();
                 if (!printed.isEmpty())
                 {
-                    qInfo().noquote() << QStringLiteral("[%1] %2").arg(id(), QString::fromUtf8(printed).trimmed());
+                    Log::write(QStringLiteral("INFO"), QStringLiteral("python:%1").arg(id()),
+                               QString::fromUtf8(printed).trimmed());
                 }
                 if (reply.contains(QStringLiteral("error")))
                 {

@@ -260,6 +260,7 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.hook_reply(hook_id, action="continue", **changes)`
 - `ScopeOne.run_hooks(before=None, after=None, experiment_id=None)`
 - `ScopeOne.action_log(since=None)`
+- `ScopeOne.log(since=None)`
 - `ScopeOne.experiment_document()`
 - `ScopeOne.validate_experiment(document)`
 - `ScopeOne.save_experiment(file_path, document)`
@@ -324,6 +325,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `recording_saved`: `sessionId`, `success`, `message`, and `paths`, or `cameraId` when one camera of the session was saved.
 - `measurement`: `cameraId`, `moduleId`, `frameIndex` and `measurements` of one frame from a processing module.
 - `trigger_fired`: `index` of the trigger, the `measurement` that crossed its threshold (with `cameraId`, `moduleId` and `frameIndex`), `action`, `success` and `error`.
+- `log`: one entry of the [log](#log), with `time`, `level`, `source` and `message`.
 - `before_event` and `after_event`: hook requests, see [Hooks](#hooks). They go to the connection that set the hooks, without a subscription.
 
 In Python, `subscribe(events=None)` and `unsubscribe(events=None)` change the subscription, and `wait_event(names=None, timeout=None)` returns the next event of those names as a dict, or `None` after `timeout` seconds. Events that arrive while the client waits for a response are kept for `wait_event`.
@@ -431,6 +433,36 @@ written beside the data) gets the entries from the last configuration load befor
 to its end as `actionLog`. A `record` request is answered when its recording ends, so its own
 entry comes after that file; the plan in the same file holds its settings.
 
+### Log
+
+The log holds the messages the console of the app shows: what ScopeOne reports, its warnings and
+errors, and what the drivers and the Python processing modules print. An entry is
+
+```json
+{"time": "2026-11-23T13:20:04.518Z", "level": "WARNING", "source": "driverhost:example.camera",
+ "message": "Exposure out of range"}
+```
+
+`level` is `DEBUG`, `INFO`, `WARNING` or `ERROR`. `source` is `scopeone` for the app itself,
+`driverhost:<driver>` for a driver process, `driverhost:micro-manager/<camera>` for the process
+of a Micro-Manager camera, which each camera has when a configuration has several, and
+`python:<module>` for a processing module. `log` returns the last 10000 entries, the `log` event
+sends each new one, and the app writes all of them to `ScopeOne.log` in the `logs` folder of its
+application data directory, keeping the session before as `ScopeOne.previous.log`.
+
+Micro-Manager and its device adapters keep their own log, as in Micro-Manager: `CoreLog.txt` in
+the same folder, and `CoreLog-<camera>.txt` for a camera in its own process. Their errors reach a
+client through the response of the request that failed.
+
+Whoever does a piece of work logs it. Core logs what it does itself, such as loading a
+configuration, a recording, a trigger or a processing error. The one who sent a request learns how
+it ended from the response: a Local API client from its response, the GUI in its status bar and
+the log. The commands typed in the console and their responses show only in the console; the
+action log records the commands with the origin `console`.
+
+The log is for people reading what happened. A program follows the request responses, the events
+and the [action log](#action-log) instead, which say the same in fields.
+
 ### Control requests
 
 - `ping`: health check.
@@ -510,6 +542,7 @@ entry comes after that file; the plan in the same file holds its settings.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
 - `action_log`: optional field `since`, an ISO 8601 time; response `entries` at or after it, oldest first. See [Action log](#action-log).
+- `log`: optional field `since`, an ISO 8601 time; response `entries` at or after it, oldest first. See [Log](#log).
 - `triggers`: response `triggers`, see [Triggers](#triggers).
 - `set_triggers`: field `triggers`, which replaces all triggers; an empty list removes them. Response `triggers`.
 - `set_hooks`: fields `hooks` and optional `timeoutMs`; response `hooks` and `timeoutMs`. See [Hooks](#hooks).

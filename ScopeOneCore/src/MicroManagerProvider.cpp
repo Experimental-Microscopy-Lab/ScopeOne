@@ -3,8 +3,10 @@
 #include "internal/DriverHostClient.h"
 
 #include "internal/MicroManagerCalls.h"
+#include "scopeone/Log.h"
 
 #include <QDebug>
+#include <QDir>
 #include <QFuture>
 #include <QJsonDocument>
 #include <QtConcurrent/QtConcurrentRun>
@@ -24,6 +26,14 @@ namespace scopeone::core::internal
     MicroManagerProvider::MicroManagerProvider()
         : m_core(std::make_shared<CMMCore>())
     {
+        // MMCore and the device adapters keep their own log, as in Micro-Manager, beside ScopeOne.log
+        const QString directory = Log::directory();
+        if (!directory.isEmpty())
+        {
+            const QString path = QDir(directory).filePath(QStringLiteral("CoreLog.txt"));
+            m_core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
+            qInfo().noquote() << QStringLiteral("Micro-Manager log: %1").arg(QDir::toNativeSeparators(path));
+        }
     }
 
     MicroManagerProvider::~MicroManagerProvider() = default;

@@ -1593,7 +1593,17 @@ namespace scopeone::core
                 m_managers->hardwareRuntime, &HardwareRuntime::finishProcessingFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
-                this, &ScopeOneCore::processingError);
+                this, [this](const QString& errorMessage)
+                {
+                    // A module that fails on every frame wrote one line per frame, so an error is
+                    // logged once until another one comes or the processing starts again
+                    if (errorMessage != m_lastProcessingError)
+                    {
+                        m_lastProcessingError = errorMessage;
+                        qWarning().noquote() << QStringLiteral("Processing error: %1").arg(errorMessage);
+                    }
+                    emit processingError(errorMessage);
+                });
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::measurementsReady,
                 this, &ScopeOneCore::handleMeasurements, Qt::QueuedConnection);
 
@@ -1812,6 +1822,39 @@ namespace scopeone::core
         }
     }
 
+    // What a finished load brought up, in the log
+    void ScopeOneCore::logConfigurationLoaded(const LoadConfigResult& result) const
+    {
+        if (result.successCount > 0)
+        {
+            qInfo().noquote() << QStringLiteral("%1 device(s) initialized").arg(result.successCount);
+        }
+        if (result.failCount > 0)
+        {
+            qWarning().noquote() << QStringLiteral("%1 device(s) failed to initialize: %2")
+                                        .arg(result.failCount)
+                                        .arg(result.failedDevices.join(QStringLiteral(", ")));
+        }
+        if (result.skippedCameraCount > 0)
+        {
+            qInfo().noquote() << QStringLiteral("%1 camera(s) run in their own process").arg(result.skippedCameraCount);
+        }
+        if (!result.cameraIds.isEmpty())
+        {
+            qInfo().noquote() << QStringLiteral("%1 camera(s) ready").arg(result.cameraIds.size());
+        }
+        else if (result.foundCamera)
+        {
+            qWarning().noquote() << QStringLiteral("No cameras were initialized");
+        }
+        else
+        {
+            qWarning().noquote() << QStringLiteral("No camera devices in configuration");
+        }
+        qInfo().noquote() << QStringLiteral("Configuration loaded (%1): %2")
+                                 .arg(configurationState(), loadedConfigurationPath());
+    }
+
     // Complete a failed configuration load and publish one consistent result
     void ScopeOneCore::finishConfigurationLoadFailure(const LoadConfigResult& result,
                                                       const QString& errorMessage)
@@ -1823,6 +1866,7 @@ namespace scopeone::core
                                    : errorMessage;
         m_configurationFailedDevices = result.failedDevices;
         m_configurationOperationRunning = false;
+        qCritical().noquote() << QStringLiteral("Configuration failed: %1").arg(m_configurationError);
         emit hardwareConfigurationChanged();
         emit configurationLoadFinished(false, result, m_configurationError);
     }
@@ -1923,6 +1967,7 @@ namespace scopeone::core
         {
             return false;
         }
+        qInfo().noquote() << QStringLiteral("Loading configuration: %1").arg(path);
 
         m_configurationError.clear();
         m_configurationFailedDevices.clear();
@@ -1978,6 +2023,7 @@ namespace scopeone::core
                 {
                     startup->deleteLater();
                     m_configurationOperationRunning = false;
+                    logConfigurationLoaded(result);
                     emit hardwareConfigurationChanged();
                     emit configurationLoadFinished(true, result, {});
                 });
@@ -2114,6 +2160,14 @@ namespace scopeone::core
                 m_configurationFailedDevices.clear();
             }
             m_configurationOperationRunning = false;
+            if (task.success)
+            {
+                qInfo().noquote() << QStringLiteral("Configuration unloaded");
+            }
+            else
+            {
+                qCritical().noquote() << QStringLiteral("Configuration unload failed: %1").arg(m_configurationError);
+            }
             emit hardwareConfigurationChanged();
             emit configurationUnloadFinished(task.success, m_configurationError);
             watcher->deleteLater();
@@ -2146,11 +2200,24 @@ namespace scopeone::core
     }
 
     // Stop preview for one camera or the full camera set
-    bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
+    bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll, QString* errorMessage)
     {
         const QString target = cameraIdOrAll.trimmed();
         if (m_configurationOperationRunning || target.isEmpty())
         {
+            return false;
+        }
+        // Stopping a camera whose live frames a recording takes left the recording waiting for
+        // frames that never came, running forever and blocking the unload
+        const QStringList recording = m_managers->recordingManager->liveRecordingCameraIds();
+        if (!recording.isEmpty()
+            && (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0 || recording.contains(target)))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("A recording is taking the frames of %1; stop the recording first")
+                                    .arg(recording.join(QStringLiteral(", ")));
+            }
             return false;
         }
         const bool stopped = m_managers->hardwareRuntime->stopPreview(target);
@@ -4308,6 +4375,7 @@ namespace scopeone::core
         {
             return false;
         }
+        m_lastProcessingError.clear();
         if (enabled && !m_managers->imageProcessingManager->anyModules())
         {
             return false;
@@ -5284,6 +5352,23 @@ namespace scopeone::core
                     parameters.insert(QStringLiteral("preset"), trigger.preset);
                 }
                 logAction(QStringLiteral("trigger"), triggerActionName(trigger.action), parameters, success, error);
+                const QString line = QStringLiteral("Trigger %1 fired: %2 %3 %4 %5 (%6, frame %7), %8")
+                                         .arg(index)
+                                         .arg(trigger.measurement)
+                                         .arg(measurement.value(QStringLiteral("value")).toDouble())
+                                         .arg(parameters.value(QStringLiteral("compare")).toString())
+                                         .arg(trigger.threshold)
+                                         .arg(cameraId)
+                                         .arg(frameIndex)
+                                         .arg(triggerActionName(trigger.action));
+                if (success)
+                {
+                    qInfo().noquote() << line;
+                }
+                else
+                {
+                    qWarning().noquote() << line + QStringLiteral(" failed: ") + error;
+                }
                 emit triggerFired(static_cast<int>(index), measurement, triggerActionName(trigger.action),
                                   success, error);
                 // A device call of the action spins an event loop that can run set_triggers, after
@@ -5320,9 +5405,9 @@ namespace scopeone::core
         case Trigger::Action::ApplyPreset:
             return setConfig(trigger.group, trigger.preset, errorMessage);
         case Trigger::Action::StopPreview:
-            if (!stopPreview(cameraId))
+            if (!stopPreview(cameraId, errorMessage))
             {
-                if (errorMessage) *errorMessage = QStringLiteral("Failed to stop preview");
+                if (errorMessage && errorMessage->isEmpty()) *errorMessage = QStringLiteral("Failed to stop preview");
                 return false;
             }
             return true;

@@ -4,6 +4,7 @@
 #include "scopeone/ImageSceneModel.h"
 #include "PreviewWidget.h"
 #include "ImageWorkspace.h"
+#include "scopeone/Log.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QCoreApplication>
@@ -56,7 +57,7 @@ namespace scopeone::ui
             QStringLiteral("config_loaded"), QStringLiteral("config_unloaded"),
             QStringLiteral("preview_state"), QStringLiteral("stage_moved"),
             QStringLiteral("experiment_state"), QStringLiteral("recording_saved"),
-            QStringLiteral("measurement"), QStringLiteral("trigger_fired"),
+            QStringLiteral("measurement"), QStringLiteral("trigger_fired"), QStringLiteral("log"),
             // Sent to the socket that set the hooks, whether or not it subscribed
             QStringLiteral("before_event"), QStringLiteral("after_event")
         };
@@ -736,7 +737,7 @@ namespace scopeone::ui
                 QStringLiteral("ping"), QStringLiteral("version"), QStringLiteral("status"),
                 QStringLiteral("capabilities"), QStringLiteral("state_snapshot"),
                 QStringLiteral("frame_mapping_info"), QStringLiteral("subscribe"),
-                QStringLiteral("unsubscribe"), QStringLiteral("action_log")
+                QStringLiteral("unsubscribe"), QStringLiteral("action_log"), QStringLiteral("log")
             }));
             groups.insert(QStringLiteral("configuration"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("camera_ids"), QStringLiteral("loaded_devices"),
@@ -1359,6 +1360,13 @@ namespace scopeone::ui
                 });
         connect(core, &scopeone::core::ScopeOneCore::measurementsReady,
                 this, &ScopeOneLocalApiServer::publishMeasurement);
+        // Queued, as an entry can be written on any thread, and a write that fails on a socket
+        // logs again
+        connect(scopeone::core::Log::instance(), &scopeone::core::Log::entryAdded,
+                this, [this](const scopeone::core::LogEntry& entry)
+                {
+                    publishEvent(QStringLiteral("log"), scopeone::core::Log::toJson(entry));
+                }, Qt::QueuedConnection);
         connect(core, &scopeone::core::ScopeOneCore::triggerFired,
                 this, [this](int index, const QVariantMap& measurement, const QString& action,
                              bool success, const QString& errorMessage)
@@ -1571,7 +1579,8 @@ namespace scopeone::ui
                      && requestType != QStringLiteral("status")
                      && requestType != QStringLiteral("state_snapshot")
                      && requestType != QStringLiteral("frame_mapping_info")
-                     && requestType != QStringLiteral("action_log"))
+                     && requestType != QStringLiteral("action_log")
+                     && requestType != QStringLiteral("log"))
             {
                 response = makeResponse(requestType, false);
                 response.insert(QStringLiteral("error"),
@@ -2729,6 +2738,24 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("log"))
+        {
+            const QString sinceText = request.value(QStringLiteral("since")).toString();
+            const QDateTime since = QDateTime::fromString(sinceText, Qt::ISODateWithMs);
+            if (!sinceText.isEmpty() && !since.isValid())
+            {
+                return errorResponse(type, QStringLiteral("since must be an ISO 8601 time"));
+            }
+            QJsonArray entries;
+            for (const auto& entry : scopeone::core::Log::instance()->entries(since))
+            {
+                entries.append(scopeone::core::Log::toJson(entry));
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("entries"), entries);
+            return response;
+        }
+
         if (type == QStringLiteral("image_windows"))
         {
             QJsonObject response = makeResponse(type, true);
@@ -2996,8 +3023,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("stop_preview"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
-            const bool ok = m_scopeonecore->stopPreview(camera);
-            return ok ? makeResponse(type, true) : errorResponse(type, QStringLiteral("Failed to stop preview"));
+            QString error;
+            const bool ok = m_scopeonecore->stopPreview(camera, &error);
+            return ok ? makeResponse(type, true)
+                      : errorResponse(type, error.isEmpty() ? QStringLiteral("Failed to stop preview") : error);
         }
 
         if (type == QStringLiteral("list_layers"))

@@ -77,7 +77,6 @@ namespace scopeone::ui
         void setupInspect();
         void setupImageProcessing();
         void setupImageGallery();
-        void setupConsole();
         void setupPropertyBrowser();
         void setupRecording();
 
@@ -103,6 +102,7 @@ namespace scopeone::ui
         // Tells about a failure where the user is looking: the status bar shows it in red until
         // something else replaces it, and a click on it opens the console, which has the full text
         void notifyError(const QString& title, const QString& message);
+        void showError(const QString& title, const QString& message);
         // Asks GitHub for a newer release. A check that the user asked for always says what it
         // found, and one at startup only speaks up when there is a newer version.
         void checkForUpdates(bool userInitiated);

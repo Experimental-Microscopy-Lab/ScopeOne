@@ -56,6 +56,11 @@ namespace scopeone::core::internal
         qint64 recordedMaxBytes() const;
 
         bool isRecording() const { return m_captureState.isRecording; }
+        // The cameras whose live frames the running recording takes; an MDA recording takes its own
+        QStringList liveRecordingCameraIds() const
+        {
+            return m_captureState.isRecording && !m_mdaState.usingMda ? m_captureState.activeCameraIds : QStringList{};
+        }
         bool isFinalizing() const { return m_completionPending; }
 
         void onRawFramesReady(const QList<ImageFrame>& frames);
