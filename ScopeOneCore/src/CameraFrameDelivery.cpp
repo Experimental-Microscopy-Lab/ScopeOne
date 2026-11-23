@@ -1,10 +1,13 @@
 #include "internal/CameraFrameDelivery.h"
 
+#include <QDateTime>
+#include <QDebug>
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QThreadPool>
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace scopeone::core::internal
@@ -33,7 +36,8 @@ namespace scopeone::core::internal
     }
 
     // The queue starts empty with the first recorded camera and is dropped with the last
-    void CameraFrameDelivery::setRecordingEnabled(const QStringList& cameraIds, bool enabled)
+    void CameraFrameDelivery::setRecordingEnabled(const QStringList& cameraIds, bool enabled,
+                                                  QList<ImageFrame>* preTriggerFrames, int preTriggerCount)
     {
         std::deque<ImageFrame> discardedFrames;
         {
@@ -43,6 +47,21 @@ namespace scopeone::core::internal
             {
                 if (enabled) m_recordingCameras.insert(cameraId);
                 else m_recordingCameras.remove(cameraId);
+                // The buffer starts again after the recording, from the frames that follow it
+                auto buffer = m_preTriggerBuffers.find(cameraId);
+                if (enabled && buffer != m_preTriggerBuffers.end())
+                {
+                    std::deque<ImageFrame>& frames = buffer->frames;
+                    const std::size_t taken = std::min<std::size_t>(frames.size(), std::max(preTriggerCount, 0));
+                    if (preTriggerFrames)
+                    {
+                        std::copy(frames.end() - static_cast<std::ptrdiff_t>(taken), frames.end(),
+                                  std::back_inserter(*preTriggerFrames));
+                    }
+                    std::move(frames.begin(), frames.end(), std::back_inserter(discardedFrames));
+                    frames.clear();
+                    buffer->bytes = 0;
+                }
             }
             if (wasRecording == m_recordingCameras.isEmpty())
             {
@@ -53,6 +72,50 @@ namespace scopeone::core::internal
             }
         }
         releaseFramesAsync(std::move(discardedFrames));
+    }
+
+    void CameraFrameDelivery::setPreTriggerFrames(const QHash<QString, int>& frameCounts,
+                                                  const QHash<QString, qint64>& byteLimits)
+    {
+        std::deque<ImageFrame> discardedFrames;
+        {
+            QMutexLocker lock(&m_mutex);
+            for (auto it = m_preTriggerBuffers.begin(); it != m_preTriggerBuffers.end();)
+            {
+                if (frameCounts.value(it.key()) > 0)
+                {
+                    ++it;
+                    continue;
+                }
+                std::move(it->frames.begin(), it->frames.end(), std::back_inserter(discardedFrames));
+                it = m_preTriggerBuffers.erase(it);
+            }
+            for (auto it = frameCounts.cbegin(); it != frameCounts.cend(); ++it)
+            {
+                if (it.value() <= 0)
+                {
+                    continue;
+                }
+                PreTriggerBuffer& buffer = m_preTriggerBuffers[it.key()];
+                buffer.frameCount = it.value();
+                buffer.byteLimit = byteLimits.value(it.key());
+                buffer.warned = false;
+                while (!buffer.frames.empty()
+                       && (static_cast<int>(buffer.frames.size()) > buffer.frameCount || buffer.bytes > buffer.byteLimit))
+                {
+                    buffer.bytes -= buffer.frames.front().payloadByteCount();
+                    discardedFrames.push_back(std::move(buffer.frames.front()));
+                    buffer.frames.pop_front();
+                }
+            }
+        }
+        releaseFramesAsync(std::move(discardedFrames));
+    }
+
+    bool CameraFrameDelivery::preTriggerEnabled(const QString& cameraId) const
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_preTriggerBuffers.contains(cameraId);
     }
 
     bool CameraFrameDelivery::recordingEnabled(const QString& cameraId) const
@@ -81,7 +144,7 @@ namespace scopeone::core::internal
 
     FrameDeliveryMode CameraFrameDelivery::mode(const QString& cameraId) const
     {
-        return recordingEnabled(cameraId) ? FrameDeliveryMode::AllFrames
+        return recordingEnabled(cameraId) || preTriggerEnabled(cameraId) ? FrameDeliveryMode::AllFrames
                                           : highRateEnabled(cameraId) ? FrameDeliveryMode::LatestOnly
                                                                       : FrameDeliveryMode::PreviewLatest;
     }
@@ -90,6 +153,20 @@ namespace scopeone::core::internal
     {
         setRecordingEnabled(cameraIds, false);
         setHighRateEnabled(cameraIds, false);
+        QHash<QString, int> frameCounts;
+        QHash<QString, qint64> byteLimits;
+        {
+            QMutexLocker lock(&m_mutex);
+            for (auto it = m_preTriggerBuffers.cbegin(); it != m_preTriggerBuffers.cend(); ++it)
+            {
+                if (!cameraIds.contains(it.key()))
+                {
+                    frameCounts.insert(it.key(), it->frameCount);
+                    byteLimits.insert(it.key(), it->byteLimit);
+                }
+            }
+        }
+        setPreTriggerFrames(frameCounts, byteLimits);
     }
 
     bool CameraFrameDelivery::previewDue(const QString& cameraId) const
@@ -163,6 +240,7 @@ namespace scopeone::core::internal
             const bool recordingWasEnabled = recording;
             quint64 validFrameCount = 0;
             quint64 queuedFrameCount = 0;
+            const auto buffer = recording ? m_preTriggerBuffers.end() : m_preTriggerBuffers.find(cameraId);
             for (const ImageFrame& frame : frames)
             {
                 if (!frame.isValid())
@@ -170,6 +248,10 @@ namespace scopeone::core::internal
                     continue;
                 }
                 ++validFrameCount;
+                if (buffer != m_preTriggerBuffers.end())
+                {
+                    keepPreTriggerFrame(*buffer, frame, m_evictedPreTriggerFrames);
+                }
                 if (!recording)
                 {
                     continue;
@@ -191,8 +273,10 @@ namespace scopeone::core::internal
                 ++queuedFrameCount;
             }
 
-            // Live processing reads frames faster than the view shows them
-            if (recordingWasEnabled || !highRate || previewDue(cameraId))
+            // Live processing reads frames faster than the view shows them, and a camera kept in
+            // AllFrames mode for its pre-trigger buffer delivers them faster too
+            const bool throttled = highRate || buffer != m_preTriggerBuffers.end();
+            if (recordingWasEnabled || !throttled || previewDue(cameraId))
             {
                 m_pendingLatestFrames.insert(cameraId, latestFrame);
                 m_previewTimers[cameraId].start();
@@ -200,6 +284,14 @@ namespace scopeone::core::internal
             if (acquiredFrameCount > 0)
             {
                 m_pendingAcquiredFrameCounts[cameraId] += acquiredFrameCount;
+            }
+            // Released here once enough have gathered, as a busy GUI thread would otherwise let
+            // them pile up until its next flush
+            if (static_cast<qsizetype>(m_evictedPreTriggerFrames.size()) >= kMaximumRecordingFlushFrames)
+            {
+                std::move(m_evictedPreTriggerFrames.begin(), m_evictedPreTriggerFrames.end(),
+                          std::back_inserter(discardedFrames));
+                m_evictedPreTriggerFrames.clear();
             }
             if (recording && acquiredFrameCount > validFrameCount && m_pendingDeliveryError.isEmpty())
             {
@@ -218,6 +310,7 @@ namespace scopeone::core::internal
                 && (!m_pendingLatestFrames.isEmpty()
                     || !m_pendingAcquiredFrameCounts.isEmpty()
                     || !m_pendingRecordingFrames.empty()
+                    || !m_evictedPreTriggerFrames.empty()
                     || !m_pendingDeliveryError.isEmpty()))
             {
                 m_frameFlushQueued = true;
@@ -229,6 +322,49 @@ namespace scopeone::core::internal
         if (queueFlush)
         {
             QMetaObject::invokeMethod(this, [this]() { flushPendingFrames(); }, Qt::QueuedConnection);
+        }
+    }
+
+    // Keeps one frame in a pre-trigger buffer, dropping the oldest beyond its frame count or bytes.
+    // A frame that does not follow the last one, or of another size or format, starts the buffer
+    // again, so that it holds only frames a recording can take as one run: the recording fails on a
+    // skipped frame, and frames from before a change of the ROI or the binning do not belong to it.
+    void CameraFrameDelivery::keepPreTriggerFrame(PreTriggerBuffer& buffer, const ImageFrame& frame,
+                                                  std::deque<ImageFrame>& discardedFrames)
+    {
+        if (!buffer.frames.empty())
+        {
+            const ImageFrame& last = buffer.frames.back();
+            if (last.width != frame.width || last.height != frame.height || last.pixelFormat != frame.pixelFormat
+                || frame.frameIndex != last.frameIndex + 1)
+            {
+                std::move(buffer.frames.begin(), buffer.frames.end(), std::back_inserter(discardedFrames));
+                buffer.frames.clear();
+                buffer.bytes = 0;
+            }
+        }
+        buffer.frames.push_back(frame);
+        // Stamped as it is taken, as the recording would otherwise stamp every buffered frame
+        // with the time it started
+        if (buffer.frames.back().timestampNs == 0)
+        {
+            buffer.frames.back().timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+        }
+        buffer.bytes += frame.payloadByteCount();
+        while (static_cast<int>(buffer.frames.size()) > buffer.frameCount
+               || (buffer.bytes > buffer.byteLimit && buffer.frames.size() > 1))
+        {
+            if (static_cast<int>(buffer.frames.size()) <= buffer.frameCount && !buffer.warned)
+            {
+                // The frames grew past the size they had when the triggers were set
+                buffer.warned = true;
+                qWarning().noquote() << QStringLiteral("The pre-trigger buffer of %1 holds fewer than %2 frames at "
+                                                       "the current frame size")
+                                            .arg(frame.cameraId).arg(buffer.frameCount);
+            }
+            buffer.bytes -= buffer.frames.front().payloadByteCount();
+            discardedFrames.push_back(std::move(buffer.frames.front()));
+            buffer.frames.pop_front();
         }
     }
 
@@ -275,8 +411,10 @@ namespace scopeone::core::internal
         QString deliveryError;
         quint64 droppedRecordingFrames = 0;
         bool queueNextFlush = false;
+        std::deque<ImageFrame> evictedFrames;
         {
             QMutexLocker lock(&m_mutex);
+            evictedFrames.swap(m_evictedPreTriggerFrames);
             latestFrames.swap(m_pendingLatestFrames);
             acquiredFrameCounts.swap(m_pendingAcquiredFrameCounts);
             deliveryError.swap(m_pendingDeliveryError);
@@ -297,6 +435,7 @@ namespace scopeone::core::internal
             queueNextFlush = !m_pendingRecordingFrames.empty();
             m_frameFlushQueued = queueNextFlush;
         }
+        releaseFramesAsync(std::move(evictedFrames));
 
         for (auto it = acquiredFrameCounts.cbegin(); it != acquiredFrameCounts.cend(); ++it)
         {

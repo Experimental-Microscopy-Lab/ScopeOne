@@ -583,15 +583,19 @@ namespace scopeone::core::internal
 
     // The cameras deliver every frame before recording takes them, and recording lets go of
     // them before the cameras skip frames again
-    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled)
+    bool HardwareRuntime::setRecordingFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled,
+                                                           QList<ImageFrame>* preTriggerFrames,
+                                                           int preTriggerCount)
     {
+        // A camera with a pre-trigger buffer stays in AllFrames mode after its recording
         QHash<QString, FrameDeliveryMode> modes;
         for (const QString& cameraId : cameraIds)
         {
-            modes.insert(cameraId, enabled ? FrameDeliveryMode::AllFrames
-                                           : m_frameDelivery.highRateEnabled(cameraId)
-                                                 ? FrameDeliveryMode::LatestOnly
-                                                 : FrameDeliveryMode::PreviewLatest);
+            modes.insert(cameraId, enabled || m_frameDelivery.preTriggerEnabled(cameraId)
+                                       ? FrameDeliveryMode::AllFrames
+                                       : m_frameDelivery.highRateEnabled(cameraId)
+                                             ? FrameDeliveryMode::LatestOnly
+                                             : FrameDeliveryMode::PreviewLatest);
         }
         if (enabled)
         {
@@ -599,7 +603,7 @@ namespace scopeone::core::internal
             {
                 return false;
             }
-            m_frameDelivery.setRecordingEnabled(cameraIds, true);
+            m_frameDelivery.setRecordingEnabled(cameraIds, true, preTriggerFrames, preTriggerCount);
             return true;
         }
         m_frameDelivery.setRecordingEnabled(cameraIds, false);
@@ -607,12 +611,27 @@ namespace scopeone::core::internal
         return true;
     }
 
+    bool HardwareRuntime::setPreTriggerFrames(const QHash<QString, int>& frameCounts,
+                                              const QHash<QString, qint64>& byteLimits)
+    {
+        m_frameDelivery.setPreTriggerFrames(frameCounts, byteLimits);
+        QHash<QString, FrameDeliveryMode> modes;
+        for (const HardwareDeviceDescriptor& device : devices())
+        {
+            if (device.kind == HardwareDeviceKind::Camera)
+            {
+                modes.insert(device.logicalId, m_frameDelivery.mode(device.logicalId));
+            }
+        }
+        return applyFrameDeliveryModes(modes);
+    }
+
     bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled)
     {
         QHash<QString, FrameDeliveryMode> modes;
         for (const QString& cameraId : cameraIds)
         {
-            modes.insert(cameraId, m_frameDelivery.recordingEnabled(cameraId)
+            modes.insert(cameraId, m_frameDelivery.recordingEnabled(cameraId) || m_frameDelivery.preTriggerEnabled(cameraId)
                                        ? FrameDeliveryMode::AllFrames
                                        : enabled ? FrameDeliveryMode::LatestOnly : FrameDeliveryMode::PreviewLatest);
         }

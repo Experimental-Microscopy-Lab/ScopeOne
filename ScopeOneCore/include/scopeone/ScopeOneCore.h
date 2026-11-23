@@ -293,6 +293,11 @@ namespace scopeone::core
             double threshold{0.0};
             Action action{Action::Record};
             int frames{100};
+            // For record: frames the camera took up to the moment the trigger fires, which the
+            // recording starts with. Core keeps that many of the newest frames of the camera while
+            // the trigger is set. The frame that crossed the threshold is among them, as far back as
+            // the live processing lags behind the camera.
+            int preTriggerFrames{0};
             QString group;
             QString preset;
             double cooldownMs{5000.0};
@@ -920,6 +925,9 @@ namespace scopeone::core
         quint64 m_nextProcessingRequestId{0};
         QHash<QString, std::vector<ImageFrame>> m_layerStacks;
         QList<Trigger> m_triggers;
+        // The pre-trigger buffers of the triggers, kept to restore them when new ones fail
+        QHash<QString, int> m_preTriggerFrameCounts;
+        QHash<QString, qint64> m_preTriggerByteLimits;
         // When each trigger last fired on m_triggerClock, or -1
         QList<qint64> m_triggerFiredMs;
         QElapsedTimer m_triggerClock;

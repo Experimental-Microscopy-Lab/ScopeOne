@@ -131,8 +131,13 @@ namespace scopeone::core::internal
                           std::vector<ImageFrame>& frames,
                           int timeoutMs = 10000);
         void setFrameDeliveryPaused(const QStringList& cameraIds, bool paused);
+        // Enabling hands over the last preTriggerCount frames of each camera's pre-trigger buffer
         bool setRecordingFrameDeliveryEnabled(const QStringList& cameraIds,
-                                              bool enabled);
+                                              bool enabled,
+                                              QList<ImageFrame>* preTriggerFrames = nullptr,
+                                              int preTriggerCount = 0);
+        // Keeps the last frames of the cameras for record triggers with frames before the threshold
+        bool setPreTriggerFrames(const QHash<QString, int>& frameCounts, const QHash<QString, qint64>& byteLimits);
         bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
                                              bool enabled);
         bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token);

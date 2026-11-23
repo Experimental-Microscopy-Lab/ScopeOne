@@ -347,7 +347,7 @@ trigger alone for `cooldownMs` milliseconds.
 - `measurement`: the `name` a processing module reports.
 - `cameraId`: the camera it applies to, empty or missing for any camera.
 - `compare`: `above` or `below` `threshold`.
-- `action`: `record` takes `frames` (default 100) from the camera that measured, as the `record` request does, and keeps the session in memory; `apply_preset` sets `preset` of `group` as `set_config` does, within the limits of the configuration; `stop_preview` stops the preview of the camera that measured.
+- `action`: `record` takes `frames` (default 100) from the camera that measured, as the `record` request does, and keeps the session in memory, and with `preTriggerFrames` (default 0) starts with that many frames the camera took up to the moment the trigger fired, so the session holds `preTriggerFrames + frames` frames in one run of frame indices with their original timestamps. The frame that crossed the threshold is among them, as many frames before the moment of firing as the live processing lags behind the camera, its `frameIndex` in `trigger_fired` and the action log. While such a trigger is set Core keeps the newest frames of its camera in memory and receives every frame of it, and `set_triggers` refuses triggers whose frames would need more memory than recordings may hold for writing. Right after `set_triggers` the buffer holds fewer frames, none at all for a trigger that fires on the first measurement, whose threshold frame then lies before the session, and the recording takes more after the threshold; `apply_preset` sets `preset` of `group` as `set_config` does, within the limits of the configuration; `stop_preview` stops the preview of the camera that measured.
 - `cooldownMs`: default 5000.
 
 ```python

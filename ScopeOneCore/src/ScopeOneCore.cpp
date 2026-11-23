@@ -1907,6 +1907,9 @@ namespace scopeone::core
         m_triggers.clear();
         ++m_triggerGeneration;
         m_triggerFiredMs.clear();
+        m_managers->hardwareRuntime->setPreTriggerFrames({}, {});
+        m_preTriggerFrameCounts.clear();
+        m_preTriggerByteLimits.clear();
         m_loadedConfigPath.clear();
         m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
@@ -5255,6 +5258,11 @@ namespace scopeone::core
             {
                 error = QStringLiteral("records no frames");
             }
+            else if (trigger.preTriggerFrames < 0
+                     || (trigger.preTriggerFrames > 0 && trigger.action != Trigger::Action::Record))
+            {
+                error = QStringLiteral("takes preTriggerFrames only with record, and not below 0");
+            }
             else if (trigger.action == Trigger::Action::ApplyPreset
                      && !availableConfigs(trigger.group).contains(trigger.preset))
             {
@@ -5266,6 +5274,75 @@ namespace scopeone::core
                 return false;
             }
         }
+        // Each camera keeps as many frames as its largest pre-trigger count asks for. The memory
+        // they take is checked here against the memory recordings may hold for writing, at the
+        // current frame size, and too much refuses the triggers instead of keeping fewer frames.
+        QHash<QString, int> frameCounts;
+        QHash<QString, int> countingTrigger;
+        for (qsizetype index = 0; index < triggers.size(); ++index)
+        {
+            const Trigger& trigger = triggers.at(index);
+            if (trigger.preTriggerFrames <= 0)
+            {
+                continue;
+            }
+            for (const QString& cameraId : trigger.cameraId.isEmpty() ? m_cameraIds : QStringList{trigger.cameraId})
+            {
+                if (trigger.preTriggerFrames > frameCounts.value(cameraId))
+                {
+                    frameCounts.insert(cameraId, trigger.preTriggerFrames);
+                    countingTrigger.insert(cameraId, static_cast<int>(index));
+                }
+            }
+        }
+        QHash<QString, qint64> byteLimits;
+        qint64 totalBytes = 0;
+        for (auto it = frameCounts.cbegin(); it != frameCounts.cend(); ++it)
+        {
+            const ImageFrame latest = graphFrame(rawLayerKey(it.key()));
+            qint64 frameBytes = latest.isValid() ? latest.payloadByteCount() : 0;
+            int x = 0, y = 0, width = 0, height = 0;
+            if (frameBytes <= 0 && m_managers->hardwareRuntime->getROI(it.key(), x, y, width, height))
+            {
+                // Before the camera has shown a frame, its ROI at two bytes a pixel
+                frameBytes = static_cast<qint64>(width) * height * 2;
+            }
+            byteLimits.insert(it.key(), frameBytes * it.value());
+            totalBytes += frameBytes * it.value();
+        }
+        if (totalBytes > recordingMaxPendingWriteBytes())
+        {
+            QStringList needs;
+            for (auto it = byteLimits.cbegin(); it != byteLimits.cend(); ++it)
+            {
+                needs.append(QStringLiteral("trigger %1 needs %2 MiB for %3")
+                                 .arg(countingTrigger.value(it.key()))
+                                 .arg(it.value() / (1024 * 1024))
+                                 .arg(it.key()));
+            }
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("The pre-trigger frames need %1 MiB, more than the %2 MiB recordings "
+                                               "may hold: %3")
+                                    .arg(totalBytes / (1024 * 1024))
+                                    .arg(recordingMaxPendingWriteBytes() / (1024 * 1024))
+                                    .arg(needs.join(QStringLiteral(", ")));
+            }
+            return false;
+        }
+        // A camera that cannot deliver every frame would fill its buffer with the sparse
+        // preview frames, and the recording would fail on the first gap after them
+        if (!m_managers->hardwareRuntime->setPreTriggerFrames(frameCounts, byteLimits))
+        {
+            m_managers->hardwareRuntime->setPreTriggerFrames(m_preTriggerFrameCounts, m_preTriggerByteLimits);
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("The cameras cannot deliver every frame for the pre-trigger frames");
+            }
+            return false;
+        }
+        m_preTriggerFrameCounts = frameCounts;
+        m_preTriggerByteLimits = byteLimits;
         m_triggers = triggers;
         ++m_triggerGeneration;
         m_triggerFiredMs = QList<qint64>(triggers.size(), -1);
@@ -5345,6 +5422,7 @@ namespace scopeone::core
                 if (trigger.action == Trigger::Action::Record)
                 {
                     parameters.insert(QStringLiteral("frames"), trigger.frames);
+                    parameters.insert(QStringLiteral("preTriggerFrames"), trigger.preTriggerFrames);
                 }
                 else if (trigger.action == Trigger::Action::ApplyPreset)
                 {
@@ -5395,12 +5473,17 @@ namespace scopeone::core
             plan.cameraIds = {cameraId};
             plan.format = RecordingFormat::OmeTiff;
             plan.streamToDisk = false;
-            plan.framesPerBurst = trigger.frames;
+            // The buffered frames count toward the recording. A buffer that holds fewer
+            // of them yet, just after the triggers were set, leaves more frames after it.
+            plan.framesPerBurst = trigger.frames + trigger.preTriggerFrames;
             plan.burstMode = false;
             plan.targetBursts = 1;
             plan.enableCompression = false;
             plan.processing = processingRecipe();
-            return startExperiment(document, errorMessage);
+            m_managers->recordingManager->setNextPreTriggerFrames(trigger.preTriggerFrames);
+            const bool started = startExperiment(document, errorMessage);
+            m_managers->recordingManager->setNextPreTriggerFrames(0);
+            return started;
         }
         case Trigger::Action::ApplyPreset:
             return setConfig(trigger.group, trigger.preset, errorMessage);

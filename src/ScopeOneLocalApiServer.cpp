@@ -986,6 +986,7 @@ namespace scopeone::ui
                 if (trigger.action == Trigger::Action::Record)
                 {
                     item.insert(QStringLiteral("frames"), trigger.frames);
+                    item.insert(QStringLiteral("preTriggerFrames"), trigger.preTriggerFrames);
                 }
                 else if (trigger.action == Trigger::Action::ApplyPreset)
                 {
@@ -1028,6 +1029,7 @@ namespace scopeone::ui
                                                                      : Trigger::Compare::Below;
                 trigger.threshold = item.value(QStringLiteral("threshold")).toDouble();
                 trigger.frames = item.value(QStringLiteral("frames")).toInt(trigger.frames);
+                trigger.preTriggerFrames = item.value(QStringLiteral("preTriggerFrames")).toInt(trigger.preTriggerFrames);
                 trigger.group = item.value(QStringLiteral("group")).toString();
                 trigger.preset = item.value(QStringLiteral("preset")).toString();
                 trigger.cooldownMs = item.value(QStringLiteral("cooldownMs")).toDouble(trigger.cooldownMs);

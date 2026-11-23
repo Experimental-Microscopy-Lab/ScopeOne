@@ -55,6 +55,9 @@ namespace scopeone::core::internal
         void setRecordedMaxBytes(qint64 bytes);
         qint64 recordedMaxBytes() const;
 
+        // The next recording of live frames starts with up to this many frames from before it, out
+        // of the pre-trigger buffer. It applies to that one recording only.
+        void setNextPreTriggerFrames(int count) { m_nextPreTriggerFrames = count; }
         bool isRecording() const { return m_captureState.isRecording; }
         // The cameras whose live frames the running recording takes; an MDA recording takes its own
         QStringList liveRecordingCameraIds() const
@@ -217,6 +220,7 @@ namespace scopeone::core::internal
 
         HardwareRuntime* m_hardwareRuntime{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
+        int m_nextPreTriggerFrames{0};
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;
         MDAHook m_mdaHook;
 

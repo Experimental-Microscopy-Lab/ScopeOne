@@ -1017,7 +1017,9 @@ namespace
                     "Replace the triggers. Each is an object with measurement (name a processing module "
                     "reports), optional cameraId (empty for any camera), compare (above or below), "
                     "threshold, action (record with frames, apply_preset with group and preset, or "
-                    "stop_preview) and cooldownMs (default 5000). Core performs the action on the frame that "
+                    "stop_preview) and cooldownMs (default 5000). record also takes preTriggerFrames, the "
+                    "frames up to the moment the trigger fires that the recording starts with, which Core keeps "
+                    "in memory while the trigger is set. Core performs the action on the frame that "
                     "crosses the threshold and sends a trigger_fired event. An empty list removes them"),
                 inputProperties({
                     {QStringLiteral("triggers"),
