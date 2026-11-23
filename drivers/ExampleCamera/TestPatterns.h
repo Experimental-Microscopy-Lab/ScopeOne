@@ -14,7 +14,8 @@ namespace example_camera
         Gradient,
         Hologram,
         RedBloodCells,
-        FluorescentBeads
+        FluorescentBeads,
+        IscatLanding
     };
 
     QStringList testPatternNames();
@@ -41,11 +42,25 @@ namespace example_camera
     private:
         void layOutBloodCells();
         void layOutBeads();
+        void layOutLanding();
+        void renderLanding(quint64 frameIndex, int roiX, int roiY, int roiWidth, int roiHeight,
+                           std::vector<double>& intensities) const;
+
+        struct Landing
+        {
+            quint64 frame;
+            quint64 dwell;
+            double x;
+            double y;
+            double contrast;
+        };
 
         int m_sensorWidth;
         int m_sensorHeight;
         std::vector<float> m_cellAmplitude;
         std::vector<float> m_cellPhase;
         std::vector<float> m_beads;
+        std::vector<float> m_glass;
+        std::vector<Landing> m_landings;
     };
 }

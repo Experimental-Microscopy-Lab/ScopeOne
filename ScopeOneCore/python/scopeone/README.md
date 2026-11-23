@@ -622,7 +622,7 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 - Python 3.14 is required.
 - Frame reads use a shared-memory export block.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
-- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_raw_stream_process.py` for live frames, `example_image_scene_sync.py` for markups, and `processing_offset.py` for a processing module.
+- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_raw_stream_process.py` for live frames, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, and for the iSCAT Landing scene of the example camera `example_landing.py`, which records when a particle lands, and `processing_landing.py`, the same detection as a module whose measurement a trigger acts on.
 
 ## Build
 
