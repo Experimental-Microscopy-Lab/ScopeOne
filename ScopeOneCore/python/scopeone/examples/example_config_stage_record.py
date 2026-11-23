@@ -1,8 +1,10 @@
+from pathlib import Path
+
 from scopeone import ScopeOne
 
 
-CONFIG_PATH = r"C:\Users\T7910\Documents\Source\cpp\ScopeOne\config\MMConfig_demo.cfg"
-SAVE_DIR = r"C:\Users\T7910\Downloads"
+CONFIG_PATH = str(Path(__file__).resolve().parents[4] / "config" / "MMConfig_demo.cfg")
+SAVE_DIR = str(Path.home())
 
 
 def main() -> None:
