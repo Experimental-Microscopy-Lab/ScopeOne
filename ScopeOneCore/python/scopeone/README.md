@@ -58,6 +58,18 @@ the script in `processing/python/` beside ScopeOne or in the same folder under t
 user's application data directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
 there; `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to copy.
 
+A module can also report what it measured by returning `(array, measurements)`, where
+`measurements` is a list of dicts with `name`, a number `value`, and optional `x` and `y` in image
+pixels. Measurements of the live preview go out as the `measurement` event and are what
+[triggers](#triggers) act on. Python processing modules never control devices themselves.
+
+```python
+@module("my.python.peak", "Peak")
+def peak(image):
+    y, x = np.unravel_index(np.argmax(image), image.shape)
+    return image, [{"name": "peak", "value": float(image[y, x]), "x": int(x), "y": int(y)}]
+```
+
 Each module in a pipeline runs in its own Python process (`python -m scopeone.processing
 serve script.py`). That interpreter needs numpy and the `scopeone` package
 (`pip install ScopeOneCore/python/scopeone`). Choose it under **Settings > Python
@@ -69,8 +81,8 @@ ScopeOne first runs `python -m scopeone.processing describe script.py`, which pr
 line with the modules of the script and their parameters. While the pipeline runs, each frame is
 one request on stdin: a JSON line with `module`, `parameters`, `width`, `height`, `stride`,
 `format` (`mono8` or `mono16`), `bits` and `bytes`, followed by that many pixel bytes. The reply
-on stdout has the same form with `width`, `height`, `format` and `bytes`, or a JSON line with
-`error`.
+on stdout has the same form with `width`, `height`, `format`, `bytes` and, when the module
+measured something, `measurements`, or a JSON line with `error`.
 
 ## Current API
 
@@ -151,7 +163,7 @@ scopeone.close()
 
 The standalone C++ `ScopeOneMcpServer` included with the desktop app is the default integration for MCP-compatible agents. It does not use this Python package. This package remains available for scripts, notebooks, and custom Python-based adapters that intentionally use the Local API directly.
 
-`capabilities()` returns `operationGroups`, `longRunningOperations`, `hardwareMutationOperations`, `filesystemMutationOperations`, and `destructiveOperations`. `state_snapshot()` returns application and configuration identity, hardware inventory, preview state, processing modules, image layers, markups, live acquisition and writer progress, retained experiments, and recording sessions. It intentionally does not poll every hardware property; use `get_property(..., from_cache=False)`, position reads, exposure reads, or ROI reads when an action requires a fresh hardware value.
+`capabilities()` returns `operationGroups`, `longRunningOperations`, `hardwareMutationOperations`, `filesystemMutationOperations`, and `destructiveOperations`. `state_snapshot()` returns application and configuration identity, hardware inventory with the `ScopeOneLimit` ranges of the configuration in `hardware.limits` (each `device`, `property`, `min`, `max`), preview state, processing modules, image layers, markups, live acquisition and writer progress, retained experiments, and recording sessions. It intentionally does not poll every hardware property; use `get_property(..., from_cache=False)`, position reads, exposure reads, or ROI reads when an action requires a fresh hardware value.
 
 The Python client assigns a numeric `requestId` to every control request. The desktop app echoes it, and the client rejects a mismatched response. Raw protocol clients may provide their own string or numeric `requestId`.
 
@@ -166,6 +178,9 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.status()`
 - `ScopeOne.capabilities()`
 - `ScopeOne.state_snapshot()`
+- `ScopeOne.subscribe(events=None)`
+- `ScopeOne.unsubscribe(events=None)`
+- `ScopeOne.wait_event(names=None, timeout=None)`
 - `ScopeOne.camera_ids()`
 - `ScopeOne.loaded_devices()`
 - `ScopeOne.start_preview(camera="All")`
@@ -239,6 +254,12 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.remove_processing_module(index)`
 - `ScopeOne.set_processing_module_parameters(index, parameters)`
 - `ScopeOne.reset_processing_module_state(index)`
+- `ScopeOne.triggers()`
+- `ScopeOne.set_triggers(triggers)`
+- `ScopeOne.set_hooks(hooks, timeout_ms=5000)`
+- `ScopeOne.hook_reply(hook_id, action="continue", **changes)`
+- `ScopeOne.run_hooks(before=None, after=None, experiment_id=None)`
+- `ScopeOne.action_log(since=None)`
 - `ScopeOne.experiment_document()`
 - `ScopeOne.validate_experiment(document)`
 - `ScopeOne.save_experiment(file_path, document)`
@@ -289,14 +310,134 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - Requests may include a string or numeric `requestId`; every response echoes it.
 - Success response: `{"type": "<request type>", "requestId": 1, "ok": true, ...}`
 - Error response: `{"type": "<request type>", "requestId": 1, "ok": false, "error": "..."}`
+- Event message, only on a subscribed connection: `{"event": "<name>", "time": "2026-11-13T09:30:00.125Z", "data": {...}}`. It never carries a `requestId`, and can arrive between a request and its response.
+
+### Events
+
+`subscribe` with optional field `events` (a list of names; empty or missing means all) starts sending those events on the same connection, and `unsubscribe` with the same field stops them. Both return the subscribed `events`. A subscription ends when the connection closes. `capabilities` lists the names in `events`.
+
+- `config_loaded`: `path`, `success`, `error`.
+- `config_unloaded`: `path`, `success`, `error`.
+- `preview_state`: `running`, and `cameraIds` of the cameras that are still running.
+- `stage_moved`: `device`, `success` and `error`. Read the position with `read_xy_position` or `read_z_position`.
+- `experiment_state`: `experimentId` and `state`, `Running` when the experiment starts, then `Completed`, `Canceled` or `Failed` with `error` and the written `paths`.
+- `recording_saved`: `sessionId`, `success`, `message`, and `paths`, or `cameraId` when one camera of the session was saved.
+- `measurement`: `cameraId`, `moduleId`, `frameIndex` and `measurements` of one frame from a processing module.
+- `trigger_fired`: `index` of the trigger, the `measurement` that crossed its threshold (with `cameraId`, `moduleId` and `frameIndex`), `action`, `success` and `error`.
+- `before_event` and `after_event`: hook requests, see [Hooks](#hooks). They go to the connection that set the hooks, without a subscription.
+
+In Python, `subscribe(events=None)` and `unsubscribe(events=None)` change the subscription, and `wait_event(names=None, timeout=None)` returns the next event of those names as a dict, or `None` after `timeout` seconds. Events that arrive while the client waits for a response are kept for `wait_event`.
+
+```python
+scope.subscribe(["experiment_state"])
+scope.start_experiment(document)
+while (event := scope.wait_event(timeout=600)) and event["data"]["state"] == "Running":
+    pass
+```
+
+### Triggers
+
+A trigger lets Core react to a measurement within the frame that made it, without a client in
+the loop. Core checks every measurement of the live processing against the triggers. When one
+crosses a threshold, Core performs the action itself, sends `trigger_fired`, and leaves that
+trigger alone for `cooldownMs` milliseconds.
+
+- `measurement`: the `name` a processing module reports.
+- `cameraId`: the camera it applies to, empty or missing for any camera.
+- `compare`: `above` or `below` `threshold`.
+- `action`: `record` takes `frames` (default 100) from the camera that measured, as the `record` request does, and keeps the session in memory; `apply_preset` sets `preset` of `group` as `set_config` does, within the limits of the configuration; `stop_preview` stops the preview of the camera that measured.
+- `cooldownMs`: default 5000.
+
+```python
+scope.set_triggers([
+    {"measurement": "contrast", "compare": "above", "threshold": 0.02,
+     "action": "record", "frames": 500, "cooldownMs": 10000},
+])
+scope.subscribe(["trigger_fired"])
+event = scope.wait_event(timeout=3600)
+```
+
+`set_triggers` checks the measurement name, the camera, the action and its preset, and keeps the
+old triggers when one is invalid. The triggers live in the running Core and are listed in
+`state_snapshot` under `triggers`.
+
+### Hooks
+
+Hooks let a client step into a running experiment at every event, as the acquisition hooks of
+pycro-manager do. `set_hooks` with `hooks` (`before_event`, `after_event` or both) and
+`timeoutMs` (default 5000) turns them on for the experiments started afterwards; an empty list
+turns them off. They belong to the connection that set them and end when it closes; while they
+are on, `set_hooks` from another connection is refused.
+
+At `before_event`, before the hardware moves, the event waits for a reply. The client answers
+with `hook_reply` and `hookId`, and `action` `continue`, `skip` (the event takes no frames and
+leaves no record; in an experiment that runs to its end, OME-TIFF and OME-Zarr files keep the
+shape of the plan with empty planes in place of the skipped ones) or `stop` (the experiment ends as `Completed` with the data taken so far).
+`continue` may change `x`, `y`, `z` and `exposureMs` of that event; the moves go through the
+same limits as any other, and the session records the changed event with `changedByHook`. Only
+the connection that set the hooks can answer them. At `after_event` the
+frames are taken and in the session, so `latest_raw_frame` or `session_frame` read them; the
+answer is `continue` or `stop`. An event without a reply within `timeoutMs` goes on unchanged.
+
+The hook event data holds `hookId`, `experimentId`, `event` (`sequenceIndex`, `timeIndex`,
+`positionIndex`, `zIndex`, `channelIndex`, `channelPreset`, `x`, `y`, `z`, `hasXY`, `hasZ`,
+`exposureMs`, `cameraIds`) and, after the event, `frames` with `cameraId`, `frameIndex`,
+`timestampNs`, `width` and `height`. Hooks apply to experiments that run as events, that is
+with positions, Z positions, channels or time intervals. While hooks are on, the Z slices and
+channels are taken one by one, not as hardware sequences. Events cannot be added.
+
+`run_hooks(before, after)` answers the hooks until the experiment ends. A function returns
+`None` to continue, `"skip"` or `"stop"`, or a dict with `action` and changes. This skips the
+positions marked as empty and corrects the focus from the last image of each position:
+
+```python
+empty_positions = {3, 7}
+focus_shift = {}
+
+def before(event):
+    if event["positionIndex"] in empty_positions:
+        return "skip"
+    if event["hasZ"]:
+        return {"z": event["z"] + focus_shift.get(event["positionIndex"], 0.0)}
+
+def after(data):
+    frame = scope.latest_raw_frame(data["frames"][0]["cameraId"])
+    focus_shift[data["event"]["positionIndex"]] = measure_defocus_um(frame)
+
+scope.set_hooks(["before_event", "after_event"])
+session = scope.start_experiment(document)
+scope.run_hooks(before, after, session.experiment_id())
+scope.set_hooks([])
+```
+
+### Action log
+
+Core logs every request listed under `hardwareMutationOperations` or
+`filesystemMutationOperations` in `capabilities` when it finishes, and every trigger action. An
+entry is
+
+```json
+{"time": "2026-11-13T09:41:07.312Z", "origin": "api", "operation": "set_exposure",
+ "parameters": {"camera": "Camera", "exposureMs": 20}, "success": true, "error": ""}
+```
+
+`origin` is `api` for a Local API request, which covers the MCP server, `console` for a command
+typed in the app console, and `trigger` for a trigger action, whose `operation` is the action and
+whose `parameters` hold the trigger `index` and the `measurement` that fired it. `parameters` are
+the request fields without `type`, `requestId` and `confirm`. Core keeps the last 10000 entries.
+
+When a recording ends, its metadata file (`<baseName>_metadata.json`, the experiment document
+written beside the data) gets the entries from the last configuration load before the recording
+to its end as `actionLog`. A `record` request is answered when its recording ends, so its own
+entry comes after that file; the plan in the same file holds its settings.
 
 ### Control requests
 
 - `ping`: health check.
 - `version`: response `version` for ScopeOne and `coreVersion` for ScopeOneCore.
 - `status`: response `version`, `coreVersion`, configuration lifecycle state, configuration path, completeness, configuration error, failed configuration devices, cameras, devices, running previews, processing state, layer keys, Stage Mosaic status, recording progress, and writer status. Writer status includes captured, written, and dropped frame counts, written bytes, and queued bytes.
-- `capabilities`: response `capabilities` with operation groups and hardware, filesystem, destructive, and long-running operation classifications.
-- `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory, preview, processing, scene, live acquisition and writer progress, experiment, and session state.
+- `capabilities`: response `capabilities` with operation groups, event names, and hardware, filesystem, destructive, and long-running operation classifications.
+- `state_snapshot`: response `snapshot` with application and Core versions, configuration, hardware inventory and limits, preview, processing, triggers, hooks, scene, live acquisition and writer progress, experiment, and session state.
 - `frame_mapping_info`: response `mappingName`, `mappingSize`, `headerBytes`, `maxPayloadBytes`, and supported `pixelFormats`.
 - `load_config`: fields `configPath`; response `state`, `complete`, `cameraIds`, `failedDevices`, `successCount`, `failCount`, and `skippedCameraCount`. A valid configuration can finish as `partially_loaded` when non-camera devices fail; cameras that fail to start are cleaned up and returned as an error.
 - `unload_config`: unload current Micro-Manager config and return `state` and `complete`. A failed unload returns `state: "failed"` and an error while preserving the actual hardware inventory for recovery.
@@ -368,8 +509,13 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
+- `action_log`: optional field `since`, an ISO 8601 time; response `entries` at or after it, oldest first. See [Action log](#action-log).
+- `triggers`: response `triggers`, see [Triggers](#triggers).
+- `set_triggers`: field `triggers`, which replaces all triggers; an empty list removes them. Response `triggers`.
+- `set_hooks`: fields `hooks` and optional `timeoutMs`; response `hooks` and `timeoutMs`. See [Hooks](#hooks).
+- `hook_reply`: fields `hookId`, `action` (`continue`, `skip` or `stop`) and optional `x`, `y`, `z`, `exposureMs`. Accepted while a configuration operation runs. It fails when no event waits on `hookId`, for example after the timeout.
 - `experiment_document`: returns the shared schema version 2 document, initializing a Draft from current cameras, processing, layers, and markups when needed; response `document`.
-- `validate_experiment`: field `document`; response contains the canonical validated `document`.
+- `validate_experiment`: field `document`; response contains the canonical validated `document`. A plan whose exposures, positions, Z positions or channel presets leave a limit of the loaded configuration is reported as an error.
 - `save_experiment`: fields `filePath`, `document`; validates and atomically saves the document.
 - `load_experiment`: field `filePath`; replaces the shared UI document when no experiment is running and responds with `document`.
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.

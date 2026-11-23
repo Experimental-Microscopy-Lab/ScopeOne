@@ -9,7 +9,6 @@
 #include "internal/PythonProcessingModule.h"
 #include "internal/DriverHostClient.h"
 #include "internal/HardwareRuntime.h"
-#include "internal/MicroManagerProvider.h"
 #include "internal/ScopeOneProvider.h"
 #include "internal/CameraFrameDelivery.h"
 #include "internal/ParticleAnalysis.h"
@@ -21,10 +20,12 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QMetaObject>
@@ -36,11 +37,13 @@
 #include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
+#include <QWaitCondition>
 #include <QtConcurrent>
 #include <opencv2/core/version.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <iterator>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -626,9 +629,9 @@ namespace
         return !values.isEmpty();
     }
 
-    // Translate manager load results into the public facade result
+    // Translate the load result of the runtime into the public facade result
     scopeone::core::ScopeOneCore::LoadConfigResult toFacadeLoadConfigResult(
-        const scopeone::core::internal::MicroManagerProvider::LoadResult& result)
+        const scopeone::core::internal::ConfigurationLoadResult& result)
     {
         scopeone::core::ScopeOneCore::LoadConfigResult facade;
         facade.cameraIds = result.cameraIds;
@@ -644,9 +647,7 @@ namespace
     struct ConfigurationTaskResult
     {
         bool success{false};
-        scopeone::core::internal::MicroManagerProvider::LoadResult loadResult;
-        QStringList failedCameras;
-        scopeone::core::internal::ScopeOneProvider::LoadResult scopeOneResult;
+        scopeone::core::internal::ConfigurationLoadResult loadResult;
         QString errorMessage;
     };
 
@@ -722,8 +723,6 @@ namespace scopeone::core
 {
     using scopeone::core::internal::ImageProcessingManager;
     using scopeone::core::internal::HardwareRuntime;
-    using scopeone::core::internal::MicroManagerCameraSetup;
-    using scopeone::core::internal::MicroManagerProvider;
     using scopeone::core::internal::ProcessingModule;
     using scopeone::core::internal::ProcessingPipelineDefinition;
     using scopeone::core::internal::RecordingManager;
@@ -1150,6 +1149,21 @@ namespace scopeone::core
         QMutex processedDeliveryMutex;
         QHash<QString, PendingProcessedFrame> pendingProcessedFrames;
         bool processedFlushQueued{false};
+        // The hook points and the one event that waits at a point. Guarded by mutex, as the
+        // acquisition thread waits while the GUI thread replies.
+        struct HookState
+        {
+            QMutex mutex;
+            QWaitCondition replied;
+            bool beforeEvent{false};
+            bool afterEvent{false};
+            int timeoutMs{5000};
+            quint64 nextId{0};
+            // 0 when no event waits
+            quint64 waitingId{0};
+            std::optional<HookReply> reply;
+        };
+        HookState hooks;
     };
 
     // Return the compiled core version string
@@ -1243,6 +1257,52 @@ namespace scopeone::core
     bool ScopeOneCore::isStaticLayerKey(const QString& layerKey)
     {
         return layerKey.trimmed().startsWith(QStringLiteral("static:"));
+    }
+
+    QString ScopeOneCore::triggerActionName(Trigger::Action action)
+    {
+        switch (action)
+        {
+        case Trigger::Action::Record:
+            return QStringLiteral("record");
+        case Trigger::Action::ApplyPreset:
+            return QStringLiteral("apply_preset");
+        case Trigger::Action::StopPreview:
+            return QStringLiteral("stop_preview");
+        }
+        return {};
+    }
+
+    bool ScopeOneCore::triggerActionFromName(const QString& name, Trigger::Action& action)
+    {
+        for (Trigger::Action candidate : {Trigger::Action::Record, Trigger::Action::ApplyPreset,
+                                          Trigger::Action::StopPreview})
+        {
+            if (triggerActionName(candidate) == name)
+            {
+                action = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    QString ScopeOneCore::hookPointName(HookPoint point)
+    {
+        return point == HookPoint::BeforeEvent ? QStringLiteral("before_event") : QStringLiteral("after_event");
+    }
+
+    bool ScopeOneCore::hookPointFromName(const QString& name, HookPoint& point)
+    {
+        for (HookPoint candidate : {HookPoint::BeforeEvent, HookPoint::AfterEvent})
+        {
+            if (hookPointName(candidate) == name)
+            {
+                point = candidate;
+                return true;
+            }
+        }
+        return false;
     }
 
     void ScopeOneCore::ensureSceneLayer(const QString& layerKey,
@@ -1363,6 +1423,19 @@ namespace scopeone::core
                 QList<DocumentMarkup> markups;
                 filterRecordingPresentation(m_imageSceneModel->document(), layers, markups);
                 session.setPresentationState(layers, markups);
+                // The log since the configuration was loaded, so the settings that led to the
+                // recording are in it too. It is counted by entries, not by the wall clock, which
+                // can step back.
+                QJsonArray actionLog;
+                const quint64 firstCount = m_actionLogCount - static_cast<quint64>(m_actionLog.size());
+                const qsizetype first = m_configLoadedLogCount > firstCount
+                                            ? static_cast<qsizetype>(m_configLoadedLogCount - firstCount)
+                                            : 0;
+                for (qsizetype index = first; index < m_actionLog.size(); ++index)
+                {
+                    actionLog.append(actionLogEntryToJson(m_actionLog.at(index)));
+                }
+                session.setActionLog(actionLog);
             });
 
         connect(m_managers->signalSourceManager,
@@ -1521,6 +1594,8 @@ namespace scopeone::core
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, &ScopeOneCore::processingError);
+        connect(m_managers->imageProcessingManager, &ImageProcessingManager::measurementsReady,
+                this, &ScopeOneCore::handleMeasurements, Qt::QueuedConnection);
 
     }
 
@@ -1565,7 +1640,6 @@ namespace scopeone::core
         return QStringLiteral("failed");
     }
 
-    // Expose the native MMCore handle for low level callers
     // Collect camera ids that currently have active previews
     QStringList ScopeOneCore::runningPreviewCameraIds() const
     {
@@ -1607,6 +1681,19 @@ namespace scopeone::core
         return pixelSizesUm;
     }
 
+    QHash<QString, CameraSettings> ScopeOneCore::cameraSettings(const QStringList& cameraIds,
+                                                               const QJsonObject& deviceProperties) const
+    {
+        QHash<QString, CameraSettings> settings;
+        for (const QString& cameraId : cameraIds)
+        {
+            const QString camera = cameraId.trimmed();
+            settings.insert(camera, m_managers->hardwareRuntime->cameraSettings(
+                                        camera, deviceProperties.value(camera).toObject()));
+        }
+        return settings;
+    }
+
     // Assign a session scale override to one camera
     bool ScopeOneCore::setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm)
     {
@@ -1629,7 +1716,7 @@ namespace scopeone::core
     // Return external device adapter directories searched after the application directory
     QStringList ScopeOneCore::additionalDeviceAdapterSearchPaths() const
     {
-        return m_managers->hardwareRuntime->microManagerAdapterSearchPaths();
+        return m_managers->hardwareRuntime->deviceAdapterSearchPaths();
     }
 
     // Set external device adapter directories for subsequent configuration loads
@@ -1653,19 +1740,14 @@ namespace scopeone::core
                 normalizedPaths.append(normalizedPath);
             }
         }
-        m_managers->hardwareRuntime->setMicroManagerAdapterSearchPaths(normalizedPaths);
+        m_managers->hardwareRuntime->setDeviceAdapterSearchPaths(normalizedPaths);
         return true;
     }
 
-    // Applies a completed device load to the frame graph and public state
-    bool ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
+    // Applies a completed device load to the public state
+    void ScopeOneCore::applyLoadedConfiguration(const QString& configPath,
                                                 const LoadConfigResult& result)
     {
-        if (!m_managers->hardwareRuntime->setMicroManagerDevices(result.devices))
-        {
-            m_managers->hardwareRuntime->setMicroManagerDevices({});
-            return false;
-        }
         m_configurationFailedDevices = result.failedDevices;
         m_configurationError.clear();
         m_configurationState = result.failedDevices.isEmpty()
@@ -1682,7 +1764,7 @@ namespace scopeone::core
             m_loadedConfigSha256 = QString::fromLatin1(
                 QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
         }
-        return true;
+        m_configLoadedLogCount = m_actionLogCount;
     }
 
     void ScopeOneCore::synchronizeCameraIdsFromRegistry()
@@ -1748,17 +1830,11 @@ namespace scopeone::core
     // Releases hardware synchronously during facade destruction
     void ScopeOneCore::unloadConfigurationForShutdown()
     {
-        applySystemShutdownPreset();
-        m_managers->hardwareRuntime->applyScopeOneShutdownPreset();
+        m_managers->hardwareRuntime->stopAllPreviews();
+        m_managers->hardwareRuntime->applyShutdownSettings();
         clearConfigurationRuntime(false, true);
-        m_managers->hardwareRuntime->unloadMicroManagerDevices();
+        m_managers->hardwareRuntime->unloadDevices();
         m_managers->hardwareRuntime->clear();
-    }
-
-    // Apply the configured hardware shutdown state before releasing devices
-    void ScopeOneCore::applySystemShutdownPreset()
-    {
-        m_managers->hardwareRuntime->applyMicroManagerShutdownPreset();
     }
 
     // Stops camera runtime and clears state owned by the facade thread
@@ -1769,7 +1845,7 @@ namespace scopeone::core
         const bool processingWasEnabled = isRealTimeProcessingEnabled();
         m_managers->imageProcessingManager->enableRealTimeProcessing(false);
         const QStringList cameraIds = m_cameraIds;
-        m_managers->hardwareRuntime->stopMicroManagerPreview();
+        m_managers->hardwareRuntime->stopAllPreviews();
         if (stopCameras)
         {
             m_managers->hardwareRuntime->takeDriverHosts();
@@ -1782,6 +1858,11 @@ namespace scopeone::core
         clearProcessedFrames();
         clearStaticFrames();
         m_cameraIds.clear();
+        // The triggers name cameras and presets of this configuration; kept, they fired for a
+        // camera of the next one that reused the id
+        m_triggers.clear();
+        ++m_triggerGeneration;
+        m_triggerFiredMs.clear();
         m_loadedConfigPath.clear();
         m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
@@ -1792,7 +1873,7 @@ namespace scopeone::core
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
         m_imageSceneModel->reset();
-        m_managers->hardwareRuntime->setMicroManagerDevices(QList<HardwareDeviceDescriptor>{});
+        m_managers->hardwareRuntime->clearLoadedDevices();
         if (notify && processingWasEnabled)
         {
             emit processingSettingsChanged();
@@ -1846,14 +1927,13 @@ namespace scopeone::core
         m_configurationError.clear();
         m_configurationFailedDevices.clear();
         m_configurationState = ConfigurationState::Loading;
-        applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
         stopDriverHosts([this, path]() { startConfigurationLoadTask(path); }, true);
         return true;
     }
 
-    // Starts the loading of Micro-Manager and ScopeOne devices after the teardown of the DriverHosts
+    // Starts the loading of the devices after the teardown of the DriverHosts
     void ScopeOneCore::startConfigurationLoadTask(const QString& path)
     {
         auto* watcher = new QFutureWatcher<ConfigurationTaskResult>(this);
@@ -1864,30 +1944,8 @@ namespace scopeone::core
             LoadConfigResult result;
             if (task.success)
             {
-                const QStringList failedCameras = task.failedCameras;
-                for (const MicroManagerCameraSetup& camera : std::as_const(task.loadResult.cameras))
-                {
-                    const bool started = !failedCameras.contains(camera.cameraId);
-                    for (HardwareDeviceDescriptor& device : task.loadResult.devices)
-                    {
-                        if (device.logicalId == camera.cameraId)
-                        {
-                            device.state = started ? HardwareDeviceState::Initialized : HardwareDeviceState::Faulted;
-                        }
-                    }
-                    if (started)
-                    {
-                        task.loadResult.cameraIds.append(camera.cameraId);
-                    }
-                }
-                task.loadResult.failCount += static_cast<int>(failedCameras.size());
-                task.loadResult.failedDevices.append(failedCameras);
+                const QStringList failedCameras = task.loadResult.failedCameras;
                 result = toFacadeLoadConfigResult(task.loadResult);
-                // The ScopeOne devices that failed count with the failed devices of Micro-Manager.
-                // They were left out of the result when the cameras failed to start.
-                result.successCount += task.scopeOneResult.successCount;
-                result.failCount += static_cast<int>(task.scopeOneResult.failedDevices.size());
-                result.failedDevices.append(task.scopeOneResult.failedDevices);
                 if (!failedCameras.isEmpty())
                 {
                     const QString errorMessage = QStringLiteral("Failed to start the cameras: %1")
@@ -1896,8 +1954,7 @@ namespace scopeone::core
                     watcher->deleteLater();
                     return;
                 }
-                if (!m_managers->hardwareRuntime->registerScopeOneDevices()
-                    || !applyLoadedConfiguration(path, result))
+                if (!m_managers->hardwareRuntime->registerLoadedDevices())
                 {
                     const QString errorMessage =
                         QStringLiteral("Device catalog conflicts with registered hardware");
@@ -1905,6 +1962,7 @@ namespace scopeone::core
                     watcher->deleteLater();
                     return;
                 }
+                applyLoadedConfiguration(path, result);
                 for (const HardwareDeviceDescriptor& device : m_managers->hardwareRuntime->devices())
                 {
                     if (device.kind == HardwareDeviceKind::Camera
@@ -1913,8 +1971,8 @@ namespace scopeone::core
                         result.cameraIds.append(device.logicalId);
                     }
                 }
-                // System/Startup of the ScopeOne devices sets properties over the DriverHosts, which
-                // the hardware thread does while the load stays unfinished
+                // The startup settings of the ScopeOne devices go over the DriverHosts, which the
+                // hardware thread sets while the load stays unfinished
                 auto* startup = new QFutureWatcher<void>(this);
                 connect(startup, &QFutureWatcher<void>::finished, this, [this, startup, result]()
                 {
@@ -1925,10 +1983,7 @@ namespace scopeone::core
                 });
                 HardwareRuntime* const runtime = m_managers->hardwareRuntime;
                 startup->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
-                                                     [runtime]() {
-                                                         runtime->applyScopeOneStartupPreset();
-                                                         runtime->applyCoreRoles();
-                                                     }));
+                                                     [runtime]() { runtime->applyStartupSettings(); }));
             }
             else
             {
@@ -1942,26 +1997,16 @@ namespace scopeone::core
         runtime->setConfigurationPath(QFileInfo(path).absoluteFilePath());
         const auto future = QtConcurrent::run(m_hardwareThreadPool.get(), [runtime, path]()
         {
-            ConfigurationTaskResult task;
-            task.success = runtime->loadMicroManagerConfiguration(path, task.loadResult, task.errorMessage);
             // The DriverHosts of the cameras take seconds to start, which the GUI thread does not wait for
-            if (task.success)
-            {
-                task.failedCameras = runtime->startMicroManagerCameras(task.loadResult.cameras);
-                task.scopeOneResult = runtime->loadScopeOneDevices(path);
-            }
-            QString cleanupError;
-            if (!task.success && !runtime->unloadMicroManagerDevices(&cleanupError))
-            {
-                task.errorMessage = QStringLiteral("%1; cleanup failed: %2").arg(task.errorMessage, cleanupError);
-            }
+            ConfigurationTaskResult task;
+            task.success = runtime->loadConfiguration(path, task.loadResult, task.errorMessage);
             return task;
         });
         watcher->setFuture(future);
     }
 
-    // Stops the DriverHosts away from the GUI thread. With applyShutdown, System/Shutdown of the
-    // ScopeOne devices is applied first, as the hosts are taken only after it.
+    // Stops the DriverHosts away from the GUI thread. With applyShutdown, the shutdown settings of
+    // the cfg are applied first, as the hosts are taken only after them.
     void ScopeOneCore::stopDriverHosts(std::function<void()> next, bool applyShutdown)
     {
         auto stop = [this, next = std::move(next)]()
@@ -1991,7 +2036,7 @@ namespace scopeone::core
         });
         HardwareRuntime* const runtime = m_managers->hardwareRuntime;
         shutdown->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(),
-                                              [runtime]() { runtime->applyScopeOneShutdownPreset(); }));
+                                              [runtime]() { runtime->applyShutdownSettings(); }));
     }
 
     // Stops the cameras and removes the devices after a failed configuration load
@@ -2026,7 +2071,7 @@ namespace scopeone::core
         watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [runtime]()
         {
             StageTaskResult task;
-            runtime->unloadMicroManagerDevices(&task.errorMessage);
+            runtime->unloadDevices(&task.errorMessage);
             return task;
         }));
     }
@@ -2042,14 +2087,13 @@ namespace scopeone::core
         m_configurationError.clear();
         m_configurationFailedDevices.clear();
         m_configurationState = ConfigurationState::Unloading;
-        applySystemShutdownPreset();
         m_configurationOperationRunning = true;
         clearConfigurationRuntime(true, false);
         stopDriverHosts([this]() { startConfigurationUnloadTask(); }, true);
         return true;
     }
 
-    // Starts MMCore device unloading after camera teardown
+    // Starts the unloading of the devices after camera teardown
     void ScopeOneCore::startConfigurationUnloadTask()
     {
         auto* watcher = new QFutureWatcher<StageTaskResult>(this);
@@ -2079,7 +2123,7 @@ namespace scopeone::core
         watcher->setFuture(QtConcurrent::run(m_hardwareThreadPool.get(), [runtime]()
         {
             StageTaskResult task;
-            task.success = runtime->unloadMicroManagerDevices(&task.errorMessage);
+            task.success = runtime->unloadDevices(&task.errorMessage);
             return task;
         }));
     }
@@ -2118,14 +2162,14 @@ namespace scopeone::core
     }
 
     // Submit exposure changes through the active camera manager
-    bool ScopeOneCore::setExposure(const QString& cameraIdOrAll, double exposureMs)
+    bool ScopeOneCore::setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage)
     {
         const QString target = cameraIdOrAll.trimmed();
         if (m_configurationOperationRunning || target.isEmpty())
         {
             return false;
         }
-        const bool ok = m_managers->hardwareRuntime->setExposure(target, exposureMs);
+        const bool ok = m_managers->hardwareRuntime->setExposure(target, exposureMs, errorMessage);
         if (ok)
         {
             emit deviceStateChanged();
@@ -2770,6 +2814,7 @@ namespace scopeone::core
         if (session)
         {
             session->setCameraPixelSizesUm(cameraPixelSizesUm(session->cameraIds()));
+            session->setCameraSettings(cameraSettings(session->cameraIds(), deviceProperties));
             SoftwareSnapshot software;
             software.applicationVersion = QCoreApplication::applicationVersion();
             software.coreVersion = getVersion();
@@ -3448,7 +3493,17 @@ namespace scopeone::core
             }
             return false;
         }
-        return m_managers->stageMosaicManager->start(effectivePlan, errorMessage);
+        // The tiles span the rectangle from the current position to the far corner. The manager
+        // reads that position, as reading it here as well blocked the GUI thread twice.
+        HardwareRuntime* const runtime = m_managers->hardwareRuntime;
+        const QString stage = plan.xyStageId.trimmed();
+        const auto checkOrigin = [runtime, stage, &plan](double x, double y, QString* error)
+        {
+            return runtime->checkXYLimit(stage, x, y, error)
+                && runtime->checkXYLimit(stage, x + (plan.columns - 1) * plan.stepXUm,
+                                         y + (plan.rows - 1) * plan.stepYUm, error);
+        };
+        return m_managers->stageMosaicManager->start(effectivePlan, checkOrigin, errorMessage);
     }
 
     void ScopeOneCore::cancelStageMosaic()
@@ -3872,6 +3927,17 @@ namespace scopeone::core
             source.onValue, source.offValue, source.powerDevice, source.powerProperty,
             source.readingDevice, source.readingProperty};
         return finishConfigurationEdit(m_managers->hardwareRuntime->setLightSource(line, errorMessage));
+    }
+
+    QList<HardwareConfiguration::Limit> ScopeOneCore::limits() const
+    {
+        return m_managers->hardwareRuntime->limits();
+    }
+
+    bool ScopeOneCore::checkPlanLimits(const ExperimentPlan& plan, QString* errorMessage) const
+    {
+        // A plan without events streams preview frames and sets no hardware
+        return !planNeedsMdaEvents(plan) || m_managers->hardwareRuntime->checkPlanLimits(plan, errorMessage);
     }
 
     bool ScopeOneCore::reloadRoles(QString* errorMessage)
@@ -4983,6 +5049,328 @@ namespace scopeone::core
         return true;
     }
 
+    void ScopeOneCore::setHooks(const QList<HookPoint>& points, int timeoutMs)
+    {
+        Managers::HookState& hooks = m_managers->hooks;
+        {
+            QMutexLocker locker(&hooks.mutex);
+            hooks.beforeEvent = points.contains(HookPoint::BeforeEvent);
+            hooks.afterEvent = points.contains(HookPoint::AfterEvent);
+            hooks.timeoutMs = timeoutMs;
+            // A waiting event continues unchanged
+            hooks.waitingId = 0;
+            hooks.replied.wakeAll();
+        }
+        if (points.isEmpty())
+        {
+            m_managers->recordingManager->setMdaHook({});
+            return;
+        }
+        m_managers->recordingManager->setMdaHook(
+            [this](HookPoint point, const internal::MDAOutput& output, const std::function<bool()>& canceled)
+            {
+                Managers::HookState& hooks = m_managers->hooks;
+                QMutexLocker locker(&hooks.mutex);
+                if (!(point == HookPoint::BeforeEvent ? hooks.beforeEvent : hooks.afterEvent))
+                {
+                    return HookReply{};
+                }
+                const AcquisitionEvent& event = output.event;
+                QVariantMap eventData{
+                    {QStringLiteral("sequenceIndex"), event.sequenceIndex},
+                    {QStringLiteral("burstIndex"), event.burstIndex},
+                    {QStringLiteral("timeIndex"), event.timeIndex},
+                    {QStringLiteral("positionIndex"), event.positionIndex},
+                    {QStringLiteral("zIndex"), event.zIndex},
+                    {QStringLiteral("channelIndex"), event.channelIndex},
+                    {QStringLiteral("channelGroup"), event.channelGroup},
+                    {QStringLiteral("channelPreset"), event.channelPreset},
+                    {QStringLiteral("hasXY"), event.hasXY},
+                    {QStringLiteral("x"), event.x},
+                    {QStringLiteral("y"), event.y},
+                    {QStringLiteral("hasZ"), event.hasZ},
+                    {QStringLiteral("z"), event.z},
+                    {QStringLiteral("exposureMs"), event.exposureMs},
+                    {QStringLiteral("cameraIds"), event.cameraIds}
+                };
+                QVariantMap data{{QStringLiteral("event"), eventData}};
+                if (point == HookPoint::AfterEvent)
+                {
+                    QVariantList frames;
+                    for (auto it = output.frames.cbegin(); it != output.frames.cend(); ++it)
+                    {
+                        frames.append(QVariantMap{
+                            {QStringLiteral("cameraId"), it.key()},
+                            {QStringLiteral("frameIndex"), it.value().frameIndex},
+                            {QStringLiteral("timestampNs"), it.value().timestampNs},
+                            {QStringLiteral("width"), it.value().width},
+                            {QStringLiteral("height"), it.value().height}
+                        });
+                    }
+                    data.insert(QStringLiteral("frames"), frames);
+                }
+                const quint64 hookId = ++hooks.nextId;
+                hooks.waitingId = hookId;
+                hooks.reply.reset();
+                const QDeadlineTimer deadline(hooks.timeoutMs);
+                // Emitted unlocked, as a receiver connected directly that replies at once locked the
+                // mutex this thread held and hung the experiment
+                locker.unlock();
+                emit hookRequested(hookId, hookPointName(point), data);
+                locker.relock();
+                // Waits in short steps so that a cancel is seen, as the wait for the event start does
+                while (hooks.waitingId == hookId && !hooks.reply && !deadline.hasExpired() && !canceled())
+                {
+                    hooks.replied.wait(&hooks.mutex, QDeadlineTimer((std::min<qint64>)(5, deadline.remainingTime())));
+                }
+                if (hooks.waitingId == hookId && !hooks.reply && deadline.hasExpired())
+                {
+                    qWarning().noquote() << QStringLiteral("Hook %1 got no reply in %2 ms, the event continues")
+                                                .arg(hookId)
+                                                .arg(hooks.timeoutMs);
+                }
+                hooks.waitingId = 0;
+                return std::exchange(hooks.reply, std::nullopt).value_or(HookReply{});
+            });
+    }
+
+    QList<ScopeOneCore::HookPoint> ScopeOneCore::hooks() const
+    {
+        Managers::HookState& hooks = m_managers->hooks;
+        QMutexLocker locker(&hooks.mutex);
+        QList<HookPoint> points;
+        if (hooks.beforeEvent) points.append(HookPoint::BeforeEvent);
+        if (hooks.afterEvent) points.append(HookPoint::AfterEvent);
+        return points;
+    }
+
+    int ScopeOneCore::hookTimeoutMs() const
+    {
+        Managers::HookState& hooks = m_managers->hooks;
+        QMutexLocker locker(&hooks.mutex);
+        return hooks.timeoutMs;
+    }
+
+    bool ScopeOneCore::replyHook(quint64 hookId, const HookReply& reply)
+    {
+        Managers::HookState& hooks = m_managers->hooks;
+        QMutexLocker locker(&hooks.mutex);
+        if (hookId == 0 || hooks.waitingId != hookId || hooks.reply)
+        {
+            return false;
+        }
+        hooks.reply = reply;
+        hooks.replied.wakeAll();
+        return true;
+    }
+
+    bool ScopeOneCore::setTriggers(const QList<Trigger>& triggers, QString* errorMessage)
+    {
+        for (qsizetype index = 0; index < triggers.size(); ++index)
+        {
+            const Trigger& trigger = triggers.at(index);
+            QString error;
+            if (trigger.measurement.isEmpty())
+            {
+                error = QStringLiteral("names no measurement");
+            }
+            else if (!trigger.cameraId.isEmpty() && !m_cameraIds.contains(trigger.cameraId))
+            {
+                error = QStringLiteral("names unknown camera %1").arg(trigger.cameraId);
+            }
+            else if (!std::isfinite(trigger.threshold) || !std::isfinite(trigger.cooldownMs)
+                     || trigger.cooldownMs < 0.0)
+            {
+                error = QStringLiteral("needs a finite threshold and cooldown");
+            }
+            else if (trigger.action == Trigger::Action::Record && trigger.frames < 1)
+            {
+                error = QStringLiteral("records no frames");
+            }
+            else if (trigger.action == Trigger::Action::ApplyPreset
+                     && !availableConfigs(trigger.group).contains(trigger.preset))
+            {
+                error = QStringLiteral("names unknown preset %1 of group %2").arg(trigger.preset, trigger.group);
+            }
+            if (!error.isEmpty())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Trigger %1 %2").arg(index).arg(error);
+                return false;
+            }
+        }
+        m_triggers = triggers;
+        ++m_triggerGeneration;
+        m_triggerFiredMs = QList<qint64>(triggers.size(), -1);
+        if (!m_triggerClock.isValid())
+        {
+            m_triggerClock.start();
+        }
+        return true;
+    }
+
+    // Passes the measurements on and fires the triggers they cross
+    void ScopeOneCore::handleMeasurements(const QString& cameraId,
+                                          const QString& moduleId,
+                                          qint64 frameIndex,
+                                          const QVariantList& measurements)
+    {
+        emit measurementsReady(cameraId, moduleId, frameIndex, measurements);
+        // The event loop of a running action delivered the next measurements here, and a trigger
+        // without cooldown started its action again inside itself
+        if (m_triggers.isEmpty() || m_runningTrigger)
+        {
+            return;
+        }
+        // An action can run events that replace the triggers, so the loop works on a copy
+        const QList<Trigger> triggers = m_triggers;
+        const quint64 generation = m_triggerGeneration;
+        for (qsizetype index = 0; index < triggers.size(); ++index)
+        {
+            const Trigger& trigger = triggers.at(index);
+            // A record trigger fired on every frame of the recording it started, each time failing
+            // as another acquisition was running, so it waits until the acquisition ends
+            if (trigger.action == Trigger::Action::Record
+                && (isRecording() || !m_managers->activeExperimentId.isEmpty() || isStageMosaicRunning()))
+            {
+                continue;
+            }
+            const qint64 firedMs = m_triggerFiredMs.at(index);
+            if ((!trigger.cameraId.isEmpty() && trigger.cameraId != cameraId)
+                || (firedMs >= 0 && m_triggerClock.elapsed() - firedMs < trigger.cooldownMs))
+            {
+                continue;
+            }
+            for (const QVariant& value : measurements)
+            {
+                QVariantMap measurement = value.toMap();
+                if (measurement.value(QStringLiteral("name")).toString() != trigger.measurement)
+                {
+                    continue;
+                }
+                // A measurement without a number read as 0 and fired the below triggers
+                bool numeric = false;
+                const double reading = measurement.value(QStringLiteral("value")).toDouble(&numeric);
+                if (!numeric || !std::isfinite(reading))
+                {
+                    continue;
+                }
+                if (trigger.compare == Trigger::Compare::Above ? reading <= trigger.threshold
+                                                               : reading >= trigger.threshold)
+                {
+                    continue;
+                }
+                m_triggerFiredMs[index] = m_triggerClock.elapsed();
+                measurement.insert(QStringLiteral("cameraId"), cameraId);
+                measurement.insert(QStringLiteral("moduleId"), moduleId);
+                measurement.insert(QStringLiteral("frameIndex"), frameIndex);
+                QString error;
+                m_runningTrigger = true;
+                const bool success = runTrigger(trigger, cameraId, &error);
+                m_runningTrigger = false;
+                QJsonObject parameters;
+                parameters.insert(QStringLiteral("index"), static_cast<int>(index));
+                parameters.insert(QStringLiteral("measurement"), QJsonObject::fromVariantMap(measurement));
+                parameters.insert(QStringLiteral("compare"), trigger.compare == Trigger::Compare::Above
+                                                                 ? QStringLiteral("above")
+                                                                 : QStringLiteral("below"));
+                parameters.insert(QStringLiteral("threshold"), trigger.threshold);
+                if (trigger.action == Trigger::Action::Record)
+                {
+                    parameters.insert(QStringLiteral("frames"), trigger.frames);
+                }
+                else if (trigger.action == Trigger::Action::ApplyPreset)
+                {
+                    parameters.insert(QStringLiteral("group"), trigger.group);
+                    parameters.insert(QStringLiteral("preset"), trigger.preset);
+                }
+                logAction(QStringLiteral("trigger"), triggerActionName(trigger.action), parameters, success, error);
+                emit triggerFired(static_cast<int>(index), measurement, triggerActionName(trigger.action),
+                                  success, error);
+                // A device call of the action spins an event loop that can run set_triggers, after
+                // which the copy and its indexes no longer match m_triggerFiredMs
+                if (m_triggerGeneration != generation)
+                {
+                    return;
+                }
+                break;
+            }
+        }
+    }
+
+    bool ScopeOneCore::runTrigger(const Trigger& trigger, const QString& cameraId, QString* errorMessage)
+    {
+        switch (trigger.action)
+        {
+        case Trigger::Action::Record:
+        {
+            // The plan of the Local API record request with the frame count of the trigger
+            ExperimentDocument document;
+            ExperimentPlan& plan = document.plan;
+            plan.experimentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            plan.cameraIds = {cameraId};
+            plan.format = RecordingFormat::OmeTiff;
+            plan.streamToDisk = false;
+            plan.framesPerBurst = trigger.frames;
+            plan.burstMode = false;
+            plan.targetBursts = 1;
+            plan.enableCompression = false;
+            plan.processing = processingRecipe();
+            return startExperiment(document, errorMessage);
+        }
+        case Trigger::Action::ApplyPreset:
+            return setConfig(trigger.group, trigger.preset, errorMessage);
+        case Trigger::Action::StopPreview:
+            if (!stopPreview(cameraId))
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Failed to stop preview");
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void ScopeOneCore::logAction(const QString& origin,
+                                 const QString& operation,
+                                 const QJsonObject& parameters,
+                                 bool success,
+                                 const QString& error)
+    {
+        m_actionLog.append(ActionLogEntry{QDateTime::currentDateTimeUtc(), origin, operation, parameters,
+                                          success, error});
+        ++m_actionLogCount;
+        if (m_actionLog.size() > kActionLogSize)
+        {
+            m_actionLog.removeFirst();
+        }
+    }
+
+    QList<ScopeOneCore::ActionLogEntry> ScopeOneCore::actionLog(const QDateTime& since) const
+    {
+        if (!since.isValid())
+        {
+            return m_actionLog;
+        }
+        // Filtered entry by entry, as the wall clock can step back and leave the log out of time
+        // order, where a binary search returned a wrong tail
+        QList<ActionLogEntry> entries;
+        std::copy_if(m_actionLog.cbegin(), m_actionLog.cend(), std::back_inserter(entries),
+                     [&since](const ActionLogEntry& entry) { return entry.time >= since; });
+        return entries;
+    }
+
+    QJsonObject ScopeOneCore::actionLogEntryToJson(const ActionLogEntry& entry)
+    {
+        QJsonObject object;
+        object.insert(QStringLiteral("time"), entry.time.toString(Qt::ISODateWithMs));
+        object.insert(QStringLiteral("origin"), entry.origin);
+        object.insert(QStringLiteral("operation"), entry.operation);
+        object.insert(QStringLiteral("parameters"), entry.parameters);
+        object.insert(QStringLiteral("success"), entry.success);
+        object.insert(QStringLiteral("error"), entry.error);
+        return object;
+    }
+
     void ScopeOneCore::setRecordingMaxPendingWriteBytes(qint64 bytes)
     {
         m_managers->recordingManager->setRecordedMaxBytes(bytes);
@@ -5009,7 +5397,8 @@ namespace scopeone::core
     }
 
     // Start recording and suspend preview during MDA motion
-    bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds)
+    bool ScopeOneCore::startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds,
+                                      QString* errorMessage)
     {
         if (m_configurationOperationRunning
             || m_pendingStageCommands > 0
@@ -5047,6 +5436,10 @@ namespace scopeone::core
         planSnapshot.pixelSizeUm = planSnapshot.cameraIds.size() == 1
                                        ? cameraPixelSizeUm(planSnapshot.cameraIds.first())
                                        : 0.0;
+        if (!checkPlanLimits(planSnapshot, errorMessage))
+        {
+            return false;
+        }
 
         const bool useMda = planNeedsMdaEvents(planSnapshot);
         QStringList suspendedPreviewIds;
@@ -5104,7 +5497,8 @@ namespace scopeone::core
         const bool started = m_managers->recordingManager->start(planSnapshot,
                                                                   activeCameraIds,
                                                                   deviceProperties,
-                                                                  cameraPixelSizesUm(planSnapshot.cameraIds));
+                                                                  cameraPixelSizesUm(planSnapshot.cameraIds),
+                                                                  cameraSettings(planSnapshot.cameraIds, deviceProperties));
         if (!started)
         {
             if (restorePreviewConnection)
@@ -5169,7 +5563,7 @@ namespace scopeone::core
                 return fail(QStringLiteral("Autofocus is enabled but no autofocus device is selected"));
             }
         }
-        return true;
+        return checkPlanLimits(plan, errorMessage);
     }
 
     bool ScopeOneCore::startExperiment(const ExperimentDocument& document,
@@ -5265,7 +5659,7 @@ namespace scopeone::core
         }
 
         m_managers->experimentStartedPreviewCameraIds = startedPreviewCameraIds;
-        if (!startRecording(document.plan, document.plan.cameraIds))
+        if (!startRecording(document.plan, document.plan.cameraIds, errorMessage))
         {
             for (const QString& cameraId : startedPreviewCameraIds)
             {

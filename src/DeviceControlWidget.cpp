@@ -2072,7 +2072,7 @@ namespace scopeone::ui
             m_cameraSelectCombo->clear();
             m_cameraSelectCombo->addItem("All");
             m_cameraSelectCombo->addItems(cameraIds);
-            // The configured camera may belong to a provider that MMCore cannot select.
+            // The camera of the Camera role is selected first
             const int configuredIndex = cameraIds.indexOf(defaultCamera);
             m_cameraSelectCombo->setCurrentIndex(configuredIndex >= 0 ? configuredIndex + 1 : (cameraIds.size() == 1 ? 1 : 0));
         }

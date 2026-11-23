@@ -606,9 +606,10 @@ namespace scopeone::ui
         connect(m_deviceControlWidget, &DeviceControlWidget::exposureValueChanged,
                 this, [this](double ms)
                 {
-                    if (!m_scopeonecore->setExposure(m_currentControlTarget, ms))
+                    QString error;
+                    if (!m_scopeonecore->setExposure(m_currentControlTarget, ms, &error))
                     {
-                        showStatusMessage(tr("Failed to set exposure"), 5000);
+                        showStatusMessage(error.isEmpty() ? tr("Failed to set exposure") : error, 5000);
                         qWarning().noquote() << QString("Failed to set exposure: %1 ms").arg(ms);
                         m_deviceControlWidget->refreshCameraParameters();
                     }

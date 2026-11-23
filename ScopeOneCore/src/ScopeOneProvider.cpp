@@ -19,7 +19,6 @@
 
 #include "internal/DriverHostClient.h"
 #include "internal/DriverHostProtocol.h"
-#include "internal/MicroManagerProvider.h"
 #include "scopeone/DriverManifest.h"
 #include "scopeone/HardwareConfiguration.h"
 
@@ -119,9 +118,9 @@ namespace scopeone::core::internal
         {
             for (const HardwareConfiguration::Preset& preset : group.presets)
             {
-                for (const HardwareConfiguration::PresetSetting& setting : preset.settings)
+                for (const ConfigSetting& setting : preset.settings)
                 {
-                    if (setting.source == HardwareConfiguration::Source::ScopeOne)
+                    if (document.namesScopeOneDevice(setting.device))
                     {
                         configuration.configGroups.append(
                             {group.name, preset.name, setting.device, setting.property, setting.value});
@@ -179,6 +178,32 @@ namespace scopeone::core::internal
         QList<DevicePtr> taken;
         taken.swap(m_devices);
         return taken;
+    }
+
+    namespace
+    {
+        QList<ScopeOneConfigGroupLine> presetLines(const ScopeOneConfiguration& configuration, const QString& preset)
+        {
+            QList<ScopeOneConfigGroupLine> lines;
+            for (const ScopeOneConfigGroupLine& line : configuration.configGroups)
+            {
+                if (line.group == QStringLiteral("System") && line.preset == preset)
+                {
+                    lines.append(line);
+                }
+            }
+            return lines;
+        }
+    }
+
+    QList<ScopeOneConfigGroupLine> ScopeOneProvider::startupSettings() const
+    {
+        return presetLines(m_configuration, QStringLiteral("Startup"));
+    }
+
+    QList<ScopeOneConfigGroupLine> ScopeOneProvider::shutdownSettings() const
+    {
+        return presetLines(m_configuration, QStringLiteral("Shutdown"));
     }
 
     bool ScopeOneProvider::defineConfig(const QString& group, const QString& preset,

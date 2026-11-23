@@ -12,10 +12,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
+#include <QTableWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -290,6 +293,72 @@ namespace scopeone::ui
             source.readingProperty = r.size() == 2 ? r[1].toString() : QString{};
             return true;
         }
+
+        // The properties of a loaded device a limit can name: the stage axes or the camera
+        // exposure first, then its writable numeric properties
+        QStringList limitProperties(const ScopeOneCore* core, const QString& device)
+        {
+            QStringList names;
+            if (core->xyStageDevices().contains(device)) names << QStringLiteral("X") << QStringLiteral("Y");
+            if (core->zStageDevices().contains(device)) names << QStringLiteral("Z");
+            if (core->cameraIds().contains(device)) names << QStringLiteral("Exposure");
+            for (const auto& property : core->deviceProperties(device, true))
+            {
+                const bool numeric = property.type().compare(QStringLiteral("Float"), Qt::CaseInsensitive) == 0
+                    || property.type().compare(QStringLiteral("Integer"), Qt::CaseInsensitive) == 0;
+                if (numeric && !property.isReadOnly() && !names.contains(property.name())) names << property.name();
+            }
+            return names;
+        }
+
+        // The present value of what a limit names, read from the device
+        bool readLimitValue(const ScopeOneCore* core, const QString& device, const QString& property, double& value)
+        {
+            double x = 0.0;
+            double y = 0.0;
+            if (core->xyStageDevices().contains(device) && (property == QStringLiteral("X") || property == QStringLiteral("Y")))
+            {
+                if (!core->readXYPosition(device, x, y)) return false;
+                value = property == QStringLiteral("X") ? x : y;
+                return true;
+            }
+            if (core->zStageDevices().contains(device) && property == QStringLiteral("Z")) return core->readZPosition(device, value);
+            if (core->cameraIds().contains(device) && property == QStringLiteral("Exposure")) return core->readExposure(device, value);
+            bool ok = false;
+            value = core->getPropertyValue(device, property, false).toDouble(&ok);
+            return ok;
+        }
+
+        // Device and Property cells of the Limits table pick from the loaded devices; the combos
+        // stay editable so a cfg can be edited without its devices loaded
+        class LimitNameDelegate : public QStyledItemDelegate
+        {
+        public:
+            LimitNameDelegate(const ScopeOneCore* core, QObject* parent) : QStyledItemDelegate(parent), m_core(core) {}
+
+            QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex& index) const override
+            {
+                auto* combo = new QComboBox(parent);
+                combo->setEditable(true);
+                combo->addItems(index.column() == 0
+                                    ? m_core->loadedDevices()
+                                    : limitProperties(m_core, index.siblingAtColumn(0).data().toString()));
+                return combo;
+            }
+
+            void setEditorData(QWidget* editor, const QModelIndex& index) const override
+            {
+                static_cast<QComboBox*>(editor)->setCurrentText(index.data().toString());
+            }
+
+            void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override
+            {
+                model->setData(index, static_cast<QComboBox*>(editor)->currentText().trimmed());
+            }
+
+        private:
+            const ScopeOneCore* m_core;
+        };
     }
 
     HardwareConfigurationDialog::HardwareConfigurationDialog(ScopeOneCore* core, QWidget* parent)
@@ -312,7 +381,7 @@ namespace scopeone::ui
         auto* body = new QHBoxLayout;
         outer->addLayout(body);
         m_steps = new QListWidget(this);
-        m_steps->addItems({tr("Devices"), tr("Roles")});
+        m_steps->addItems({tr("Devices"), tr("Roles"), tr("Limits")});
         m_steps->setMaximumWidth(150);
         body->addWidget(m_steps);
         m_pages = new QStackedWidget(this);
@@ -367,7 +436,7 @@ namespace scopeone::ui
         m_roles.append({QStringLiteral("AutoShutter"), autoShutter});
         for (const auto& [role, combo] : m_roles)
         {
-            const QString value = m_document.coreRole(role);
+            const QString value = m_document.role(role);
             if (combo->findData(value) < 0)
             {
                 combo->addItem(value, value);
@@ -400,6 +469,69 @@ namespace scopeone::ui
         connect(m_lightSources, &QListWidget::itemDoubleClicked, this, [this] { editLightSource(true); });
         refreshLightSources();
         m_pages->addWidget(roles);
+
+        // The ranges Core keeps device properties in: X, Y and Z of a stage in µm, Exposure of a
+        // camera in ms, or any numeric property by its name
+        auto* limitsPage = new QWidget(this);
+        auto* limitsLayout = new QVBoxLayout(limitsPage);
+        m_limits = new QTableWidget(0, 4, limitsPage);
+        m_limits->setHorizontalHeaderLabels({tr("Device"), tr("Property"), tr("Min"), tr("Max")});
+        m_limits->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        m_limits->verticalHeader()->hide();
+        auto* nameDelegate = new LimitNameDelegate(m_core, m_limits);
+        m_limits->setItemDelegateForColumn(0, nameDelegate);
+        m_limits->setItemDelegateForColumn(1, nameDelegate);
+        for (const auto& limit : m_document.limits())
+        {
+            const int row = m_limits->rowCount();
+            m_limits->insertRow(row);
+            m_limits->setItem(row, 0, new QTableWidgetItem(limit.device));
+            m_limits->setItem(row, 1, new QTableWidgetItem(limit.property));
+            m_limits->setItem(row, 2, new QTableWidgetItem(QString::number(limit.min, 'g', QLocale::FloatingPointShortest)));
+            m_limits->setItem(row, 3, new QTableWidgetItem(QString::number(limit.max, 'g', QLocale::FloatingPointShortest)));
+        }
+        limitsLayout->addWidget(m_limits);
+        auto* limitControls = new QHBoxLayout;
+        auto* addLimit = new QPushButton(tr("Add"), limitsPage);
+        connect(addLimit, &QPushButton::clicked, this, [this]
+        {
+            const int row = m_limits->rowCount();
+            m_limits->insertRow(row);
+            m_limits->setCurrentCell(row, 0);
+            // A new row has no items, and editItem ignores a null item, so the cell is edited by index
+            m_limits->edit(m_limits->model()->index(row, 0));
+        });
+        auto* removeLimit = new QPushButton(tr("Remove"), limitsPage);
+        connect(removeLimit, &QPushButton::clicked, this, [this]
+        {
+            if (m_limits->currentRow() >= 0) m_limits->removeRow(m_limits->currentRow());
+        });
+        // Sets Min or Max of the selected row to the present reading, so a limit is set by moving
+        // the device to the safe end and taking its value
+        const auto takeReading = [this](int column)
+        {
+            const int row = m_limits->currentRow();
+            if (row < 0) return;
+            const auto text = [&](int c) { return m_limits->item(row, c) ? m_limits->item(row, c)->text() : QString{}; };
+            double value = 0.0;
+            if (!readLimitValue(m_core, text(0), text(1), value))
+            {
+                QMessageBox::warning(this, windowTitle(), tr("Cannot read %1 of %2.").arg(text(1), text(0)));
+                return;
+            }
+            m_limits->setItem(row, column, new QTableWidgetItem(QString::number(value, 'g', QLocale::FloatingPointShortest)));
+        };
+        auto* setMin = new QPushButton(tr("Set Min"), limitsPage);
+        connect(setMin, &QPushButton::clicked, this, [takeReading] { takeReading(2); });
+        auto* setMax = new QPushButton(tr("Set Max"), limitsPage);
+        connect(setMax, &QPushButton::clicked, this, [takeReading] { takeReading(3); });
+        limitControls->addWidget(addLimit);
+        limitControls->addWidget(removeLimit);
+        limitControls->addStretch();
+        limitControls->addWidget(setMin);
+        limitControls->addWidget(setMax);
+        limitsLayout->addLayout(limitControls);
+        m_pages->addWidget(limitsPage);
         connect(m_steps, &QListWidget::currentRowChanged, m_pages, &QStackedWidget::setCurrentIndex);
 
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Close, this);
@@ -442,6 +574,44 @@ namespace scopeone::ui
         }
         m_document.setLightSource(source);
         refreshLightSources();
+    }
+
+    bool HardwareConfigurationDialog::readLimits()
+    {
+        QList<HardwareConfiguration::Limit> rows;
+        for (int row = 0; row < m_limits->rowCount(); ++row)
+        {
+            const auto text = [&](int column)
+            {
+                const QTableWidgetItem* item = m_limits->item(row, column);
+                return item ? item->text().trimmed() : QString{};
+            };
+            bool minOk = false;
+            bool maxOk = false;
+            const HardwareConfiguration::Limit limit{text(0), text(1), text(2).toDouble(&minOk), text(3).toDouble(&maxOk)};
+            if (limit.device.isEmpty() || limit.property.isEmpty() || !HardwareConfiguration::isValidField(limit.device)
+                || !HardwareConfiguration::isValidField(limit.property) || !minOk || !maxOk || limit.min > limit.max)
+            {
+                m_steps->setCurrentRow(2);
+                QMessageBox::warning(this, windowTitle(),
+                                     tr("Limit %1 needs a device, a property without commas and a Min not above Max.").arg(row + 1));
+                return false;
+            }
+            rows.append(limit);
+        }
+        for (const auto& old : m_document.limits())
+        {
+            if (std::none_of(rows.cbegin(), rows.cend(), [&](const auto& limit)
+                             { return limit.device == old.device && limit.property == old.property; }))
+            {
+                m_document.removeLimit(old.device, old.property);
+            }
+        }
+        for (const auto& limit : rows)
+        {
+            m_document.setLimit(limit);
+        }
+        return true;
     }
 
     void HardwareConfigurationDialog::refreshDevices()
@@ -523,9 +693,9 @@ namespace scopeone::ui
         for (const auto& [role, combo] : m_roles)
         {
             const QString value = combo->currentData().toString();
-            if (m_document.coreRole(role) != value)
+            if (m_document.role(role) != value)
             {
-                m_document.setCoreRole(role, value);
+                m_document.setRole(role, value);
             }
         }
     }
@@ -550,8 +720,12 @@ namespace scopeone::ui
     void HardwareConfigurationDialog::apply()
     {
         readRoles();
-        // Only a change of the devices restarts them. The roles and light sources are taken again
-        // from the written file.
+        if (!readLimits())
+        {
+            return;
+        }
+        // Only a change of the devices restarts them. The roles, light sources and limits are taken
+        // again from the written file.
         m_reload = m_path.isEmpty()
             || HardwareConfiguration::fromByteArray(m_original).scopeOneDevices() != m_document.scopeOneDevices();
         if (m_path.isEmpty())

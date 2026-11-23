@@ -6,6 +6,7 @@
 
 #include <QMap>
 #include <QReadWriteLock>
+#include <QSet>
 
 #include <atomic>
 
@@ -15,6 +16,7 @@
 #include "scopeone/Device.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/Camera.h"
+#include "scopeone/HardwareConfiguration.h"
 
 class CMMCore;
 
@@ -23,6 +25,11 @@ namespace scopeone::core::internal
     // The devices of the loaded Micro-Manager configuration. They run on the core of ScopeOne,
     // except the cameras of a configuration with more than one camera: each of those runs in a
     // DriverHost of its own, so two cameras of the same model do not share one vendor library.
+    // It translates between Micro-Manager's names and ScopeOne's: the property Position of a Z
+    // stage (MM::g_Keyword_Position) is its Z axis, named Z above the provider, in the property
+    // calls, the presets and the cfg file it reads and writes for the runtime. The properties Camera,
+    // Shutter, Focus, XYStage, AutoFocus and AutoShutter of the pseudo device Core of MMCore are
+    // the Core roles of ScopeOne.
     class MicroManagerProvider final : public Device,
                                        public Camera,
                                        public XYStage,
@@ -36,7 +43,6 @@ namespace scopeone::core::internal
     public:
         struct LoadResult
         {
-            QStringList cameraIds;
             QList<MicroManagerCameraSetup> cameras;
             QStringList failedDevices;
             int successCount{0};
@@ -57,7 +63,20 @@ namespace scopeone::core::internal
         // Blocks while the devices initialize
         bool loadConfiguration(const QString& configPath, LoadResult& result, QString& errorMessage);
         bool unloadDevices(QString* errorMessage);
+        // System/Shutdown of the configuration
         void applyShutdownPreset();
+        // The device MMCore holds for a role, which presets may change
+        QString role(const QString& role) const;
+        // Takes the roles after a load. MMCore loads the cfg without the role lines that name
+        // ScopeOne devices and gives those roles to a device it loads, so they are cleared.
+        void applyRoles(const HardwareConfiguration& document);
+        // Sets every role of the cfg again after an edit, the ones of ScopeOne devices empty
+        bool setRoles(const HardwareConfiguration& document, QString* errorMessage);
+        // The cfg file in ScopeOne's names, which writeConfiguration turns back into
+        // Micro-Manager's, so the file stays a configuration of Micro-Manager
+        HardwareConfiguration readConfiguration(const QString& path, QString* errorMessage) const;
+        bool writeConfiguration(const HardwareConfiguration& document, const QString& path,
+                                QString* errorMessage) const;
 
         HardwareProviderDescriptor descriptor() const override;
         QList<HardwareDeviceDescriptor> devices() const override;
@@ -208,14 +227,25 @@ namespace scopeone::core::internal
         CameraRef camera(const QString& cameraId) const;
         CameraEntry cameraEntry(const QString& cameraId) const;
         void readBinning(const QString& cameraId);
+        bool isZStage(const QString& deviceId) const;
+        // The role settings of System/Startup that name ScopeOne devices, which MMCore cannot hold
+        bool isScopeOneRole(const QString& group, const QString& preset, const ConfigSetting& setting) const;
+        // The name in MMCore of a property named above the provider, empty for Position of a Z
+        // stage, which is shown as Z only
+        QString mmProperty(const QString& deviceId, const QString& name) const;
+        QString scopeOneProperty(const QString& deviceId, const QString& name) const;
         QList<CameraEntry> cameras() const;
 
         std::shared_ptr<CMMCore> m_core;
         QStringList m_adapterSearchPaths;
-        QList<HardwareDeviceDescriptor> m_devices;
         // Written when a configuration loads or unloads, read by calls on any thread
         mutable QReadWriteLock m_camerasLock;
+        QList<HardwareDeviceDescriptor> m_devices;
         QMap<QString, CameraEntry> m_cameras;
+        QSet<QString> m_zStages;
+        // The settings of System/Startup that isScopeOneRole keeps out of MMCore, so the preset
+        // still shows and writes them
+        std::vector<ConfigSetting> m_scopeOneStartupRoles;
         // The binning of each camera in a DriverHost, read when it changes, as the core of
         // ScopeOne does not hold these cameras to apply it to the pixel size
         QHash<QString, int> m_binnings;

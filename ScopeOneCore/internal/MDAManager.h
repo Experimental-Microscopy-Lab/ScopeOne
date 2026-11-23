@@ -12,6 +12,7 @@
 #include <vector>
 #include "internal/HardwareRuntime.h"
 #include "scopeone/ExperimentDocument.h"
+#include "scopeone/AcquisitionHook.h"
 
 namespace scopeone::core::internal
 {
@@ -25,6 +26,12 @@ namespace scopeone::core::internal
         QString errorMessage;
     };
 
+    // Asks a client at one hook point of an event and waits for the reply on the acquisition
+    // thread. canceled is checked while waiting.
+    using MDAHook = std::function<HookReply(HookPoint point,
+                                            const MDAOutput& output,
+                                            const std::function<bool()>& canceled)>;
+
     class MDAManager : public QObject
     {
         Q_OBJECT
@@ -36,7 +43,8 @@ namespace scopeone::core::internal
         bool isRunning() const { return m_running.load(); }
 
         void setHardwareRuntime(HardwareRuntime* hardwareRuntime);
-        bool start(const QList<AcquisitionEvent>& events);
+        // Without a hook the events run without hook points
+        bool start(const QList<AcquisitionEvent>& events, MDAHook hook = {});
         void requestCancel();
         void cancelAndWait();
 
@@ -44,6 +52,8 @@ namespace scopeone::core::internal
         void eventFinished(const scopeone::core::internal::MDAOutput& output);
         void sequenceFinished();
         void sequenceCanceled();
+        // A hook reply stopped the sequence early
+        void sequenceStopped();
         void sequenceError(const QString& message);
 
     private:
@@ -121,7 +131,8 @@ namespace scopeone::core::internal
         bool openShutter(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         void closeShutter(const AcquisitionEvent& event, SequenceState& state);
 
-        void captureInitialState(const QList<AcquisitionEvent>& events, SequenceState& state);
+        void captureInitialState(const QList<AcquisitionEvent>& events, bool hooked, SequenceState& state);
+        void applyHookChanges(AcquisitionEvent& event, const HookReply& reply) const;
         void restoreInitialState(const SequenceState& state);
         bool setupEvent(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         bool applyChannel(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
@@ -134,7 +145,7 @@ namespace scopeone::core::internal
                          QString* errorMessage);
         bool moveXY(double x, double y, QString* errorMessage);
         bool moveZ(double z, QString* errorMessage);
-        void runSequence(QList<AcquisitionEvent> events);
+        void runSequence(QList<AcquisitionEvent> events, const MDAHook& hook);
 
         HardwareRuntime* m_hardwareRuntime{nullptr};
         QThreadPool m_threadPool;

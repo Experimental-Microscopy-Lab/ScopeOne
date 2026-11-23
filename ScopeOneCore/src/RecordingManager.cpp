@@ -72,13 +72,6 @@ namespace scopeone::core::internal
             return QStringLiteral(".dat");
         }
 
-        bool readFiniteNumber(const QJsonValue& value, double& number)
-        {
-            bool ok = false;
-            number = value.isDouble() ? value.toDouble() : value.toString().toDouble(&ok);
-            return (value.isDouble() || ok) && std::isfinite(number);
-        }
-
         double uniformTimeIncrementMs(const ExperimentPlan& plan)
         {
             if (plan.framesPerBurst < 2 || (plan.burstMode && plan.targetBursts > 1))
@@ -448,7 +441,7 @@ namespace scopeone::core::internal
                                double physicalSizeYUm,
                                quint64 acquisitionStartTimestampNs,
                                const QString& imageName,
-                               const QJsonObject& cameraProperties,
+                               const CameraSettings& camera,
                                const TiffOptions& tiff)
             {
                 (void)stopStack();
@@ -617,24 +610,19 @@ namespace scopeone::core::internal
                         }
                     }
                 }
-                double value = 0.0;
-                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), value)
-                    && value > 0.0)
+                if (camera.exposureMs > 0.0)
                 {
-                    settings.defaultExposureMs = value;
-                }
-                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Offset")), value))
-                {
-                    settings.detector.offset = value;
+                    settings.defaultExposureMs = camera.exposureMs;
                 }
                 // What the camera reports about itself and how it was set
-                settings.detector.model = cameraProperties.value(QStringLiteral("CameraName")).toString().toStdString();
-                settings.detector.serialNumber = cameraProperties.value(QStringLiteral("CameraID")).toString().toStdString();
-                settings.detector.binning = cameraProperties.value(QStringLiteral("Binning")).toString().toStdString();
-                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Gain")), value))
+                settings.detector.offset = camera.offset;
+                settings.detector.model = camera.model.toStdString();
+                settings.detector.serialNumber = camera.serialNumber.toStdString();
+                if (camera.binning > 0)
                 {
-                    settings.detector.gain = value;
+                    settings.detector.binning = std::to_string(camera.binning);
                 }
+                settings.detector.gain = camera.gain;
                 settings.enableCompression = tiff.useDeflate;
                 settings.compressionLevel = tiff.zipQuality;
                 settings.zarrPyramidLevels = tiff.pyramid ? 0 : 1;
@@ -694,14 +682,15 @@ namespace scopeone::core::internal
                 return true;
             }
 
-            // Flushes and closes the active writer
-            bool stopStack()
+            // Flushes and closes the active writer, after writing the planes the frames did not
+            // reach as empty planes when fillMissingPlanes is set
+            bool stopStack(bool fillMissingPlanes = false)
             {
                 if (!m_writer)
                 {
                     return true;
                 }
-                const bool success = m_writer->close();
+                const bool success = (!fillMissingPlanes || m_writer->fillMissingPlanes()) && m_writer->close();
                 if (!success)
                 {
                     m_lastError = QString::fromStdString(m_writer->lastError());
@@ -733,7 +722,7 @@ namespace scopeone::core::internal
         QString rawPath;
         QString frameInfoPath;
         QString metadataFileName;
-        QJsonObject cameraProperties;
+        CameraSettings camera;
         double pixelSizeUm{0.0};
         std::unique_ptr<SaveBackend> backend;
         quint64 acquisitionStartTimestampNs{0};
@@ -747,6 +736,8 @@ namespace scopeone::core::internal
         std::thread writerThread;
         std::atomic_bool writerFinished{false};
         bool stopRequested{false};
+        // Set when the whole plan ran, so the planes of skipped events are written empty
+        bool fillMissingPlanes{false};
         qint64 framesWritten{0};
     };
 
@@ -953,7 +944,8 @@ namespace scopeone::core::internal
     // Prepares a fresh session object for the next recording
     void RecordingManager::resetSessionState(const ExperimentPlan& plan,
                                              const QJsonObject& deviceProperties,
-                                             const QHash<QString, double>& cameraPixelSizesUm)
+                                             const QHash<QString, double>& cameraPixelSizesUm,
+                                             const QHash<QString, CameraSettings>& cameraSettings)
     {
         m_activeSession = std::make_shared<RecordingSessionData>();
         m_activeSession->setCapturePlan(plan);
@@ -967,6 +959,7 @@ namespace scopeone::core::internal
         m_activeSession->setSoftwareSnapshot(software);
         m_activeSession->setDeviceProperties(deviceProperties);
         m_activeSession->setCameraPixelSizesUm(cameraPixelSizesUm);
+        m_activeSession->setCameraSettings(cameraSettings);
         m_activeSession->prepareForSave(plan.streamToDisk, recordedMaxBytes());
         m_activeSession->setStartedTimestampNs(currentTimestampNs());
         m_activeSession->setRunState(ExperimentRunState::Running);
@@ -1077,8 +1070,7 @@ namespace scopeone::core::internal
                                                               outputInfo.metadataFileName,
                                                               paths.rawPath);
             output->acquisitionStartTimestampNs = acquisitionStartTimestampNs;
-            output->cameraProperties = m_activeSession->experimentDocument()
-                                           .deviceProperties.value(cameraId).toObject();
+            output->camera = m_activeSession->cameraSettings(cameraId);
             output->pixelSizeUm = m_activeSession->cameraPixelSizeUm(cameraId);
             if (requiresFrameInfo(plan.format))
             {
@@ -1203,6 +1195,7 @@ namespace scopeone::core::internal
     // Drains queued frames for one camera writer thread
     void RecordingManager::writerLoop(const std::shared_ptr<CameraOutput>& output, quint64 generation)
     {
+        bool fillMissingPlanes = false;
         while (true)
         {
             WriteTask task;
@@ -1214,6 +1207,7 @@ namespace scopeone::core::internal
                 });
                 if (output->writeQueue.empty())
                 {
+                    fillMissingPlanes = output->fillMissingPlanes;
                     break;
                 }
                 task = std::move(output->writeQueue.front());
@@ -1266,7 +1260,7 @@ namespace scopeone::core::internal
 
         if (output->backend)
         {
-            if (!output->backend->stopStack())
+            if (!output->backend->stopStack(fillMissingPlanes))
             {
                 std::lock_guard<std::mutex> lock(m_writerState.writeMutex);
                 if (m_writerState.writerError.isEmpty())
@@ -1314,7 +1308,7 @@ namespace scopeone::core::internal
                                                                output.pixelSizeUm),
                                            output.acquisitionStartTimestampNs,
                                            output.cameraId,
-                                           output.cameraProperties,
+                                           output.camera,
                                            tiffOpts))
             {
                 errorMessage = QStringLiteral("Failed to open raw output for %1: %2")
@@ -1363,7 +1357,8 @@ namespace scopeone::core::internal
     bool RecordingManager::start(const ExperimentPlan& requestedPlan,
                                  const QStringList& activeCameraIds,
                                  const QJsonObject& deviceProperties,
-                                 const QHash<QString, double>& cameraPixelSizesUm)
+                                 const QHash<QString, double>& cameraPixelSizesUm,
+                                 const QHash<QString, CameraSettings>& cameraSettings)
     {
         if (m_captureState.isRecording || isFinalizing())
         {
@@ -1434,7 +1429,7 @@ namespace scopeone::core::internal
                 }
             }, Qt::QueuedConnection);
         }
-        resetSessionState(plan, deviceProperties, cameraPixelSizesUm);
+        resetSessionState(plan, deviceProperties, cameraPixelSizesUm, cameraSettings);
 
         if (plan.streamToDisk)
         {
@@ -1922,14 +1917,7 @@ namespace scopeone::core::internal
             previewEvent.exposureMs = m_mdaState.plan.exposureMs;
             if (previewEvent.exposureMs <= 0.0)
             {
-                double exposureMs = 0.0;
-                const QJsonObject cameraProperties = m_activeSession->experimentDocument()
-                                                         .deviceProperties.value(frame.cameraId).toObject();
-                if (readFiniteNumber(cameraProperties.value(QStringLiteral("Exposure")), exposureMs)
-                    && exposureMs > 0.0)
-                {
-                    previewEvent.exposureMs = exposureMs;
-                }
+                previewEvent.exposureMs = m_activeSession->cameraSettings(frame.cameraId).exposureMs;
             }
             previewEvent.cameraIds = QStringList{frame.cameraId};
         }
@@ -2098,6 +2086,8 @@ namespace scopeone::core::internal
         }
 
         m_mdaState.burstsRemaining = m_captureState.burstMode ? m_captureState.targetBursts : 1;
+        // Taken once, as hooks set during a burst experiment took effect from its next burst
+        m_mdaState.hook = m_mdaHook;
         const quint64 generation = m_captureState.generation;
         disconnect(m_mdaState.manager, nullptr, this, nullptr);
         connect(m_mdaState.manager, &MDAManager::eventFinished, this,
@@ -2147,8 +2137,28 @@ namespace scopeone::core::internal
             }
             else
             {
+                // Every event of the plan was reached, so a position or plane whose events a hook
+                // skipped is written with empty planes and the files keep the shape of the plan.
+                // Only the gaps before a later frame of the same position were filled, so a fully
+                // skipped position had no OME-TIFF file and an OME-Zarr group with T 0.
+                for (const auto& output : writerOutputsSnapshot())
+                {
+                    std::lock_guard<std::mutex> lock(output->queueMutex);
+                    output->fillMissingPlanes = true;
+                }
                 finishRecording(ExperimentRunState::Completed);
             }
+        });
+        // A stop from a hook ends the whole experiment, also between bursts, and keeps what it took
+        connect(m_mdaState.manager, &MDAManager::sequenceStopped, this, [this, generation]()
+        {
+            if (generation != m_captureState.generation
+                || !m_mdaState.usingMda
+                || !m_captureState.isRecording)
+            {
+                return;
+            }
+            finishRecording(ExperimentRunState::Completed);
         });
         connect(m_mdaState.manager, &MDAManager::sequenceCanceled, this, [this, generation]()
         {
@@ -2207,7 +2217,7 @@ namespace scopeone::core::internal
             return false;
         }
         m_mdaState.eventsThisBurst = events.size();
-        if (!m_mdaState.manager->start(events))
+        if (!m_mdaState.manager->start(events, m_mdaState.hook))
         {
             if (errorMessage && errorMessage->isEmpty())
             {
@@ -2399,8 +2409,7 @@ namespace scopeone::core::internal
                                                             inputSession->cameraPixelSizeUm(cameraId)),
                                         inputSession->experimentDocument().startedTimestampNs,
                                         cameraId,
-                                        inputSession->experimentDocument().deviceProperties
-                                            .value(cameraId).toObject(),
+                                        inputSession->cameraSettings(cameraId),
                                         tiffOpts))
             {
                 return failSave(QStringLiteral("Failed to start raw output for %1: %2")

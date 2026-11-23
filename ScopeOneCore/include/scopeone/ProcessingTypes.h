@@ -83,6 +83,9 @@ namespace scopeone::core
         ImageFrame frame;
         ProcessingValue value;
         QString error;
+        // What the module measured on the frame, each a map of name, value and optional x and y in
+        // image pixels. The result of a pipeline adds the id of its module to each as module.
+        QVariantList measurements;
 
         ProcessingResult() = default;
         ProcessingResult(const ImageFrame& output, QString message = {})

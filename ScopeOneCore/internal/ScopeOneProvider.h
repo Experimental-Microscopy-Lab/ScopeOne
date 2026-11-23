@@ -51,6 +51,10 @@ namespace scopeone::core::internal
         // Starts the devices of the file together and blocks until all have started or failed
         LoadResult load(const QString& configPath);
         const ScopeOneConfiguration& configuration() const { return m_configuration; }
+        // The settings the devices take after they start and before they stop, the presets
+        // System/Startup and System/Shutdown of the cfg file
+        QList<ScopeOneConfigGroupLine> startupSettings() const;
+        QList<ScopeOneConfigGroupLine> shutdownSettings() const;
         void setLightSources(const QList<LightSourceLine>& sources) { m_configuration.lightSources = sources; }
         bool defineConfig(const QString& group, const QString& preset,
                           const QList<ScopeOneConfigGroupLine>& settings,

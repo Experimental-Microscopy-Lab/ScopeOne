@@ -1243,6 +1243,34 @@ namespace scopeone::core::internal
             return;
         }
 
+        if (type == driverhost::kCommandGetBinning || type == driverhost::kCommandGetGain)
+        {
+            if (!supportsCapability(*device, driverhost::kCapabilityCamera))
+            {
+                unsupported(driverhost::kCapabilityCamera);
+                return;
+            }
+            QJsonObject response = makeResponse(type, requestId, true);
+            if (type == driverhost::kCommandGetBinning)
+            {
+                // A camera that does not override getBinning bins through its Binning property, so
+                // the binning comes from there; taking 1 for it put a binned camera at full pixel size.
+                int binning = 0;
+                if (!m_camera->getBinning(deviceId, binning) && m_properties)
+                {
+                    binning = m_properties->getProperty(deviceId, QStringLiteral("Binning"), true)
+                                  .section(QLatin1Char('x'), 0, 0).toInt();
+                }
+                response.insert(QStringLiteral("binning"), (std::max)(binning, 1));
+            }
+            else if (double gain = 0.0; m_camera->getGain(deviceId, gain))
+            {
+                response.insert(QStringLiteral("gain"), gain);
+            }
+            reply(response);
+            return;
+        }
+
         if (type == driverhost::kCommandSetExposure)
         {
             if (!supportsCapability(*device, driverhost::kCapabilityCamera))

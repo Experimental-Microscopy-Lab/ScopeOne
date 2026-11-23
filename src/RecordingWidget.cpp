@@ -22,6 +22,7 @@
 #include <QListWidget>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -1530,9 +1531,14 @@ namespace scopeone::ui
             plan.keepShutterOpenChannels = plan.channels.size() > 1 && m_keepShutterChannelsCheck->isChecked();
         }
 
-        if (!m_scopeonecore->startRecording(plan, selectedCameraIds()))
+        QString error;
+        if (!m_scopeonecore->startRecording(plan, selectedCameraIds(), &error))
         {
             qWarning().noquote() << QStringLiteral("Failed to start recording");
+            if (!error.isEmpty())
+            {
+                QMessageBox::warning(this, tr("Recording"), error);
+            }
             return false;
         }
         saveLastSettings();

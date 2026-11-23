@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
@@ -41,13 +42,20 @@ namespace scopeone::ui
         void handleSocketReadyRead(QLocalSocket* socket);
         void handleSocketDisconnected(QLocalSocket* socket);
         void sendResponse(QLocalSocket* socket, const QJsonObject& response);
+        void logRequest(const QString& origin, const QJsonObject& request, const QJsonObject& response);
+        QJsonObject updateSubscription(QLocalSocket* socket, const QJsonObject& request);
+        QJsonObject setHooks(QLocalSocket* socket, const QJsonObject& request);
+        QJsonObject replyHook(QLocalSocket* socket, const QJsonObject& request);
+        bool hasSubscriber(const QString& event) const;
+        void publishEvent(const QString& event, const QJsonObject& data);
+        void publishMeasurement(const QString& cameraId,
+                                const QString& moduleId,
+                                qint64 frameIndex,
+                                const QVariantList& measurements);
         void sendRequestResponse(QLocalSocket* socket,
                                  QJsonObject response,
                                  const QJsonValue& requestId);
-        bool processAsyncRequest(QLocalSocket* socket,
-                                 const QJsonObject& request,
-                                 const QJsonValue& requestId,
-                                 const ResponseCallback& callback = {});
+        bool processAsyncRequest(const QJsonObject& request, const ResponseCallback& finish);
         scopeone::core::ExperimentDocument createExperimentDocument();
         QJsonObject experimentStatusResponse(const QString& type,
                                              const QString& experimentId) const;
@@ -64,6 +72,12 @@ namespace scopeone::ui
         scopeone::core::ImageSceneModel* m_sceneModel{nullptr};
         QLocalServer* m_server{nullptr};
         QHash<QLocalSocket*, QByteArray> m_readBuffers;
+        // The events each subscribed socket receives
+        QHash<QLocalSocket*, QSet<QString>> m_subscriptions;
+        // The socket that set the hooks and receives their requests
+        QLocalSocket* m_hookOwner{nullptr};
+        QString m_configPath;
+        QJsonObject m_lastPreviewState;
         QThreadPool m_taskPool;
         QString m_frameMappingCameraId;
 

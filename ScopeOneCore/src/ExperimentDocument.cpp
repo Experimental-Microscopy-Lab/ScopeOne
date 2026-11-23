@@ -1336,9 +1336,14 @@ namespace scopeone::core
                             QStringLiteral("%1 spatial coordinates must be finite").arg(path));
             }
 
+            // A hook reply can move an event away from the plan, and the record keeps where it was
+            // taken. Requiring the planned coordinates failed every run whose hook changed X, Y or Z,
+            // so only the events marked changedByHook may leave them.
+            const bool planned = !event.changedByHook;
             if (plan.positions.empty())
             {
-                if (event.hasXY || event.positionIndex != 0 || event.x != 0.0 || event.y != 0.0)
+                if (event.positionIndex != 0 || (planned && event.hasXY)
+                    || (!event.hasXY && (event.x != 0.0 || event.y != 0.0)))
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1 must use the empty XY sentinel for a plan without positions")
@@ -1356,7 +1361,7 @@ namespace scopeone::core
                                     .arg(path));
                 }
                 const QPointF& expected = plan.positions.at(static_cast<size_t>(event.positionIndex));
-                if (event.x != expected.x() || event.y != expected.y())
+                if (planned && (event.x != expected.x() || event.y != expected.y()))
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1 XY coordinates do not match plan.positions[%2]")
@@ -1412,7 +1417,7 @@ namespace scopeone::core
                     : std::nullopt;
             if (plan.zPositions.empty() && !positionFocus)
             {
-                if (event.hasZ || event.zIndex != 0 || event.z != 0.0)
+                if (event.zIndex != 0 || (planned && event.hasZ) || (!event.hasZ && event.z != 0.0))
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1 must use the empty Z sentinel for a plan without zPositions")
@@ -1433,7 +1438,7 @@ namespace scopeone::core
                 const double expectedZ = positionFocus.value_or(0.0)
                     + (plan.zPositions.empty() ? 0.0 : plan.zPositions.at(static_cast<size_t>(event.zIndex)))
                     + (channel ? channel->zOffsetUm : 0.0);
-                if (event.z != expectedZ)
+                if (planned && event.z != expectedZ)
                 {
                     return fail(errorMessage,
                                 QStringLiteral("%1.z does not match plan.zPositions[%2]")
@@ -1665,6 +1670,10 @@ namespace scopeone::core
             if (event.zOffsetUm != 0.0)
             {
                 object.insert(QStringLiteral("zOffsetUm"), event.zOffsetUm);
+            }
+            if (event.changedByHook)
+            {
+                object.insert(QStringLiteral("changedByHook"), true);
             }
             return canonicalJsonObject(object);
         }
@@ -2560,7 +2569,8 @@ namespace scopeone::core
                                                          {QStringLiteral("channelIndex"),
                                                           QStringLiteral("channelGroup"),
                                                           QStringLiteral("channelPreset"),
-                                                          QStringLiteral("zOffsetUm")}),
+                                                          QStringLiteral("zOffsetUm"),
+                                                          QStringLiteral("changedByHook")}),
                                    {QStringLiteral("sequenceIndex"),
                                     QStringLiteral("burstIndex"),
                                     QStringLiteral("timeIndex"),
@@ -2628,7 +2638,9 @@ namespace scopeone::core
                 || (object.contains(QStringLiteral("channelPreset"))
                     && !readString(object, QStringLiteral("channelPreset"), parsed.channelPreset, path, errorMessage))
                 || (object.contains(QStringLiteral("zOffsetUm"))
-                    && !readDouble(object, QStringLiteral("zOffsetUm"), parsed.zOffsetUm, path, errorMessage)))
+                    && !readDouble(object, QStringLiteral("zOffsetUm"), parsed.zOffsetUm, path, errorMessage))
+                || (object.contains(QStringLiteral("changedByHook"))
+                    && !readBool(object, QStringLiteral("changedByHook"), parsed.changedByHook, path, errorMessage)))
             {
                 return false;
             }
@@ -3068,7 +3080,7 @@ namespace scopeone::core
                                            const QString& path,
                                            QString* errorMessage)
         {
-            if (!checkObjectFields(object,
+            if (!checkObjectFields(withoutOptionalFields(object, {QStringLiteral("actionLog")}),
                                    {QStringLiteral("schemaVersion"),
                                     QStringLiteral("plan"),
                                     QStringLiteral("runState"),
@@ -3228,6 +3240,11 @@ namespace scopeone::core
                     return false;
                 }
                 parsed.markups.append(markup);
+            }
+            if (object.contains(QStringLiteral("actionLog"))
+                && !readArray(object, QStringLiteral("actionLog"), parsed.actionLog, path, errorMessage))
+            {
+                return false;
             }
             document = parsed;
             return true;
@@ -3641,6 +3658,10 @@ namespace scopeone::core
             object.insert(QStringLiteral("output"), outputToJson(document.output));
             object.insert(QStringLiteral("layers"), layers);
             object.insert(QStringLiteral("markups"), markups);
+            if (!document.actionLog.isEmpty())
+            {
+                object.insert(QStringLiteral("actionLog"), document.actionLog);
+            }
             return canonicalJsonObject(object);
         }
     }

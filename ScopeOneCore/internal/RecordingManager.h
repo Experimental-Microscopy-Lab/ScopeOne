@@ -42,10 +42,14 @@ namespace scopeone::core::internal
             m_sessionPreparationCallback = std::move(callback);
         }
 
+        // The hook the MDA runs that start from now on call at each event, or none
+        void setMdaHook(MDAHook hook) { m_mdaHook = std::move(hook); }
+
         bool start(const ExperimentPlan& requestedPlan,
                    const QStringList& activeCameraIds,
                    const QJsonObject& deviceProperties,
-                   const QHash<QString, double>& cameraPixelSizesUm);
+                   const QHash<QString, double>& cameraPixelSizesUm,
+                   const QHash<QString, CameraSettings>& cameraSettings);
         void stop();
         void shutdown();
         void setRecordedMaxBytes(qint64 bytes);
@@ -154,6 +158,8 @@ namespace scopeone::core::internal
             // Events of the running burst and how many of them finished
             qint64 eventsThisBurst{0};
             qint64 eventsDone{0};
+            // The hook taken when the recording started, for all of its bursts
+            MDAHook hook;
         };
 
         bool buildCapturePlan(const ExperimentPlan& requestedPlan,
@@ -163,7 +169,8 @@ namespace scopeone::core::internal
         void resetCaptureState(const ExperimentPlan& plan);
         void resetSessionState(const ExperimentPlan& plan,
                                const QJsonObject& deviceProperties,
-                               const QHash<QString, double>& cameraPixelSizesUm);
+                               const QHash<QString, double>& cameraPixelSizesUm,
+                               const QHash<QString, CameraSettings>& cameraSettings);
         void finalizeActiveSession(ExperimentRunState state, const QString& errorMessage);
         void finishRecording(ExperimentRunState state, const QString& errorMessage = QString());
         void completeRecording(ExperimentRunState state,
@@ -206,6 +213,7 @@ namespace scopeone::core::internal
         HardwareRuntime* m_hardwareRuntime{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;
+        MDAHook m_mdaHook;
 
         std::shared_ptr<RecordingSessionData> m_activeSession;
         WriterState m_writerState;

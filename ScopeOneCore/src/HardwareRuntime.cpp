@@ -1,11 +1,13 @@
 #include "internal/HardwareRuntime.h"
 
 #include "internal/DaqDeviceManager.h"
+#include "internal/MicroManagerProvider.h"
 #include "internal/SignalSourceManager.h"
 #include "scopeone/Camera.h"
 #include "scopeone/HardwareConfiguration.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QDebug>
 #include <QMetaObject>
 #include <functional>
@@ -267,7 +269,8 @@ namespace scopeone::core::internal
     Device* HardwareRuntime::propertyDeviceForDevice(
         const QString& logicalId) const
     {
-        if (logicalId.trimmed() == QStringLiteral("Core")) return m_microManager.get();
+        // The roles in presets are those of Micro-Manager, the only provider that holds roles itself
+        if (logicalId.trimmed() == HardwareConfiguration::coreDevice()) return m_microManager.get();
         const DevicePtr provider = m_registry.providerForDevice(logicalId);
         return dynamic_cast<Device*>(provider.get());
     }
@@ -353,13 +356,23 @@ namespace scopeone::core::internal
         return found;
     }
 
-    bool HardwareRuntime::setExposure(const QString& cameraIdOrAll, double exposureMs)
+    bool HardwareRuntime::setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage)
     {
         const QString target = cameraIdOrAll.trimmed();
         if (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) != 0)
         {
             Camera* provider = cameraForDevice(target);
-            return provider && provider->setExposure(target, exposureMs);
+            return checkLimit(target, QStringLiteral("Exposure"), exposureMs, errorMessage)
+                && provider && provider->setExposure(target, exposureMs);
+        }
+        // All cameras are checked before the first one changes
+        for (const HardwareDeviceDescriptor& device : m_registry.devices())
+        {
+            if (device.kind == HardwareDeviceKind::Camera
+                && !checkLimit(device.logicalId, QStringLiteral("Exposure"), exposureMs, errorMessage))
+            {
+                return false;
+            }
         }
         bool ok = false;
         bool all = true;
@@ -396,7 +409,8 @@ namespace scopeone::core::internal
                                       QString* errorMessage)
     {
         Device* provider = propertyDeviceForDevice(cameraId);
-        return provider && provider->setProperty(cameraId, name, value, errorMessage);
+        return checkPropertyLimit(cameraId, name, value, errorMessage)
+            && provider && provider->setProperty(cameraId, name, value, errorMessage);
     }
 
     QString HardwareRuntime::getPropertyType(const QString& cameraId, const QString& name)
@@ -658,6 +672,16 @@ namespace scopeone::core::internal
                                                 double dy,
                                                 QString* errorMessage)
     {
+        // A relative move is checked at the position it ends at
+        if (limit(deviceId, QStringLiteral("X")) || limit(deviceId, QStringLiteral("Y")))
+        {
+            double x = 0.0;
+            double y = 0.0;
+            if (!getXYPosition(deviceId, x, y, errorMessage) || !checkXYLimit(deviceId, x + dx, y + dy, errorMessage))
+            {
+                return false;
+            }
+        }
         return forward(xyStageForDevice(deviceId), "XY stage provider not available", errorMessage,
                        [&](XYStage& provider)
                        {
@@ -669,6 +693,15 @@ namespace scopeone::core::internal
                                                double dz,
                                                QString* errorMessage)
     {
+        if (limit(deviceId, QStringLiteral("Z")))
+        {
+            double z = 0.0;
+            if (!getZPosition(deviceId, z, errorMessage)
+                || !checkLimit(deviceId, QStringLiteral("Z"), z + dz, errorMessage))
+            {
+                return false;
+            }
+        }
         return forward(zStageForDevice(deviceId), "Z stage provider not available", errorMessage,
                        [&](ZStage& provider)
                        {
@@ -681,6 +714,10 @@ namespace scopeone::core::internal
                                         double y,
                                         QString* errorMessage)
     {
+        if (!checkXYLimit(deviceId, x, y, errorMessage))
+        {
+            return false;
+        }
         return forward(xyStageForDevice(deviceId), "XY stage provider not available", errorMessage,
                        [&](XYStage& provider)
                        {
@@ -692,6 +729,10 @@ namespace scopeone::core::internal
                                        double z,
                                        QString* errorMessage)
     {
+        if (!checkLimit(deviceId, QStringLiteral("Z"), z, errorMessage))
+        {
+            return false;
+        }
         return forward(zStageForDevice(deviceId), "Z stage provider not available", errorMessage,
                        [&](ZStage& provider)
                        {
@@ -786,35 +827,24 @@ namespace scopeone::core::internal
     bool HardwareRuntime::setLightSource(const LightSourceLine& source, QString* errorMessage)
     {
         QString error;
-        auto document = HardwareConfiguration::read(m_configurationPath, &error);
+        auto document = m_microManager->readConfiguration(m_configurationPath, &error);
         if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
         document.setLightSource(source);
-        if (!document.write(m_configurationPath, errorMessage)) return false;
+        if (!m_microManager->writeConfiguration(document, m_configurationPath, errorMessage)) return false;
         m_scopeOne.setLightSources(document.lightSources());
         return true;
     }
 
-    // Takes the Core roles and the light sources of the cfg file again after an edit, without
-    // restarting a device. The roles of Micro-Manager devices are set on its Core.
+    // Takes the roles, the light sources and the limits of the cfg file again after an edit,
+    // without restarting a device
     bool HardwareRuntime::reloadRoles(QString* errorMessage)
     {
         QString error;
-        const auto document = HardwareConfiguration::read(m_configurationPath, &error);
+        const auto document = m_microManager->readConfiguration(m_configurationPath, &error);
         if (!error.isEmpty()) { if (errorMessage) *errorMessage = error; return false; }
         applyRoles(document);
         m_scopeOne.setLightSources(document.lightSources());
-        // A role that moved to a ScopeOne device is cleared in MMCore, which had kept driving the
-        // earlier Micro-Manager device beside the new one
-        const QStringList mmLabels = document.microManagerDeviceLabels();
-        for (const QString& role : {QStringLiteral("Camera"), QStringLiteral("Shutter"), QStringLiteral("Focus"),
-                                    QStringLiteral("XYStage"), QStringLiteral("AutoFocus")})
-        {
-            const QString value = document.coreRole(role);
-            if (!m_microManager->setProperty(QStringLiteral("Core"), role,
-                                             mmLabels.contains(value) ? value : QString{}, errorMessage)) return false;
-        }
-        applyCoreRoles();
-        return true;
+        return m_microManager->setRoles(document, errorMessage);
     }
 
     // The preset names of the group in cfg order, which are the Micro-Manager ones first
@@ -852,26 +882,6 @@ namespace scopeone::core::internal
     {
         std::vector<scopeone::core::ConfigSetting> settings =
             m_microManager->configSettings(groupName.trimmed(), configName);
-        // ScopeOne role lines are removed from the temporary MM cfg before loading. Keep them in
-        // the editor's view so editing System/Startup writes the original role lines back.
-        if (groupName.trimmed() == QStringLiteral("System")
-            && configName == QStringLiteral("Startup") && !m_configurationPath.isEmpty())
-        {
-            QString error;
-            const auto document = HardwareConfiguration::read(m_configurationPath, &error);
-            if (error.isEmpty())
-            {
-                for (const auto& group : document.configGroups())
-                    if (group.name == QStringLiteral("System"))
-                        for (const auto& preset : group.presets)
-                            if (preset.name == QStringLiteral("Startup"))
-                                for (const auto& setting : preset.settings)
-                                    if (setting.device == QStringLiteral("Core")
-                                        && !std::any_of(settings.cbegin(), settings.cend(), [&](const auto& current)
-                                        { return current.device == setting.device && current.property == setting.property; }))
-                                        settings.push_back({setting.device, setting.property, setting.value});
-            }
-        }
         for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
         {
             if (line.group == groupName.trimmed() && line.preset == configName)
@@ -923,14 +933,11 @@ namespace scopeone::core::internal
         return {};
     }
 
-    // Sets the ScopeOne part of a preset, stopping at the first property that cannot be set
-    bool HardwareRuntime::applyScopeOnePreset(const QString& groupName,
-                                              const QString& configName,
-                                              QString* errorMessage)
+    bool HardwareRuntime::applyScopeOneLines(const QList<ScopeOneConfigGroupLine>& lines, QString* errorMessage)
     {
-        for (const ScopeOneConfigGroupLine& line : scopeOneConfigLines())
+        for (const ScopeOneConfigGroupLine& line : lines)
         {
-            if (line.group != groupName.trimmed() || line.preset != configName)
+            if (!m_registry.providerForDevice(line.label))
             {
                 continue;
             }
@@ -961,12 +968,28 @@ namespace scopeone::core::internal
             }
             return false;
         }
+        // A preset is refused as a whole when one of its values leaves a limit
+        for (const ConfigSetting& setting : configSettings(groupName, configName))
+        {
+            if (!checkPropertyLimit(setting.device, setting.property, setting.value, errorMessage))
+            {
+                return false;
+            }
+        }
         if (m_microManager->availableConfigs(groupName.trimmed()).contains(configName)
             && !m_microManager->setConfig(groupName.trimmed(), configName, errorMessage))
         {
             return false;
         }
-        return applyScopeOnePreset(groupName, configName, errorMessage);
+        QList<ScopeOneConfigGroupLine> lines;
+        for (const ScopeOneConfigGroupLine& line : m_scopeOne.configuration().configGroups)
+        {
+            if (line.group == groupName.trimmed() && line.preset == configName)
+            {
+                lines.append(line);
+            }
+        }
+        return applyScopeOneLines(lines, errorMessage);
     }
 
     namespace
@@ -1004,7 +1027,7 @@ namespace scopeone::core::internal
         if (error) error->clear();
         if (m_configurationPath.isEmpty()) return editError(error, QStringLiteral("No configuration file is loaded"));
         QString failure;
-        auto document = HardwareConfiguration::read(m_configurationPath, &failure);
+        auto document = m_microManager->readConfiguration(m_configurationPath, &failure);
         if (!failure.isEmpty()) return editError(error, failure);
 
         QList<HardwareConfiguration::Group> mmSnapshot;
@@ -1017,7 +1040,7 @@ namespace scopeone::core::internal
             {
                 HardwareConfiguration::Preset preset{presetName, {}};
                 for (const auto& setting : m_microManager->configSettings(name, presetName))
-                    preset.settings.append({setting, HardwareConfiguration::Source::MicroManager});
+                    preset.settings.append(setting);
                 group.presets.append(preset);
             }
             mmSnapshot.append(group);
@@ -1038,7 +1061,7 @@ namespace scopeone::core::internal
                     return editError(error, QStringLiteral("Preset needs a valid name and at least one property"));
                 for (const auto& setting : preset.settings)
                     if (!validName(setting.device) || !validName(setting.property)
-                        || !HardwareConfiguration::isValidField(setting.value, setting.source == HardwareConfiguration::Source::ScopeOne))
+                        || !HardwareConfiguration::isValidField(setting.value, document.namesScopeOneDevice(setting.device)))
                         return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
                                          .arg(setting.device, setting.property));
             }
@@ -1070,24 +1093,16 @@ namespace scopeone::core::internal
                 QList<ScopeOneConfigGroupLine> scope;
                 for (const auto& setting : preset.settings)
                 {
-                    const bool scopeOneRole = group.name == QStringLiteral("System")
-                        && preset.name == QStringLiteral("Startup")
-                        && setting.device == QStringLiteral("Core")
-                        && (setting.property == QStringLiteral("Camera")
-                            || setting.property == QStringLiteral("Shutter")
-                            || setting.property == QStringLiteral("Focus"))
-                        && document.namesScopeOneDevice(setting.value);
-                    if (scopeOneRole) continue;
-                    if (setting.source == HardwareConfiguration::Source::MicroManager)
-                        mm.push_back(setting);
-                    else
+                    if (document.namesScopeOneDevice(setting.device))
                         scope.append({group.name, preset.name, setting.device, setting.property, setting.value});
+                    else
+                        mm.push_back(setting);
                 }
                 if (!mm.empty()) ok = m_microManager->defineConfig(group.name, preset.name, mm, &failure);
                 if (ok && !scope.isEmpty()) ok = m_scopeOne.defineConfig(group.name, preset.name, scope, &failure);
             }
         }
-        if (ok) ok = document.write(m_configurationPath, &failure);
+        if (ok) ok = m_microManager->writeConfiguration(document, m_configurationPath, &failure);
         if (ok) return true;
 
         QStringList recoveryErrors;
@@ -1122,26 +1137,19 @@ namespace scopeone::core::internal
         return editError(error, failure);
     }
 
-    bool HardwareRuntime::presetSettingsForEdit(
-        const QList<ConfigSetting>& settings, QList<HardwareConfiguration::PresetSetting>& rows, QString* error) const
+    // The values are checked against the cfg in editConfigGroups
+    bool HardwareRuntime::presetSettingsForEdit(const QList<ConfigSetting>& settings, QString* error) const
     {
         if (settings.isEmpty()) return editError(error, QStringLiteral("Select at least one property"));
-        for (const auto& setting : settings)
+        for (qsizetype index = 0; index < settings.size(); ++index)
         {
-            const auto device = m_registry.device(setting.device);
-            const bool coreDevice = setting.device == QStringLiteral("Core");
-            if (!coreDevice && device.logicalId.isEmpty()) return editError(error, QStringLiteral("Unknown device %1").arg(setting.device));
-            const auto source = coreDevice || device.providerId == QStringLiteral("micro-manager")
-                ? HardwareConfiguration::Source::MicroManager : HardwareConfiguration::Source::ScopeOne;
-            if (!validName(setting.device) || !validName(setting.property)
-                || !HardwareConfiguration::isValidField(setting.value, source == HardwareConfiguration::Source::ScopeOne))
-                return editError(error, QStringLiteral("Setting of %1.%2 cannot be written to cfg")
-                                 .arg(setting.device, setting.property));
-            for (const auto& row : rows)
-                if (row.device == setting.device && row.property == setting.property)
+            const auto& setting = settings[index];
+            if (!propertyDeviceForDevice(setting.device))
+                return editError(error, QStringLiteral("Unknown device %1").arg(setting.device));
+            for (qsizetype previous = 0; previous < index; ++previous)
+                if (settings[previous].device == setting.device && settings[previous].property == setting.property)
                     return editError(error, QStringLiteral("Property selected twice: %1.%2")
                                      .arg(setting.device, setting.property));
-            rows.append({setting, source});
         }
         return true;
     }
@@ -1187,9 +1195,8 @@ namespace scopeone::core::internal
     {
         const QString name = group.trimmed(), presetName = preset.trimmed();
         if (!validName(presetName)) return editError(error, QStringLiteral("Invalid preset name"));
-        QList<HardwareConfiguration::PresetSetting> rows;
-        const QList<ConfigSetting> values(settings.cbegin(), settings.cend());
-        if (!presetSettingsForEdit(values, rows, error)) return false;
+        const QList<ConfigSetting> rows(settings.cbegin(), settings.cend());
+        if (!presetSettingsForEdit(rows, error)) return false;
         return editConfigGroups({name}, [&](auto& document, QString* reason)
         {
             if (!hasGroup(document, name)) return editError(reason, QStringLiteral("No group %1").arg(name));
@@ -1231,8 +1238,8 @@ namespace scopeone::core::internal
                                                   QString* error)
     {
         const QString name = group.trimmed();
-        QList<HardwareConfiguration::PresetSetting> selected;
-        if (!presetSettingsForEdit(properties, selected, error)) return false;
+        const QList<ConfigSetting>& selected = properties;
+        if (!presetSettingsForEdit(selected, error)) return false;
         return editConfigGroups({name}, [&](auto& document, QString* reason)
         {
             for (const auto& current : document.configGroups())
@@ -1257,34 +1264,27 @@ namespace scopeone::core::internal
         }, error);
     }
 
-    // System/Startup of the ScopeOne devices, after the load. MMCore has applied its own part.
-    void HardwareRuntime::applyScopeOneStartupPreset()
+    // Micro-Manager has applied its startup settings while it loaded
+    void HardwareRuntime::applyStartupSettings()
     {
         QString error;
-        if (!applyScopeOnePreset(QStringLiteral("System"), QStringLiteral("Startup"), &error))
+        if (!applyScopeOneLines(m_scopeOne.startupSettings(), &error))
         {
-            qWarning().noquote() << QStringLiteral("System/Startup failed: %1").arg(error);
+            qWarning().noquote() << QStringLiteral("Startup settings failed: %1").arg(error);
         }
+        m_microManager->applyRoles(m_microManager->readConfiguration(m_configurationPath, nullptr));
     }
 
-    // MMCore loads the cfg without the role lines that name ScopeOne devices and gives those
-    // roles to a Micro-Manager device it loads, which then took the role over from the ScopeOne
-    // device. They are cleared here. The shutter of a ScopeOne device was asked to open around
-    // the images by itself, which it cannot, as the cameras run in other DriverHosts.
-    void HardwareRuntime::applyCoreRoles()
+    // Runs off the GUI thread, as the ScopeOne devices are set over their DriverHosts. The previews
+    // are stopped on the GUI thread before, as stopping them here raced with the registry and the
+    // frame delivery of the GUI thread.
+    void HardwareRuntime::applyShutdownSettings()
     {
+        m_microManager->applyShutdownPreset();
         QString error;
-        if (!m_microManager->setProperty(QStringLiteral("Core"), QStringLiteral("AutoShutter"), QStringLiteral("0"), &error))
-            qWarning().noquote() << QStringLiteral("AutoShutter failed: %1").arg(error);
-        const auto document = HardwareConfiguration::read(m_configurationPath, nullptr);
-        const std::pair<QString, QString*> roles[]{{QStringLiteral("Shutter"), &m_shutterRole},
-                                                   {QStringLiteral("Focus"), &m_focusRole},
-                                                   {QStringLiteral("XYStage"), &m_xyStageRole},
-                                                   {QStringLiteral("AutoFocus"), &m_autofocusRole}};
-        for (const auto& [role, value] : roles)
+        if (!applyScopeOneLines(m_scopeOne.shutdownSettings(), &error))
         {
-            if (document.namesScopeOneDevice(*value))
-                m_microManager->setProperty(QStringLiteral("Core"), role, QString{}, nullptr);
+            qWarning().noquote() << QStringLiteral("Shutdown settings failed: %1").arg(error);
         }
     }
 
@@ -1297,12 +1297,12 @@ namespace scopeone::core::internal
         });
     }
 
-    // The device of a Core role. MMCore holds a Micro-Manager device, which presets may change, as
-    // a channel that switches the shutter. A ScopeOne device comes from the cfg. Otherwise the
-    // first device of the kind takes the role, as MMCore gives a role to a device it loads.
+    // The device of a role. Micro-Manager holds one of its devices, which presets may change, as a
+    // channel that switches the shutter. A ScopeOne device comes from the cfg. Otherwise the first
+    // device of the kind takes the role, as Micro-Manager gives a role to a device it loads.
     QString HardwareRuntime::roleDevice(const QString& role, const QString& configured, HardwareDeviceKind kind) const
     {
-        QString id = m_microManager->getProperty(QStringLiteral("Core"), role, false);
+        QString id = m_microManager->role(role);
         if (id.isEmpty()) id = configured;
         if (id.isEmpty())
         {
@@ -1341,17 +1341,170 @@ namespace scopeone::core::internal
     void HardwareRuntime::setConfigurationPath(const QString& path)
     {
         m_configurationPath = path;
-        applyRoles(path.isEmpty() ? HardwareConfiguration{} : HardwareConfiguration::read(path, nullptr));
+        applyRoles(path.isEmpty() ? HardwareConfiguration{} : m_microManager->readConfiguration(path, nullptr));
     }
 
     void HardwareRuntime::applyRoles(const HardwareConfiguration& document)
     {
-        m_cameraRole = document.coreRole(QStringLiteral("Camera"));
-        m_xyStageRole = document.coreRole(QStringLiteral("XYStage"));
-        m_focusRole = document.coreRole(QStringLiteral("Focus"));
-        m_shutterRole = document.coreRole(QStringLiteral("Shutter"));
-        m_autofocusRole = document.coreRole(QStringLiteral("AutoFocus"));
-        m_autoShutter = document.coreRole(QStringLiteral("AutoShutter")) != QStringLiteral("0");
+        m_cameraRole = document.role(QStringLiteral("Camera"));
+        m_xyStageRole = document.role(QStringLiteral("XYStage"));
+        m_focusRole = document.role(QStringLiteral("Focus"));
+        m_shutterRole = document.role(QStringLiteral("Shutter"));
+        m_autofocusRole = document.role(QStringLiteral("AutoFocus"));
+        m_autoShutter = document.role(QStringLiteral("AutoShutter")) != QStringLiteral("0");
+        QWriteLocker locker(&m_limitsLock);
+        m_limits = document.limits();
+    }
+
+    QList<HardwareConfiguration::Limit> HardwareRuntime::limits() const
+    {
+        QReadLocker locker(&m_limitsLock);
+        return m_limits;
+    }
+
+    std::optional<HardwareConfiguration::Limit> HardwareRuntime::limit(const QString& device,
+                                                                       const QString& property) const
+    {
+        QReadLocker locker(&m_limitsLock);
+        for (const HardwareConfiguration::Limit& entry : m_limits)
+        {
+            if (entry.device == device && entry.property == property)
+            {
+                return entry;
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool HardwareRuntime::checkLimit(const QString& device, const QString& property, double value,
+                                     QString* errorMessage) const
+    {
+        const auto range = limit(device, property);
+        if (!range || (value >= range->min && value <= range->max))
+        {
+            return true;
+        }
+        if (errorMessage)
+        {
+            const HardwareDeviceKind kind = m_registry.device(device).kind;
+            const bool axis = (kind == HardwareDeviceKind::XYStage || kind == HardwareDeviceKind::ZStage)
+                && (property == QStringLiteral("X") || property == QStringLiteral("Y") || property == QStringLiteral("Z"));
+            const QString unit = axis ? QStringLiteral(" µm")
+                : kind == HardwareDeviceKind::Camera && property == QStringLiteral("Exposure") ? QStringLiteral(" ms")
+                : QString{};
+            const bool below = value < range->min;
+            *errorMessage = QStringLiteral("%1 %2%3 is %4 the limit %5%3 of %6")
+                                .arg(property, QString::number(value), unit,
+                                     below ? QStringLiteral("below") : QStringLiteral("above"),
+                                     QString::number(below ? range->min : range->max), device);
+        }
+        return false;
+    }
+
+    bool HardwareRuntime::checkPropertyLimit(const QString& device, const QString& property, const QString& value,
+                                             QString* errorMessage) const
+    {
+        if (!limit(device, property))
+        {
+            return true;
+        }
+        bool number = false;
+        const double x = value.toDouble(&number);
+        if (!number)
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("%1 %2 of %3 is not a number, and %1 has a limit")
+                                    .arg(property, value, device);
+            }
+            return false;
+        }
+        return checkLimit(device, property, x, errorMessage);
+    }
+
+    bool HardwareRuntime::checkXYLimit(const QString& device, double x, double y, QString* errorMessage) const
+    {
+        return checkLimit(device, QStringLiteral("X"), x, errorMessage)
+            && checkLimit(device, QStringLiteral("Y"), y, errorMessage);
+    }
+
+    // The values follow buildAcquisitionEvents: the Z of an image is the focus of its position plus
+    // its Z position plus the offset of its channel, and a channel outside the Z stack images the
+    // middle Z position only
+    bool HardwareRuntime::checkPlanLimits(const ExperimentPlan& plan, QString* errorMessage) const
+    {
+        std::vector<ChannelSetting> channels = plan.channels;
+        if (channels.empty())
+        {
+            channels.push_back({});
+        }
+        // An event takes the exposure of its channel, else that of the plan, on the cameras of the channel.
+        // Checking the plan exposure on every camera refused plans whose channels never use it.
+        for (const ChannelSetting& channel : channels)
+        {
+            const double exposureMs = channel.exposureMs > 0.0 ? channel.exposureMs : plan.exposureMs;
+            const QStringList cameras = channel.cameraId.isEmpty() ? plan.cameraIds : QStringList{channel.cameraId};
+            for (const QString& camera : cameras)
+            {
+                if (exposureMs > 0.0 && !checkLimit(camera, QStringLiteral("Exposure"), exposureMs, errorMessage))
+                {
+                    return false;
+                }
+            }
+        }
+        for (const ChannelSetting& channel : plan.channels)
+        {
+            for (const ConfigSetting& setting : configSettings(plan.channelGroup, channel.preset))
+            {
+                if (!checkPropertyLimit(setting.device, setting.property, setting.value, errorMessage))
+                {
+                    return false;
+                }
+            }
+        }
+        const QString stage = defaultXYStage();
+        for (const QPointF& position : plan.positions)
+        {
+            if (!checkXYLimit(stage, position.x(), position.y(), errorMessage))
+            {
+                return false;
+            }
+        }
+
+        const QString focus = defaultZStage();
+        if (!limit(focus, QStringLiteral("Z")))
+        {
+            return true;
+        }
+        const std::size_t positionCount = std::max<std::size_t>(plan.positions.size(), 1);
+        const std::size_t middle = plan.zPositions.empty() ? 0 : (plan.zPositions.size() - 1) / 2;
+        for (std::size_t index = 0; index < positionCount; ++index)
+        {
+            const std::optional<double> base = index < plan.positionZ.size() ? plan.positionZ[index] : std::nullopt;
+            for (const ChannelSetting& channel : channels)
+            {
+                // Without Z positions the channel offsets move from the focus at the start, which the
+                // acquisition thread reads and checks; reading it here blocked the GUI thread
+                if (plan.zPositions.empty() && !base)
+                {
+                    continue;
+                }
+                for (std::size_t slice = 0; slice < std::max<std::size_t>(plan.zPositions.size(), 1); ++slice)
+                {
+                    if (!channel.zStack && slice != middle)
+                    {
+                        continue;
+                    }
+                    const double z = base.value_or(0.0)
+                        + (plan.zPositions.empty() ? 0.0 : plan.zPositions[slice]) + channel.zOffsetUm;
+                    if (!checkLimit(focus, QStringLiteral("Z"), z, errorMessage))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     bool HardwareRuntime::hasAutofocus() const
@@ -1377,6 +1530,13 @@ namespace scopeone::core::internal
                                              const std::vector<double>& positions,
                                              QString* errorMessage)
     {
+        for (const double position : positions)
+        {
+            if (!checkLimit(focusDevice, QStringLiteral("Z"), position, errorMessage))
+            {
+                return false;
+            }
+        }
         return forward(zStageForDevice(focusDevice), "Z stage provider not available", errorMessage,
                        [&](ZStage& provider)
                        {
@@ -1402,6 +1562,16 @@ namespace scopeone::core::internal
     bool HardwareRuntime::startPropertySequences(const std::vector<PropertySequence>& sequences,
                                                  QString* errorMessage)
     {
+        for (const PropertySequence& sequence : sequences)
+        {
+            for (const QString& value : sequence.values)
+            {
+                if (!checkPropertyLimit(sequence.device, sequence.property, value, errorMessage))
+                {
+                    return false;
+                }
+            }
+        }
         for (std::size_t index = 0; index < sequences.size(); ++index)
         {
             const PropertySequence& sequence = sequences[index];
@@ -1438,50 +1608,125 @@ namespace scopeone::core::internal
         {
             return m_microManager->pixelSizeUm(cameraId);
         }
-        // The camera of a driver takes the pixel size calibration of the cfg as well, which is
-        // scaled by its binning, as in Micro-Manager. Cameras name their binning "2" or "2x2".
-        Device* const device = propertyDeviceForDevice(cameraId);
-        const int binning = device ? device->getProperty(cameraId, QStringLiteral("Binning"), true)
-                                         .section(QLatin1Char('x'), 0, 0).toInt()
-                                   : 0;
-        return m_microManager->calibratedPixelSizeUm() * (std::max)(binning, 1);
+        // The camera of a driver takes the pixel size calibration of the cfg as well, scaled by its
+        // binning as Micro-Manager does
+        int binning = 1;
+        if (Camera* const provider = cameraForDevice(cameraId.trimmed()))
+        {
+            provider->getBinning(cameraId.trimmed(), binning);
+        }
+        return m_microManager->calibratedPixelSizeUm() * binning;
     }
 
-    QStringList HardwareRuntime::microManagerAdapterSearchPaths() const
+    // The camera from the property snapshot that a recording takes anyway, by the names that
+    // Micro-Manager gives the properties, and from the binning and gain of the driver SDK. Reading
+    // the camera again made blocking DriverHost calls on the GUI thread at every recording start.
+    CameraSettings HardwareRuntime::cameraSettings(const QString& cameraId, const QJsonObject& properties) const
+    {
+        const QString camera = cameraId.trimmed();
+        const auto number = [&properties](const QString& name) -> std::optional<double>
+        {
+            bool ok = false;
+            const double value = properties.value(name).toString().toDouble(&ok);
+            return ok && std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+        };
+        CameraSettings settings;
+        settings.exposureMs = number(QStringLiteral("Exposure")).value_or(0.0);
+        settings.gain = number(QStringLiteral("Gain"));
+        settings.offset = number(QStringLiteral("Offset"));
+        settings.model = properties.value(QStringLiteral("CameraName")).toString();
+        settings.serialNumber = properties.value(QStringLiteral("CameraID")).toString();
+        // Cameras name their binning "2" or "2x2"
+        settings.binning = properties.value(QStringLiteral("Binning")).toString().section(QLatin1Char('x'), 0, 0).toInt();
+        if (m_registry.device(camera).providerId == m_microManager->descriptor().id)
+        {
+            return settings;
+        }
+        if (Camera* const provider = cameraForDevice(camera))
+        {
+            if (settings.binning <= 0)
+            {
+                provider->getBinning(camera, settings.binning);
+            }
+            if (double gain = 0.0; !settings.gain && provider->getGain(camera, gain))
+            {
+                settings.gain = gain;
+            }
+        }
+        return settings;
+    }
+
+    QStringList HardwareRuntime::deviceAdapterSearchPaths() const
     {
         return m_microManager->adapterSearchPaths();
     }
 
-    void HardwareRuntime::setMicroManagerAdapterSearchPaths(const QStringList& paths)
+    void HardwareRuntime::setDeviceAdapterSearchPaths(const QStringList& paths)
     {
         m_microManager->setAdapterSearchPaths(paths);
     }
 
-    bool HardwareRuntime::loadMicroManagerConfiguration(const QString& configPath,
-                                                        MicroManagerProvider::LoadResult& result,
-                                                        QString& errorMessage)
+    // Micro-Manager loads first, then its cameras start in their DriverHosts and the ScopeOne
+    // devices in theirs. The devices that failed of both count together.
+    bool HardwareRuntime::loadConfiguration(const QString& configPath, ConfigurationLoadResult& result,
+                                            QString& errorMessage)
     {
-        return m_microManager->loadConfiguration(configPath, result, errorMessage);
+        result = {};
+        MicroManagerProvider::LoadResult loaded;
+        if (!m_microManager->loadConfiguration(configPath, loaded, errorMessage))
+        {
+            QString cleanupError;
+            if (!m_microManager->unloadDevices(&cleanupError))
+            {
+                errorMessage = QStringLiteral("%1; cleanup failed: %2").arg(errorMessage, cleanupError);
+            }
+            return false;
+        }
+        result.failedCameras = m_microManager->startCameras(loaded.cameras);
+        const ScopeOneProvider::LoadResult scopeOne = m_scopeOne.load(configPath);
+        for (const MicroManagerCameraSetup& camera : std::as_const(loaded.cameras))
+        {
+            const bool started = !result.failedCameras.contains(camera.cameraId);
+            for (HardwareDeviceDescriptor& device : loaded.devices)
+            {
+                if (device.logicalId == camera.cameraId)
+                {
+                    device.state = started ? HardwareDeviceState::Initialized : HardwareDeviceState::Faulted;
+                }
+            }
+            if (started)
+            {
+                result.cameraIds.append(camera.cameraId);
+            }
+        }
+        result.failedDevices = loaded.failedDevices + result.failedCameras + scopeOne.failedDevices;
+        result.successCount = loaded.successCount + scopeOne.successCount;
+        result.failCount = loaded.failCount + static_cast<int>(result.failedCameras.size())
+            + static_cast<int>(scopeOne.failedDevices.size());
+        result.skippedCameraCount = loaded.skippedCameraCount;
+        result.foundCamera = loaded.foundCamera;
+        result.devices = loaded.devices;
+        if (result.failedCameras.isEmpty())
+        {
+            m_microManager->setDevices(loaded.devices);
+        }
+        return true;
     }
 
-    QStringList HardwareRuntime::startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras)
-    {
-        return m_microManager->startCameras(cameras);
-    }
-
-    ScopeOneProvider::LoadResult HardwareRuntime::loadScopeOneDevices(const QString& configPath)
-    {
-        return m_scopeOne.load(configPath);
-    }
-
-    bool HardwareRuntime::registerScopeOneDevices()
+    bool HardwareRuntime::registerLoadedDevices()
     {
         for (const DevicePtr& device : m_scopeOne.devices())
         {
             if (!registerProvider(device))
             {
+                clearLoadedDevices();
                 return false;
             }
+        }
+        if (!registerProvider(m_microManager))
+        {
+            clearLoadedDevices();
+            return false;
         }
         return true;
     }
@@ -1497,36 +1742,25 @@ namespace scopeone::core::internal
         return hosts;
     }
 
-    bool HardwareRuntime::setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices)
+    // Micro-Manager stays registered without devices, as the runtime owns it for its lifetime.
+    // The ScopeOne devices leave with their DriverHosts in takeDriverHosts.
+    void HardwareRuntime::clearLoadedDevices()
     {
-        m_microManager->setDevices(devices);
-        return registerProvider(m_microManager);
+        m_microManager->setDevices({});
+        registerProvider(m_microManager);
     }
 
-    void HardwareRuntime::stopMicroManagerPreview()
+    void HardwareRuntime::stopAllPreviews()
     {
-        stopPreviewForProvider(m_microManager->descriptor().id);
+        for (const HardwareProviderDescriptor& descriptor : m_registry.providers())
+        {
+            stopPreviewForProvider(descriptor.id);
+        }
     }
 
-    bool HardwareRuntime::unloadMicroManagerDevices(QString* errorMessage)
+    bool HardwareRuntime::unloadDevices(QString* errorMessage)
     {
         return m_microManager->unloadDevices(errorMessage);
-    }
-
-    void HardwareRuntime::applyMicroManagerShutdownPreset()
-    {
-        stopPreviewForProvider(m_microManager->descriptor().id);
-        m_microManager->applyShutdownPreset();
-    }
-
-    // System/Shutdown of the ScopeOne devices, which the caller runs off the GUI thread
-    void HardwareRuntime::applyScopeOneShutdownPreset()
-    {
-        QString error;
-        if (!applyScopeOnePreset(QStringLiteral("System"), QStringLiteral("Shutdown"), &error))
-        {
-            qWarning().noquote() << QStringLiteral("System/Shutdown failed: %1").arg(error);
-        }
     }
 
     // Removes the drivers. Micro-Manager stays registered, as the runtime owns it for its lifetime.

@@ -22,7 +22,7 @@ capability interfaces that fit it:
 
 | Interface | Device |
 |---|---|
-| `Camera` | frames, exposure, ROI and events |
+| `Camera` | frames, exposure, binning, gain, ROI and events |
 | `XYStage` | XY position |
 | `ZStage` | Z position, with optional sequences |
 | `Shutter` | open and close |
@@ -38,8 +38,12 @@ it implements, and its calls and frames leave `deviceId` empty. A single camera 
 `ExampleCamera` implements `Camera` alone, and `Hub` is for a device that holds several, such as a
 DAQ board.
 
+A camera reports its binning factor with `getBinning` and its gain with `getGain`, which returns
+false for a camera without gain. As in Micro-Manager, the binning is set through a property named
+`Binning`, the ROI is in binned pixels, and ScopeOne scales the calibrated pixel size by the binning.
+
 The SDK interfaces are in `ScopeOneCore/sdk/include/scopeone`, and `DriverSDK.h` includes all of
-them. Driver API version 4 is `ScopeOneDriverApiVersion` in `scopeone/DriverManifest.h`.
+them. Driver API version 5 is `ScopeOneDriverApiVersion` in `scopeone/DriverManifest.h`.
 
 ## Declaring devices in the configuration
 
@@ -53,6 +57,7 @@ ScopeOneConfigGroup,<group>,<preset>,<label>,<property>,<value>
 ScopeOneLightSource,<name>,<label>,Enable,<property>,<on value>,<off value>
 ScopeOneLightSource,<name>,<label>,Power,<property>
 ScopeOneLightSource,<name>,<label>,Reading,<property>
+ScopeOneLimit,<label>,<property>,<min>,<max>
 ```
 
 The label is the device id in ScopeOne, and the driver id is the `id` of its manifest or the name of
@@ -86,15 +91,33 @@ ScopeOneLightSource,561,Laser 488,Power,Power Setpoint [mW]
 ScopeOneLightSource,561,Laser 488,Reading,Power Reading [W]
 ```
 
+A `ScopeOneLimit` line sets the range that Core keeps a device property in. The label may be a
+ScopeOne device or a Micro-Manager device. The axes of a stage are the properties `X` and `Y` of an XY
+stage and `Z` of a Z stage, in µm, and the exposure of a camera is `Exposure`, in ms. ScopeOne shows
+the `Position` property of a Micro-Manager Z stage as `Z`, also in presets and limits. Any other
+numeric property goes by its name. Core refuses a command that would leave the range, whoever sends
+it: a property set, an exposure, an absolute or relative stage move, a Z sequence, a preset, an
+experiment and a stage mosaic. An experiment or mosaic that would leave a range is refused before it
+starts. The value is never clamped; the command fails with an error such as
+`Z 3000 µm is above the limit 2500 µm of ZStage`.
+
+```text
+ScopeOneLimit,ZStage,Z,0,2500
+ScopeOneLimit,XYStage,X,-20000,20000
+ScopeOneLimit,XYStage,Y,-20000,20000
+ScopeOneLimit,Camera,Exposure,0.1,2000
+ScopeOneLimit,Laser 488,Power Setpoint [mW],0,30
+```
+
 Only the devices in the file are loaded. `config/ScopeOne_MM_demo.cfg` has Micro-Manager and ScopeOne devices in one file, and `config/ScopeOne_demo.cfg` has ScopeOne devices only.
 
 In ScopeOne, Tools > Hardware Configuration opens the configuration editor. The Devices page adds
 and removes ScopeOne devices and sets their pre-init properties; Micro-Manager devices are shown
 there but are edited with Micro-Manager. Roles sets the Core roles of Micro-Manager, the Camera,
 Shutter, Focus, XYStage and AutoFocus devices and AutoShutter, and assigns each light source its
-Power and optional Enable and Reading properties, whose lists show the current values. Apply shows
-the changes and writes them. A change of the devices reloads the configuration, while roles and
-light sources take effect without restarting a device. The same editor can create a new
+Power and optional Enable and Reading properties, whose lists show the current values. Limits edits
+the `ScopeOneLimit` lines. Apply shows the changes and writes them. A change of the devices reloads
+the configuration, while roles, light sources and limits take effect without restarting a device. The same editor can create a new
 configuration. The edit button on the Light Sources panel opens Roles.
 
 The preset editor in the Control dock creates and edits groups and presets. A group selects device
@@ -150,7 +173,7 @@ the drivers into `ScopeOneCore/install/bin/drivers`, from where the GUI build co
   "id": "my.camera",
   "name": "My Camera",
   "version": "1.0.0",
-  "scopeOneApi": 4,
+  "scopeOneApi": 5,
   "kind": "driver"
 }
 ```

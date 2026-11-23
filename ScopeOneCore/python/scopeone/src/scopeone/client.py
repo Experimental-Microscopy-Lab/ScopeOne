@@ -13,6 +13,7 @@ import mmap
 import os
 import struct
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -26,7 +27,9 @@ _IS_WINDOWS = os.name == "nt"
 if _IS_WINDOWS:
     import pywintypes
     import win32file
+    import win32pipe
 else:
+    import select
     import socket
 
 # Windows: named pipe. Unix: QLocalServer turns this name into a socket file
@@ -90,6 +93,19 @@ class _WindowsPipeTransport:
             chunks.extend(data)
         return bytes(chunks)
 
+    def wait_readable(self, timeout: float | None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                _, available, _ = win32pipe.PeekNamedPipe(self._handle, 0)
+            except pywintypes.error as exc:
+                raise RuntimeError(f"ScopeOne control connection failed: {exc}") from exc
+            if available > 0:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
     def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
         access = mmap.ACCESS_WRITE if write else mmap.ACCESS_READ
         return mmap.mmap(-1, mapping_size, tagname=mapping_name, access=access)
@@ -146,6 +162,10 @@ class _UnixSocketTransport:
                 raise RuntimeError("ScopeOne control connection closed")
             chunks.extend(data)
         return bytes(chunks)
+
+    def wait_readable(self, timeout: float | None) -> bool:
+        readable, _, _ = select.select([self._sock], [], [], timeout)
+        return bool(readable)
 
     def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
         # The server publishes the frame as a POSIX shm object; it appears at
@@ -285,6 +305,12 @@ class ScopeOne:
     def __init__(self, endpoint: str = "local") -> None:
         self._transport = _make_transport(LOCAL_SERVER_NAME if endpoint == "local" else endpoint)
         self._next_request_id = 1
+        # Event messages read while a response was awaited. Bounded, as a subscription that nobody
+        # waits on, such as measurement during live processing, grew it without limit; the oldest
+        # events go first.
+        self._events = deque(maxlen=10000)
+        # The events this connection is subscribed to, as the last subscribe or unsubscribe returned
+        self._subscribed = []
         self._request({"type": "ping"})
 
     @classmethod
@@ -341,6 +367,40 @@ class ScopeOne:
     def capabilities(self) -> dict:
         response = self._request({"type": "capabilities"})
         return dict(response.get("capabilities", {}))
+
+    def subscribe(self, events: list[str] | None = None) -> list[str]:
+        response = self._request({"type": "subscribe", "events": list(events or [])})
+        self._subscribed = list(response.get("events", []))
+        return list(self._subscribed)
+
+    def unsubscribe(self, events: list[str] | None = None) -> list[str]:
+        response = self._request({"type": "unsubscribe", "events": list(events or [])})
+        self._subscribed = list(response.get("events", []))
+        return list(self._subscribed)
+
+    def wait_event(self, names: list[str] | None = None, timeout: float | None = None) -> dict | None:
+        """Return the next event of the given names, or None after timeout seconds.
+
+        Events of other names are dropped, except hook requests, which stay for a later wait.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # Dropping hook requests left their events waiting for the hook timeout
+        hooks = []
+        try:
+            while True:
+                if self._events:
+                    event = self._events.popleft()
+                else:
+                    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                    if not self._transport.wait_readable(remaining):
+                        return None
+                    event = self._read_message()
+                if not names or event.get("event") in names:
+                    return event
+                if event.get("event") in ("before_event", "after_event"):
+                    hooks.append(event)
+        finally:
+            self._events.extendleft(reversed(hooks))
 
     def state_snapshot(self) -> dict:
         response = self._request({"type": "state_snapshot"})
@@ -1096,6 +1156,86 @@ class ScopeOne:
             }
         )
 
+    def triggers(self) -> list[dict]:
+        response = self._request({"type": "triggers"})
+        return list(response["triggers"])
+
+    def set_triggers(self, triggers: list[dict]) -> list[dict]:
+        response = self._request({"type": "set_triggers", "triggers": list(triggers)})
+        return list(response["triggers"])
+
+    def set_hooks(self, hooks: list[str], timeout_ms: int = 5000) -> dict:
+        """Make the experiments started afterwards wait at "before_event" and/or
+        "after_event" of every event for hook_reply. An empty list turns them off.
+        The hooks belong to this connection."""
+        response = self._request(
+            {"type": "set_hooks", "hooks": list(hooks), "timeoutMs": int(timeout_ms)}
+        )
+        return {"hooks": list(response["hooks"]), "timeoutMs": int(response["timeoutMs"])}
+
+    def hook_reply(self, hook_id: int, action: str = "continue", **changes) -> None:
+        """Answer a hook with "continue", "skip" or "stop". Before an event, changes
+        may set x, y, z and exposureMs of that event."""
+        self._request({"type": "hook_reply", "hookId": int(hook_id), "action": action, **changes})
+
+    def run_hooks(self, before=None, after=None, experiment_id: str | None = None) -> dict:
+        """Answer the hooks until the experiment ends, and return its last experiment_state event.
+
+        before(event) and after(data) get the event of the hook and the whole hook data. They
+        return None or "continue", "skip", "stop", or a dict with "action" and changes such as
+        {"z": 12.5}. Hooks without a function are answered with continue.
+        """
+        names = ["before_event", "after_event", "experiment_state"]
+        # A subscription the caller had before stays, as unsubscribing it always ended the caller's
+        # own waits for experiment_state
+        subscribed = "experiment_state" in self._subscribed
+        self.subscribe(["experiment_state"])
+        try:
+            # An experiment without events, or one that ended before the subscription, sends no
+            # experiment_state that this loop could wait for, so the loop waited forever.
+            if experiment_id is not None:
+                status = self.experiment_status(experiment_id)
+                if status["state"] != "Running":
+                    return {"event": "experiment_state",
+                            "data": {"experimentId": experiment_id, "state": status["state"]}}
+            while True:
+                message = self.wait_event(names)
+                data = message.get("data", {})
+                if message["event"] == "experiment_state":
+                    if data.get("state") != "Running" and (
+                        experiment_id is None or data.get("experimentId") == experiment_id
+                    ):
+                        return message
+                    continue
+                function = before if message["event"] == "before_event" else after
+                if function is None:
+                    reply = None
+                elif message["event"] == "before_event":
+                    reply = function(data["event"])
+                else:
+                    reply = function(data)
+                if isinstance(reply, dict):
+                    reply = dict(reply)
+                    action = reply.pop("action", "continue")
+                else:
+                    action, reply = reply or "continue", {}
+                # A hook that timed out or whose experiment was canceled while the function ran no
+                # longer waits, and its refused reply ended the loop before the final experiment_state.
+                try:
+                    self.hook_reply(data["hookId"], action, **reply)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("No event waits on hook"):
+                        raise
+        finally:
+            if not subscribed:
+                self.unsubscribe(["experiment_state"])
+
+    def action_log(self, since: str | None = None) -> list[dict]:
+        request = {"type": "action_log"}
+        if since is not None:
+            request["since"] = since
+        return list(self._request(request)["entries"])
+
     def experiment_document(self) -> dict:
         response = self._request({"type": "experiment_document"})
         return dict(response["document"])
@@ -1387,12 +1527,10 @@ class ScopeOne:
         framed = struct.pack("<I", len(payload)) + payload
         self._transport.send(framed)
 
-        response_size = self._transport.recv_exact(4)
-        payload_size = struct.unpack("<I", response_size)[0]
-        if payload_size <= 0 or payload_size > MAX_MESSAGE_BYTES:
-            self._transport.close()
-            raise RuntimeError("ScopeOne control response has invalid size")
-        response = json.loads(self._transport.recv_exact(payload_size).decode("utf-8"))
+        response = self._read_message()
+        while "event" in response and "requestId" not in response:
+            self._events.append(response)
+            response = self._read_message()
 
         if response.get("requestId") != request_id:
             self._transport.close()
@@ -1402,6 +1540,14 @@ class ScopeOne:
             error = response.get("error", "ScopeOne request failed")
             raise RuntimeError(error)
         return response
+
+    def _read_message(self) -> dict:
+        response_size = self._transport.recv_exact(4)
+        payload_size = struct.unpack("<I", response_size)[0]
+        if payload_size <= 0 or payload_size > MAX_MESSAGE_BYTES:
+            self._transport.close()
+            raise RuntimeError("ScopeOne control response has invalid size")
+        return json.loads(self._transport.recv_exact(payload_size).decode("utf-8"))
 
     @staticmethod
     def _experiment_status_result(response: dict) -> dict:

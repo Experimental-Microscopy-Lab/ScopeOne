@@ -51,6 +51,35 @@ namespace scopeone::ui
         const char* const kPosixFrameShmName = "/ScopeOne.Api.frame";
 #endif
         const QString kFrameMappingName = QStringLiteral("ScopeOne.Api.frame");
+        // The events a socket can subscribe to
+        const QStringList kEventNames{
+            QStringLiteral("config_loaded"), QStringLiteral("config_unloaded"),
+            QStringLiteral("preview_state"), QStringLiteral("stage_moved"),
+            QStringLiteral("experiment_state"), QStringLiteral("recording_saved"),
+            QStringLiteral("measurement"), QStringLiteral("trigger_fired"),
+            // Sent to the socket that set the hooks, whether or not it subscribed
+            QStringLiteral("before_event"), QStringLiteral("after_event")
+        };
+        const QStringList kHardwareMutationOperations{
+            QStringLiteral("load_config"), QStringLiteral("unload_config"),
+            QStringLiteral("start_preview"), QStringLiteral("stop_preview"),
+            QStringLiteral("set_config"), QStringLiteral("set_config_preset"),
+            QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source"),
+            QStringLiteral("set_property"),
+            QStringLiteral("set_exposure"), QStringLiteral("set_roi"), QStringLiteral("set_half_roi"),
+            QStringLiteral("clear_roi"), QStringLiteral("move_xy_relative"),
+            QStringLiteral("move_z_relative"), QStringLiteral("move_xy_to"),
+            QStringLiteral("move_z_to"), QStringLiteral("start_experiment"),
+            QStringLiteral("cancel_experiment"), QStringLiteral("record"),
+            QStringLiteral("start_stage_mosaic"), QStringLiteral("cancel_stage_mosaic"),
+            QStringLiteral("set_triggers"), QStringLiteral("set_hooks"), QStringLiteral("hook_reply")
+        };
+        const QStringList kFilesystemMutationOperations{
+            QStringLiteral("save_experiment"), QStringLiteral("start_experiment"),
+            QStringLiteral("save_frame_mapping"), QStringLiteral("session_save"),
+            QStringLiteral("save_image_window"), QStringLiteral("set_config_preset"),
+            QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source")
+        };
 
         // Encodes one JSON object with a little endian size prefix
         QByteArray encodeMessage(const QJsonObject& message)
@@ -121,6 +150,19 @@ namespace scopeone::ui
         }
 
         // Creates a failed response carrying the reason
+        QJsonObject hooksToJson(const scopeone::core::ScopeOneCore* core)
+        {
+            QStringList points;
+            for (const auto point : core->hooks())
+            {
+                points.append(scopeone::core::ScopeOneCore::hookPointName(point));
+            }
+            QJsonObject hooks;
+            hooks.insert(QStringLiteral("hooks"), QJsonArray::fromStringList(points));
+            hooks.insert(QStringLiteral("timeoutMs"), core->hookTimeoutMs());
+            return hooks;
+        }
+
         QJsonObject errorResponse(const QString& type, const QString& message)
         {
             QJsonObject response = makeResponse(type, false);
@@ -693,7 +735,8 @@ namespace scopeone::ui
             groups.insert(QStringLiteral("system"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("ping"), QStringLiteral("version"), QStringLiteral("status"),
                 QStringLiteral("capabilities"), QStringLiteral("state_snapshot"),
-                QStringLiteral("frame_mapping_info")
+                QStringLiteral("frame_mapping_info"), QStringLiteral("subscribe"),
+                QStringLiteral("unsubscribe"), QStringLiteral("action_log")
             }));
             groups.insert(QStringLiteral("configuration"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("camera_ids"), QStringLiteral("loaded_devices"),
@@ -744,13 +787,15 @@ namespace scopeone::ui
                 QStringLiteral("set_realtime_processing"), QStringLiteral("add_processing_module"),
                 QStringLiteral("remove_processing_module"),
                 QStringLiteral("set_processing_module_parameters"),
-                QStringLiteral("reset_processing_module_state")
+                QStringLiteral("reset_processing_module_state"), QStringLiteral("triggers"),
+                QStringLiteral("set_triggers")
             }));
             groups.insert(QStringLiteral("experiment"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("experiment_document"), QStringLiteral("validate_experiment"),
                 QStringLiteral("save_experiment"), QStringLiteral("load_experiment"),
                 QStringLiteral("start_experiment"), QStringLiteral("experiment_status"),
-                QStringLiteral("cancel_experiment")
+                QStringLiteral("cancel_experiment"), QStringLiteral("set_hooks"),
+                QStringLiteral("hook_reply")
             }));
             groups.insert(QStringLiteral("recording"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("record"), QStringLiteral("session_info"),
@@ -783,25 +828,10 @@ namespace scopeone::ui
                 QStringLiteral("start_stage_mosaic"), QStringLiteral("process_image_window"),
                 QStringLiteral("save_image_window")
             }));
-            object.insert(QStringLiteral("hardwareMutationOperations"), QJsonArray::fromStringList(QStringList{
-                QStringLiteral("load_config"), QStringLiteral("unload_config"),
-                QStringLiteral("start_preview"), QStringLiteral("stop_preview"),
-                QStringLiteral("set_config"), QStringLiteral("set_config_preset"),
-                QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source"),
-                QStringLiteral("set_property"),
-                QStringLiteral("set_exposure"), QStringLiteral("set_roi"), QStringLiteral("set_half_roi"),
-                QStringLiteral("clear_roi"), QStringLiteral("move_xy_relative"),
-                QStringLiteral("move_z_relative"), QStringLiteral("move_xy_to"),
-                QStringLiteral("move_z_to"), QStringLiteral("start_experiment"),
-                QStringLiteral("cancel_experiment"), QStringLiteral("record"),
-                QStringLiteral("start_stage_mosaic"), QStringLiteral("cancel_stage_mosaic")
-            }));
-            object.insert(QStringLiteral("filesystemMutationOperations"), QJsonArray::fromStringList(QStringList{
-                QStringLiteral("save_experiment"), QStringLiteral("start_experiment"),
-                QStringLiteral("save_frame_mapping"), QStringLiteral("session_save"),
-                QStringLiteral("save_image_window"), QStringLiteral("set_config_preset"),
-                QStringLiteral("remove_config_preset"), QStringLiteral("set_light_source")
-            }));
+            object.insert(QStringLiteral("hardwareMutationOperations"),
+                          QJsonArray::fromStringList(kHardwareMutationOperations));
+            object.insert(QStringLiteral("filesystemMutationOperations"),
+                          QJsonArray::fromStringList(kFilesystemMutationOperations));
             object.insert(QStringLiteral("destructiveOperations"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("unload_config"), QStringLiteral("remove_static_layer"),
                 QStringLiteral("clear_static_layers"), QStringLiteral("remove_markup"),
@@ -811,6 +841,7 @@ namespace scopeone::ui
                 QStringLiteral("close_image_window")
             }));
             object.insert(QStringLiteral("frameTransport"), QStringLiteral("shared_memory"));
+            object.insert(QStringLiteral("events"), QJsonArray::fromStringList(kEventNames));
             return object;
         }
 
@@ -934,6 +965,74 @@ namespace scopeone::ui
                 return {};
             }
             return QStringList{target};
+        }
+
+        QJsonArray triggersToJson(const QList<scopeone::core::ScopeOneCore::Trigger>& triggers)
+        {
+            using Trigger = scopeone::core::ScopeOneCore::Trigger;
+            QJsonArray array;
+            for (const Trigger& trigger : triggers)
+            {
+                QJsonObject item;
+                item.insert(QStringLiteral("measurement"), trigger.measurement);
+                item.insert(QStringLiteral("cameraId"), trigger.cameraId);
+                item.insert(QStringLiteral("compare"), trigger.compare == Trigger::Compare::Above
+                                                           ? QStringLiteral("above")
+                                                           : QStringLiteral("below"));
+                item.insert(QStringLiteral("threshold"), trigger.threshold);
+                item.insert(QStringLiteral("action"),
+                            scopeone::core::ScopeOneCore::triggerActionName(trigger.action));
+                if (trigger.action == Trigger::Action::Record)
+                {
+                    item.insert(QStringLiteral("frames"), trigger.frames);
+                }
+                else if (trigger.action == Trigger::Action::ApplyPreset)
+                {
+                    item.insert(QStringLiteral("group"), trigger.group);
+                    item.insert(QStringLiteral("preset"), trigger.preset);
+                }
+                item.insert(QStringLiteral("cooldownMs"), trigger.cooldownMs);
+                array.append(item);
+            }
+            return array;
+        }
+
+        bool triggersFromJson(const QJsonValue& value,
+                              QList<scopeone::core::ScopeOneCore::Trigger>& triggers,
+                              QString& errorMessage)
+        {
+            using Trigger = scopeone::core::ScopeOneCore::Trigger;
+            if (!value.isArray())
+            {
+                errorMessage = QStringLiteral("triggers must be an array");
+                return false;
+            }
+            const QJsonArray array = value.toArray();
+            for (qsizetype index = 0; index < array.size(); ++index)
+            {
+                const QJsonObject item = array.at(index).toObject();
+                Trigger trigger;
+                trigger.measurement = item.value(QStringLiteral("measurement")).toString();
+                trigger.cameraId = item.value(QStringLiteral("cameraId")).toString();
+                const QString compare = item.value(QStringLiteral("compare")).toString(QStringLiteral("above"));
+                const QString action = item.value(QStringLiteral("action")).toString();
+                if ((compare != QStringLiteral("above") && compare != QStringLiteral("below"))
+                    || !scopeone::core::ScopeOneCore::triggerActionFromName(action, trigger.action))
+                {
+                    errorMessage = QStringLiteral("Trigger %1 needs compare above or below and action "
+                                                  "record, apply_preset or stop_preview").arg(index);
+                    return false;
+                }
+                trigger.compare = compare == QStringLiteral("above") ? Trigger::Compare::Above
+                                                                     : Trigger::Compare::Below;
+                trigger.threshold = item.value(QStringLiteral("threshold")).toDouble();
+                trigger.frames = item.value(QStringLiteral("frames")).toInt(trigger.frames);
+                trigger.group = item.value(QStringLiteral("group")).toString();
+                trigger.preset = item.value(QStringLiteral("preset")).toString();
+                trigger.cooldownMs = item.value(QStringLiteral("cooldownMs")).toDouble(trigger.cooldownMs);
+                triggers.append(trigger);
+            }
+            return true;
         }
 
         // Parses the convenience recording request without starting acquisition
@@ -1163,6 +1262,135 @@ namespace scopeone::ui
         connect(m_server, &QLocalServer::newConnection,
                 this, &ScopeOneLocalApiServer::handleNewConnection);
 
+        connect(core, &scopeone::core::ScopeOneCore::configurationLoadFinished,
+                this, [this](bool success,
+                             const scopeone::core::ScopeOneCore::LoadConfigResult&,
+                             const QString& errorMessage)
+                {
+                    m_configPath = m_scopeonecore->loadedConfigurationPath();
+                    QJsonObject data;
+                    data.insert(QStringLiteral("path"), m_configPath);
+                    data.insert(QStringLiteral("success"), success);
+                    data.insert(QStringLiteral("error"), errorMessage);
+                    publishEvent(QStringLiteral("config_loaded"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::configurationUnloadFinished,
+                this, [this](bool success, const QString& errorMessage)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("path"), m_configPath);
+                    data.insert(QStringLiteral("success"), success);
+                    data.insert(QStringLiteral("error"), errorMessage);
+                    m_configPath.clear();
+                    publishEvent(QStringLiteral("config_unloaded"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::previewStateChanged,
+                this, [this](bool running)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("running"), running);
+                    data.insert(QStringLiteral("cameraIds"),
+                                QJsonArray::fromStringList(m_scopeonecore->runningPreviewCameraIds()));
+                    // Core signals a preview change from the camera and again from start or stop,
+                    // which sent every preview_state twice
+                    if (data == m_lastPreviewState)
+                    {
+                        return;
+                    }
+                    m_lastPreviewState = data;
+                    publishEvent(QStringLiteral("preview_state"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::stageMoveFinished,
+                this, [this](quint64, const QString& device, bool success, const QString& errorMessage)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("device"), device);
+                    data.insert(QStringLiteral("success"), success);
+                    data.insert(QStringLiteral("error"), errorMessage);
+                    publishEvent(QStringLiteral("stage_moved"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::recordingStateChanged,
+                this, [this](bool recording)
+                {
+                    if (!recording)
+                    {
+                        return;
+                    }
+                    QJsonObject data;
+                    data.insert(QStringLiteral("experimentId"), m_scopeonecore->activeExperimentId());
+                    data.insert(QStringLiteral("state"),
+                                scopeone::core::experimentRunStateName(
+                                    scopeone::core::ExperimentRunState::Running));
+                    publishEvent(QStringLiteral("experiment_state"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::recordingStopped,
+                this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("experimentId"), session->capturePlan().experimentId);
+                    data.insert(QStringLiteral("state"),
+                                scopeone::core::experimentRunStateName(session->runState()));
+                    data.insert(QStringLiteral("error"), session->experimentDocument().errorMessage);
+                    data.insert(QStringLiteral("paths"), savedFramePaths(session));
+                    publishEvent(QStringLiteral("experiment_state"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::recordingSessionSaveFinished,
+                this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("sessionId"), session->capturePlan().experimentId);
+                    data.insert(QStringLiteral("success"), session->isSaved());
+                    data.insert(QStringLiteral("message"), session->saveMessage());
+                    data.insert(QStringLiteral("paths"), savedFramePaths(session));
+                    publishEvent(QStringLiteral("recording_saved"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::recordingSessionCameraSaveFinished,
+                this, [this](const std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>& session,
+                             const QString& cameraId,
+                             bool success,
+                             const QString& message)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("sessionId"), session->capturePlan().experimentId);
+                    data.insert(QStringLiteral("cameraId"), cameraId);
+                    data.insert(QStringLiteral("success"), success);
+                    data.insert(QStringLiteral("message"), message);
+                    publishEvent(QStringLiteral("recording_saved"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::measurementsReady,
+                this, &ScopeOneLocalApiServer::publishMeasurement);
+        connect(core, &scopeone::core::ScopeOneCore::triggerFired,
+                this, [this](int index, const QVariantMap& measurement, const QString& action,
+                             bool success, const QString& errorMessage)
+                {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("index"), index);
+                    data.insert(QStringLiteral("measurement"), QJsonObject::fromVariantMap(measurement));
+                    data.insert(QStringLiteral("action"), action);
+                    data.insert(QStringLiteral("success"), success);
+                    data.insert(QStringLiteral("error"), errorMessage);
+                    publishEvent(QStringLiteral("trigger_fired"), data);
+                });
+        connect(core, &scopeone::core::ScopeOneCore::hookRequested,
+                this, [this](quint64 hookId, const QString& point, const QVariantMap& data)
+                {
+                    // The hooks were turned off while the request was queued, which already let
+                    // the event continue
+                    if (!m_hookOwner)
+                    {
+                        return;
+                    }
+                    QJsonObject payload = QJsonObject::fromVariantMap(data);
+                    payload.insert(QStringLiteral("hookId"), static_cast<double>(hookId));
+                    payload.insert(QStringLiteral("experimentId"), m_scopeonecore->activeExperimentId());
+                    QJsonObject message;
+                    message.insert(QStringLiteral("event"), point);
+                    message.insert(QStringLiteral("time"),
+                                   QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+                    message.insert(QStringLiteral("data"), payload);
+                    sendResponse(m_hookOwner, message);
+                });
+
         if (!m_server->listen(kServerName))
         {
             qWarning().noquote()
@@ -1273,19 +1501,27 @@ namespace scopeone::ui
                     this, [this, socket]() { handleSocketReadyRead(socket); });
             connect(socket, &QLocalSocket::disconnected,
                     this, [this, socket]() { handleSocketDisconnected(socket); });
+            // An event written to another socket can disconnect it while a request of this socket
+            // holds its read buffer, and removing from the hash then moved that buffer, so the
+            // buffer is removed only when the socket is deleted.
+            connect(socket, &QObject::destroyed,
+                    this, [this, socket]() { m_readBuffers.remove(socket); });
         }
     }
 
     // Reads and dispatches framed JSON messages from one socket
     void ScopeOneLocalApiServer::handleSocketReadyRead(QLocalSocket* socket)
     {
-        QByteArray& buffer = m_readBuffers[socket];
-        buffer += socket->readAll();
+        m_readBuffers[socket] += socket->readAll();
 
-        while (true)
+        // A request can spin an event loop in which other sockets connect and the hash of the
+        // buffers grows, so a reference to this socket's buffer held over the loop dangled. The
+        // buffer is looked up again for every message.
+        const QPointer<QLocalSocket> guardedSocket(socket);
+        while (guardedSocket)
         {
             QJsonObject request;
-            const DecodeResult result = tryDecodeMessage(buffer, request);
+            const DecodeResult result = tryDecodeMessage(m_readBuffers[socket], request);
             if (result == DecodeResult::Incomplete)
             {
                 return;
@@ -1299,11 +1535,34 @@ namespace scopeone::ui
 
             const QJsonValue requestId = request.value(QStringLiteral("requestId"));
             const QString requestType = request.value(QStringLiteral("type")).toString().trimmed();
+            const ResponseCallback finish = [this, guardedSocket, request, requestId](QJsonObject response)
+            {
+                logRequest(QStringLiteral("api"), request, response);
+                if (guardedSocket)
+                {
+                    sendRequestResponse(guardedSocket, std::move(response), requestId);
+                }
+            };
             QJsonObject response;
             if (!requestId.isUndefined() && !requestId.isString() && !requestId.isDouble())
             {
                 response = makeResponse(requestType, false);
                 response.insert(QStringLiteral("error"), QStringLiteral("requestId must be a string or number"));
+            }
+            else if (requestType == QStringLiteral("subscribe")
+                     || requestType == QStringLiteral("unsubscribe"))
+            {
+                response = updateSubscription(socket, request);
+            }
+            else if (requestType == QStringLiteral("hook_reply"))
+            {
+                response = replyHook(socket, request);
+            }
+            // Before the configuration guard, as the owner turning the hooks off during a load was
+            // refused and every event of a waiting experiment ran into the hook timeout
+            else if (requestType == QStringLiteral("set_hooks"))
+            {
+                response = setHooks(socket, request);
             }
             else if (m_scopeonecore->configurationOperationRunning()
                      && requestType != QStringLiteral("ping")
@@ -1311,7 +1570,8 @@ namespace scopeone::ui
                      && requestType != QStringLiteral("capabilities")
                      && requestType != QStringLiteral("status")
                      && requestType != QStringLiteral("state_snapshot")
-                     && requestType != QStringLiteral("frame_mapping_info"))
+                     && requestType != QStringLiteral("frame_mapping_info")
+                     && requestType != QStringLiteral("action_log"))
             {
                 response = makeResponse(requestType, false);
                 response.insert(QStringLiteral("error"),
@@ -1319,21 +1579,203 @@ namespace scopeone::ui
             }
             else
             {
-                if (processAsyncRequest(socket, request, requestId))
+                if (processAsyncRequest(request, finish))
                 {
                     continue;
                 }
                 response = processRequest(request);
             }
-            sendRequestResponse(socket, response, requestId);
+            finish(response);
         }
     }
 
     // Cleans up socket state after disconnect
     void ScopeOneLocalApiServer::handleSocketDisconnected(QLocalSocket* socket)
     {
-        m_readBuffers.remove(socket);
+        m_subscriptions.remove(socket);
+        // Nobody is left to answer, so the experiment runs on without hooks
+        if (socket == m_hookOwner)
+        {
+            m_hookOwner = nullptr;
+            m_scopeonecore->setHooks({});
+        }
         socket->deleteLater();
+    }
+
+    // Gives the hooks to the socket, or turns them off with an empty list
+    QJsonObject ScopeOneLocalApiServer::setHooks(QLocalSocket* socket, const QJsonObject& request)
+    {
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        // A second connection silently took the hooks, and the client that set them stopped being
+        // asked. Only the owner changes them until it turns them off or disconnects.
+        if (m_hookOwner && m_hookOwner != socket)
+        {
+            return errorResponse(type, QStringLiteral("Hooks are held by another connection"));
+        }
+        QList<scopeone::core::ScopeOneCore::HookPoint> points;
+        for (const QJsonValue& value : request.value(QStringLiteral("hooks")).toArray())
+        {
+            scopeone::core::ScopeOneCore::HookPoint point;
+            if (!scopeone::core::ScopeOneCore::hookPointFromName(value.toString(), point))
+            {
+                return errorResponse(type, QStringLiteral("Unknown hook: %1").arg(value.toString()));
+            }
+            points.append(point);
+        }
+        const int timeoutMs = request.value(QStringLiteral("timeoutMs")).toInt(5000);
+        if (timeoutMs < 1)
+        {
+            return errorResponse(type, QStringLiteral("timeoutMs must be positive"));
+        }
+        m_scopeonecore->setHooks(points, timeoutMs);
+        m_hookOwner = points.isEmpty() ? nullptr : socket;
+        QJsonObject response = makeResponse(type, true);
+        const QJsonObject hooks = hooksToJson(m_scopeonecore);
+        for (auto it = hooks.begin(); it != hooks.end(); ++it)
+        {
+            response.insert(it.key(), it.value());
+        }
+        return response;
+    }
+
+    // Answers the hook request an event waits on
+    QJsonObject ScopeOneLocalApiServer::replyHook(QLocalSocket* socket, const QJsonObject& request)
+    {
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        // Any connection could answer, and so skip, stop or move the experiment of the client
+        // that set the hooks
+        if (socket != m_hookOwner)
+        {
+            return errorResponse(type, QStringLiteral("Hooks are held by another connection"));
+        }
+        using HookReply = scopeone::core::ScopeOneCore::HookReply;
+        HookReply reply;
+        const QString action = request.value(QStringLiteral("action")).toString(QStringLiteral("continue"));
+        if (action == QStringLiteral("skip"))
+        {
+            reply.action = HookReply::Action::Skip;
+        }
+        else if (action == QStringLiteral("stop"))
+        {
+            reply.action = HookReply::Action::Stop;
+        }
+        else if (action != QStringLiteral("continue"))
+        {
+            return errorResponse(type, QStringLiteral("Unknown action: %1").arg(action));
+        }
+        const auto number = [&request](const QString& name)
+        {
+            const QJsonValue value = request.value(name);
+            return value.isDouble() ? std::optional<double>(value.toDouble()) : std::nullopt;
+        };
+        reply.x = number(QStringLiteral("x"));
+        reply.y = number(QStringLiteral("y"));
+        reply.z = number(QStringLiteral("z"));
+        reply.exposureMs = number(QStringLiteral("exposureMs"));
+        const quint64 hookId = static_cast<quint64>(request.value(QStringLiteral("hookId")).toDouble());
+        if (!m_scopeonecore->replyHook(hookId, reply))
+        {
+            return errorResponse(type, QStringLiteral("No event waits on hook %1").arg(hookId));
+        }
+        return makeResponse(type, true);
+    }
+
+    // Adds or removes events of one socket's subscription; no names means all events
+    QJsonObject ScopeOneLocalApiServer::updateSubscription(QLocalSocket* socket,
+                                                           const QJsonObject& request)
+    {
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        QSet<QString> names;
+        for (const QJsonValue& value : request.value(QStringLiteral("events")).toArray())
+        {
+            const QString name = value.toString();
+            if (!kEventNames.contains(name))
+            {
+                return errorResponse(type, QStringLiteral("Unknown event: %1").arg(name));
+            }
+            names.insert(name);
+        }
+        if (names.isEmpty())
+        {
+            names = QSet<QString>(kEventNames.cbegin(), kEventNames.cend());
+        }
+
+        if (type == QStringLiteral("subscribe"))
+        {
+            m_subscriptions[socket].unite(names);
+        }
+        else
+        {
+            QSet<QString>& events = m_subscriptions[socket];
+            events.subtract(names);
+            if (events.isEmpty())
+            {
+                m_subscriptions.remove(socket);
+            }
+        }
+        const QSet<QString> events = m_subscriptions.value(socket);
+        QStringList subscribed(events.cbegin(), events.cend());
+        subscribed.sort();
+        QJsonObject response = makeResponse(type, true);
+        response.insert(QStringLiteral("events"), QJsonArray::fromStringList(subscribed));
+        return response;
+    }
+
+    bool ScopeOneLocalApiServer::hasSubscriber(const QString& event) const
+    {
+        for (const QSet<QString>& events : m_subscriptions)
+        {
+            if (events.contains(event))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Writes one event message to every socket subscribed to it
+    void ScopeOneLocalApiServer::publishEvent(const QString& event, const QJsonObject& data)
+    {
+        if (!hasSubscriber(event))
+        {
+            return;
+        }
+        QJsonObject message;
+        message.insert(QStringLiteral("event"), event);
+        message.insert(QStringLiteral("time"),
+                       QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        message.insert(QStringLiteral("data"), data);
+        // A failed write can emit disconnected at once, which removes the socket from m_subscriptions,
+        // so the sockets are collected before writing instead of writing while iterating the hash.
+        QList<QLocalSocket*> sockets;
+        for (auto it = m_subscriptions.cbegin(); it != m_subscriptions.cend(); ++it)
+        {
+            if (it.value().contains(event))
+            {
+                sockets.append(it.key());
+            }
+        }
+        for (QLocalSocket* socket : sockets)
+        {
+            sendResponse(socket, message);
+        }
+    }
+
+    void ScopeOneLocalApiServer::publishMeasurement(const QString& cameraId,
+                                                    const QString& moduleId,
+                                                    qint64 frameIndex,
+                                                    const QVariantList& measurements)
+    {
+        if (!hasSubscriber(QStringLiteral("measurement")))
+        {
+            return;
+        }
+        QJsonObject data;
+        data.insert(QStringLiteral("cameraId"), cameraId);
+        data.insert(QStringLiteral("moduleId"), moduleId);
+        data.insert(QStringLiteral("frameIndex"), frameIndex);
+        data.insert(QStringLiteral("measurements"), QJsonArray::fromVariantList(measurements));
+        publishEvent(QStringLiteral("measurement"), data);
     }
 
     // Writes one framed JSON response to a socket
@@ -1358,10 +1800,6 @@ namespace scopeone::ui
                                                      QJsonObject response,
                                                      const QJsonValue& requestId)
     {
-        if (!socket)
-        {
-            return;
-        }
         if (!requestId.isUndefined())
         {
             response.insert(QStringLiteral("requestId"), requestId);
@@ -1370,22 +1808,10 @@ namespace scopeone::ui
     }
 
     // Starts Local API operations that must not run in the socket callback
-    bool ScopeOneLocalApiServer::processAsyncRequest(QLocalSocket* socket,
-                                                     const QJsonObject& request,
-                                                     const QJsonValue& requestId,
-                                                     const ResponseCallback& callback)
+    bool ScopeOneLocalApiServer::processAsyncRequest(const QJsonObject& request,
+                                                     const ResponseCallback& finish)
     {
         const QString type = request.value(QStringLiteral("type")).toString().trimmed();
-        const QPointer<QLocalSocket> guardedSocket(socket);
-        const auto finish = callback
-                                ? callback
-                                : ResponseCallback([this, guardedSocket, requestId](QJsonObject response)
-                                {
-                                    if (guardedSocket)
-                                    {
-                                        sendRequestResponse(guardedSocket, std::move(response), requestId);
-                                    }
-                                });
         // Loads one frame of a recording session for onFrame, or answers with the error
         const auto requestSessionFrame =
             [this, &request, type, finish](std::function<void(const scopeone::core::ImageFrame&)> onFrame)
@@ -2221,11 +2647,51 @@ namespace scopeone::ui
     void ScopeOneLocalApiServer::dispatchRequest(const QJsonObject& request,
                                                  ResponseCallback callback)
     {
-        if (processAsyncRequest(nullptr, request, QJsonValue(), callback))
+        const ResponseCallback finish = [this, request, callback](QJsonObject response)
+        {
+            logRequest(QStringLiteral("console"), request, response);
+            callback(std::move(response));
+        };
+        // These were only routed for socket connections, so the console called them unknown
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        if (type == QStringLiteral("subscribe") || type == QStringLiteral("unsubscribe")
+            || type == QStringLiteral("set_hooks") || type == QStringLiteral("hook_reply"))
+        {
+            QJsonObject response = makeResponse(type, false);
+            response.insert(QStringLiteral("error"),
+                            QStringLiteral("%1 belongs to a Local API connection, which receives the events").arg(type));
+            finish(response);
+            return;
+        }
+        if (processAsyncRequest(request, finish))
         {
             return;
         }
-        callback(processRequest(request));
+        finish(processRequest(request));
+    }
+
+    // Adds a finished hardware or file changing request to the Core action log
+    void ScopeOneLocalApiServer::logRequest(const QString& origin,
+                                            const QJsonObject& request,
+                                            const QJsonObject& response)
+    {
+        const QString type = request.value(QStringLiteral("type")).toString().trimmed();
+        // Hook replies are left out, as the session records the events they changed and a long
+        // hooked run filled the log with them and pushed out the settings before it
+        if ((!kHardwareMutationOperations.contains(type) && !kFilesystemMutationOperations.contains(type))
+            || type == QStringLiteral("hook_reply"))
+        {
+            return;
+        }
+        QJsonObject parameters = request;
+        parameters.remove(QStringLiteral("type"));
+        parameters.remove(QStringLiteral("requestId"));
+        parameters.remove(QStringLiteral("confirm"));
+        m_scopeonecore->logAction(origin,
+                                  type,
+                                  parameters,
+                                  response.value(QStringLiteral("ok")).toBool(),
+                                  response.value(QStringLiteral("error")).toString());
     }
 
     // Dispatches one local API request object
@@ -2242,6 +2708,24 @@ namespace scopeone::ui
             QJsonObject response = makeResponse(type, true);
             response.insert(QStringLiteral("version"), QCoreApplication::applicationVersion());
             response.insert(QStringLiteral("coreVersion"), scopeone::core::ScopeOneCore::getVersion());
+            return response;
+        }
+
+        if (type == QStringLiteral("action_log"))
+        {
+            const QString sinceText = request.value(QStringLiteral("since")).toString();
+            const QDateTime since = QDateTime::fromString(sinceText, Qt::ISODateWithMs);
+            if (!sinceText.isEmpty() && !since.isValid())
+            {
+                return errorResponse(type, QStringLiteral("since must be an ISO 8601 time"));
+            }
+            QJsonArray entries;
+            for (const auto& entry : m_scopeonecore->actionLog(since))
+            {
+                entries.append(scopeone::core::ScopeOneCore::actionLogEntryToJson(entry));
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("entries"), entries);
             return response;
         }
 
@@ -2372,6 +2856,15 @@ namespace scopeone::ui
                             QJsonArray::fromStringList(m_scopeonecore->zStageDevices()));
             hardware.insert(QStringLiteral("currentXYStageDevice"), m_scopeonecore->currentXYStageDevice());
             hardware.insert(QStringLiteral("currentFocusDevice"), m_scopeonecore->currentFocusDevice());
+            QJsonArray limits;
+            for (const auto& limit : m_scopeonecore->limits())
+            {
+                limits.append(QJsonObject{{QStringLiteral("device"), limit.device},
+                                          {QStringLiteral("property"), limit.property},
+                                          {QStringLiteral("min"), limit.min},
+                                          {QStringLiteral("max"), limit.max}});
+            }
+            hardware.insert(QStringLiteral("limits"), limits);
 
             QJsonObject preview;
             preview.insert(QStringLiteral("runningCameraIds"),
@@ -2450,6 +2943,8 @@ namespace scopeone::ui
             snapshot.insert(QStringLiteral("hardware"), hardware);
             snapshot.insert(QStringLiteral("preview"), preview);
             snapshot.insert(QStringLiteral("processing"), processingStateToJson(m_scopeonecore));
+            snapshot.insert(QStringLiteral("triggers"), triggersToJson(m_scopeonecore->triggers()));
+            snapshot.insert(QStringLiteral("hooks"), hooksToJson(m_scopeonecore));
             snapshot.insert(QStringLiteral("scene"), scene);
             snapshot.insert(QStringLiteral("acquisition"), acquisition);
             snapshot.insert(QStringLiteral("experiments"), experiments);
@@ -2959,6 +3454,27 @@ namespace scopeone::ui
             return makeResponse(type, true);
         }
 
+        if (type == QStringLiteral("triggers"))
+        {
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("triggers"), triggersToJson(m_scopeonecore->triggers()));
+            return response;
+        }
+
+        if (type == QStringLiteral("set_triggers"))
+        {
+            QList<scopeone::core::ScopeOneCore::Trigger> triggers;
+            QString errorMessage;
+            if (!triggersFromJson(request.value(QStringLiteral("triggers")), triggers, errorMessage)
+                || !m_scopeonecore->setTriggers(triggers, &errorMessage))
+            {
+                return errorResponse(type, errorMessage);
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("triggers"), triggersToJson(m_scopeonecore->triggers()));
+            return response;
+        }
+
         if (type == QStringLiteral("light_sources"))
         {
             QJsonArray sources;
@@ -3351,9 +3867,10 @@ namespace scopeone::ui
             {
                 return errorResponse(type, QStringLiteral("Missing exposureMs"));
             }
-            if (!m_scopeonecore->setExposure(camera, exposureValue.toDouble()))
+            QString error;
+            if (!m_scopeonecore->setExposure(camera, exposureValue.toDouble(), &error))
             {
-                return errorResponse(type, QStringLiteral("Failed to set exposure"));
+                return errorResponse(type, error.isEmpty() ? QStringLiteral("Failed to set exposure") : error);
             }
 
             double exposureMs = 0.0;
@@ -3795,7 +4312,8 @@ namespace scopeone::ui
         {
             scopeone::core::ExperimentDocument document;
             QString errorMessage;
-            const bool ok = experimentDocumentFromRequest(request, document, errorMessage);
+            const bool ok = experimentDocumentFromRequest(request, document, errorMessage)
+                && m_scopeonecore->checkPlanLimits(document.plan, &errorMessage);
             QJsonObject response = makeResponse(type, ok);
             if (!ok)
             {

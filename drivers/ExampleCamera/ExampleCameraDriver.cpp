@@ -113,14 +113,15 @@ namespace example_camera
             return true;
         }
 
+        // The region of interest is in binned pixels, as in Micro-Manager
         bool setRoi(int x, int y, int width, int height)
         {
+            QMutexLocker locker(&m_mutex);
             if (x < 0 || y < 0 || width <= 0 || height <= 0
-                || x + width > m_sensorWidth || y + height > m_sensorHeight)
+                || x + width > m_sensorWidth / m_binning || y + height > m_sensorHeight / m_binning)
             {
                 return false;
             }
-            QMutexLocker locker(&m_mutex);
             m_roiX = x;
             m_roiY = y;
             m_roiWidth = width;
@@ -139,7 +140,28 @@ namespace example_camera
 
         bool clearRoi()
         {
-            return setRoi(0, 0, m_sensorWidth, m_sensorHeight);
+            QMutexLocker locker(&m_mutex);
+            clearRoiLocked();
+            return true;
+        }
+
+        int binning() const
+        {
+            QMutexLocker locker(&m_mutex);
+            return m_binning;
+        }
+
+        // A new binning resets the region of interest to the whole sensor
+        bool setBinning(int binning)
+        {
+            if (binning != 1 && binning != 2 && binning != 4)
+            {
+                return false;
+            }
+            QMutexLocker locker(&m_mutex);
+            m_binning = binning;
+            clearRoiLocked();
+            return true;
         }
 
         int gain() const
@@ -180,6 +202,7 @@ namespace example_camera
             int roiWidth = 0;
             int roiHeight = 0;
             int gain = 1;
+            int binning = 1;
             TestPattern pattern = TestPattern::MovingSpot;
             {
                 QMutexLocker locker(&m_mutex);
@@ -190,6 +213,7 @@ namespace example_camera
                 roiWidth = m_roiWidth;
                 roiHeight = m_roiHeight;
                 gain = m_gain;
+                binning = m_binning;
             }
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(exposureMs));
 
@@ -213,14 +237,27 @@ namespace example_camera
             frame.bytes.resize(static_cast<qsizetype>(frame.stride) * roiHeight);
 
             // The signal grows with the exposure and the gain, 16 counts of the 12-bit sensor for each level of
-            // the pattern at the default exposure, and the shot noise of the sensor is drawn around it
-            m_patterns->render(pattern, frame.frameIndex, roiX, roiY, roiWidth, roiHeight, m_intensities);
+            // the pattern at the default exposure, and the shot noise of the sensor is drawn around it. A binned
+            // pixel sums the light of binning x binning sensor pixels.
+            const int sensorWidth = roiWidth * binning;
+            m_patterns->render(pattern, frame.frameIndex, roiX * binning, roiY * binning,
+                               sensorWidth, roiHeight * binning, m_intensities);
             const double scale = 16.0 * gain * exposureMs / 10.0;
             const double maximum = static_cast<double>((1 << kBitsPerSample) - 1);
             auto* pixels = reinterpret_cast<quint16*>(frame.bytes.data());
-            for (std::size_t index = 0; index < m_intensities.size(); ++index)
+            for (int index = 0; index < roiWidth * roiHeight; ++index)
             {
-                const double counts = scale * m_intensities[index];
+                const int x = index % roiWidth * binning;
+                const int y = index / roiWidth * binning;
+                double light = 0.0;
+                for (int row = y; row < y + binning; ++row)
+                {
+                    for (int column = x; column < x + binning; ++column)
+                    {
+                        light += m_intensities[static_cast<std::size_t>(row) * sensorWidth + column];
+                    }
+                }
+                const double counts = scale * light;
                 std::normal_distribution<double> noise(counts, std::sqrt(std::max(counts, 1.0)));
                 pixels[index] = static_cast<quint16>(std::clamp(noise(m_random), 0.0, maximum));
             }
@@ -228,6 +265,14 @@ namespace example_camera
         }
 
     private:
+        void clearRoiLocked()
+        {
+            m_roiX = 0;
+            m_roiY = 0;
+            m_roiWidth = m_sensorWidth / m_binning;
+            m_roiHeight = m_sensorHeight / m_binning;
+        }
+
         const QString m_id;
         const std::shared_ptr<const TestPatterns> m_patterns;
         const int m_sensorWidth;
@@ -237,6 +282,7 @@ namespace example_camera
         Camera::FrameSink m_sink;
         double m_exposureMs{10.0};
         int m_gain{1};
+        int m_binning{1};
         TestPattern m_pattern{TestPattern::MovingSpot};
         int m_roiX{0};
         int m_roiY{0};
@@ -307,6 +353,18 @@ namespace example_camera
             return m_camera.setExposureMs(exposureMs);
         }
 
+        bool getBinning(const QString&, int& binning) const override
+        {
+            binning = m_camera.binning();
+            return true;
+        }
+
+        bool getGain(const QString&, double& gain) const override
+        {
+            gain = m_camera.gain();
+            return true;
+        }
+
         bool setROI(const QString&, int x, int y, int width, int height) override
         {
             return m_camera.setRoi(x, y, width, height);
@@ -334,14 +392,20 @@ namespace example_camera
             return true;
         }
 
-        // The camera has a gain and a test pattern the user can set, and a sensor temperature it reports
+        // The camera has a binning, a gain and a test pattern the user can set, and a sensor temperature it
+        // reports
         QStringList listProperties(const QString&) override
         {
-            return {QStringLiteral("Gain"), QStringLiteral("Pattern"), QStringLiteral("SensorTemperature")};
+            return {QStringLiteral("Binning"), QStringLiteral("Gain"), QStringLiteral("Pattern"),
+                    QStringLiteral("SensorTemperature")};
         }
 
         QString getProperty(const QString&, const QString& name, bool) override
         {
+            if (name == QStringLiteral("Binning"))
+            {
+                return QString::number(m_camera.binning());
+            }
             if (name == QStringLiteral("Gain"))
             {
                 return QString::number(m_camera.gain());
@@ -369,14 +433,19 @@ namespace example_camera
                 return true;
             }
             bool numeric = false;
-            const int gain = value.toInt(&numeric);
-            if (name == QStringLiteral("Gain") && numeric && m_camera.setGain(gain))
+            const int number = value.toInt(&numeric);
+            if (name == QStringLiteral("Binning") && numeric && m_camera.setBinning(number))
+            {
+                return true;
+            }
+            if (name == QStringLiteral("Gain") && numeric && m_camera.setGain(number))
             {
                 return true;
             }
             if (errorMessage)
             {
-                *errorMessage = name == QStringLiteral("Gain") ? QStringLiteral("Gain must be an integer from 1 to 16")
+                *errorMessage = name == QStringLiteral("Binning") ? QStringLiteral("Binning must be 1, 2 or 4")
+                              : name == QStringLiteral("Gain") ? QStringLiteral("Gain must be an integer from 1 to 16")
                               : name == QStringLiteral("Pattern") ? QStringLiteral("Unknown pattern %1").arg(value)
                                                                   : QStringLiteral("%1 cannot be set").arg(name);
             }
@@ -385,7 +454,7 @@ namespace example_camera
 
         QString getPropertyType(const QString&, const QString& name) override
         {
-            return name == QStringLiteral("Gain") ? QStringLiteral("Integer")
+            return name == QStringLiteral("Binning") || name == QStringLiteral("Gain") ? QStringLiteral("Integer")
                  : name == QStringLiteral("Pattern") ? QStringLiteral("String")
                                                      : QStringLiteral("Float");
         }
@@ -402,7 +471,9 @@ namespace example_camera
 
         QStringList getAllowedPropertyValues(const QString&, const QString& name) override
         {
-            return name == QStringLiteral("Pattern") ? testPatternNames() : QStringList{};
+            return name == QStringLiteral("Binning") ? QStringList{QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("4")}
+                 : name == QStringLiteral("Pattern") ? testPatternNames()
+                                                     : QStringList{};
         }
 
         bool hasPropertyLimits(const QString&, const QString& name) override

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <functional>
 #include <future>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -44,7 +45,7 @@ namespace scopeone::core::internal
     }
 
     // Starts one immutable acquisition event sequence
-    bool MDAManager::start(const QList<AcquisitionEvent>& events)
+    bool MDAManager::start(const QList<AcquisitionEvent>& events, MDAHook hook)
     {
         if (m_running.exchange(true))
         {
@@ -53,9 +54,9 @@ namespace scopeone::core::internal
         }
 
         m_cancelRequested.store(false);
-        m_threadPool.start([this, events]()
+        m_threadPool.start([this, events, hook = std::move(hook)]()
         {
-            runSequence(events);
+            runSequence(events, hook);
         });
         return true;
     }
@@ -74,25 +75,57 @@ namespace scopeone::core::internal
     }
 
     // Executes a precomputed event sequence in order
-    void MDAManager::runSequence(QList<AcquisitionEvent> events)
+    void MDAManager::runSequence(QList<AcquisitionEvent> events, const MDAHook& hook)
     {
         QElapsedTimer timer;
         timer.start();
         const qint64 sequenceOriginMs = events.first().minimumStartTimeMs;
+        // With hooks every event is taken on its own, without hardware Z or channel sequences,
+        // so that each one passes both hook points
+        const bool hooked = static_cast<bool>(hook);
+        const std::function<bool()> canceled = [this]() { return m_cancelRequested.load(); };
         SequenceState state;
-        captureInitialState(events, state);
+        captureInitialState(events, hooked, state);
+        const auto end = [this, &state](void (MDAManager::*signal)())
+        {
+            restoreInitialState(state);
+            m_running.store(false);
+            emit (this->*signal)();
+        };
+        // The channel offsets move from the focus at the start, which is read here, so they are
+        // checked against the limits here, before any event moves
+        if (state.hasInitialZ)
+        {
+            const QString focus = m_hardwareRuntime->defaultZStage();
+            for (const AcquisitionEvent& event : events)
+            {
+                QString error;
+                if (!event.hasZ && event.zOffsetUm != 0.0
+                    && !m_hardwareRuntime->checkLimit(focus, QStringLiteral("Z"),
+                                                      state.zReference + event.zOffsetUm, &error))
+                {
+                    restoreInitialState(state);
+                    m_running.store(false);
+                    emit sequenceError(error);
+                    return;
+                }
+            }
+        }
+        // What skipped events would have done for the events after them: open the shutter of
+        // their block and run the autofocus of their position
+        bool carryShutter = false;
+        bool carryAutofocus = false;
+        int carryPosition = -1;
 
         for (int index = 0; index < events.size();)
         {
-            const AcquisitionEvent& event = events.at(index);
+            AcquisitionEvent event = events.at(index);
             const qint64 targetMs = event.minimumStartTimeMs - sequenceOriginMs;
             while (timer.elapsed() < targetMs)
             {
                 if (m_cancelRequested.load())
                 {
-                    restoreInitialState(state);
-                    m_running.store(false);
-                    emit sequenceCanceled();
+                    end(&MDAManager::sequenceCanceled);
                     return;
                 }
                 const qint64 remaining = targetMs - timer.elapsed();
@@ -101,19 +134,53 @@ namespace scopeone::core::internal
 
             if (m_cancelRequested.load())
             {
-                restoreInitialState(state);
-                m_running.store(false);
-                emit sequenceCanceled();
+                end(&MDAManager::sequenceCanceled);
                 return;
+            }
+
+            if (hooked)
+            {
+                event.openShutterBefore = event.openShutterBefore || carryShutter;
+                event.autofocusBefore = event.autofocusBefore
+                    || (carryAutofocus && event.positionIndex == carryPosition);
+                MDAOutput request;
+                request.event = event;
+                const HookReply reply = hook(HookPoint::BeforeEvent, request, canceled);
+                if (m_cancelRequested.load())
+                {
+                    end(&MDAManager::sequenceCanceled);
+                    return;
+                }
+                if (reply.action == HookReply::Action::Stop)
+                {
+                    end(&MDAManager::sequenceStopped);
+                    return;
+                }
+                if (reply.action == HookReply::Action::Skip)
+                {
+                    // A skipped event takes no frames and leaves no record, as the events a
+                    // canceled run did not reach
+                    closeShutter(event, state);
+                    carryShutter = event.openShutterBefore && !event.closeShutterAfter;
+                    carryAutofocus = event.autofocusBefore;
+                    carryPosition = event.positionIndex;
+                    ++index;
+                    continue;
+                }
+                carryShutter = false;
+                carryAutofocus = false;
+                applyHookChanges(event, reply);
             }
 
             // Z slices that the hardware can time are taken in one sequence
             QList<MDAOutput> outputs;
             QString errorMessage;
             int consumed = 1;
-            const int sequenceLength = hardwareSequenceLength(events, index);
+            const int sequenceLength = hooked ? 1 : hardwareSequenceLength(events, index);
             std::vector<PropertySequence> channelSequences;
-            const int channelLength = sequenceLength > 1 ? 1 : channelSequenceLength(events, index, channelSequences);
+            const int channelLength = hooked || sequenceLength > 1
+                ? 1
+                : channelSequenceLength(events, index, channelSequences);
             bool handled = false;
             if (sequenceLength > 1 || channelLength > 1)
             {
@@ -152,7 +219,6 @@ namespace scopeone::core::internal
                 outputs.push_back(std::move(output));
             }
 
-            bool failed = false;
             for (const MDAOutput& output : outputs)
             {
                 emit eventFinished(output);
@@ -161,27 +227,55 @@ namespace scopeone::core::internal
                     restoreInitialState(state);
                     m_running.store(false);
                     emit sequenceError(output.errorMessage);
-                    failed = true;
-                    break;
+                    return;
                 }
             }
-            if (failed)
+            if (hooked)
             {
-                return;
+                const HookReply reply = hook(HookPoint::AfterEvent, outputs.constFirst(), canceled);
+                if (m_cancelRequested.load())
+                {
+                    end(&MDAManager::sequenceCanceled);
+                    return;
+                }
+                if (reply.action == HookReply::Action::Stop)
+                {
+                    end(&MDAManager::sequenceStopped);
+                    return;
+                }
             }
             index += consumed;
         }
 
-        restoreInitialState(state);
-        m_running.store(false);
-        emit sequenceFinished();
+        end(&MDAManager::sequenceFinished);
+    }
+
+    // Takes the changes of a hook reply into the event. A position the event did not have starts
+    // from where the stage is.
+    void MDAManager::applyHookChanges(AcquisitionEvent& event, const HookReply& reply) const
+    {
+        if ((reply.x || reply.y) && !event.hasXY)
+        {
+            m_hardwareRuntime->getXYPosition(m_hardwareRuntime->defaultXYStage(), event.x, event.y);
+            event.hasXY = true;
+        }
+        event.x = reply.x.value_or(event.x);
+        event.y = reply.y.value_or(event.y);
+        if (reply.z)
+        {
+            event.z = *reply.z;
+            event.hasZ = true;
+        }
+        event.exposureMs = reply.exposureMs.value_or(event.exposureMs);
+        event.changedByHook = reply.x || reply.y || reply.z || reply.exposureMs;
     }
 
     // Remembers what the hardware is set to before the sequence, so it can be put back
-    void MDAManager::captureInitialState(const QList<AcquisitionEvent>& events, SequenceState& state)
+    void MDAManager::captureInitialState(const QList<AcquisitionEvent>& events, bool hooked, SequenceState& state)
     {
-        bool usesXY = false;
-        bool usesZ = false;
+        // A hook reply can move the stages of any event
+        bool usesXY = hooked;
+        bool usesZ = hooked;
         QString channelGroup;
         for (const AcquisitionEvent& event : events)
         {
@@ -352,6 +446,9 @@ namespace scopeone::core::internal
             }
             state.zKnown = true;
             state.z = targetZ;
+            // The focus left the channel offset, so the next event without Z moves back to it; a
+            // Z from a hook reply in a plan without Z positions stayed for the later events
+            state.zOffset = std::numeric_limits<double>::quiet_NaN();
         }
         if (!event.hasZ && !applyZOffset(event, state, errorMessage))
         {
@@ -627,9 +724,8 @@ namespace scopeone::core::internal
             {
                 continue;
             }
-            // The core and the camera cannot be stepped by triggers
-            if (reference.device == QLatin1String("Core")
-                || m_hardwareRuntime->propertySequenceCapacity(reference.device, reference.property) < length)
+            // A property the hardware cannot step by triggers, such as a role, has no capacity
+            if (m_hardwareRuntime->propertySequenceCapacity(reference.device, reference.property) < length)
             {
                 return 1;
             }
@@ -797,12 +893,14 @@ namespace scopeone::core::internal
     {
         for (const QString& cameraId : cameraIds)
         {
-            if (!m_hardwareRuntime->setExposure(cameraId, exposureMs))
+            QString error;
+            if (!m_hardwareRuntime->setExposure(cameraId, exposureMs, &error))
             {
                 if (errorMessage)
                 {
-                    *errorMessage = QStringLiteral("Failed to set exposure for camera: %1")
-                                        .arg(cameraId);
+                    *errorMessage = error.isEmpty()
+                        ? QStringLiteral("Failed to set exposure for camera: %1").arg(cameraId)
+                        : error;
                 }
                 return false;
             }

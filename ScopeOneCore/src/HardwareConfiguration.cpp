@@ -2,6 +2,7 @@
 #include "scopeone/HardwareConfiguration.h"
 
 #include <QFile>
+#include <QLocale>
 #include <QSaveFile>
 #include <QStringDecoder>
 
@@ -82,6 +83,10 @@ namespace scopeone::core
             {
                 return commas >= 5 ? 6 : 0;
             }
+            if (command == QStringLiteral("ScopeOneLimit"))
+            {
+                return 5;
+            }
             return 0;
         }
 
@@ -100,6 +105,11 @@ namespace scopeone::core
     bool HardwareConfiguration::isGroupLine(const Line& line)
     {
         return line.kind == Kind::ConfigGroup || line.kind == Kind::ScopeOneConfigGroup;
+    }
+
+    QString HardwareConfiguration::coreDevice()
+    {
+        return QStringLiteral("Core");
     }
 
     bool HardwareConfiguration::isValidField(const QString& value, bool allowComma)
@@ -189,7 +199,8 @@ namespace scopeone::core
             {QStringLiteral("PixelSize_um"), Kind::PixelSizeUm},
             {QStringLiteral("ScopeOneDevice"), Kind::ScopeOneDevice},
             {QStringLiteral("ScopeOneProperty"), Kind::ScopeOneProperty},
-            {QStringLiteral("ScopeOneConfigGroup"), Kind::ScopeOneConfigGroup}};
+            {QStringLiteral("ScopeOneConfigGroup"), Kind::ScopeOneConfigGroup},
+            {QStringLiteral("ScopeOneLimit"), Kind::ScopeOneLimit}};
         const auto kind = std::find_if(kinds.cbegin(), kinds.cend(),
                                        [&](const auto& entry) { return entry.first == command; });
         if (kind == kinds.cend())
@@ -198,12 +209,26 @@ namespace scopeone::core
         }
         QStringList fields;
         if (kind->second == Kind::ScopeOneDevice || kind->second == Kind::ScopeOneProperty
-            || kind->second == Kind::ScopeOneConfigGroup)
+            || kind->second == Kind::ScopeOneConfigGroup || kind->second == Kind::ScopeOneLimit)
         {
             const int count = scopeOneFieldCount(command, commas);
             if (count > 0)
             {
                 fields = splitFields(text, count);
+            }
+            // A limit line with too few or too many fields was taken as an ordinary line and the
+            // limit was dropped without a word. Its missing fields are empty, so it is rejected as
+            // not a range.
+            if (kind->second == Kind::ScopeOneLimit && fields.isEmpty())
+            {
+                for (const QString& field : text.split(QLatin1Char(',')))
+                {
+                    fields.append(field.trimmed());
+                }
+                while (fields.size() < 5)
+                {
+                    fields.append(QString{});
+                }
             }
         }
         else
@@ -279,19 +304,19 @@ namespace scopeone::core
         return properties;
     }
 
-    QString HardwareConfiguration::coreRole(const QString& role) const
+    QString HardwareConfiguration::role(const QString& role) const
     {
         // System/Startup is applied after Property lines, even when it appears earlier in the file.
         const qsizetype startup = lastLine([&](const Line& line)
         {
             return line.kind == Kind::ConfigGroup && line.fields.size() >= 6
                    && line.fields[1] == QStringLiteral("System") && line.fields[2] == QStringLiteral("Startup")
-                   && line.fields[3] == QStringLiteral("Core") && line.fields[4] == role;
+                   && line.fields[3] == coreDevice() && line.fields[4] == role;
         });
         if (startup >= 0) return m_lines[startup].fields[5];
         const qsizetype index = lastLine([&](const Line& line)
         {
-            return line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core") && line.fields[2] == role;
+            return line.kind == Kind::Property && line.fields[1] == coreDevice() && line.fields[2] == role;
         });
         return index < 0 ? QString{} : m_lines[index].fields[3];
     }
@@ -304,22 +329,21 @@ namespace scopeone::core
         return false;
     }
 
-    bool HardwareConfiguration::removeScopeOneCoreRoles()
+    bool HardwareConfiguration::removeScopeOneRoles()
     {
         bool removed = false;
-        // MMCore cannot resolve ScopeOne role values before those devices are registered.
         removeLines([&](const Line& line)
         {
-            QString role, value;
-            if (line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core"))
+            QString value;
+            if (line.kind == Kind::Property && line.fields[1] == coreDevice())
             {
-                role = line.fields[2]; value = line.fields[3];
+                value = line.fields[3];
             }
             else if (line.kind == Kind::ConfigGroup && line.fields.size() >= 6
                      && line.fields[1] == QStringLiteral("System") && line.fields[2] == QStringLiteral("Startup")
-                     && line.fields[3] == QStringLiteral("Core"))
+                     && line.fields[3] == coreDevice())
             {
-                role = line.fields[4]; value = line.fields[5];
+                value = line.fields[5];
             }
             const bool match = namesScopeOneDevice(value);
             removed = removed || match;
@@ -395,12 +419,7 @@ namespace scopeone::core
                 group.presets.append(Preset{line.fields[2], {}});
                 preset = group.presets.end() - 1;
             }
-            PresetSetting setting;
-            setting.device = line.fields[3];
-            setting.property = line.fields[4];
-            setting.value = line.fields[5];
-            setting.source = line.kind == Kind::ConfigGroup ? Source::MicroManager : Source::ScopeOne;
-            preset->settings.append(setting);
+            preset->settings.append({line.fields[3], line.fields[4], line.fields[5]});
         }
         return groups;
     }
@@ -443,6 +462,37 @@ namespace scopeone::core
         return sources;
     }
 
+    QList<HardwareConfiguration::Limit> HardwareConfiguration::limits() const
+    {
+        QList<Limit> limits;
+        for (const Line& line : m_lines)
+        {
+            if (line.kind != Kind::ScopeOneLimit)
+            {
+                continue;
+            }
+            bool minOk = false;
+            bool maxOk = false;
+            const Limit limit{line.fields[1], line.fields[2], line.fields[3].toDouble(&minOk),
+                              line.fields[4].toDouble(&maxOk)};
+            if (!minOk || !maxOk || limit.min > limit.max)
+            {
+                continue;
+            }
+            auto it = std::find_if(limits.begin(), limits.end(), [&](const Limit& existing)
+            { return existing.device == limit.device && existing.property == limit.property; });
+            if (it == limits.end())
+            {
+                limits.append(limit);
+            }
+            else
+            {
+                *it = limit;
+            }
+        }
+        return limits;
+    }
+
     QStringList HardwareConfiguration::rejectedLines() const
     {
         QStringList rejected;
@@ -465,6 +515,17 @@ namespace scopeone::core
             {
                 malformed.append(line.fields[0]);
                 rejected.append(QStringLiteral("%1 (malformed ScopeOneLightSource line)").arg(line.fields[0]));
+            }
+            else if (line.kind == Kind::ScopeOneLimit)
+            {
+                bool minOk = false;
+                bool maxOk = false;
+                const double min = line.fields[3].toDouble(&minOk);
+                const double max = line.fields[4].toDouble(&maxOk);
+                if (!minOk || !maxOk || min > max)
+                {
+                    rejected.append(QStringLiteral("%1 %2 (limit is not a range)").arg(line.fields[1], line.fields[2]));
+                }
             }
         }
         for (const LightSource& source : lightSources())
@@ -506,22 +567,23 @@ namespace scopeone::core
         { return value == label || value.startsWith(label + QLatin1Char('.')); };
         removeLines([&](const Line& line)
         {
-            return (line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core")
+            return (line.kind == Kind::Property && line.fields[1] == coreDevice()
                     && namesDevice(line.fields[3]))
                    || (line.kind == Kind::ConfigGroup && line.fields.size() >= 6
                        && line.fields[1] == QStringLiteral("System") && line.fields[2] == QStringLiteral("Startup")
-                       && line.fields[3] == QStringLiteral("Core") && namesDevice(line.fields[5]))
+                       && line.fields[3] == coreDevice() && namesDevice(line.fields[5]))
                    || (line.kind == Kind::ScopeOneDevice && line.fields[1] == label)
                    || (line.kind == Kind::ScopeOneProperty && line.fields[1] == label)
                    || (line.kind == Kind::ScopeOneConfigGroup && line.fields[3] == label)
-                   || (line.kind == Kind::ScopeOneLightSource && line.fields[2] == label);
+                   || (line.kind == Kind::ScopeOneLightSource && line.fields[2] == label)
+                   || (line.kind == Kind::ScopeOneLimit && line.fields[1] == label);
         });
     }
 
     void HardwareConfiguration::setScopeOneProperty(const QString& label, const QString& name, const QString& value)
     {
         const QStringList fields{QStringLiteral("ScopeOneProperty"), label, name, value};
-        // MMCore and coreRole() take the last of two equal lines, so that is the one to change
+        // MMCore and role() take the last of two equal lines, so that is the one to change
         const qsizetype index = lastLine([&](const Line& line)
         {
             return line.kind == Kind::ScopeOneProperty && line.fields[1] == label && line.fields[2] == name;
@@ -564,7 +626,7 @@ namespace scopeone::core
     }
 
     void HardwareConfiguration::setPreset(const QString& group, const QString& preset,
-                                          const QList<PresetSetting>& settings)
+                                          const QList<ConfigSetting>& settings)
     {
         const auto ofPreset = [&](const Line& line)
         {
@@ -580,7 +642,7 @@ namespace scopeone::core
             for (qsizetype i = 0; i < settings.size(); ++i)
             {
                 const auto& setting = settings[i];
-                const bool sameKind = (line.kind == Kind::ScopeOneConfigGroup) == (setting.source == Source::ScopeOne);
+                const bool sameKind = (line.kind == Kind::ScopeOneConfigGroup) == namesScopeOneDevice(setting.device);
                 if (!matched[i] && sameKind && line.fields[3] == setting.device && line.fields[4] == setting.property)
                 { found = i; break; }
             }
@@ -598,7 +660,7 @@ namespace scopeone::core
         {
             if (matched[i]) continue;
             const auto& setting = settings[i];
-            const bool scopeOne = setting.source == Source::ScopeOne;
+            const bool scopeOne = namesScopeOneDevice(setting.device);
             const QStringList fields{scopeOne ? QStringLiteral("ScopeOneConfigGroup") : QStringLiteral("ConfigGroup"),
                                      group, preset, setting.device, setting.property, setting.value};
             insertAfterLast(scopeOne ? Kind::ScopeOneConfigGroup : Kind::ConfigGroup, fields);
@@ -624,6 +686,24 @@ namespace scopeone::core
             {
                 QStringList fields = line.fields;
                 fields[2] = newName;
+                replaceFields(index, fields);
+            }
+        }
+    }
+
+    void HardwareConfiguration::renameMicroManagerProperty(const QString& device, const QString& name,
+                                                           const QString& newName)
+    {
+        for (qsizetype index = 0; index < m_lines.size(); ++index)
+        {
+            const Line& line = m_lines[index];
+            const int field = line.kind == Kind::Property ? 2
+                : line.kind == Kind::ConfigGroup && line.fields.size() == 6 ? 4
+                : 0;
+            if (field > 0 && line.fields[field - 1] == device && line.fields[field] == name)
+            {
+                QStringList fields = line.fields;
+                fields[field] = newName;
                 replaceFields(index, fields);
             }
         }
@@ -679,14 +759,42 @@ namespace scopeone::core
         });
     }
 
-    void HardwareConfiguration::setCoreRole(const QString& role, const QString& value)
+    void HardwareConfiguration::setLimit(const Limit& limit)
+    {
+        const QStringList fields{QStringLiteral("ScopeOneLimit"), limit.device, limit.property,
+                                 QString::number(limit.min, 'g', QLocale::FloatingPointShortest),
+                                 QString::number(limit.max, 'g', QLocale::FloatingPointShortest)};
+        const qsizetype index = lastLine([&](const Line& line)
+        {
+            return line.kind == Kind::ScopeOneLimit && line.fields[1] == limit.device
+                   && line.fields[2] == limit.property;
+        });
+        if (index < 0)
+        {
+            insertAfterLast(Kind::ScopeOneLimit, fields);
+        }
+        else if (m_lines[index].fields[3].toDouble() != limit.min || m_lines[index].fields[4].toDouble() != limit.max)
+        {
+            replaceFields(index, fields);
+        }
+    }
+
+    void HardwareConfiguration::removeLimit(const QString& device, const QString& property)
+    {
+        removeLines([&](const Line& line)
+        {
+            return line.kind == Kind::ScopeOneLimit && line.fields[1] == device && line.fields[2] == property;
+        });
+    }
+
+    void HardwareConfiguration::setRole(const QString& role, const QString& value)
     {
         const auto ofRole = [&](const Line& line)
         {
-            return (line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core") && line.fields[2] == role)
+            return (line.kind == Kind::Property && line.fields[1] == coreDevice() && line.fields[2] == role)
                    || (line.kind == Kind::ConfigGroup && line.fields.size() >= 6
                        && line.fields[1] == QStringLiteral("System") && line.fields[2] == QStringLiteral("Startup")
-                       && line.fields[3] == QStringLiteral("Core") && line.fields[4] == role);
+                       && line.fields[3] == coreDevice() && line.fields[4] == role);
         };
         if (value.isEmpty())
         {
@@ -701,7 +809,7 @@ namespace scopeone::core
             replaceFields(startup, fields);
             return;
         }
-        const QStringList fields{QStringLiteral("Property"), QStringLiteral("Core"), role, value};
+        const QStringList fields{QStringLiteral("Property"), coreDevice(), role, value};
         const qsizetype index = lastLine(ofRole);
         if (index >= 0)
         {
@@ -711,7 +819,7 @@ namespace scopeone::core
         // A new role goes behind the other lines of Core, then behind the last Property line
         const qsizetype core = lastLine([](const Line& line)
         {
-            return line.kind == Kind::Property && line.fields[1] == QStringLiteral("Core");
+            return line.kind == Kind::Property && line.fields[1] == coreDevice();
         });
         if (core >= 0)
         {

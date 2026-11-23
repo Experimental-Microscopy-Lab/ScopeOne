@@ -47,6 +47,7 @@ namespace scopeone::core::internal
     StageMosaicManager::~StageMosaicManager() = default;
 
     bool StageMosaicManager::start(const ScopeOneCore::StageMosaicPlan& plan,
+                                   const std::function<bool(double x, double y, QString* errorMessage)>& checkOrigin,
                                    QString* errorMessage)
     {
         if (isRunning())
@@ -85,6 +86,10 @@ namespace scopeone::core::internal
         if (!m_core->readXYPosition(normalized.xyStageId, m_originX, m_originY))
         {
             if (errorMessage) *errorMessage = QStringLiteral("Failed to read current stage position");
+            return false;
+        }
+        if (!checkOrigin(m_originX, m_originY, errorMessage))
+        {
             return false;
         }
 

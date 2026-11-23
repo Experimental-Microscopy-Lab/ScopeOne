@@ -1323,6 +1323,50 @@ namespace scopeone::core::internal
             return true;
         }
 
+        // Kept until a property is set, as the pixel size is asked for on every repaint of the
+        // scale bar and the binning changes only through a property
+        bool getBinning(const QString& cameraId, int& binning) const override
+        {
+            const QString camera = cameraId.trimmed();
+            quint64 generation = 0;
+            {
+                QMutexLocker locker(&m_stateMutex);
+                const auto cached = m_binnings.constFind(camera);
+                if (cached != m_binnings.cend())
+                {
+                    binning = cached.value();
+                    return true;
+                }
+                generation = m_binningGeneration;
+            }
+            QJsonObject response;
+            if (!isCamera(cameraId) || !request(driverhost::kCommandGetBinning, cameraId, {}, response, nullptr))
+            {
+                return false;
+            }
+            binning = response.value(QStringLiteral("binning")).toInt();
+            QMutexLocker locker(&m_stateMutex);
+            // A property set on another thread while the host answered cleared the cache after this
+            // answer was read, so the old binning was cached again; it is kept only if nothing was set.
+            if (generation == m_binningGeneration)
+            {
+                m_binnings.insert(camera, binning);
+            }
+            return true;
+        }
+
+        bool getGain(const QString& cameraId, double& gain) const override
+        {
+            QJsonObject response;
+            if (!isCamera(cameraId) || !request(driverhost::kCommandGetGain, cameraId, {}, response, nullptr)
+                || !response.contains(QStringLiteral("gain")))
+            {
+                return false;
+            }
+            gain = response.value(QStringLiteral("gain")).toDouble();
+            return true;
+        }
+
         bool setExposure(const QString& cameraId, double exposureMs) override
         {
             QJsonObject fields;
@@ -1399,9 +1443,11 @@ namespace scopeone::core::internal
             QJsonObject response;
             clearPropertyDetails();
             const bool ok = request(driverhost::kCommandSetProperty, deviceId, fields, response, errorMessage);
+            QMutexLocker locker(&m_stateMutex);
+            m_binnings.clear();
+            ++m_binningGeneration;
             if (ok && m_arguments.contains(QStringLiteral("--driver")))
             {
-                QMutexLocker locker(&m_stateMutex);
                 m_propertyValues.insert(deviceId.trimmed() + QLatin1Char('\n') + name, value);
             }
             return ok;
@@ -1942,6 +1988,8 @@ namespace scopeone::core::internal
         QSet<QString> m_runningCameras;
         QHash<QString, QJsonObject> m_propertyDetails;
         QHash<QString, QString> m_propertyValues;
+        mutable QHash<QString, int> m_binnings;
+        quint64 m_binningGeneration{0};
     };
 
     DevicePtr createScopeOneDevice(const QString& label,
