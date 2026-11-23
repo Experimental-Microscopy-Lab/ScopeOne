@@ -9,19 +9,37 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 #include "scopeone/Device.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/Camera.h"
+#include "scopeone/CameraSettings.h"
+#include "scopeone/ExperimentDocument.h"
+#include "scopeone/HardwareConfiguration.h"
 #include "internal/AcquisitionEngine.h"
 #include "internal/CameraFrameDelivery.h"
-#include "internal/MicroManagerProvider.h"
 #include "internal/ScopeOneProvider.h"
 
 namespace scopeone::core::internal
 {
     class DaqDeviceManager;
+    class MicroManagerProvider;
     class SignalSourceManager;
+
+    // The devices that loading a cfg file gave, over every provider
+    struct ConfigurationLoadResult
+    {
+        QStringList cameraIds;
+        QStringList failedDevices;
+        // The cameras that did not start, which fail the load
+        QStringList failedCameras;
+        int successCount{0};
+        int failCount{0};
+        int skippedCameraCount{0};
+        bool foundCamera{false};
+        QList<HardwareDeviceDescriptor> devices;
+    };
 
     // The values that one device property takes on successive triggers of the camera
     struct PropertySequence
@@ -80,7 +98,7 @@ namespace scopeone::core::internal
         bool stopPreview(const QString& cameraIdOrAll);
         bool isPreviewRunning(const QString& cameraId) const;
         bool getExposure(const QString& cameraIdOrAll, double& exposureMs) const;
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs);
+        bool setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage = nullptr);
         QStringList listProperties(const QString& cameraId);
         QString getProperty(const QString& cameraId,
                             const QString& name,
@@ -163,7 +181,7 @@ namespace scopeone::core::internal
         QString currentConfig(const QString& groupName) const;
         std::vector<scopeone::core::ConfigSetting> configSettings(
             const QString& groupName, const QString& configName) const;
-        // The presets are those of Micro-Manager and of the ScopeOneConfigGroup lines, merged by name
+        // The presets of every provider, merged by name
         bool setConfig(const QString& groupName,
                        const QString& configName,
                        QString* errorMessage = nullptr);
@@ -178,10 +196,11 @@ namespace scopeone::core::internal
                                 QString* errorMessage = nullptr);
         bool setConfigGroupProperties(const QString& group, const QList<ConfigSetting>& properties,
                                       QString* errorMessage = nullptr);
-        void applyScopeOneStartupPreset();
-        // Sets the roles of MMCore after a load. Core opens and closes the shutter around the
-        // images itself, so the AutoShutter of MMCore is off.
-        void applyCoreRoles();
+        // The startup settings of the cfg after a load, and the roles the providers hold. The
+        // runtime opens and closes the shutter around the images itself.
+        void applyStartupSettings();
+        // The shutdown settings of the cfg, before the devices are released
+        void applyShutdownSettings();
 
         bool autoShutter() const { return m_autoShutter; }
         void setAutoShutter(bool enabled) { m_autoShutter = enabled; }
@@ -200,36 +219,43 @@ namespace scopeone::core::internal
                                     QString* errorMessage = nullptr);
         void stopPropertySequences(const std::vector<PropertySequence>& sequences);
 
+        // The ScopeOneLimit lines of the cfg. Every command that sets a limited property, exposure or
+        // stage position is refused as a whole when a value leaves its range.
+        QList<HardwareConfiguration::Limit> limits() const;
+        bool checkLimit(const QString& device, const QString& property, double value,
+                        QString* errorMessage) const;
+        bool checkXYLimit(const QString& device, double x, double y, QString* errorMessage) const;
+        // Refuses a plan whose exposures, positions, Z positions or channel presets leave a limit,
+        // before anything moves. The shift of the autofocus is checked as each move is made.
+        bool checkPlanLimits(const ExperimentPlan& plan, QString* errorMessage) const;
+
         // Where the frames of every camera arrive
         CameraFrameDelivery* frameDelivery() { return &m_frameDelivery; }
         SignalSourceManager* signalSourceManager() const { return m_signalSourceManager; }
         DaqDeviceManager* daqDeviceManager() const { return m_daqDeviceManager; }
         double pixelSizeUm(const QString& cameraId) const;
+        // The camera in ScopeOne's terms, with properties its entry of the device property snapshot
+        CameraSettings cameraSettings(const QString& cameraId, const QJsonObject& properties) const;
 
-        // The Micro-Manager configuration. Loading and unloading block, so they run on a worker
-        // thread, while the cameras are started and stopped on the thread of the runtime.
-        QStringList microManagerAdapterSearchPaths() const;
-        void setMicroManagerAdapterSearchPaths(const QStringList& paths);
-        bool loadMicroManagerConfiguration(const QString& configPath,
-                                           MicroManagerProvider::LoadResult& result,
-                                           QString& errorMessage);
-        QStringList startMicroManagerCameras(const QList<MicroManagerCameraSetup>& cameras);
-        // The ScopeOne devices of the configuration, each in a DriverHost. Loading blocks, so it
-        // runs on a worker thread, while the devices are registered on the thread of the runtime.
-        ScopeOneProvider::LoadResult loadScopeOneDevices(const QString& configPath);
+        // The folders of the device adapters besides the one of the application
+        QStringList deviceAdapterSearchPaths() const;
+        void setDeviceAdapterSearchPaths(const QStringList& paths);
+        // Loads the devices of the cfg file and starts the cameras. It blocks, so it runs on a
+        // worker thread, while the devices are registered on the thread of the runtime. A failed
+        // load leaves no device loaded.
+        bool loadConfiguration(const QString& configPath, ConfigurationLoadResult& result,
+                               QString& errorMessage);
+        // False when a device conflicts with registered hardware
+        bool registerLoadedDevices();
         void setConfigurationPath(const QString& path);
         QString configuredCamera() const { return m_cameraRole; }
-        // False when a device conflicts with registered hardware
-        bool registerScopeOneDevices();
-        // The cameras of Micro-Manager and the ScopeOne devices, unregistered and to be destroyed
-        // on a worker thread, as their DriverHosts take time to exit
+        // The cameras and devices that run in DriverHosts, unregistered and to be destroyed on a
+        // worker thread, as their DriverHosts take time to exit
         QList<DevicePtr> takeDriverHosts();
-        // Registers the devices again, false when one conflicts with the devices of a driver
-        bool setMicroManagerDevices(const QList<HardwareDeviceDescriptor>& devices);
-        void stopMicroManagerPreview();
-        bool unloadMicroManagerDevices(QString* errorMessage = nullptr);
-        void applyMicroManagerShutdownPreset();
-        void applyScopeOneShutdownPreset();
+        void stopAllPreviews();
+        // Takes the devices that stay loaded until unloadDevices out of the registry
+        void clearLoadedDevices();
+        bool unloadDevices(QString* errorMessage = nullptr);
         QList<HardwareDeviceDescriptor> devices() const { return m_registry.devices(); }
         static QString microManagerVersion();
         void clear();
@@ -243,14 +269,16 @@ namespace scopeone::core::internal
         void previewStateChanged(bool running);
 
     private:
-        // Takes the Core roles of the cfg for the ScopeOne devices
+        // Takes the roles and the limits of the cfg
         void applyRoles(const HardwareConfiguration& document);
+        std::optional<HardwareConfiguration::Limit> limit(const QString& device, const QString& property) const;
+        // A property value with a limit has to be a number inside it
+        bool checkPropertyLimit(const QString& device, const QString& property, const QString& value,
+                                QString* errorMessage) const;
         bool editConfigGroups(const QStringList& groups,
                               const std::function<bool(HardwareConfiguration&, QString*)>& edit,
                               QString* errorMessage);
-        bool presetSettingsForEdit(const QList<ConfigSetting>& settings,
-                                   QList<HardwareConfiguration::PresetSetting>& rows,
-                                   QString* errorMessage) const;
+        bool presetSettingsForEdit(const QList<ConfigSetting>& settings, QString* errorMessage) const;
         Camera* cameraForDevice(const QString& logicalId) const;
         Device* propertyDeviceForDevice(const QString& logicalId) const;
         XYStage* xyStageForDevice(const QString& logicalId) const;
@@ -262,7 +290,8 @@ namespace scopeone::core::internal
         bool anyCameraRunning() const;
         StateDevice* stateDeviceForDevice(const QString& logicalId) const;
         std::vector<ScopeOneConfigGroupLine> scopeOneConfigLines() const;
-        bool applyScopeOnePreset(const QString& groupName, const QString& configName, QString* errorMessage);
+        // Sets the lines of loaded devices, stopping at the first property that cannot be set
+        bool applyScopeOneLines(const QList<ScopeOneConfigGroupLine>& lines, QString* errorMessage);
         QList<QPair<CameraFrameSource*, QStringList>> frameSourcesFor(const QStringList& cameraIds) const;
         bool applyFrameDeliveryModes(const QHash<QString, FrameDeliveryMode>& modes);
 
@@ -277,6 +306,9 @@ namespace scopeone::core::internal
         QString m_shutterRole;
         QString m_autofocusRole;
         std::atomic<bool> m_autoShutter{true};
+        // Read on the hardware and MDA threads, set when a cfg is loaded or edited
+        mutable QReadWriteLock m_limitsLock;
+        QList<HardwareConfiguration::Limit> m_limits;
         SignalSourceManager* m_signalSourceManager{nullptr};
         DaqDeviceManager* m_daqDeviceManager{nullptr};
 

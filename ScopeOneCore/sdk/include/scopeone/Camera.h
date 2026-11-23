@@ -78,5 +78,22 @@ namespace scopeone::core
             (void)timeoutMs;
             return false;
         }
+        // The binning factor, 1 for full resolution and 2 for 2x2, as GetBinning in Micro-Manager.
+        // ScopeOne scales the calibrated pixel size by it. A camera that bins changes it through a
+        // property named Binning, as in Micro-Manager, and the ROI is in binned pixels. A camera
+        // that returns false has its binning read from that property ("2" or "2x2").
+        virtual bool getBinning(const QString& cameraId, int& binning) const
+        {
+            (void)cameraId;
+            (void)binning;
+            return false;
+        }
+        // The gain of the camera, in the units of the camera; false for a camera without one
+        virtual bool getGain(const QString& cameraId, double& gain) const
+        {
+            (void)cameraId;
+            (void)gain;
+            return false;
+        }
     };
 }

@@ -164,8 +164,8 @@ namespace
             makeTool(
                 QStringLiteral("state_snapshot"),
                 QStringLiteral(
-                    "Observe current configuration, hardware, preview, processing, scene, experiment, "
-                    "and session state")),
+                    "Observe current configuration, hardware with its safety limits, preview, processing, "
+                    "scene, experiment, and session state")),
             makeTool(
                 QStringLiteral("ping"),
                 QStringLiteral("Check that the ScopeOne Local API is responding")),
@@ -175,6 +175,33 @@ namespace
             makeTool(
                 QStringLiteral("status"),
                 QStringLiteral("Read a compact ScopeOne runtime status summary")),
+            makeTool(
+                QStringLiteral("action_log"),
+                QStringLiteral(
+                    "Read the log of hardware and file changes made through the Local API and by triggers, "
+                    "oldest first. Each entry has time, origin, operation, parameters, success and error"),
+                inputProperties({
+                    {QStringLiteral("since"),
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("ISO 8601 time; only entries at or after it"))}
+                })),
+            makeTool(
+                QStringLiteral("wait_event"),
+                QStringLiteral(
+                    "Wait for the next ScopeOne event, such as experiment_state when an experiment ends, "
+                    "and return it or a timeout. Only events after the call starts are seen, so read the "
+                    "state first"),
+                inputProperties({
+                    {QStringLiteral("events"),
+                     arrayProperty(QStringLiteral("Event names from capabilities; empty waits for any event"),
+                                   QStringLiteral("string"))},
+                    {QStringLiteral("timeout_s"),
+                     withMaximum(withMinimum(inputProperty(QStringLiteral("number"),
+                                                           QStringLiteral("Seconds to wait"),
+                                                           30.0),
+                                             0.0),
+                                 kRequestTimeoutMs / 1000.0)}
+                })),
             makeTool(
                 QStringLiteral("load_config"),
                 QStringLiteral("Load a Micro-Manager configuration and report partial failures"),
@@ -971,6 +998,23 @@ namespace
                 {QStringLiteral("index")},
                 ToolAccess::StateChanging),
             makeTool(
+                QStringLiteral("triggers"),
+                QStringLiteral("Read the triggers Core checks on the measurements of the live processing")),
+            makeTool(
+                QStringLiteral("set_triggers"),
+                QStringLiteral(
+                    "Replace the triggers. Each is an object with measurement (name a processing module "
+                    "reports), optional cameraId (empty for any camera), compare (above or below), "
+                    "threshold, action (record with frames, apply_preset with group and preset, or "
+                    "stop_preview) and cooldownMs (default 5000). Core performs the action on the frame that "
+                    "crosses the threshold and sends a trigger_fired event. An empty list removes them"),
+                inputProperties({
+                    {QStringLiteral("triggers"),
+                     arrayProperty(QStringLiteral("Trigger objects"), QStringLiteral("object"))}
+                }),
+                {QStringLiteral("triggers")},
+                ToolAccess::Confirmed),
+            makeTool(
                 QStringLiteral("experiment_document"),
                 QStringLiteral("Read the current experiment document")),
             makeTool(
@@ -1027,6 +1071,51 @@ namespace
                 }),
                 {QStringLiteral("experimentId")},
                 ToolAccess::Destructive),
+            makeTool(
+                QStringLiteral("set_hooks"),
+                QStringLiteral(
+                    "Make the experiments started afterwards wait at hook points of every event. At "
+                    "before_event, before the hardware moves, and at after_event, after the cameras took the "
+                    "frames, ScopeOne sends an event of that name with hookId, experimentId, the event "
+                    "(indexes, x, y, z, exposureMs, cameraIds) and after the event its frames. Wait for them "
+                    "with wait_event and answer each with hook_reply. Without a reply in timeoutMs the event "
+                    "continues unchanged. Hardware Z and channel sequences are not used while hooks are on. "
+                    "An empty list turns the hooks off. Refused while another connection holds the hooks"),
+                inputProperties({
+                    {QStringLiteral("hooks"),
+                     arrayProperty(QStringLiteral("before_event and/or after_event"), QStringLiteral("string"))},
+                    {QStringLiteral("timeoutMs"),
+                     withMinimum(inputProperty(QStringLiteral("integer"),
+                                               QStringLiteral("Milliseconds an event waits for the reply"), 5000),
+                                 1.0)}
+                }),
+                {QStringLiteral("hooks")},
+                ToolAccess::Confirmed),
+            makeTool(
+                QStringLiteral("hook_reply"),
+                QStringLiteral(
+                    "Answer a before_event or after_event hook. continue takes the event, optionally with "
+                    "changed x, y, z (stage coordinates, within the safety limits) or exposureMs, which only "
+                    "apply before the event. skip leaves the event out, before the event only. stop ends the "
+                    "experiment and keeps the data taken so far"),
+                inputProperties({
+                    {QStringLiteral("hookId"),
+                     withMinimum(inputProperty(QStringLiteral("integer"), QStringLiteral("hookId of the hook event")),
+                                 1.0)},
+                    {QStringLiteral("action"),
+                     withEnum(inputProperty(QStringLiteral("string"), QStringLiteral("What the event does"),
+                                            QStringLiteral("continue")),
+                              {QStringLiteral("continue"), QStringLiteral("skip"), QStringLiteral("stop")})},
+                    {QStringLiteral("x"), inputProperty(QStringLiteral("number"), QStringLiteral("Stage X in um"))},
+                    {QStringLiteral("y"), inputProperty(QStringLiteral("number"), QStringLiteral("Stage Y in um"))},
+                    {QStringLiteral("z"), inputProperty(QStringLiteral("number"), QStringLiteral("Focus Z in um"))},
+                    {QStringLiteral("exposureMs"),
+                     inputProperty(QStringLiteral("number"), QStringLiteral("Exposure in milliseconds"))}
+                }),
+                {QStringLiteral("hookId")},
+                // The user confirms set_hooks once for the run. A confirmation per reply could not
+                // come within the hook timeout, and the safety limits still bound every change.
+                ToolAccess::StateChanging),
             makeTool(
                 QStringLiteral("record"),
                 QStringLiteral("Run a blocking in-memory recording and retain the resulting session"),
@@ -1382,35 +1471,21 @@ namespace
                 }
             }
 
-            QByteArray header;
-            if (!readExact(static_cast<qsizetype>(sizeof(quint32)), header, error))
+            // Event messages of a subscription can arrive before the response, and are skipped.
+            // Hook events wait for an answer, so they are kept for wait_event.
+            do
             {
-                return false;
+                if (!readMessage(response, error))
+                {
+                    return false;
+                }
+                if (isHookEvent(response))
+                {
+                    m_hookEvents.append(response);
+                }
             }
-            const quint32 payloadSize = qFromLittleEndian<quint32>(
-                reinterpret_cast<const uchar*>(header.constData()));
-            if (payloadSize == 0 || payloadSize > kMaxMessageBytes)
-            {
-                error = QStringLiteral("Local API response has an invalid size");
-                m_socket.abort();
-                return false;
-            }
+            while (response.contains(QStringLiteral("event")) && !response.contains(QStringLiteral("requestId")));
 
-            QByteArray responsePayload;
-            if (!readExact(static_cast<qsizetype>(payloadSize), responsePayload, error))
-            {
-                return false;
-            }
-            QJsonParseError parseError;
-            const QJsonDocument document = QJsonDocument::fromJson(responsePayload, &parseError);
-            if (parseError.error != QJsonParseError::NoError || !document.isObject())
-            {
-                error = QStringLiteral("Local API returned invalid JSON: %1").arg(parseError.errorString());
-                m_socket.abort();
-                return false;
-            }
-
-            response = document.object();
             if (!response.value(QStringLiteral("requestId")).isDouble()
                 || response.value(QStringLiteral("requestId")).toDouble() != requestId)
             {
@@ -1421,7 +1496,105 @@ namespace
             return true;
         }
 
+        // Subscribes for the duration of the call and returns the first event, or a timeout
+        bool waitEvent(const QJsonObject& arguments, QJsonObject& result, QString& error)
+        {
+            const QJsonArray names = arguments.value(QStringLiteral("events")).toArray();
+            const auto wanted = [&names](const QJsonObject& event)
+            {
+                return names.isEmpty() || names.contains(event.value(QStringLiteral("event")));
+            };
+            const auto takeHookEvent = [this, &wanted]()
+            {
+                for (qsizetype index = 0; index < m_hookEvents.size(); ++index)
+                {
+                    if (wanted(m_hookEvents.at(index)))
+                    {
+                        return m_hookEvents.takeAt(index);
+                    }
+                }
+                return QJsonObject{};
+            };
+            if (const QJsonObject hookEvent = takeHookEvent(); !hookEvent.isEmpty())
+            {
+                result = QJsonObject{};
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("event"), hookEvent);
+                return true;
+            }
+
+            QJsonObject subscription;
+            subscription.insert(QStringLiteral("type"), QStringLiteral("subscribe"));
+            subscription.insert(QStringLiteral("events"), arguments.value(QStringLiteral("events")));
+            if (!request(subscription, result, error))
+            {
+                return false;
+            }
+            if (!result.value(QStringLiteral("ok")).toBool(false))
+            {
+                return true;
+            }
+
+            const int timeoutMs = static_cast<int>(arguments.value(QStringLiteral("timeout_s")).toDouble() * 1000.0);
+            QElapsedTimer timer;
+            timer.start();
+            // A hook event that came before the subscribe response was kept by request, and the
+            // wait below only read the socket, so the event waited unanswered until its timeout.
+            QJsonObject event = takeHookEvent();
+            while (event.isEmpty())
+            {
+                const int remaining = timeoutMs - static_cast<int>(timer.elapsed());
+                if (m_socket.bytesAvailable() == 0
+                    && (remaining <= 0 || !m_socket.waitForReadyRead(remaining)))
+                {
+                    if (m_socket.state() != QLocalSocket::ConnectedState)
+                    {
+                        error = QStringLiteral("Local API connection closed while waiting for an event");
+                        return false;
+                    }
+                    break;
+                }
+                if (!readMessage(event, error))
+                {
+                    return false;
+                }
+                // Hook events come without a subscription
+                if (!wanted(event))
+                {
+                    if (isHookEvent(event))
+                    {
+                        m_hookEvents.append(event);
+                    }
+                    event = QJsonObject{};
+                }
+            }
+
+            QJsonObject response;
+            subscription.insert(QStringLiteral("type"), QStringLiteral("unsubscribe"));
+            if (!request(subscription, response, error))
+            {
+                return false;
+            }
+            result = QJsonObject{};
+            result.insert(QStringLiteral("ok"), true);
+            if (event.isEmpty())
+            {
+                result.insert(QStringLiteral("timedOut"), true);
+            }
+            else
+            {
+                result.insert(QStringLiteral("event"), event);
+            }
+            return true;
+        }
+
     private:
+        static bool isHookEvent(const QJsonObject& message)
+        {
+            const QJsonValue name = message.value(QStringLiteral("event"));
+            return name == QStringLiteral("before_event") || name == QStringLiteral("after_event");
+        }
+
         bool ensureConnected(QString& error)
         {
             if (m_socket.state() == QLocalSocket::ConnectedState)
@@ -1436,6 +1609,40 @@ namespace
                             .arg(m_socket.errorString());
                 return false;
             }
+            return true;
+        }
+
+        // Reads one framed JSON message, a response or an event
+        bool readMessage(QJsonObject& message, QString& error)
+        {
+            QByteArray header;
+            if (!readExact(static_cast<qsizetype>(sizeof(quint32)), header, error))
+            {
+                return false;
+            }
+            const quint32 payloadSize = qFromLittleEndian<quint32>(
+                reinterpret_cast<const uchar*>(header.constData()));
+            if (payloadSize == 0 || payloadSize > kMaxMessageBytes)
+            {
+                error = QStringLiteral("Local API response has an invalid size");
+                m_socket.abort();
+                return false;
+            }
+
+            QByteArray payload;
+            if (!readExact(static_cast<qsizetype>(payloadSize), payload, error))
+            {
+                return false;
+            }
+            QJsonParseError parseError;
+            const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !document.isObject())
+            {
+                error = QStringLiteral("Local API returned invalid JSON: %1").arg(parseError.errorString());
+                m_socket.abort();
+                return false;
+            }
+            message = document.object();
             return true;
         }
 
@@ -1472,6 +1679,7 @@ namespace
 
         QLocalSocket m_socket;
         qint64 m_nextRequestId{1};
+        QList<QJsonObject> m_hookEvents;
     };
 
     QJsonObject jsonRpcEnvelope(const QJsonValue& id)
@@ -1564,7 +1772,10 @@ namespace
         QJsonObject request = arguments;
         request.insert(QStringLiteral("type"), spec->name);
         QJsonObject response;
-        if (!client.request(request, response, error))
+        const bool sent = spec->name == QStringLiteral("wait_event")
+                              ? client.waitEvent(arguments, response, error)
+                              : client.request(request, response, error);
+        if (!sent)
         {
             logToolCall(name, false);
             return toolError(error);

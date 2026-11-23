@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QPointF>
@@ -212,6 +213,8 @@ namespace scopeone::core
         bool autofocusBefore{false};
         // The Z slices of the plan may be taken in one hardware sequence. Derived from the plan.
         bool hardwareSequencing{false};
+        // A hook reply changed X, Y, Z or the exposure, so the coordinates may leave the plan
+        bool changedByHook{false};
     };
 
     struct FrameRecord
@@ -331,6 +334,9 @@ namespace scopeone::core
         RecordingOutputManifest output;
         QList<DocumentLayer> layers;
         QList<DocumentMarkup> markups;
+        // The Local API requests and trigger actions that led to and ran during the recording,
+        // each with time, origin, operation, parameters, success and error
+        QJsonArray actionLog;
 
         RecordingFileManifest& ensureFile(const QString& cameraId)
         {

@@ -96,7 +96,8 @@ namespace example_camera
                 QStringLiteral("Gradient"),
                 QStringLiteral("Hologram"),
                 QStringLiteral("Red Blood Cells"),
-                QStringLiteral("Fluorescent Beads")};
+                QStringLiteral("Fluorescent Beads"),
+                QStringLiteral("iSCAT Landing")};
     }
 
     QString testPatternName(TestPattern pattern)
@@ -121,6 +122,7 @@ namespace example_camera
     {
         layOutBloodCells();
         layOutBeads();
+        layOutLanding();
     }
 
     void TestPatterns::render(TestPattern pattern,
@@ -132,6 +134,11 @@ namespace example_camera
                               std::vector<double>& intensities) const
     {
         intensities.resize(static_cast<std::size_t>(roiWidth) * roiHeight);
+        if (pattern == TestPattern::IscatLanding)
+        {
+            renderLanding(frameIndex, roiX, roiY, roiWidth, roiHeight, intensities);
+            return;
+        }
         const double angle = kTwoPi * static_cast<double>(frameIndex % 200) / 200.0;
         const double spotX = m_sensorWidth * (0.5 + 0.3 * std::cos(angle));
         const double spotY = m_sensorHeight * (0.5 + 0.3 * std::sin(angle));
@@ -187,6 +194,8 @@ namespace example_camera
                 }
                 case TestPattern::FluorescentBeads:
                     intensity = m_beads[sensorIndex];
+                    break;
+                case TestPattern::IscatLanding:
                     break;
                 }
                 intensities[static_cast<std::size_t>(y) * roiWidth + x] = intensity;
@@ -324,6 +333,112 @@ namespace example_camera
         for (const Bead& bead : kBeadDoublets)
         {
             drawBead(bead);
+        }
+    }
+
+    namespace
+    {
+        // The level of the reference light, 2880 counts of the 12-bit sensor at the default exposure, where the
+        // shot noise of one frame is about 1.9 % of the signal
+        constexpr double kLandingBackground = 180.0;
+        // The landings repeat after this many frames. Time runs on a circle, so a particle that lands near the
+        // end of one round stays into the next, and the surface never empties at once.
+        constexpr quint64 kLandingPeriod = 100000;
+        // One landing every 200 frames on average
+        constexpr double kFramesPerLanding = 200.0;
+        // How long a particle stays on average before it leaves, which keeps about 30 on the surface
+        constexpr double kFramesOnSurface = 6000.0;
+    }
+
+    // Lays out the scattering of the glass and the particles that land on it over one period. The glass varies
+    // the light by a few percent, much more than one particle does, as on a real cover slip; flat field or
+    // reference correction takes it out. The particles land at random times and places, each with a contrast of
+    // 2 to 4 %, about the shot noise of a pixel in one frame, so they are seen clearly only after averaging as DRA
+    // does. Each stays
+    // for a random time and then leaves, as particles that bind and unbind.
+    void TestPatterns::layOutLanding()
+    {
+        const std::size_t count = static_cast<std::size_t>(m_sensorWidth) * m_sensorHeight;
+        std::mt19937 layout(20261123u);
+        std::normal_distribution<float> normal(0.0f, 1.0f);
+        m_glass.resize(count);
+        for (float& value : m_glass)
+        {
+            value = normal(layout);
+        }
+        const double resolutionScale = std::min(m_sensorWidth, m_sensorHeight) / 256.0;
+        blur(m_glass, m_sensorWidth, m_sensorHeight, 1.5 * resolutionScale);
+        double sumSquares = 0.0;
+        for (const float value : m_glass)
+        {
+            sumSquares += static_cast<double>(value) * value;
+        }
+        const float scale = static_cast<float>(0.03 / std::sqrt(sumSquares / static_cast<double>(count)));
+        for (float& value : m_glass)
+        {
+            value *= scale;
+        }
+
+        std::exponential_distribution<double> wait(1.0 / kFramesPerLanding);
+        std::exponential_distribution<double> stay(1.0 / kFramesOnSurface);
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        double frame = wait(layout);
+        while (frame < static_cast<double>(kLandingPeriod))
+        {
+            m_landings.push_back({static_cast<quint64>(frame),
+                                  static_cast<quint64>(std::min(stay(layout), 0.5 * kLandingPeriod)),
+                                  m_sensorWidth * (0.05 + 0.9 * unit(layout)),
+                                  m_sensorHeight * (0.05 + 0.9 * unit(layout)),
+                                  0.02 + 0.02 * unit(layout)});
+            frame += wait(layout);
+        }
+    }
+
+    // The reference light over the glass, darkened by the particles that have landed. A particle in focus is a
+    // dark spot of the width of the resolution with a faint bright ring, from the interference of the light it
+    // scatters with the reference.
+    void TestPatterns::renderLanding(quint64 frameIndex, int roiX, int roiY, int roiWidth, int roiHeight,
+                                     std::vector<double>& intensities) const
+    {
+        for (int y = 0; y < roiHeight; ++y)
+        {
+            for (int x = 0; x < roiWidth; ++x)
+            {
+                const std::size_t sensorIndex = static_cast<std::size_t>(roiY + y) * m_sensorWidth + roiX + x;
+                intensities[static_cast<std::size_t>(y) * roiWidth + x] = 1.0 + m_glass[sensorIndex];
+            }
+        }
+
+        const double resolutionScale = std::min(m_sensorWidth, m_sensorHeight) / 256.0;
+        const double sigma = 4.0 * resolutionScale / 2.354820045;
+        const int radius = static_cast<int>(std::ceil(4.0 * sigma));
+        const quint64 now = frameIndex % kLandingPeriod;
+        for (const Landing& landing : m_landings)
+        {
+            if ((now + kLandingPeriod - landing.frame) % kLandingPeriod >= landing.dwell)
+            {
+                continue;
+            }
+            const int minX = std::max(roiX, static_cast<int>(landing.x) - radius);
+            const int maxX = std::min(roiX + roiWidth - 1, static_cast<int>(landing.x) + radius);
+            const int minY = std::max(roiY, static_cast<int>(landing.y) - radius);
+            const int maxY = std::min(roiY + roiHeight - 1, static_cast<int>(landing.y) + radius);
+            for (int y = minY; y <= maxY; ++y)
+            {
+                for (int x = minX; x <= maxX; ++x)
+                {
+                    const double dx = x + 0.5 - landing.x;
+                    const double dy = y + 0.5 - landing.y;
+                    const double r = std::sqrt(dx * dx + dy * dy);
+                    const double spot = std::exp(-r * r / (2.0 * sigma * sigma)) * std::cos(kPi * r / (2.0 * sigma));
+                    intensities[static_cast<std::size_t>(y - roiY) * roiWidth + x - roiX] *= 1.0 - landing.contrast * spot;
+                }
+            }
+        }
+
+        for (double& intensity : intensities)
+        {
+            intensity *= kLandingBackground;
         }
     }
 }

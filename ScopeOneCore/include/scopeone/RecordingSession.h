@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scopeone/CameraSettings.h"
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/scopeone_core_export.h"
@@ -107,6 +108,11 @@ namespace scopeone::core
         double cameraPixelSizeUm(const QString& cameraId) const
         {
             return m_cameraPixelSizesUm.value(cameraId.trimmed(), 0.0);
+        }
+        // The settings of a camera when the recording started, for the detector of the metadata
+        CameraSettings cameraSettings(const QString& cameraId) const
+        {
+            return m_cameraSettings.value(cameraId.trimmed());
         }
         // Sets how the planes of the images are arranged along the channel, Z and time axes
         void setStackShape(int channels, int slices, int frames, const QString& order)
@@ -251,6 +257,7 @@ namespace scopeone::core
         {
             m_cameraPixelSizesUm = pixelSizesUm;
         }
+        void setCameraSettings(const QHash<QString, CameraSettings>& settings) { m_cameraSettings = settings; }
         void setRunState(ExperimentRunState state,
                          quint64 completedTimestampNs = 0,
                          const QString& errorMessage = QString())
@@ -267,6 +274,7 @@ namespace scopeone::core
             m_manifest.layers = layers;
             m_manifest.markups = markups;
         }
+        void setActionLog(const QJsonArray& actionLog) { m_manifest.actionLog = actionLog; }
         ImageFrame imageFrameAt(const QString& cameraId, int index) const;
         bool appendImageFrame(const ImageFrame& frame)
         {
@@ -324,6 +332,7 @@ namespace scopeone::core
         ExperimentDocument m_manifest;
         QHash<QString, std::vector<ImageFrame>> m_frames;
         QHash<QString, double> m_cameraPixelSizesUm;
+        QHash<QString, CameraSettings> m_cameraSettings;
         bool m_saved{false};
         QString m_saveMessage;
         RecordingWriterStatus m_writerStatus;

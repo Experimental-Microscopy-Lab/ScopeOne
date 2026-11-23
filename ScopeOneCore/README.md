@@ -105,7 +105,7 @@ Outputs:
 ## Core and SDK API
 
 `HardwareConfiguration` reads and edits cfg files while preserving untouched lines and their order.
-The Hardware Configuration dialog uses it to edit ScopeOne devices, Core roles and light sources,
+The Hardware Configuration dialog uses it to edit ScopeOne devices, roles and light sources,
 and writes them on Apply. A change of the devices reloads the configuration, and otherwise
 `ScopeOneCore::reloadRoles` takes the roles and light sources from the file without restarting a
 device. Micro-Manager devices remain editable in Micro-Manager. The preset editor saves group and preset changes immediately and updates

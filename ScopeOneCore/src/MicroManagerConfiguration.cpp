@@ -163,12 +163,33 @@ namespace scopeone::core::internal
             QHash<QString, QList<ConfigProperty>> startupProperties;
         };
 
-        // Read camera property entries that must be replayed by DriverHost processes
-        ConfigPropertyReplay configPropertyReplay(const QString& configPath)
+        // The settings of System/Startup in the cfg file
+        QList<ConfigSetting> startupSettings(const HardwareConfiguration& document)
+        {
+            for (const HardwareConfiguration::Group& group : document.configGroups())
+            {
+                if (group.name != QLatin1String(MM::g_CFGGroup_System))
+                {
+                    continue;
+                }
+                for (const HardwareConfiguration::Preset& preset : group.presets)
+                {
+                    if (preset.name == QLatin1String(MM::g_CFGGroup_System_Startup))
+                    {
+                        return preset.settings;
+                    }
+                }
+            }
+            return {};
+        }
+
+        // Read camera property entries that must be replayed by DriverHost processes. The settings
+        // are by device label, so only those of the cameras are taken.
+        ConfigPropertyReplay configPropertyReplay(const QList<ConfigSetting>& properties,
+                                                  const QList<ConfigSetting>& startup)
         {
             ConfigPropertyReplay replay;
-            const HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
-            for (const ConfigSetting& property : document.propertyLines())
+            for (const ConfigSetting& property : properties)
             {
                 if (!property.device.isEmpty() && !property.property.isEmpty())
                 {
@@ -176,27 +197,12 @@ namespace scopeone::core::internal
                         ConfigProperty{property.property, property.value});
                 }
             }
-            for (const HardwareConfiguration::Group& group : document.configGroups())
+            for (const ConfigSetting& setting : startup)
             {
-                if (group.name != QString::fromLatin1(MM::g_CFGGroup_System))
+                if (!setting.device.isEmpty() && !setting.property.isEmpty())
                 {
-                    continue;
-                }
-                for (const HardwareConfiguration::Preset& preset : group.presets)
-                {
-                    if (preset.name != QString::fromLatin1(MM::g_CFGGroup_System_Startup))
-                    {
-                        continue;
-                    }
-                    for (const HardwareConfiguration::PresetSetting& setting : preset.settings)
-                    {
-                        if (setting.source == HardwareConfiguration::Source::MicroManager
-                            && !setting.device.isEmpty() && !setting.property.isEmpty())
-                        {
-                            replay.startupProperties[setting.device].append(
-                                ConfigProperty{setting.property, setting.value});
-                        }
-                    }
+                    replay.startupProperties[setting.device].append(
+                        ConfigProperty{setting.property, setting.value});
                 }
             }
             return replay;
@@ -272,9 +278,12 @@ namespace scopeone::core::internal
             return state;
         }
 
-    // Loads one config file into MMCore
+    // Loads one config file into MMCore. A filtered document is loaded from a temporary file
+    // instead of the file itself.
     bool loadConfigurationFile(CMMCore& core,
                                const QString& configPath,
+                               const HardwareConfiguration& document,
+                               bool filtered,
                                const QStringList& additionalPaths,
                                QString* errorMessage)
     {
@@ -290,8 +299,6 @@ namespace scopeone::core::internal
         try
         {
             configureAdapterSearchPaths(core, additionalPaths);
-            auto document = HardwareConfiguration::read(configPath, errorMessage);
-            const bool filtered = document.removeScopeOneCoreRoles();
             QTemporaryFile filteredFile;
             QString loadPath = configPath;
             if (filtered)
@@ -417,9 +424,28 @@ namespace scopeone::core::internal
         {
             return false;
         }
-        if (!loadConfigurationFile(*m_core, configPath, m_adapterSearchPaths, &errorMessage))
+        // MMCore cannot resolve the roles that name ScopeOne devices, which are registered only
+        // later. They are left out of the file it loads, and those of System/Startup are kept
+        // here, so the preset still holds them.
+        HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
+        const QList<ConfigSetting> properties = document.propertyLines();
+        const QList<ConfigSetting> startup = startupSettings(document);
+        std::vector<ConfigSetting> scopeOneRoles;
+        for (const ConfigSetting& setting : startup)
+        {
+            if (setting.device == HardwareConfiguration::coreDevice() && document.namesScopeOneDevice(setting.value))
+            {
+                scopeOneRoles.push_back(setting);
+            }
+        }
+        const bool filtered = document.removeScopeOneRoles();
+        if (!loadConfigurationFile(*m_core, configPath, document, filtered, m_adapterSearchPaths, &errorMessage))
         {
             return false;
+        }
+        {
+            QWriteLocker locker(&m_camerasLock);
+            m_scopeOneStartupRoles = scopeOneRoles;
         }
 
         QString listError;
@@ -429,7 +455,7 @@ namespace scopeone::core::internal
             errorMessage = QString("Failed to query loaded devices: %1").arg(listError);
             return false;
         }
-        const ConfigPropertyReplay propertyReplay = configPropertyReplay(configPath);
+        const ConfigPropertyReplay propertyReplay = configPropertyReplay(properties, startup);
         const QList<MicroManagerCameraSetup> cameraInfos =
             loadedCameraInfos(*m_core, loadedDevices, propertyReplay);
         const bool useSingleCamera = cameraInfos.size() == 1;
@@ -541,6 +567,10 @@ namespace scopeone::core::internal
 
     bool MicroManagerProvider::unloadDevices(QString* errorMessage)
     {
+        {
+            QWriteLocker locker(&m_camerasLock);
+            m_scopeOneStartupRoles.clear();
+        }
         try
         {
             m_core->unloadAllDevices();

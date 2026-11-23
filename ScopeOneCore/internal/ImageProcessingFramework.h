@@ -86,6 +86,11 @@ namespace scopeone::core::internal
         void imageProcessed(const ImageFrame& frame);
         void processingFrameFinished(const QString& cameraId, quint64 token);
         void processingError(const QString& error);
+        // The measurements one module of a live pipeline made on a frame, on a pool thread
+        void measurementsReady(const QString& cameraId,
+                               const QString& moduleId,
+                               qint64 frameIndex,
+                               const QVariantList& measurements);
 
     private:
         struct CameraSlot
@@ -105,6 +110,7 @@ namespace scopeone::core::internal
             const QString& cameraKey);
         void processCameraQueue(const QString& cameraKey);
         ImageFrame frameFromResult(ProcessingResult result);
+        void publishMeasurements(const ImageFrame& frame, const QVariantList& measurements);
 
         ProcessingPipelineDefinition m_definition;
         QHash<QString, std::shared_ptr<ProcessingPipelineDefinition>> m_cameraDefinitions;

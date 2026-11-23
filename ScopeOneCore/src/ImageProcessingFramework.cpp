@@ -81,6 +81,7 @@ namespace scopeone::core::internal
 
         ProcessingValue currentValue(input);
         ImageFrame displayFrame;
+        QVariantList measurements;
         const int startIndex = std::clamp(startModuleIndex, 0, static_cast<int>(m_modules.size()));
         const int endIndex = std::clamp(endModuleIndexExclusive, startIndex, static_cast<int>(m_modules.size()));
         for (int moduleIndex = startIndex; moduleIndex < endIndex; ++moduleIndex)
@@ -98,6 +99,13 @@ namespace scopeone::core::internal
                     result.error = QString("%1 returned an invalid frame").arg(module->name());
                 }
                 return result;
+            }
+
+            for (const QVariant& measurement : std::as_const(result.measurements))
+            {
+                QVariantMap entry = measurement.toMap();
+                entry.insert(QStringLiteral("module"), module->id());
+                measurements.append(entry);
             }
 
             if (result.hasImage())
@@ -123,6 +131,7 @@ namespace scopeone::core::internal
         {
             result.frame = std::move(displayFrame);
         }
+        result.measurements = std::move(measurements);
         return result;
     }
 
@@ -447,6 +456,28 @@ namespace scopeone::core::internal
                    : std::move(result.frame);
     }
 
+    // Splits the measurements of a pipeline result into one signal per module
+    void ImageProcessingManager::publishMeasurements(const ImageFrame& frame, const QVariantList& measurements)
+    {
+        QString moduleId;
+        QVariantList moduleMeasurements;
+        for (const QVariant& measurement : measurements)
+        {
+            QVariantMap entry = measurement.toMap();
+            const QString id = entry.take(QStringLiteral("module")).toString();
+            if (id != moduleId && !moduleMeasurements.isEmpty())
+            {
+                emit measurementsReady(frame.cameraId, moduleId, static_cast<qint64>(frame.frameIndex),
+                                       moduleMeasurements);
+                moduleMeasurements.clear();
+            }
+            moduleId = id;
+            moduleMeasurements.append(entry);
+        }
+        emit measurementsReady(frame.cameraId, moduleId, static_cast<qint64>(frame.frameIndex),
+                               moduleMeasurements);
+    }
+
     // Builds a stable key for camera specific processing state
     QString ImageProcessingManager::getCameraKey(const ImageFrame& frame) const
     {
@@ -529,6 +560,10 @@ namespace scopeone::core::internal
                     {
                         // Publish completed data before downstream display coalescing
                         emit imageProcessed(result.frame);
+                        if (!result.measurements.isEmpty())
+                        {
+                            publishMeasurements(frame, result.measurements);
+                        }
                     }
                 }
                 else

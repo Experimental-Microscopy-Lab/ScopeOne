@@ -8,6 +8,7 @@
 
 class QListWidget;
 class QStackedWidget;
+class QTableWidget;
 class QTreeWidget;
 class QComboBox;
 
@@ -32,6 +33,8 @@ namespace scopeone::ui
         void readRoles();
         void refreshLightSources();
         void editLightSource(bool existing);
+        // Takes the rows of the Limits page into the document, false when a row is not a valid range
+        bool readLimits();
         QString changes() const;
         void apply();
 
@@ -42,9 +45,10 @@ namespace scopeone::ui
         QListWidget* m_steps;
         QStackedWidget* m_pages;
         QTreeWidget* m_devices;
-        // The Core roles with the combo that picks each
+        // The roles with the combo that picks each
         QList<std::pair<QString, QComboBox*>> m_roles;
         QListWidget* m_lightSources;
+        QTableWidget* m_limits;
         bool m_reload{false};
     };
 }

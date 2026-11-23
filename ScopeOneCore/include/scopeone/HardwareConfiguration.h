@@ -16,28 +16,19 @@ namespace scopeone::core
     // A cfg file as an ordered list of lines. A line keeps its text, including its line ending and
     // trailing spaces, until it is edited, so a document that is not edited is written back byte for
     // byte. The Micro-Manager commands Device, Property, Parent, Label, ConfigGroup, ConfigPixelSize
-    // and PixelSize_um and the ScopeOne commands ScopeOneDevice, ScopeOneProperty, ScopeOneConfigGroup
-    // and ScopeOneLightSource are split into fields. Comments, blank lines and the other commands
-    // stay as they are. A new line goes after the last line of its command, or to the end of the file.
+    // and PixelSize_um and the ScopeOne commands ScopeOneDevice, ScopeOneProperty, ScopeOneConfigGroup,
+    // ScopeOneLightSource and ScopeOneLimit are split into fields. Comments, blank lines and the other
+    // commands stay as they are. A new line goes after the last line of its command, or to the end of
+    // the file.
+    // The roles are the lines of Micro-Manager's pseudo device Core. A preset setting of a ScopeOne
+    // device is a ScopeOneConfigGroup line, any other a ConfigGroup line.
     class SCOPEONE_CORE_EXPORT HardwareConfiguration
     {
     public:
-        // The command that holds a setting of a preset
-        enum class Source
-        {
-            MicroManager,
-            ScopeOne
-        };
-
-        struct PresetSetting : ConfigSetting
-        {
-            Source source{Source::MicroManager};
-        };
-
         struct Preset
         {
             QString name;
-            QList<PresetSetting> settings;
+            QList<ConfigSetting> settings;
         };
 
         struct Group
@@ -71,6 +62,19 @@ namespace scopeone::core
             QString readingProperty;
         };
 
+        // The range of a ScopeOneLimit line that Core keeps a device property in. The axes of a stage
+        // are the properties X, Y and Z in µm, and the exposure of a camera is Exposure in ms.
+        struct Limit
+        {
+            QString device;
+            QString property;
+            double min{0.0};
+            double max{0.0};
+        };
+
+        // The device whose properties are the roles: Camera, XYStage, Focus, Shutter, AutoFocus and
+        // AutoShutter
+        static QString coreDevice();
         // A value a cfg line can hold: no surrounding spaces, line breaks or NUL, and no comma unless
         // the line allows it
         static bool isValidField(const QString& value, bool allowComma = false);
@@ -80,43 +84,54 @@ namespace scopeone::core
         bool write(const QString& path, QString* errorMessage) const;
         QByteArray toByteArray() const;
 
-        // The labels of the Device lines
+        // The labels of the devices of Micro-Manager, which are edited in Micro-Manager
         QStringList microManagerDeviceLabels() const;
-        // The Property lines, including the ones of Core
-        QList<ConfigSetting> propertyLines() const;
-        // The effective Core role after System/Startup has been applied
-        QString coreRole(const QString& role) const;
-        // Whether a Core role value names a ScopeOne device or one of its subdevices
+        // The device of a role, or the value of AutoShutter, as the hardware takes it at the start
+        QString role(const QString& role) const;
+        // Whether a device label or role value names a ScopeOne device or one of its subdevices
         bool namesScopeOneDevice(const QString& value) const;
-        bool removeScopeOneCoreRoles();
         // The ScopeOne devices, a second device of a label is left out
         QList<ScopeOneDevice> scopeOneDevices() const;
         // The groups in the order of their first line, each preset with the settings of both commands
         QList<Group> configGroups() const;
         // The channels in the order of their first line
         QList<LightSource> lightSources() const;
+        // The limits in the order of their lines, the last line of a device property wins
+        QList<Limit> limits() const;
         // The ScopeOne lines that name no device to start, each as "label (reason)"
         QStringList rejectedLines() const;
 
         void addScopeOneDevice(const ScopeOneDevice& device);
-        // Removes the device with its ScopeOneProperty, ScopeOneConfigGroup and ScopeOneLightSource lines
+        // Removes the device with its ScopeOneProperty, ScopeOneConfigGroup, ScopeOneLightSource and
+        // ScopeOneLimit lines
         void removeScopeOneDevice(const QString& label);
         void setScopeOneProperty(const QString& label, const QString& name, const QString& value);
 
         void addConfigGroup(const QString& name);
         void removeConfigGroup(const QString& name);
         void renameConfigGroup(const QString& name, const QString& newName);
-        // Replaces the settings of a preset, or adds the preset. Each setting is written with the
-        // command of its source.
-        void setPreset(const QString& group, const QString& preset, const QList<PresetSetting>& settings);
+        // Replaces the settings of a preset, or adds the preset
+        void setPreset(const QString& group, const QString& preset, const QList<ConfigSetting>& settings);
         void removePreset(const QString& group, const QString& preset);
         void renamePreset(const QString& group, const QString& preset, const QString& newName);
 
         // Replaces the lines of the channel, or adds the channel
         void setLightSource(const LightSource& source);
         void removeLightSource(const QString& name);
-        // Sets the effective Core role, an empty value removes its lines
-        void setCoreRole(const QString& role, const QString& value);
+        // Replaces the line of the device property, or adds it
+        void setLimit(const Limit& limit);
+        void removeLimit(const QString& device, const QString& property);
+        // Sets the role as the hardware takes it at the start, an empty value removes its lines
+        void setRole(const QString& role, const QString& value);
+
+        // The Property lines, including the ones of Core
+        QList<ConfigSetting> propertyLines() const;
+        // Removes the role lines that name ScopeOne devices, which MMCore cannot resolve, and
+        // returns whether there were any
+        bool removeScopeOneRoles();
+        // Renames a property of a device in the Property and ConfigGroup lines, for a provider that
+        // names the property otherwise
+        void renameMicroManagerProperty(const QString& device, const QString& name, const QString& newName);
 
     private:
         enum class Kind
@@ -133,6 +148,7 @@ namespace scopeone::core
             ScopeOneProperty,
             ScopeOneConfigGroup,
             ScopeOneLightSource,
+            ScopeOneLimit,
             // A ScopeOneLightSource line of no valid form, its only field is the name for the message
             MalformedLightSource
         };

@@ -3,9 +3,11 @@
 #include <QObject>
 #include <QStringList>
 #include <QByteArray>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QFuture>
+#include <QJsonObject>
 #include <QList>
 #include <QMetaType>
 #include <QMap>
@@ -19,12 +21,16 @@
 #include <functional>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "scopeone/AcquisitionHook.h"
+#include "scopeone/CameraSettings.h"
 #include "scopeone/ExperimentDocument.h"
 #include "scopeone/DaqDevice.h"
 #include "scopeone/HardwareTypes.h"
+#include "scopeone/HardwareConfiguration.h"
 #include "scopeone/Device.h"
 #include "scopeone/ImageFrame.h"
 #include "scopeone/ProcessingTypes.h"
@@ -259,6 +265,54 @@ namespace scopeone::core
             QString reading;
         };
 
+        // A rule that Core checks on every measurement of the live processing. When a measurement
+        // of that name goes above or below the threshold, Core performs the action itself and then
+        // waits cooldownMs before the rule can fire again.
+        struct Trigger
+        {
+            enum class Compare
+            {
+                Above,
+                Below
+            };
+
+            enum class Action
+            {
+                // Records frames from the camera that measured, as the Local API record request does
+                Record,
+                // Applies preset of group, through setConfig
+                ApplyPreset,
+                // Stops the preview of the camera that measured
+                StopPreview
+            };
+
+            QString measurement;
+            // Empty for any camera
+            QString cameraId;
+            Compare compare{Compare::Above};
+            double threshold{0.0};
+            Action action{Action::Record};
+            int frames{100};
+            QString group;
+            QString preset;
+            double cooldownMs{5000.0};
+        };
+
+        using HookPoint = scopeone::core::HookPoint;
+        using HookReply = scopeone::core::HookReply;
+
+        // One change made to the microscope from outside the user interface: a Local API request
+        // (origin api), a console command (console) or a trigger action (trigger)
+        struct ActionLogEntry
+        {
+            QDateTime time;
+            QString origin;
+            QString operation;
+            QJsonObject parameters;
+            bool success{true};
+            QString error;
+        };
+
         explicit ScopeOneCore(QObject* parent = nullptr);
         ~ScopeOneCore() override;
         static QString getVersion();
@@ -276,6 +330,12 @@ namespace scopeone::core
         static bool isProcessedLayerKey(const QString& layerKey);
         static bool isToolLayerKey(const QString& layerKey);
         static bool isStaticLayerKey(const QString& layerKey);
+        static QString triggerActionName(Trigger::Action action);
+        static bool triggerActionFromName(const QString& name, Trigger::Action& action);
+        static QString hookPointName(HookPoint point);
+        static bool hookPointFromName(const QString& name, HookPoint& point);
+        // time is ISO 8601 UTC with milliseconds
+        static QJsonObject actionLogEntryToJson(const ActionLogEntry& entry);
         ImageSceneModel* imageSceneModel() const { return m_imageSceneModel; }
 
         bool loadConfiguration(const QString& configPath);
@@ -298,7 +358,7 @@ namespace scopeone::core
 
         bool startPreview(const QString& cameraIdOrAll);
         bool stopPreview(const QString& cameraIdOrAll);
-        bool setExposure(const QString& cameraIdOrAll, double exposureMs);
+        bool setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage = nullptr);
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
         bool setHalfROI(const QString& cameraId);
         bool clearROI(const QString& cameraId);
@@ -398,9 +458,14 @@ namespace scopeone::core
         // or unload.
         QList<LightSource> lightSources() const;
         bool setLightSource(const LightSource& source, QString* errorMessage = nullptr);
-        // Takes the Core roles and the light sources of the loaded cfg file again after it was edited,
-        // without restarting a device
+        // Takes the roles, the light sources and the limits of the loaded cfg file again after it
+        // was edited, without restarting a device
         bool reloadRoles(QString* errorMessage = nullptr);
+        // The ScopeOneLimit ranges of the loaded cfg. Core refuses any command that would set a
+        // limited property, exposure or stage position outside its range.
+        QList<HardwareConfiguration::Limit> limits() const;
+        // Refuses an acquisition plan that would leave a limit, before anything moves
+        bool checkPlanLimits(const ExperimentPlan& plan, QString* errorMessage = nullptr) const;
         // Reads the measured power of the light sources on the hardware thread, which also runs the
         // configuration load and unload. With settings it also reads the switch, the power setting
         // and the limits of the power.
@@ -482,13 +547,33 @@ namespace scopeone::core
                                                        const QString& cameraId);
         quint64 requestLayerStackProcessing(const QString& layerKey);
         bool cancelProcessingRequest(quint64 requestId);
+        // Replaces the triggers, or keeps them and fails when one is invalid
+        bool setTriggers(const QList<Trigger>& triggers, QString* errorMessage = nullptr);
+        QList<Trigger> triggers() const { return m_triggers; }
+        // Turns on the hook points of the experiment events; no points turns the hooks off. They
+        // apply to experiments that start afterwards. A request without a reply within timeoutMs
+        // continues with the event unchanged. Turning them off releases a waiting event.
+        void setHooks(const QList<HookPoint>& points, int timeoutMs = 5000);
+        QList<HookPoint> hooks() const;
+        int hookTimeoutMs() const;
+        // Thread safe. Answers request hookId, and is false when no event waits on it.
+        bool replyHook(quint64 hookId, const HookReply& reply);
+        // Appends to the action log, which keeps the last 10000 entries
+        void logAction(const QString& origin,
+                       const QString& operation,
+                       const QJsonObject& parameters,
+                       bool success,
+                       const QString& error = QString());
+        // The entries at or after since, all of them for an invalid since
+        QList<ActionLogEntry> actionLog(const QDateTime& since = QDateTime()) const;
 
 
         void setRecordingMaxPendingWriteBytes(qint64 bytes);
         qint64 recordingMaxPendingWriteBytes() const;
         RecordingProgress recordingProgress() const;
         RecordingWriterStatus recordingWriterStatus() const;
-        bool startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds);
+        bool startRecording(const ExperimentPlan& plan, const QStringList& activeCameraIds,
+                            QString* errorMessage = nullptr);
         void stopRecording();
         bool isRecording() const;
         bool startExperiment(const ExperimentDocument& document,
@@ -578,6 +663,20 @@ namespace scopeone::core
             const QString& message,
             bool canceled);
         void processingError(const QString& errorMessage);
+        // The measurements a processing module made on one frame of a camera
+        void measurementsReady(const QString& cameraId,
+                               const QString& moduleId,
+                               qint64 frameIndex,
+                               const QVariantList& measurements);
+        // A trigger fired on a measurement and performed its action
+        void triggerFired(int index,
+                          const QVariantMap& measurement,
+                          const QString& action,
+                          bool success,
+                          const QString& error);
+        // An experiment event waits at a hook point for replyHook. Emitted on the acquisition
+        // thread. data holds the event, and after the event also its frames.
+        void hookRequested(quint64 hookId, const QString& point, const QVariantMap& data);
         void processingModulesChanged();
         void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
@@ -638,6 +737,11 @@ namespace scopeone::core
 
      private:
         bool checkPlanHardware(const ExperimentPlan& plan, QString* errorMessage) const;
+        void handleMeasurements(const QString& cameraId,
+                                const QString& moduleId,
+                                qint64 frameIndex,
+                                const QVariantList& measurements);
+        bool runTrigger(const Trigger& trigger, const QString& cameraId, QString* errorMessage);
         struct Managers;
 
         enum class FrameGraphStream
@@ -680,15 +784,14 @@ namespace scopeone::core
         };
 
         void unloadConfigurationForShutdown();
-        void applySystemShutdownPreset();
-        bool applyLoadedConfiguration(const QString& configPath,
+        void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
         void synchronizeCameraIdsFromRegistry();
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool stopCameras);
-        // Stops the DriverHosts of the Micro-Manager cameras and ScopeOne devices on the hardware
-        // thread, as they can take a second to exit, and then calls next
+        // Stops the DriverHosts of the cameras and devices on the hardware thread, as they can take
+        // a second to exit, and then calls next
         void stopDriverHosts(std::function<void()> next, bool applyShutdown = false);
         void startConfigurationLoadTask(const QString& configPath);
         void startConfigurationLoadCleanupTask(const LoadConfigResult& result,
@@ -701,6 +804,8 @@ namespace scopeone::core
         bool finishConfigurationEdit(bool success);
         internal::ProcessingPipelineDefinition* editableDefinition(const QString& cameraId) const;
         QHash<QString, double> cameraPixelSizesUm(const QStringList& cameraIds) const;
+        QHash<QString, CameraSettings> cameraSettings(const QStringList& cameraIds,
+                                                      const QJsonObject& deviceProperties) const;
         void startConfigurationUnloadTask();
         quint64 queueStageMove(
             const QString& deviceLabel,
@@ -813,6 +918,20 @@ namespace scopeone::core
         QHash<quint64, std::shared_ptr<std::atomic_bool>> m_processingRequestCancelTokens;
         quint64 m_nextProcessingRequestId{0};
         QHash<QString, std::vector<ImageFrame>> m_layerStacks;
+        QList<Trigger> m_triggers;
+        // When each trigger last fired on m_triggerClock, or -1
+        QList<qint64> m_triggerFiredMs;
+        QElapsedTimer m_triggerClock;
+        // Counts setTriggers calls, so a trigger loop sees when an action replaced the triggers
+        quint64 m_triggerGeneration{0};
+        // Set while a trigger action runs
+        bool m_runningTrigger{false};
+        static constexpr qsizetype kActionLogSize = 10000;
+        QList<ActionLogEntry> m_actionLog;
+        // Entries ever appended, and their count when the last configuration finished loading,
+        // where the log of a recording starts
+        quint64 m_actionLogCount{0};
+        quint64 m_configLoadedLogCount{0};
     };
 }
 

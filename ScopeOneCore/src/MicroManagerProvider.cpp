@@ -12,6 +12,8 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -41,12 +43,142 @@ namespace scopeone::core::internal
 
     QList<HardwareDeviceDescriptor> MicroManagerProvider::devices() const
     {
+        QReadLocker locker(&m_camerasLock);
         return m_devices;
     }
 
+    // The runtime sets the devices on the thread that loads the configuration, and registers them
+    // on its own thread
     void MicroManagerProvider::setDevices(const QList<HardwareDeviceDescriptor>& devices)
     {
+        QWriteLocker locker(&m_camerasLock);
         m_devices = devices;
+        m_zStages.clear();
+        for (const HardwareDeviceDescriptor& device : devices)
+        {
+            if (device.kind == HardwareDeviceKind::ZStage)
+            {
+                m_zStages.insert(device.logicalId);
+            }
+        }
+    }
+
+    bool MicroManagerProvider::isZStage(const QString& deviceId) const
+    {
+        QReadLocker locker(&m_camerasLock);
+        return m_zStages.contains(deviceId.trimmed());
+    }
+
+    // Writing Position of a Z stage bypassed its Z limit, which is on the name Z, so Position is not
+    // a property above the provider
+    QString MicroManagerProvider::mmProperty(const QString& deviceId, const QString& name) const
+    {
+        const QLatin1String position(MM::g_Keyword_Position);
+        if (!isZStage(deviceId))
+        {
+            return name;
+        }
+        if (name.trimmed() == QLatin1String("Z"))
+        {
+            return position;
+        }
+        return name.trimmed() == position ? QString{} : name;
+    }
+
+    QString MicroManagerProvider::scopeOneProperty(const QString& deviceId, const QString& name) const
+    {
+        return name.trimmed() == QLatin1String(MM::g_Keyword_Position) && isZStage(deviceId)
+                   ? QStringLiteral("Z")
+                   : name;
+    }
+
+    bool MicroManagerProvider::isScopeOneRole(const QString& group, const QString& preset,
+                                              const ConfigSetting& setting) const
+    {
+        static const QStringList roles{QLatin1String(MM::g_Keyword_CoreCamera), QLatin1String(MM::g_Keyword_CoreShutter),
+                                       QLatin1String(MM::g_Keyword_CoreFocus), QLatin1String(MM::g_Keyword_CoreXYStage),
+                                       QLatin1String(MM::g_Keyword_CoreAutoFocus)};
+        if (group != QLatin1String(MM::g_CFGGroup_System) || preset != QLatin1String(MM::g_CFGGroup_System_Startup)
+            || setting.device != QLatin1String(MM::g_Keyword_CoreDevice) || !roles.contains(setting.property)
+            || setting.value.isEmpty())
+        {
+            return false;
+        }
+        QReadLocker locker(&m_camerasLock);
+        return std::none_of(m_devices.cbegin(), m_devices.cend(), [&](const HardwareDeviceDescriptor& device)
+                            { return device.logicalId == setting.value; });
+    }
+
+    QString MicroManagerProvider::role(const QString& role) const
+    {
+        return orElse(QString{}, [&]
+        {
+            return QString::fromStdString(m_core->getProperty(MM::g_Keyword_CoreDevice, name8(role).c_str()));
+        });
+    }
+
+    void MicroManagerProvider::applyRoles(const HardwareConfiguration& document)
+    {
+        // The runtime opens the shutter around the images itself, also for cameras in other
+        // DriverHosts, so AutoShutter of MMCore is off
+        QString error;
+        if (!setProperty(QLatin1String(MM::g_Keyword_CoreDevice), QLatin1String(MM::g_Keyword_CoreAutoShutter),
+                         QStringLiteral("0"), &error))
+        {
+            qWarning().noquote() << QStringLiteral("AutoShutter failed: %1").arg(error);
+        }
+        for (const char* role : {MM::g_Keyword_CoreShutter, MM::g_Keyword_CoreFocus, MM::g_Keyword_CoreXYStage,
+                                 MM::g_Keyword_CoreAutoFocus})
+        {
+            if (document.namesScopeOneDevice(document.role(QLatin1String(role))))
+            {
+                setProperty(QLatin1String(MM::g_Keyword_CoreDevice), QLatin1String(role), QString{}, nullptr);
+            }
+        }
+    }
+
+    // A role that moved to a ScopeOne device is cleared, as MMCore had kept driving the earlier
+    // Micro-Manager device beside the new one
+    bool MicroManagerProvider::setRoles(const HardwareConfiguration& document, QString* errorMessage)
+    {
+        const QStringList labels = document.microManagerDeviceLabels();
+        for (const char* role : {MM::g_Keyword_CoreCamera, MM::g_Keyword_CoreShutter, MM::g_Keyword_CoreFocus,
+                                 MM::g_Keyword_CoreXYStage, MM::g_Keyword_CoreAutoFocus})
+        {
+            const QString value = document.role(QLatin1String(role));
+            if (!setProperty(QLatin1String(MM::g_Keyword_CoreDevice), QLatin1String(role),
+                             labels.contains(value) ? value : QString{}, errorMessage))
+            {
+                return false;
+            }
+        }
+        applyRoles(document);
+        return true;
+    }
+
+    HardwareConfiguration MicroManagerProvider::readConfiguration(const QString& path, QString* errorMessage) const
+    {
+        HardwareConfiguration document = HardwareConfiguration::read(path, errorMessage);
+        QReadLocker locker(&m_camerasLock);
+        for (const QString& stage : m_zStages)
+        {
+            document.renameMicroManagerProperty(stage, QLatin1String(MM::g_Keyword_Position), QStringLiteral("Z"));
+        }
+        return document;
+    }
+
+    bool MicroManagerProvider::writeConfiguration(const HardwareConfiguration& document, const QString& path,
+                                                  QString* errorMessage) const
+    {
+        HardwareConfiguration file = document;
+        {
+            QReadLocker locker(&m_camerasLock);
+            for (const QString& stage : m_zStages)
+            {
+                file.renameMicroManagerProperty(stage, QStringLiteral("Z"), QLatin1String(MM::g_Keyword_Position));
+            }
+        }
+        return file.write(path, errorMessage);
     }
 
     QStringList MicroManagerProvider::startCameras(const QList<MicroManagerCameraSetup>& cameras)
@@ -269,10 +401,15 @@ namespace scopeone::core::internal
         {
             return provider.owner->listProperties(cameraId.trimmed());
         }
-        return orElse(QStringList{}, [&]
+        QStringList names = orElse(QStringList{}, [&]
         {
             return toQStringList(m_core->getDevicePropertyNames(name8(cameraId).c_str()));
         });
+        for (QString& name : names)
+        {
+            name = scopeOneProperty(cameraId, name);
+        }
+        return names;
     }
 
     QString MicroManagerProvider::getProperty(const QString& cameraId,
@@ -286,7 +423,7 @@ namespace scopeone::core::internal
         return orElse(QString{}, [&]
         {
             const std::string device = name8(cameraId);
-            const std::string property = name8(name);
+            const std::string property = name8(mmProperty(cameraId, name));
             return QString::fromStdString(
                 fromCache
                     ? m_core->getPropertyFromCache(device.c_str(), property.c_str())
@@ -308,10 +445,16 @@ namespace scopeone::core::internal
             }
             return ok;
         }
+        const QString property = mmProperty(cameraId, name);
+        if (property.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Unknown property %1").arg(name);
+            return false;
+        }
         return succeeds(errorMessage, [&]
         {
             const std::string device = name8(cameraId);
-            m_core->setProperty(device.c_str(), name8(name).c_str(), value.toStdString().c_str());
+            m_core->setProperty(device.c_str(), name8(property).c_str(), value.toStdString().c_str());
             m_core->waitForDevice(device.c_str());
             m_core->updateSystemStateCache();
         });
@@ -323,7 +466,7 @@ namespace scopeone::core::internal
         {
             return provider.owner->getPropertyType(cameraId.trimmed(), name);
         }
-        return micromanager::propertyType(*m_core, cameraId, name);
+        return micromanager::propertyType(*m_core, cameraId, mmProperty(cameraId, name));
     }
 
     bool MicroManagerProvider::isPropertyReadOnly(const QString& cameraId, const QString& name)
@@ -334,7 +477,7 @@ namespace scopeone::core::internal
         }
         return orElse(true, [&]
         {
-            return m_core->isPropertyReadOnly(name8(cameraId).c_str(), name8(name).c_str());
+            return m_core->isPropertyReadOnly(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str());
         });
     }
 
@@ -346,7 +489,7 @@ namespace scopeone::core::internal
         }
         return orElse(false, [&]
         {
-            return m_core->isPropertyPreInit(name8(cameraId).c_str(), name8(name).c_str());
+            return m_core->isPropertyPreInit(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str());
         });
     }
 
@@ -360,7 +503,7 @@ namespace scopeone::core::internal
         return orElse(QStringList{}, [&]
         {
             return toQStringList(
-                m_core->getAllowedPropertyValues(name8(cameraId).c_str(), name8(name).c_str()));
+                m_core->getAllowedPropertyValues(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str()));
         });
     }
 
@@ -372,7 +515,7 @@ namespace scopeone::core::internal
         }
         return orElse(false, [&]
         {
-            return m_core->hasPropertyLimits(name8(cameraId).c_str(), name8(name).c_str());
+            return m_core->hasPropertyLimits(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str());
         });
     }
 
@@ -384,7 +527,7 @@ namespace scopeone::core::internal
         }
         return orElse(0.0, [&]
         {
-            return m_core->getPropertyLowerLimit(name8(cameraId).c_str(), name8(name).c_str());
+            return m_core->getPropertyLowerLimit(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str());
         });
     }
 
@@ -396,7 +539,7 @@ namespace scopeone::core::internal
         }
         return orElse(0.0, [&]
         {
-            return m_core->getPropertyUpperLimit(name8(cameraId).c_str(), name8(name).c_str());
+            return m_core->getPropertyUpperLimit(name8(cameraId).c_str(), name8(mmProperty(cameraId, name)).c_str());
         });
     }
 
@@ -589,7 +732,7 @@ namespace scopeone::core::internal
     std::vector<scopeone::core::ConfigSetting> MicroManagerProvider::configSettings(
         const QString& groupName, const QString& configName) const
     {
-        return orElse(std::vector<scopeone::core::ConfigSetting>{}, [&]
+        std::vector<scopeone::core::ConfigSetting> settings = orElse(std::vector<scopeone::core::ConfigSetting>{}, [&]
         {
             std::vector<scopeone::core::ConfigSetting> settings;
             const Configuration preset = m_core->getConfigData(name8(groupName).c_str(),
@@ -597,12 +740,20 @@ namespace scopeone::core::internal
             for (size_t index = 0; index < preset.size(); ++index)
             {
                 const PropertySetting setting = preset.getSetting(index);
-                settings.push_back({QString::fromStdString(setting.getDeviceLabel()),
-                                    QString::fromStdString(setting.getPropertyName()),
+                const QString device = QString::fromStdString(setting.getDeviceLabel());
+                settings.push_back({device,
+                                    scopeOneProperty(device, QString::fromStdString(setting.getPropertyName())),
                                     QString::fromStdString(setting.getPropertyValue())});
             }
             return settings;
         });
+        if (groupName.trimmed() == QLatin1String(MM::g_CFGGroup_System)
+            && configName == QLatin1String(MM::g_CFGGroup_System_Startup))
+        {
+            QReadLocker locker(&m_camerasLock);
+            settings.insert(settings.end(), m_scopeOneStartupRoles.cbegin(), m_scopeOneStartupRoles.cend());
+        }
+        return settings;
     }
 
     QString MicroManagerProvider::currentConfig(const QString& groupName) const
@@ -621,7 +772,7 @@ namespace scopeone::core::internal
                 {
                     const PropertySetting setting = preset.getSetting(index);
                     const QString device = QString::fromStdString(setting.getDeviceLabel());
-                    const QString property = QString::fromStdString(setting.getPropertyName());
+                    const QString property = scopeOneProperty(device, QString::fromStdString(setting.getPropertyName()));
                     const QString key = device + QChar(0x1f) + property;
                     if (!currentValues.contains(key) && !failedProperties.contains(key))
                     {
@@ -677,7 +828,7 @@ namespace scopeone::core::internal
                 for (const PropertySetting& setting : pending)
                 {
                     const QString device = QString::fromStdString(setting.getDeviceLabel());
-                    const QString property = QString::fromStdString(setting.getPropertyName());
+                    const QString property = scopeOneProperty(device, QString::fromStdString(setting.getPropertyName()));
                     const QString value = QString::fromStdString(setting.getPropertyValue());
                     QString error;
                     if (!setProperty(device, property, value, &error))
@@ -717,6 +868,11 @@ namespace scopeone::core::internal
 
     bool MicroManagerProvider::deleteConfigGroup(const QString& groupName, QString* errorMessage)
     {
+        if (groupName.trimmed() == QLatin1String(MM::g_CFGGroup_System))
+        {
+            QWriteLocker locker(&m_camerasLock);
+            m_scopeOneStartupRoles.clear();
+        }
         return succeeds(errorMessage, [&] { m_core->deleteConfigGroup(name8(groupName).c_str()); });
     }
 
@@ -730,20 +886,48 @@ namespace scopeone::core::internal
                                             const std::vector<scopeone::core::ConfigSetting>& settings,
                                             QString* errorMessage)
     {
-        return succeeds(errorMessage, [&]
+        // Position of a Z stage became an empty property name in MMCore, a preset that failed only
+        // when it was set, so it is refused here as in setProperty
+        for (const auto& setting : settings)
+        {
+            if (mmProperty(setting.device, setting.property).isEmpty())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Unknown property %1").arg(setting.property);
+                return false;
+            }
+        }
+        std::vector<ConfigSetting> mmSettings;
+        std::vector<ConfigSetting> scopeOneRoles;
+        for (const auto& setting : settings)
+        {
+            (isScopeOneRole(groupName.trimmed(), configName, setting) ? scopeOneRoles : mmSettings).push_back(setting);
+        }
+        if (!scopeOneRoles.empty())
+        {
+            QWriteLocker locker(&m_camerasLock);
+            m_scopeOneStartupRoles = scopeOneRoles;
+        }
+        return mmSettings.empty() || succeeds(errorMessage, [&]
         {
             const std::string group = name8(groupName), config = name8(configName);
             if (!m_core->isGroupDefined(group.c_str())) m_core->defineConfigGroup(group.c_str());
             m_core->defineConfig(group.c_str(), config.c_str());
-            for (const auto& setting : settings)
+            for (const auto& setting : mmSettings)
                 m_core->defineConfig(group.c_str(), config.c_str(), name8(setting.device).c_str(),
-                                     name8(setting.property).c_str(), name8(setting.value).c_str());
+                                     name8(mmProperty(setting.device, setting.property)).c_str(),
+                                     name8(setting.value).c_str());
         });
     }
 
     bool MicroManagerProvider::deleteConfig(const QString& groupName, const QString& configName,
                                             QString* errorMessage)
     {
+        if (groupName.trimmed() == QLatin1String(MM::g_CFGGroup_System)
+            && configName.trimmed() == QLatin1String(MM::g_CFGGroup_System_Startup))
+        {
+            QWriteLocker locker(&m_camerasLock);
+            m_scopeOneStartupRoles.clear();
+        }
         return succeeds(errorMessage, [&] { m_core->deleteConfig(name8(groupName).c_str(), name8(configName).c_str()); });
     }
 
@@ -799,7 +983,7 @@ namespace scopeone::core::internal
         {
             return provider.owner->propertySequenceCapacity(deviceId.trimmed(), name);
         }
-        return micromanager::propertySequenceCapacity(*m_core, deviceId, name);
+        return micromanager::propertySequenceCapacity(*m_core, deviceId, mmProperty(deviceId, name));
     }
 
     bool MicroManagerProvider::startPropertySequence(const QString& deviceId,
@@ -811,7 +995,7 @@ namespace scopeone::core::internal
         {
             return provider.owner->startPropertySequence(deviceId.trimmed(), name, values, errorMessage);
         }
-        return micromanager::startPropertySequence(*m_core, deviceId, name, values, errorMessage);
+        return micromanager::startPropertySequence(*m_core, deviceId, mmProperty(deviceId, name), values, errorMessage);
     }
 
     void MicroManagerProvider::stopPropertySequence(const QString& deviceId, const QString& name)
@@ -821,7 +1005,7 @@ namespace scopeone::core::internal
             provider.owner->stopPropertySequence(deviceId.trimmed(), name);
             return;
         }
-        micromanager::stopPropertySequence(*m_core, deviceId, name);
+        micromanager::stopPropertySequence(*m_core, deviceId, mmProperty(deviceId, name));
     }
 
     // The pixel size configurations are on the core of ScopeOne, also for a camera in a DriverHost.

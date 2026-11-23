@@ -107,6 +107,9 @@ namespace scopeone::core::internal::driverhost
     inline const QString kKeysField = QStringLiteral("keys");
     inline const QString kCommandGetExposure = QStringLiteral("GetExposure");
     inline const QString kCommandSetExposure = QStringLiteral("SetExposure");
+    inline const QString kCommandGetBinning = QStringLiteral("GetBinning");
+    // The response has no "gain" for a camera without one
+    inline const QString kCommandGetGain = QStringLiteral("GetGain");
     inline const QString kCommandListProperties = QStringLiteral("ListProperties");
     inline const QString kCommandGetProperty = QStringLiteral("GetProperty");
     inline const QString kCommandSetProperty = QStringLiteral("SetProperty");

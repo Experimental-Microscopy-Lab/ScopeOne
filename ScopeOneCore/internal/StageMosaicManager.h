@@ -15,7 +15,10 @@ namespace scopeone::core::internal
         explicit StageMosaicManager(ScopeOneCore* core, QObject* parent = nullptr);
         ~StageMosaicManager() override;
 
-        bool start(const ScopeOneCore::StageMosaicPlan& plan, QString* errorMessage);
+        // checkOrigin gets the position the tiles start from, read once here
+        bool start(const ScopeOneCore::StageMosaicPlan& plan,
+                   const std::function<bool(double x, double y, QString* errorMessage)>& checkOrigin,
+                   QString* errorMessage);
         void cancel();
         bool isRunning() const
         {

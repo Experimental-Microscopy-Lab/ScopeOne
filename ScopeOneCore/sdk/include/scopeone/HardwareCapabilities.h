@@ -11,7 +11,7 @@ namespace scopeone::core
 {
     // XYStage and ZStage are separate devices, as in Micro-Manager, so a device without
     // peripherals is either kind after the interface it implements. Which stage, shutter or
-    // autofocus the acquisitions use are Core roles of the cfg file, not chosen by a device.
+    // autofocus the acquisitions use are roles of the cfg file, not chosen by a device.
     class SCOPEONE_SDK_EXPORT XYStage
     {
     public:

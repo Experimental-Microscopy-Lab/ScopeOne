@@ -249,7 +249,9 @@ namespace scopeone::core::internal
                 output.height = reply.value(QStringLiteral("height")).toInt();
                 output.stride = output.width * (mono16 ? 2 : 1);
                 output.bytes = m_process->read(byteCount);
-                return ProcessingResult(output);
+                ProcessingResult result(std::move(output));
+                result.measurements = reply.value(QStringLiteral("measurements")).toArray().toVariantList();
+                return result;
             }
 
             std::shared_ptr<const PythonScriptModule> m_script;

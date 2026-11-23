@@ -13,6 +13,16 @@ modules::
     def offset(image, offset, bits):
         return np.clip(image.astype(np.int32) + offset, 0, (1 << bits) - 1).astype(image.dtype)
 
+A module can also report what it measured on the frame by returning ``(array, measurements)``,
+where measurements is a list of dicts with ``name``, ``value`` and optional ``x`` and ``y`` in image
+pixels. ScopeOne sends them as the ``measurement`` event of the Local API, and the triggers of Core
+act on them::
+
+    @module("example.py.peak", "Peak")
+    def peak(image):
+        y, x = np.unravel_index(np.argmax(image), image.shape)
+        return image, [{"name": "peak", "value": float(image[y, x]), "x": int(x), "y": int(y)}]
+
 ScopeOne runs the script in its own Python process (``python -m scopeone.processing serve
 script.py``), so the interpreter that runs it needs numpy and this package.
 """
@@ -117,7 +127,9 @@ def _read_exactly(stream, count: int) -> bytes:
 
 
 def _send(stream, header: dict, payload: bytes = b"") -> None:
-    stream.write(json.dumps(header).encode() + b"\n")
+    # NaN in a measurement would write a header Core cannot parse and leave the pixel bytes unread,
+    # so it is refused here and the module reports an error instead
+    stream.write(json.dumps(header, allow_nan=False).encode() + b"\n")
     stream.write(payload)
     stream.flush()
 
@@ -142,12 +154,19 @@ def _serve() -> None:
             arguments = dict(request["parameters"])
             if selected.takes_bits:
                 arguments["bits"] = request["bits"]
-            result = np.ascontiguousarray(selected.function(image, **arguments))
+            result = selected.function(image, **arguments)
+            measurements = []
+            if isinstance(result, tuple):
+                result, measurements = result
+            result = np.ascontiguousarray(result)
             if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
                 raise TypeError("a module must return a 2D uint8 or uint16 array")
-            _send(replies, {"width": result.shape[1], "height": result.shape[0],
-                            "format": "mono16" if result.dtype == np.uint16 else "mono8",
-                            "bytes": result.nbytes}, result.tobytes())
+            header = {"width": result.shape[1], "height": result.shape[0],
+                      "format": "mono16" if result.dtype == np.uint16 else "mono8",
+                      "bytes": result.nbytes}
+            if measurements:
+                header["measurements"] = list(measurements)
+            _send(replies, header, result.tobytes())
         except Exception as error:
             _send(replies, {"error": f"{type(error).__name__}: {error}"})
 
