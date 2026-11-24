@@ -8,7 +8,7 @@ The same command works in PowerShell on Windows and in a Linux shell, and the pr
 ScopeOne(.exe) and ScopeOne_DriverHost(.exe) are found by name on both.
 The cameras come from the loaded configuration. The states are idle, preview of one
 camera, preview of all cameras, and preview of all cameras with a processing module
-on the first (or --camera) stream.
+on every stream.
 """
 import argparse, csv, os, statistics, subprocess, time
 import psutil
@@ -66,7 +66,7 @@ def sample(settle, duration, gpu_index):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--camera", help="camera for the single preview and the processing, default the first")
+    a.add_argument("--camera", help="camera for the single preview, default the first")
     a.add_argument("--module", help="processing module, default the CUDA frequency filter if present")
     a.add_argument("--settle", type=float, default=10)
     a.add_argument("--duration", type=float, default=60)
@@ -89,12 +89,13 @@ def main():
 
     def processing():
         s.add_processing_module(module, {"output_mode": 2, "min_feature_size": 2, "max_feature_size": 10})
-        s.set_realtime_processing(True, cam)
+        # an empty source sends the frames of every camera through the pipeline
+        s.set_realtime_processing(True, "")
 
     states = [("idle", [], lambda: None),
               ("preview " + cam, [cam], lambda: s.start_preview(cam)),
               ("preview all", cams, lambda: s.start_preview("All")),
-              ("preview all + " + module, cams, processing)]
+              ("preview all + " + module + " on all", cams, processing)]
     results = []
     for name, used, enter in states:
         enter()
