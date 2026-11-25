@@ -71,18 +71,18 @@ def main():
     saved = [(m["kind"], m["parameters"]) for m in state["modules"]]
 
     s.stop_preview("All")
-    s.set_realtime_processing(False)
+    s.stop_processing()
     for m in reversed(state["modules"]):
         s.remove_processing_module(m["index"])
 
     def bandpass(module):
         def enter():
-            s.set_realtime_processing(False)
+            s.stop_processing()
             for m in reversed(s.processing_modules()):
                 s.remove_processing_module(m["index"])
             s.add_processing_module(module, {"output_mode": 2, "min_feature_size": 2, "max_feature_size": 10})
             # an empty source sends the frames of every camera through the pipeline
-            s.set_realtime_processing(True, "")
+            s.start_processing("")
         return enter
 
     states = [("idle", [], lambda: None),
@@ -97,7 +97,7 @@ def main():
         results.append([name, len(used), n, f"{cpu:.1f}", f"{g:.0f}"])
         print(f"{name:30s} cpu {cpu:5.1f} %  gpu {g:4.0f} %", flush=True)
 
-    s.set_realtime_processing(False)
+    s.stop_processing()
     s.stop_preview("All")
     s.remove_processing_module(0)
     for kind, par in saved:

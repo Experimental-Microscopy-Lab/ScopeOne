@@ -285,10 +285,6 @@ class ScopeOne:
             raise RuntimeError(f"scopeone {__version__} does not match ScopeOne {app_version}, "
                                f"install it with: pip install \"scopeone=={series}.*\"")
 
-    @classmethod
-    def connect(cls, endpoint: str = "local") -> "ScopeOne":
-        return cls(endpoint)
-
     def __enter__(self):
         return self
 
@@ -1115,21 +1111,14 @@ class ScopeOne:
             }
         )
 
-    def set_realtime_processing(self, enabled: bool, camera_id: str | None = None) -> bool:
-        request = {
-            "type": "set_realtime_processing",
-            "enabled": bool(enabled),
-        }
+    def start_processing(self, camera_id: str | None = None) -> None:
+        request = {"type": "set_realtime_processing", "enabled": True}
         if camera_id is not None:
             request["cameraId"] = str(camera_id)
         self._request(request)
-        return True
-
-    def start_processing(self, camera_id: str | None = None) -> None:
-        self.set_realtime_processing(True, camera_id)
 
     def stop_processing(self) -> None:
-        self.set_realtime_processing(False)
+        self._request({"type": "set_realtime_processing", "enabled": False})
 
     def add_processing_module(
         self,

@@ -247,7 +247,6 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.processing_state()`
 - `ScopeOne.processing_modules()`
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
-- `ScopeOne.set_realtime_processing(enabled, camera_id=None)`
 - `ScopeOne.start_processing(camera_id=None)`
 - `ScopeOne.stop_processing()`
 - `ScopeOne.add_processing_module(kind, parameters=None)`
@@ -647,7 +646,6 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 ## Notes
 
 - `ScopeOne()` connects to a running ScopeOne control server over the local platform endpoint.
-- `ScopeOne.connect("local")` is an alias for the default local connection.
 - Start the ScopeOne app before using the Python API.
 - Python 3.12 or later is required.
 - Frame reads use a shared-memory export block.
