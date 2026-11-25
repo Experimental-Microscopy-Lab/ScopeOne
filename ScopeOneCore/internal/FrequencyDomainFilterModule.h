@@ -30,7 +30,8 @@ namespace scopeone::core::internal
         ProcessingResult process(const ImageFrame& frame, int processingBitDepth) override;
 
     private:
-        const cv::Mat& maskForSize(const cv::Size& size);
+        // packed gives the mask in the layout of the real DFT (CCS), else of the complex DFT
+        const cv::Mat& maskForSize(const cv::Size& size, bool packed);
         void invalidateMask();
 
         double m_minFeatureSize{2.0};
@@ -43,11 +44,12 @@ namespace scopeone::core::internal
         double m_maskMinFeatureSize{-1.0};
         double m_maskMaxFeatureSize{-1.0};
         FilterKind m_maskFilterKind{FilterKind::Smooth};
+        bool m_maskPacked{false};
         cv::Mat m_grayFloat;
         cv::Mat m_padded;
         cv::Mat m_complex;
         cv::Mat m_planes[2];
-        cv::Mat m_filteredComplex;
+        cv::Mat m_packed;
         cv::Mat m_filtered;
         cv::Mat m_spectrumMagnitude;
         cv::Mat m_shiftedSpectrum;

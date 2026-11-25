@@ -59,39 +59,63 @@ namespace scopeone::core::internal
             });
         }
 
+        // The weight of the bandpass at the frequency (fx, fy) in cycles per pixel
+        float maskValue(double fx,
+                        double fy,
+                        double minFeatureSize,
+                        double maxFeatureSize,
+                        FrequencyDomainFilterModule::FilterKind filterKind)
+        {
+            constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
+            const double radiusSquared = (kTwoPi * fx) * (kTwoPi * fx) + (kTwoPi * fy) * (kTwoPi * fy);
+            if (filterKind == FrequencyDomainFilterModule::FilterKind::Hard)
+            {
+                return radiusSquared * maxFeatureSize * maxFeatureSize > 1.0
+                           && radiusSquared * minFeatureSize * minFeatureSize < 1.0
+                       ? 1.0f
+                       : 0.0f;
+            }
+            return static_cast<float>(std::exp(-radiusSquared * minFeatureSize * minFeatureSize / 2.0)
+                                      - std::exp(-radiusSquared * maxFeatureSize * maxFeatureSize / 2.0));
+        }
+
+        // The frequency of DFT index k of n samples, in cycles per sample
+        double frequency(int k, int n)
+        {
+            return static_cast<double>(k <= n / 2 ? k : k - n) / n;
+        }
+
+        // The mask in the layout of the complex DFT, or packed like the real DFT (CCS), which keeps
+        // the real and imaginary parts of half the spectrum in one real matrix. Column 0, and the
+        // last column for an even width, hold the columns kx = 0 and kx = width / 2 with ky in
+        // pairs of rows; the other columns hold kx = (x + 1) / 2 for every row ky.
         cv::Mat buildMask(const cv::Size& size,
                           double minFeatureSize,
                           double maxFeatureSize,
-                          FrequencyDomainFilterModule::FilterKind filterKind)
+                          FrequencyDomainFilterModule::FilterKind filterKind,
+                          bool packed)
         {
-            constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
-            cv::Mat centered(size, CV_32F);
-            for (int y = 0; y < size.height; ++y)
+            cv::Mat mask(size, CV_32F);
+            parallelForImageRows(size.width, size.height, [&](int firstRow, int lastRow)
             {
-                const double fy = (static_cast<double>(y) - size.height / 2.0) / size.height;
-                float* row = centered.ptr<float>(y);
-                for (int x = 0; x < size.width; ++x)
+                for (int y = firstRow; y < lastRow; ++y)
                 {
-                    const double fx = (static_cast<double>(x) - size.width / 2.0) / size.width;
-                    const double radiusSquared = (kTwoPi * fx) * (kTwoPi * fx)
-                                                 + (kTwoPi * fy) * (kTwoPi * fy);
-                    if (filterKind == FrequencyDomainFilterModule::FilterKind::Hard)
+                    float* row = mask.ptr<float>(y);
+                    for (int x = 0; x < size.width; ++x)
                     {
-                        row[x] = radiusSquared * maxFeatureSize * maxFeatureSize > 1.0
-                                     && radiusSquared * minFeatureSize * minFeatureSize < 1.0
-                                 ? 1.0f
-                                 : 0.0f;
-                    }
-                    else
-                    {
-                        row[x] = static_cast<float>(
-                            std::exp(-radiusSquared * minFeatureSize * minFeatureSize / 2.0)
-                            - std::exp(-radiusSquared * maxFeatureSize * maxFeatureSize / 2.0));
+                        int kx = x;
+                        int ky = y;
+                        if (packed)
+                        {
+                            const bool edgeColumn = x == 0 || (size.width % 2 == 0 && x == size.width - 1);
+                            kx = edgeColumn ? (x == 0 ? 0 : size.width / 2) : (x + 1) / 2;
+                            ky = edgeColumn ? (y + 1) / 2 : y;
+                        }
+                        row[x] = maskValue(frequency(kx, size.width), frequency(ky, size.height),
+                                           minFeatureSize, maxFeatureSize, filterKind);
                     }
                 }
-            }
-            cv::Mat mask;
-            fftShift(centered, mask);
+            });
             return mask;
         }
 
@@ -112,16 +136,18 @@ namespace scopeone::core::internal
         return module;
     }
 
-    const cv::Mat& FrequencyDomainFilterModule::maskForSize(const cv::Size& size)
+    const cv::Mat& FrequencyDomainFilterModule::maskForSize(const cv::Size& size, bool packed)
     {
         if (m_mask.empty()
             || m_maskSize != size
+            || m_maskPacked != packed
             || m_maskMinFeatureSize != m_minFeatureSize
             || m_maskMaxFeatureSize != m_maxFeatureSize
             || m_maskFilterKind != m_filterKind)
         {
-            m_mask = buildMask(size, m_minFeatureSize, m_maxFeatureSize, m_filterKind);
+            m_mask = buildMask(size, m_minFeatureSize, m_maxFeatureSize, m_filterKind, packed);
             m_maskSize = size;
+            m_maskPacked = packed;
             m_maskMinFeatureSize = m_minFeatureSize;
             m_maskMaxFeatureSize = m_maxFeatureSize;
             m_maskFilterKind = m_filterKind;
@@ -157,36 +183,33 @@ namespace scopeone::core::internal
                                columns - m_grayFloat.cols,
                                cv::BORDER_CONSTANT,
                                0);
-            cv::dft(m_padded, m_complex, cv::DFT_COMPLEX_OUTPUT);
-            cv::split(m_complex, m_planes);
-
-            if (m_outputMode != OutputMode::Spectrum)
+            // The filtered image needs only the real DFT, packed half the size of the complex one,
+            // and the real, even mask multiplies the packed parts in place. The complex DFT with its
+            // split planes took twice as long and made the module slower than numpy.
+            if (m_outputMode == OutputMode::FilteredImage)
             {
-                const cv::Mat& mask = maskForSize(m_padded.size());
-                cv::multiply(m_planes[0], mask, m_planes[0]);
-                cv::multiply(m_planes[1], mask, m_planes[1]);
-            }
-
-            if (m_outputMode != OutputMode::FilteredImage)
-            {
-                cv::Mat visible = spectrum(m_planes, m_spectrumMagnitude, m_shiftedSpectrum);
-                if (visible.size() != m_grayFloat.size())
-                {
-                    const int x = (visible.cols - m_grayFloat.cols) / 2;
-                    const int y = (visible.rows - m_grayFloat.rows) / 2;
-                    visible = visible(cv::Rect(x, y, m_grayFloat.cols, m_grayFloat.rows));
-                }
+                cv::dft(m_padded, m_packed);
+                cv::multiply(m_packed, maskForSize(m_padded.size(), true), m_packed);
+                cv::dft(m_packed, m_filtered, cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
+                const cv::Mat visible = m_filtered(cv::Rect(0, 0, m_grayFloat.cols, m_grayFloat.rows));
                 return ProcessingResult(outputFrame(visible, workingFrame));
             }
 
-            cv::merge(m_planes, 2, m_filteredComplex);
-            cv::dft(m_filteredComplex,
-                    m_filtered,
-                    cv::DFT_INVERSE | cv::DFT_REAL_OUTPUT | cv::DFT_SCALE);
-            const cv::Mat visible = m_filtered(cv::Rect(0,
-                                                        0,
-                                                        m_grayFloat.cols,
-                                                        m_grayFloat.rows));
+            cv::dft(m_padded, m_complex, cv::DFT_COMPLEX_OUTPUT);
+            cv::split(m_complex, m_planes);
+            if (m_outputMode == OutputMode::FilteredSpectrum)
+            {
+                const cv::Mat& mask = maskForSize(m_padded.size(), false);
+                cv::multiply(m_planes[0], mask, m_planes[0]);
+                cv::multiply(m_planes[1], mask, m_planes[1]);
+            }
+            cv::Mat visible = spectrum(m_planes, m_spectrumMagnitude, m_shiftedSpectrum);
+            if (visible.size() != m_grayFloat.size())
+            {
+                const int x = (visible.cols - m_grayFloat.cols) / 2;
+                const int y = (visible.rows - m_grayFloat.rows) / 2;
+                visible = visible(cv::Rect(x, y, m_grayFloat.cols, m_grayFloat.rows));
+            }
             return ProcessingResult(outputFrame(visible, workingFrame));
         }
         catch (const std::exception& error)
