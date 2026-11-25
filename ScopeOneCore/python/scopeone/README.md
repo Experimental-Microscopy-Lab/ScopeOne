@@ -73,10 +73,12 @@ in it shows as the error of that pipeline step.
 
 ScopeOne first runs `python -m scopeone.processing describe script.py`, which prints one JSON
 line with the modules of the script and their parameters. While the pipeline runs, each frame is
-one request on stdin: a JSON line with `module`, `parameters`, `width`, `height`, `stride`,
-`format` (`mono8` or `mono16`), `bits` and `bytes`, followed by that many pixel bytes. The reply
-on stdout has the same form with `width`, `height`, `format`, `bytes` and, when the module
-measured something, `measurements`, or a JSON line with `error`.
+one JSON line on stdin with `module`, `parameters`, `width`, `height`, `stride`, `format`
+(`mono8` or `mono16`), `bits`, and `mapping` and `capacity`, the name and size of the shared
+memory that holds the pixels. The reply is one JSON line on stdout with `width`, `height`,
+`format`, `bytes` and, when the module measured something, `measurements`, with the result
+written to the start of the same memory, or a JSON line with `error`. A result holds at most
+twice the bytes of the frame.
 
 ## Current API
 

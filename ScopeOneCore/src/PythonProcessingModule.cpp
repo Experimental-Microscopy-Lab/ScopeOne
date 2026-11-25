@@ -1,6 +1,7 @@
 #include "internal/PythonProcessingModule.h"
 #include "scopeone/Log.h"
 
+#include "internal/DriverHostProtocol.h"
 #include "internal/ProcessingModuleRegistry.h"
 
 #include <QDebug>
@@ -8,11 +9,22 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QCoreApplication>
 #include <QProcess>
 #include <QSettings>
+#include <QSharedMemory>
 #include <QThread>
 
+#include <atomic>
+#include <cstring>
 #include <memory>
+
+#ifndef Q_OS_WIN
+#include <semaphore.h>
+// The macOS SDK declares shm_unlink only outside strict POSIX mode, so it is declared here as the
+// SDK does
+extern "C" int shm_unlink(const char* name);
+#endif
 
 namespace scopeone::core::internal
 {
@@ -145,6 +157,7 @@ namespace scopeone::core::internal
                     m_thread->quit();
                     m_thread->wait();
                 }
+                releaseFrames();
             }
 
             QString id() const override { return m_script->descriptor.id; }
@@ -189,7 +202,49 @@ namespace scopeone::core::internal
                 return ProcessingResult(ImageFrame{}, log.isEmpty() ? message : message + QLatin1Char('\n') + log);
             }
 
-            // Sends one frame and reads the frame that comes back, on the module's own thread
+            // Qt leaves a POSIX memory and the semaphore of its name in place when the creator
+            // detaches, so both are removed here
+            void releaseFrames()
+            {
+                if (!m_frames)
+                {
+                    return;
+                }
+#ifndef Q_OS_WIN
+                const QByteArray name = m_frames->nativeIpcKey().nativeKey().toLocal8Bit();
+#endif
+                m_frames.reset();
+#ifndef Q_OS_WIN
+                ::shm_unlink(name.constData());
+                ::sem_unlink(name.constData());
+#endif
+            }
+
+            // The memory the frame goes to Python in and the result comes back in. It holds twice
+            // the frame, so that a module may return a 16-bit result of an 8-bit frame.
+            bool reserveFrames(qsizetype frameBytes)
+            {
+                if (m_frames && m_frames->size() >= 2 * frameBytes)
+                {
+                    return true;
+                }
+                releaseFrames();
+                static std::atomic<quint64> counter{0};
+                const QString key = QStringLiteral("so.py.%1.%2")
+                                        .arg(QCoreApplication::applicationPid())
+                                        .arg(counter++);
+                m_frames = std::make_unique<QSharedMemory>(driverhost::sharedMemoryNativeKey(key));
+                if (!m_frames->create(2 * frameBytes))
+                {
+                    m_frames.reset();
+                    return false;
+                }
+                return true;
+            }
+
+            // Sends one frame and reads the frame that comes back, on the module's own thread. The
+            // pipe carries only the JSON lines and the pixels go through shared memory, as sending
+            // them through the pipe took most of the time of a frame.
             ProcessingResult exchange(const ImageFrame& frame)
             {
                 if (!m_process)
@@ -203,6 +258,12 @@ namespace scopeone::core::internal
                     }
                 }
 
+                if (!reserveFrames(frame.bytes.size()))
+                {
+                    return failure(QStringLiteral("Could not create the shared memory of Python module %1").arg(id()));
+                }
+                std::memcpy(m_frames->data(), frame.bytes.constData(), frame.bytes.size());
+
                 const QJsonObject request{
                     {QStringLiteral("module"), m_script->descriptor.id},
                     {QStringLiteral("width"), frame.width},
@@ -211,9 +272,9 @@ namespace scopeone::core::internal
                     {QStringLiteral("format"), frame.isMono16() ? QStringLiteral("mono16") : QStringLiteral("mono8")},
                     {QStringLiteral("bits"), frame.isMono16() ? frame.bitsPerSample : 8},
                     {QStringLiteral("parameters"), QJsonObject::fromVariantMap(m_parameters)},
-                    {QStringLiteral("bytes"), static_cast<qint64>(frame.bytes.size())}};
+                    {QStringLiteral("mapping"), m_frames->nativeIpcKey().nativeKey()},
+                    {QStringLiteral("capacity"), static_cast<qint64>(m_frames->size())}};
                 m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
-                m_process->write(frame.bytes);
 
                 while (!m_process->canReadLine())
                 {
@@ -235,14 +296,6 @@ namespace scopeone::core::internal
                 }
 
                 const qint64 byteCount = reply.value(QStringLiteral("bytes")).toInteger();
-                while (m_process->bytesAvailable() < byteCount)
-                {
-                    if (!m_process->waitForReadyRead(30000))
-                    {
-                        return failure(QStringLiteral("Python module %1 stopped answering").arg(id()));
-                    }
-                }
-
                 ImageFrame output = frame;
                 const bool mono16 = reply.value(QStringLiteral("format")).toString() == QStringLiteral("mono16");
                 output.pixelFormat = mono16 ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
@@ -250,7 +303,7 @@ namespace scopeone::core::internal
                 output.width = reply.value(QStringLiteral("width")).toInt();
                 output.height = reply.value(QStringLiteral("height")).toInt();
                 output.stride = output.width * (mono16 ? 2 : 1);
-                output.bytes = m_process->read(byteCount);
+                output.bytes = QByteArray(static_cast<const char*>(m_frames->constData()), byteCount);
                 ProcessingResult result(std::move(output));
                 result.measurements = reply.value(QStringLiteral("measurements")).toArray().toVariantList();
                 return result;
@@ -261,6 +314,7 @@ namespace scopeone::core::internal
             std::unique_ptr<QThread> m_thread;
             std::unique_ptr<QObject> m_threadContext;
             std::unique_ptr<QProcess> m_process;
+            std::unique_ptr<QSharedMemory> m_frames;
         };
     }
 

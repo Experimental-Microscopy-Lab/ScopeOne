@@ -32,6 +32,8 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import mmap
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -116,40 +118,47 @@ def _describe() -> None:
     sys.stdout.flush()
 
 
-def _read_exactly(stream, count: int) -> bytes:
-    data = bytearray()
-    while len(data) < count:
-        chunk = stream.read(count - len(data))
-        if not chunk:
-            raise EOFError
-        data.extend(chunk)
-    return bytes(data)
+# The shared memory Core creates for the frames of a module
+def _open_frames(name: str, size: int) -> mmap.mmap:
+    if sys.platform == "win32":
+        return mmap.mmap(-1, size, tagname=name)
+    import _posixshmem
+
+    fd = _posixshmem.shm_open(name, os.O_RDWR, mode=0o600)
+    try:
+        return mmap.mmap(fd, size)
+    finally:
+        os.close(fd)
 
 
-def _send(stream, header: dict, payload: bytes = b"") -> None:
-    # NaN in a measurement would write a header Core cannot parse and leave the pixel bytes unread,
-    # so it is refused here and the module reports an error instead
+def _send(stream, header: dict) -> None:
+    # NaN in a measurement would write a header Core cannot parse, so it is refused here and the
+    # module reports an error instead
     stream.write(json.dumps(header, allow_nan=False).encode() + b"\n")
-    stream.write(payload)
     stream.flush()
 
 
-# One frame per request: a JSON header line, then the pixel bytes, and the same back
+# One frame per request: a JSON line with the frame in the shared memory it names, and a JSON line
+# back with the result in the same memory
 def _serve() -> None:
     requests = sys.stdin.buffer
     replies = sys.stdout.buffer
     # Anything the module prints goes to stderr, so it cannot break the frame stream
     sys.stdout = sys.stderr
+    name = None
     while True:
         line = requests.readline()
         if not line:
             return
         request = json.loads(line)
-        payload = _read_exactly(requests, request["bytes"])
+        if request["mapping"] != name:
+            name = request["mapping"]
+            frames = _open_frames(name, request["capacity"])
         try:
             dtype = np.uint16 if request["format"] == "mono16" else np.uint8
-            rows = np.frombuffer(payload, dtype=dtype).reshape(request["height"], request["stride"] // dtype().itemsize)
-            image = rows[:, : request["width"]]
+            rows = np.ndarray((request["height"], request["stride"] // dtype().itemsize), dtype, frames)
+            # A copy, as a module may keep the frame and the next frame overwrites the memory
+            image = rows[:, : request["width"]].copy()
             selected = _modules[request["module"]]
             arguments = dict(request["parameters"])
             if selected.takes_bits:
@@ -158,15 +167,19 @@ def _serve() -> None:
             measurements = []
             if isinstance(result, tuple):
                 result, measurements = result
-            result = np.ascontiguousarray(result)
+            result = np.asarray(result)
             if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
                 raise TypeError("a module must return a 2D uint8 or uint16 array")
+            # The memory only grows, so it is not the limit itself, which then depended on earlier frames
+            if result.nbytes > 2 * request["height"] * request["stride"]:
+                raise ValueError("a module must return at most twice the bytes of the frame")
+            np.ndarray(result.shape, result.dtype, frames)[...] = result
             header = {"width": result.shape[1], "height": result.shape[0],
                       "format": "mono16" if result.dtype == np.uint16 else "mono8",
                       "bytes": result.nbytes}
             if measurements:
                 header["measurements"] = list(measurements)
-            _send(replies, header, result.tobytes())
+            _send(replies, header)
         except Exception as error:
             _send(replies, {"error": f"{type(error).__name__}: {error}"})
 
