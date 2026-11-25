@@ -21,6 +21,7 @@ import numpy as np
 
 from ._shm import (MONO16, SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header,
                    write_ndarray_to_frame)
+from . import __version__
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -311,7 +312,14 @@ class ScopeOne:
         self._events = deque(maxlen=10000)
         # The events this connection is subscribed to, as the last subscribe or unsubscribe returned
         self._subscribed = []
-        self._request({"type": "ping"})
+        app_version = str(self._request({"type": "ping"}).get("version", ""))
+        # The Local API changes between minor versions, so a client of another MAJOR.MINOR is refused
+        # here instead of failing on some later request
+        if app_version.split(".")[:2] != __version__.split(".")[:2]:
+            self._transport.close()
+            series = ".".join(app_version.split(".")[:2])
+            raise RuntimeError(f"scopeone {__version__} does not match ScopeOne {app_version}, "
+                               f"install it with: pip install \"scopeone=={series}.*\"")
 
     @classmethod
     def connect(cls, endpoint: str = "local") -> "ScopeOne":
@@ -760,6 +768,48 @@ class ScopeOne:
             }
         )
         return str(response.get("config", ""))
+
+    def set_config_preset(self, group: str, preset: str, settings: list[dict]) -> None:
+        """Create or replace preset of group in the loaded configuration. Each setting is a dict
+        with "device", "property" and "value"."""
+        self._request({"type": "set_config_preset", "group": group, "preset": preset,
+                       "settings": list(settings)})
+
+    def remove_config_preset(self, group: str, preset: str) -> None:
+        self._request({"type": "remove_config_preset", "group": group, "preset": preset})
+
+    def light_sources(self) -> list[dict]:
+        response = self._request({"type": "light_sources"})
+        return list(response.get("sources", []))
+
+    def set_light_source(
+        self,
+        name: str,
+        power_device: str,
+        power_property: str,
+        enable_device: str = "",
+        enable_property: str = "",
+        on_value: str = "",
+        off_value: str = "",
+        reading_device: str = "",
+        reading_property: str = "",
+    ) -> None:
+        """Add or replace the light source name in the loaded configuration. The enable property
+        switches it with on_value and off_value, the reading property reports the measured power."""
+        self._request(
+            {
+                "type": "set_light_source",
+                "name": name,
+                "powerDevice": power_device,
+                "powerProperty": power_property,
+                "enableDevice": enable_device,
+                "enableProperty": enable_property,
+                "onValue": on_value,
+                "offValue": off_value,
+                "readingDevice": reading_device,
+                "readingProperty": reading_property,
+            }
+        )
 
     def remove_static_layer(self, layer_key: str) -> None:
         self._request({"type": "remove_static_layer", "layerKey": layer_key})

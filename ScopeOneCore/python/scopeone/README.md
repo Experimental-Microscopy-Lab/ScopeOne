@@ -4,32 +4,26 @@ Python client for ScopeOne's language-neutral Local API. It controls a running S
 
 ## Installation
 
-Requires Python 3.10 or later and a running ScopeOne desktop application.
-
-Create and activate an isolated Conda environment:
+Python 3.12 or later.
 
 ```powershell
-conda create -n ScopeOne python=3.12
-conda activate ScopeOne
+pip install scopeone
 ```
 
-Install from this source checkout:
-
-```powershell
-cd ScopeOneCore\python\scopeone
-python -m pip install -e .
-```
-
-For a regular, non-editable installation, use:
-
-```powershell
-python -m pip install .
-```
-
-`pip` installs the required `numpy` and `pywin32` dependencies automatically on Windows. Verify the connection after ScopeOne is running:
+Start ScopeOne, then check the connection:
 
 ```powershell
 python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
+```
+
+### From source
+
+For changing the client. `requirements.txt` fixes the versions of numpy and pywin32.
+
+```powershell
+cd ScopeOneCore\python\scopeone
+pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Project layout
@@ -211,6 +205,10 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.configs(group)`
 - `ScopeOne.current_config(group)`
 - `ScopeOne.set_config(group, config)`
+- `ScopeOne.set_config_preset(group, preset, settings)`
+- `ScopeOne.remove_config_preset(group, preset)`
+- `ScopeOne.light_sources()`
+- `ScopeOne.set_light_source(name, power_device, power_property, enable_device="", enable_property="", on_value="", off_value="", reading_device="", reading_property="")`
 - `ScopeOne.remove_static_layer(layer_key)`
 - `ScopeOne.clear_static_layers()`
 - `ScopeOne.create_line_markup(layer_key, x1, y1, x2, y2, label="", role="generic")`
@@ -503,6 +501,10 @@ and the [action log](#action-log) instead, which say the same in fields.
 - `configs`: fields `group`; response `configs`.
 - `current_config`: fields `group`; response `config`.
 - `set_config`: fields `group`, `config`; response `config`.
+- `set_config_preset`: fields `group`, `preset`, `settings` as a list of `device`, `property` and `value`; creates or replaces the preset in the loaded configuration.
+- `remove_config_preset`: fields `group`, `preset`.
+- `light_sources`: response `sources`, each with `name`, `enableDevice`, `enableProperty`, `onValue`, `offValue`, `powerDevice`, `powerProperty`, `readingDevice`, `readingProperty`.
+- `set_light_source`: the fields of one source in `light_sources`; `name`, `powerDevice` and `powerProperty` are required, the enable and reading properties are optional and the enable property needs different `onValue` and `offValue`. Adds or replaces the source of that name.
 - `remove_static_layer`: fields `layerKey`.
 - `clear_static_layers`: remove all static preview layers.
 - `create_line_markup`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`, optional `label` and `role`; response `markupId`.
@@ -652,7 +654,7 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 - `ScopeOne()` connects to a running ScopeOne control server over the local platform endpoint.
 - `ScopeOne.connect("local")` is an alias for the default local connection.
 - Start the ScopeOne app before using the Python API.
-- Python 3.10 or later is required.
+- Python 3.12 or later is required.
 - Frame reads use a shared-memory export block.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
 - Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_raw_stream_process.py` for live frames, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, and for the iSCAT Landing scene of the example camera `example_landing.py`, which records when a particle lands, and `processing_landing.py`, the same detection as a module whose measurement a trigger acts on.

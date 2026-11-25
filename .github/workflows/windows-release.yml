@@ -144,9 +144,49 @@ jobs:
           compression-level: 0
           retention-days: ${{ inputs.publish && 1 || 7 }}
 
+  # Before the GitHub release, as the package job refuses a version whose release exists and a failed
+  # PyPI upload after the release could then never be run again for that version
+  pypi:
+    name: Publish Python client
+    needs: package
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      # The system Python of the runner refuses pip installs (PEP 668)
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The client carries the full version of the app it ships with, and the license of the repository
+      - name: Build package
+        shell: bash
+        working-directory: ScopeOneCore/python/scopeone
+        run: |
+          version=$(cmake -DSCOPEONE_ROOT="$GITHUB_WORKSPACE" -P "$GITHUB_WORKSPACE/ScopeOneCore/cmake/ScopeOneVersion.cmake")
+          sed -i -E "s/^__version__ = \".*\"/__version__ = \"$version\"/" src/scopeone/__init__.py
+          cp "$GITHUB_WORKSPACE/LICENSE" .
+          python -m pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ScopeOneCore/python/scopeone/dist
+          # A rerun after a failed GitHub release finds the files of this version already on PyPI
+          skip-existing: true
+
   release:
     name: Publish release
-    needs: package
+    needs: pypi
     if: inputs.publish
     runs-on: ubuntu-24.04
 

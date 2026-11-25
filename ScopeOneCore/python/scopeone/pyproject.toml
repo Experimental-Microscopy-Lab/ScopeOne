@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "scopeone"
-version = "0.1.0"
+dynamic = ["version"]
 description = "External Python API for ScopeOne"
 readme = "README.md"
-requires-python = ">=3.10"
-license = {text = "MIT"}
+requires-python = ">=3.12"
+license = "BSD-3-Clause"
 authors = [
     {name = "Tianyi Zhao"}
 ]
@@ -16,17 +16,20 @@ keywords = ["microscopy", "camera", "acquisition"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
 ]
 
 dependencies = [
-    "numpy>=1.24",
+    "numpy>=1.26",
     "pywin32>=306; platform_system == 'Windows'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Experimental-Microscopy-Lab/ScopeOne"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -34,3 +37,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["scopeone*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "scopeone.__version__"}
