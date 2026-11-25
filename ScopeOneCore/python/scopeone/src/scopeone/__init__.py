@@ -8,11 +8,10 @@
 # version of the app here, and the client refuses an app of another MAJOR.MINOR.
 __version__ = "1.5"
 
-from .client import ExperimentSession, FrameResult, RecordingSession, ScopeOne
+from .client import Frame, RecordingSession, ScopeOne
 
 __all__ = [
-    "ExperimentSession",
-    "FrameResult",
+    "Frame",
     "RecordingSession",
     "ScopeOne",
     "__version__",

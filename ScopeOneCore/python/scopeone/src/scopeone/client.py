@@ -14,14 +14,10 @@ import os
 import struct
 import time
 from collections import deque
-from contextlib import contextmanager
 from dataclasses import dataclass
 
-import numpy as np
-
-from ._shm import (MONO16, SHARED_FRAME_HEADER_SIZE, frame_to_ndarray, parse_frame_header,
-                   write_ndarray_to_frame)
 from . import __version__
+from ._shm import frame_to_ndarray, parse_frame_header, write_ndarray_to_frame
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -169,10 +165,12 @@ class _UnixSocketTransport:
         return bool(readable)
 
     def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
-        # The server publishes the frame as a POSIX shm object; it appears at
-        # /dev/shm/<name>. mapping_name is the bare object name.
-        path = mapping_name if os.path.isabs(mapping_name) else f"/dev/shm/{mapping_name}"
-        fd = os.open(path, os.O_RDWR if write else os.O_RDONLY)
+        # The server publishes the frame as a POSIX shm object. It was opened as /dev/shm/<name>,
+        # which exists only on Linux, so macOS could not read any frame.
+        import _posixshmem
+
+        name = mapping_name if mapping_name.startswith("/") else f"/{mapping_name}"
+        fd = _posixshmem.shm_open(name, os.O_RDWR if write else os.O_RDONLY, mode=0o600)
         try:
             prot = mmap.PROT_READ | (mmap.PROT_WRITE if write else 0)
             return mmap.mmap(fd, mapping_size, prot=prot)
@@ -191,22 +189,10 @@ def _make_transport(server_name: str):
     return _UnixSocketTransport(server_name)
 
 
-# The shared frame as a memoryview, released before the mapping closes
-@contextmanager
-def _open_mapping(transport, mapping_name: str, mapping_size: int, write: bool = False):
-    with transport.open_frame(mapping_name, mapping_size, write=write) as view:
-        mapping = memoryview(view)
-        try:
-            yield mapping
-        finally:
-            mapping.release()
-
-
 @dataclass
-class FrameResult:
+class Frame:
     image: object
     metadata: dict
-    _transport: object
 
     @property
     def camera(self) -> str:
@@ -262,32 +248,6 @@ class FrameResult:
         value = self.metadata.get("startModuleIndex")
         return None if value is None else int(value)
 
-    def write(self, image: object | None = None) -> None:
-        """Writes an edited image back into the shared frame this result came from"""
-        with _open_mapping(self._transport, str(self.metadata["mappingName"]),
-                           int(self.metadata["mappingSize"]), write=True) as mapping:
-            header = parse_frame_header(mapping)
-            # Another request reuses the one shared frame, so check it is still this one
-            if header.frame_index != self.frame_index or header.timestamp_ns != self.timestamp_ns:
-                raise RuntimeError("Shared frame mapping no longer contains this FrameResult")
-            array = np.asarray(self.image if image is None else image)
-            if array.shape != (header.height, header.width):
-                raise ValueError("Edited frame shape does not match the shared frame")
-            dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
-            contiguous = np.ascontiguousarray(
-                np.clip(array, 0, (1 << header.bits_per_sample) - 1).astype(dtype, copy=False))
-            row_bytes = header.width * contiguous.dtype.itemsize
-            struct.pack_into("<I", mapping, 0, 1)
-            payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + header.payload_nbytes]
-            try:
-                for row in range(header.height):
-                    begin = row * header.stride
-                    payload[begin:begin + row_bytes] = contiguous[row].tobytes()
-            finally:
-                payload.release()
-            struct.pack_into("<I", mapping, 0, 2)
-        self.image = contiguous
-
 
 def _add_stage_fields(
     request: dict,
@@ -312,6 +272,10 @@ class ScopeOne:
         self._events = deque(maxlen=10000)
         # The events this connection is subscribed to, as the last subscribe or unsubscribe returned
         self._subscribed = []
+        # The shared frame mapping, opened on first use and kept for the connection, as mapping it
+        # again for every frame cost more in page faults than copying the frame
+        self._mmap = None
+        self._mapping = None
         app_version = str(self._request({"type": "ping"}).get("version", ""))
         # The Local API changes between minor versions, so a client of another MAJOR.MINOR is refused
         # here instead of failing on some later request
@@ -1331,7 +1295,7 @@ class ScopeOne:
                 "document": dict(document),
             }
         )
-        return ExperimentSession(self, str(response["experimentId"]))
+        return RecordingSession(self, str(response["experimentId"]))
 
     def experiment_status(self, experiment_id: str) -> dict:
         response = self._request(
@@ -1377,7 +1341,7 @@ class ScopeOne:
         response = self._request(request)
         return RecordingSession(self, str(response["sessionId"]))
 
-    def frame_mapping_info(self) -> dict:
+    def _frame_mapping_info(self) -> dict:
         response = self._request({"type": "frame_mapping_info"})
         return {
             "mappingName": str(response["mappingName"]),
@@ -1387,38 +1351,36 @@ class ScopeOne:
             "pixelFormats": list(response.get("pixelFormats", [])),
         }
 
-    def write_frame_mapping(
+    def _write_frame_mapping(
         self,
         image: object,
         camera: str = "python",
         bits_per_sample: int | None = None,
         frame_index: int = 0,
         source_roi: tuple[int, int, int, int] | None = None,
-    ) -> FrameResult:
-        info = self.frame_mapping_info()
-        with _open_mapping(self._transport, info["mappingName"], info["mappingSize"], write=True) as mapping:
-            written, metadata = write_ndarray_to_frame(
-                mapping,
-                image,
-                bits_per_sample=bits_per_sample,
-                frame_index=frame_index,
-                source_roi=source_roi,
-            )
+    ) -> Frame:
+        written, metadata = write_ndarray_to_frame(
+            self._frame_mapping(),
+            image,
+            bits_per_sample=bits_per_sample,
+            frame_index=frame_index,
+            source_roi=source_roi,
+        )
         metadata.update(
             {
                 "camera": camera,
-                "mappingName": info["mappingName"],
-                "mappingSize": info["mappingSize"],
+                "mappingName": self._mapping_name,
+                "mappingSize": len(self._mapping),
             }
         )
-        return FrameResult(image=written, metadata=metadata, _transport=self._transport)
+        return Frame(image=written, metadata=metadata)
 
-    def process_frame_mapping(
+    def _process_frame_mapping(
         self,
         camera: str | None = None,
         start_module_index: int | None = None,
         end_module_index: int | None = None,
-    ) -> FrameResult:
+    ) -> Frame:
         request = {"type": "process_frame_mapping"}
         if camera:
             request["camera"] = camera
@@ -1433,15 +1395,15 @@ class ScopeOne:
         bits_per_sample: int | None = None,
         start_module_index: int | None = None,
         end_module_index: int | None = None,
-    ) -> FrameResult:
-        frame = self.write_frame_mapping(image, camera, bits_per_sample)
-        return self.process_frame_mapping(
+    ) -> Frame:
+        frame = self._write_frame_mapping(image, camera, bits_per_sample)
+        return self._process_frame_mapping(
             frame.camera,
             start_module_index,
             end_module_index,
         )
 
-    def latest_raw_frame(self, camera: str) -> FrameResult:
+    def latest_raw_frame(self, camera: str) -> Frame:
         response = self._request(
             {
                 "type": "latest_raw_frame",
@@ -1450,7 +1412,7 @@ class ScopeOne:
         )
         return self._frame_result_from_mapping_response(response)
 
-    def layer_frame(self, layer_key: str) -> FrameResult:
+    def layer_frame(self, layer_key: str) -> Frame:
         response = self._request(
             {
                 "type": "layer_frame",
@@ -1459,7 +1421,7 @@ class ScopeOne:
         )
         return self._frame_result_from_mapping_response(response)
 
-    def show_frame_mapping_as_layer(
+    def _show_frame_mapping(
         self,
         layer_id: str = "python_result",
         name: str = "Python Result",
@@ -1483,10 +1445,10 @@ class ScopeOne:
         camera: str = "python",
         bits_per_sample: int | None = None,
     ) -> str:
-        frame = self.write_frame_mapping(image, camera, bits_per_sample)
-        return self.show_frame_mapping_as_layer(layer_id, name, frame.camera)
+        frame = self._write_frame_mapping(image, camera, bits_per_sample)
+        return self._show_frame_mapping(layer_id, name, frame.camera)
 
-    def save_frame_mapping(
+    def _save_frame_mapping(
         self,
         save_dir: str,
         base_name: str,
@@ -1519,8 +1481,8 @@ class ScopeOne:
         camera: str = "python",
         bits_per_sample: int | None = None,
     ) -> list[str]:
-        frame = self.write_frame_mapping(image, camera, bits_per_sample)
-        return self.save_frame_mapping(
+        frame = self._write_frame_mapping(image, camera, bits_per_sample)
+        return self._save_frame_mapping(
             save_dir,
             base_name,
             format,
@@ -1529,28 +1491,28 @@ class ScopeOne:
             frame.camera,
         )
 
-    def continue_pipeline(self, frame: FrameResult, image: object | None = None) -> FrameResult:
+    def continue_pipeline(self, frame: Frame, image: object | None = None) -> Frame:
         if frame.next_module_index is None:
-            raise ValueError("FrameResult has no next_module_index")
-        frame.write(image)
-        return self.process_frame_mapping(
+            raise ValueError("The frame has no next_module_index")
+        self._write_frame(frame, image)
+        return self._process_frame_mapping(
             frame.camera or None,
             start_module_index=frame.next_module_index,
         )
 
     def show_frame(
         self,
-        frame: FrameResult,
+        frame: Frame,
         image: object | None = None,
         layer_id: str = "python_result",
         name: str = "Python Result",
     ):
-        frame.write(image)
-        return self.show_frame_mapping_as_layer(layer_id, name, frame.camera or None)
+        self._write_frame(frame, image)
+        return self._show_frame_mapping(layer_id, name, frame.camera or None)
 
     def save_frame(
         self,
-        frame: FrameResult,
+        frame: Frame,
         save_dir: str,
         base_name: str,
         image: object | None = None,
@@ -1558,8 +1520,8 @@ class ScopeOne:
         compression: bool = False,
         compression_level: int = 6,
     ) -> list[str]:
-        frame.write(image)
-        return self.save_frame_mapping(
+        self._write_frame(frame, image)
+        return self._save_frame_mapping(
             save_dir,
             base_name,
             format,
@@ -1568,8 +1530,32 @@ class ScopeOne:
             frame.camera or None,
         )
 
+    # Puts image, or the frame's own image, into the shared frame with the metadata of the frame
+    def _write_frame(self, frame: Frame, image: object | None = None) -> None:
+        frame.image, _ = write_ndarray_to_frame(
+            self._frame_mapping(),
+            frame.image if image is None else image,
+            bits_per_sample=frame.bits_per_sample,
+            frame_index=frame.frame_index,
+            timestamp_ns=frame.timestamp_ns,
+            source_roi=frame.source_roi,
+        )
+
     def close(self) -> None:
+        if self._mapping is not None:
+            self._mapping.release()
+            self._mmap.close()
+            self._mapping = None
+            self._mmap = None
         self._transport.close()
+
+    def _frame_mapping(self) -> memoryview:
+        if self._mapping is None:
+            info = self._frame_mapping_info()
+            self._mmap = self._transport.open_frame(info["mappingName"], info["mappingSize"], write=True)
+            self._mapping = memoryview(self._mmap)
+            self._mapping_name = info["mappingName"]
+        return self._mapping
 
     def _request(self, message: dict):
         request = dict(message)
@@ -1623,55 +1609,41 @@ class ScopeOne:
             result["writer"] = dict(response["writer"])
         return result
 
-    def _frame_result_from_mapping_response(self, response: dict) -> FrameResult:
-        with _open_mapping(self._transport, str(response["mappingName"]), int(response["mappingSize"])) as mapping:
-            image = frame_to_ndarray(parse_frame_header(mapping), mapping)
-        return FrameResult(image=image, metadata=dict(response), _transport=self._transport)
+    def _frame_result_from_mapping_response(self, response: dict) -> Frame:
+        mapping = self._frame_mapping()
+        image = frame_to_ndarray(parse_frame_header(mapping), mapping)
+        return Frame(image=image, metadata=dict(response))
 
 
-class ExperimentSession:
-    def __init__(self, client: ScopeOne, experiment_id: str) -> None:
-        self._client = client
-        self._experiment_id = experiment_id
-
-    def experiment_id(self) -> str:
-        return self._experiment_id
-
-    def status(self) -> dict:
-        return self._client.experiment_status(self._experiment_id)
-
-    def document(self) -> dict:
-        return dict(self.status()["document"])
-
-    def cancel(self) -> dict:
-        return self._client.cancel_experiment(self._experiment_id)
-
-    def close(self) -> None:
-        status = self.status()
-        session_id = status.get("sessionId")
-        if session_id:
-            self._client._request(
-                {
-                    "type": "session_close",
-                    "sessionId": session_id,
-                }
-            )
-
-
+# An experiment, which record also starts, and the frames it recorded in memory. Core keeps both
+# under the experiment id.
 class RecordingSession:
     def __init__(self, client: ScopeOne, session_id: str) -> None:
         self._client = client
         self._session_id = session_id
 
+    def experiment_id(self) -> str:
+        return self._session_id
+
+    def status(self) -> dict:
+        return self._client.experiment_status(self._session_id)
+
+    def document(self) -> dict:
+        return dict(self.status()["document"])
+
+    def cancel(self) -> dict:
+        return self._client.cancel_experiment(self._session_id)
+
+    # An experiment that streamed to disk has no frames in memory to release
     def close(self) -> None:
-        if self._session_id:
+        if self._session_id and "sessionId" in self.status():
             self._client._request(
                 {
                     "type": "session_close",
                     "sessionId": self._session_id,
                 }
             )
-            self._session_id = ""
+        self._session_id = ""
 
     def __enter__(self):
         return self
@@ -1696,7 +1668,7 @@ class RecordingSession:
             return int(info.get("frameCounts", {}).get(camera, 0))
         return int(info.get("frameCount", 0))
 
-    def frame(self, camera: str, index: int) -> FrameResult:
+    def frame(self, camera: str, index: int) -> Frame:
         response = self._client._request(
             {
                 "type": "session_frame",
@@ -1713,7 +1685,7 @@ class RecordingSession:
         index: int,
         start_module_index: int | None = None,
         end_module_index: int | None = None,
-    ) -> FrameResult:
+    ) -> Frame:
         request = {
             "type": "session_process_frame",
             "sessionId": self._session_id,
@@ -1724,7 +1696,7 @@ class RecordingSession:
         response = self._client._request(request)
         return self._client._frame_result_from_mapping_response(response)
 
-    def frames(self, camera: str) -> list[FrameResult]:
+    def frames(self, camera: str) -> list[Frame]:
         return [self.frame(camera, index) for index in range(self.frame_count(camera))]
 
     def save(

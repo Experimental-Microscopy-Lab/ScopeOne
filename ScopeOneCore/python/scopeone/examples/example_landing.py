@@ -1,73 +1,72 @@
-"""Record when a particle lands, with the detection in a plain script.
+"""Record every particle landing and save it, with the detection in the pipeline.
 
-Load a configuration with the example camera first. The script shows the camera its iSCAT
-Landing scene, runs iSCAT Processing in DRA mode on the live frames, looks at the DRA image for
-a new dark spot and records 200 frames when one appears. processing_landing.py does the same
-detection inside the pipeline, where a Core trigger acts on every frame.
+Copy processing_landing.py into processing/python/ beside ScopeOne, start ScopeOne and load a
+configuration with the example camera first. The script shows the camera its iSCAT Landing scene
+and builds the pipeline: iSCAT Processing in DRA mode, then the Landing module, which measures
+every frame. A Core trigger records 200 frames when a landing crosses the threshold, starting with
+the frames from before it. The script only waits for the recordings and saves each one.
 """
 
-import time
 from pathlib import Path
 
-import numpy as np
-
-from scopeone import ScopeOne
+from scopeone import RecordingSession, ScopeOne
 
 
 GAIN = 20.0
-SIGMA = 1.7
 THRESHOLD = 0.008
 SAVE_DIR = str(Path.home())
 
 
-def find_landing(image):
-    """The contrast of the deepest dark spot of a DRA image, as a positive number, and where it is."""
-    contrast = (image.astype(np.float32) - 32768.0) / (GAIN * 32768.0)
-    fy = np.fft.fftfreq(contrast.shape[0])[:, None]
-    fx = np.fft.rfftfreq(contrast.shape[1])[None, :]
-    kernel = np.exp(-2.0 * (np.pi * SIGMA) ** 2 * (fx * fx + fy * fy))
-    smooth = np.fft.irfft2(np.fft.rfft2(contrast) * kernel, s=contrast.shape)
-    y, x = np.unravel_index(np.argmin(smooth), smooth.shape)
-    return float(-smooth[y, x]), int(x), int(y)
+# The trigger records into memory, so a completed recording is saved, and every recording is then
+# closed to free that memory
+def finish(data):
+    with RecordingSession(scope, data["experimentId"]) as session:
+        if data["state"] == "Completed":
+            print("Saved:", session.save(SAVE_DIR, f"landing_{data['experimentId'][:8]}"))
+        else:
+            print("Recording", data["state"])
 
 
-def main() -> None:
-    with ScopeOne() as scope:
-        camera = scope.camera_ids()[0]
-        scope.set_property(camera, "Pattern", "iSCAT Landing")
-        module = scope.add_processing_module("iscat.processing", {"mode": 2, "frames": 32, "contrast_gain": GAIN})
-        scope.start_preview(camera)
-        scope.start_processing()
-        # The processed layer has no frame until the pipeline has run once
-        time.sleep(1.0)
-        print("Waiting for landings. Press Ctrl+C to stop.")
+scope = ScopeOne()
+camera = scope.camera_ids()[0]
+scope.set_property(camera, "Pattern", "iSCAT Landing")
+iscat = scope.add_processing_module("iscat.processing", {"mode": 2, "frames": 32, "contrast_gain": GAIN})
+landing = scope.add_processing_module("example.python.landing", {"gain": GAIN})
+scope.set_triggers([{"measurement": "landing", "camera": camera, "compare": "above",
+                     "threshold": THRESHOLD, "action": "record", "frames": 200,
+                     "preTriggerFrames": 50, "cooldownMs": 2000}])
+scope.subscribe(["trigger_fired", "experiment_state"])
+scope.start_preview(camera)
+scope.start_processing()
+print("Waiting for landings. Press Ctrl+C to stop.")
 
-        last_frame = -1
-        try:
-            while True:
-                frame = scope.layer_frame(f"proc:{camera}")
-                if frame.frame_index == last_frame:
-                    time.sleep(0.01)
-                    continue
-                last_frame = frame.frame_index
-                # While DRA fills its two windows the iSCAT module passes the camera frames on, which
-                # read as a deep dark spot
-                if frame.bits_per_sample != 16:
-                    continue
-                depth, x, y = find_landing(frame.image)
-                # The recording takes longer than a landing stays in the DRA image, so the same
-                # landing is not found again after it
-                if depth > THRESHOLD:
-                    print(f"Landing at ({x}, {y}), contrast {depth:.4f}, frame {frame.frame_index}")
-                    with scope.record(frames=200, camera=camera) as session:
-                        print("Saved:", session.save(SAVE_DIR, f"landing_{frame.frame_index}", format="ome-tiff"))
-        except KeyboardInterrupt:
-            print("\nStopped.")
-        finally:
-            scope.stop_processing()
-            scope.remove_processing_module(module)
-            scope.stop_preview(camera)
-
-
-if __name__ == "__main__":
-    main()
+recording = None
+try:
+    while True:
+        message = scope.wait_event(["trigger_fired", "experiment_state"])
+        data = message["data"]
+        if message["event"] == "trigger_fired":
+            measurement = data["measurement"]
+            print(f"Landing at ({measurement['x']}, {measurement['y']}), "
+                  f"contrast {measurement['value']:.4f}")
+        elif data["state"] == "Running":
+            recording = data["experimentId"]
+        else:
+            # A recording that failed or was canceled ends too, and was otherwise waited for on exit
+            recording = None
+            finish(data)
+except KeyboardInterrupt:
+    print("\nStopped.")
+finally:
+    scope.set_triggers([])
+    # A recording that runs holds the camera, which then refuses to stop its preview, so it
+    # is finished and saved first
+    while recording:
+        data = scope.wait_event(["experiment_state"])["data"]
+        if data["experimentId"] == recording and data["state"] != "Running":
+            finish(data)
+            recording = None
+    scope.stop_processing()
+    scope.remove_processing_module(landing)
+    scope.remove_processing_module(iscat)
+    scope.stop_preview(camera)
