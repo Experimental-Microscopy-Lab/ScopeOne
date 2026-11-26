@@ -55,6 +55,11 @@ after changing its modules or parameters, and remove it with **Python > Remove S
 pipeline or experiment names the script of each Python step and adds it when it is opened.
 `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to start from.
 
+A module runs at the speed of the library it calls, so the work of each frame belongs in compiled
+code such as numpy, scipy or torch, and the Python only decides what to compute.
+`processing_frequency_filter.py` is a bandpass filter in this form: the script builds the mask,
+and `scipy.fft` runs the FFT in C++ on every core.
+
 A module can also report what it measured by returning `(array, measurements)`, where
 `measurements` is a list of dicts with `name`, a number `value`, and optional `x` and `y` in image
 pixels. Measurements of the live preview go out as the `measurement` event and are what
@@ -657,7 +662,7 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 - Python 3.12 or later is required.
 - Frame reads use a shared-memory export block.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
-- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, and for the iSCAT Landing scene of the example camera `processing_landing.py`, a module that measures each particle landing, and `example_landing.py`, which builds the pipeline and the trigger around it and saves every recording.
+- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, `processing_frequency_filter.py` for one that leaves the heavy work to scipy, and for the iSCAT Landing scene of the example camera `processing_landing.py`, a module that measures each particle landing, and `example_landing.py`, which builds the pipeline and the trigger around it and saves every recording.
 
 ## Build
 
