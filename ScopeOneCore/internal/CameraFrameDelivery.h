@@ -47,9 +47,6 @@ namespace scopeone::core::internal
         // Forgets the cameras, as the ids of a new configuration may name other cameras
         void removeCameras(const QStringList& cameraIds);
 
-        // Whether the newest frame of a camera is worth reading now. Without recording or live
-        // processing every newest frame is, as the live view takes it.
-        bool wantsLatestFrame(const QString& cameraId);
         // Frames of one camera in order. acquiredFrameCount counts every frame the camera took
         // since the last call, including those that were not read.
         void deliverFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount);
@@ -73,7 +70,7 @@ namespace scopeone::core::internal
         struct PreTriggerBuffer;
         void keepPreTriggerFrame(PreTriggerBuffer& buffer, const ImageFrame& frame,
                                  std::deque<ImageFrame>& discardedFrames);
-        quint64 tryAcquireProcessingFrame(const QString& cameraId);
+        quint64 tryAcquireProcessingFrame(const ImageFrame& frame);
         bool previewDue(const QString& cameraId) const;
         void flushPendingFrames();
 
@@ -103,6 +100,9 @@ namespace scopeone::core::internal
         mutable QMutex m_processingMutex;
         QSet<QString> m_highRateCameras;
         QHash<QString, quint64> m_processingTokens;
+        // The newest frame of each camera that arrived while its processing was busy, which the
+        // processing takes as soon as it finishes
+        QHash<QString, ImageFrame> m_pendingProcessingFrames;
         quint64 m_nextProcessingToken{0};
     };
 

@@ -515,6 +515,8 @@ namespace scopeone::core
 
         bool isRealTimeProcessingEnabled() const;
         bool setRealTimeProcessingEnabled(bool enabled);
+        // The live view draws at most once per refresh of the display, at this rate in hertz
+        void setDisplayRefreshRate(double hertz);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         QString realTimeProcessingSource() const;

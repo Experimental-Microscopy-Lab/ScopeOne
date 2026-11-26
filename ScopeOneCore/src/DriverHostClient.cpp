@@ -555,6 +555,7 @@ namespace scopeone::core::internal
                 request.insert(driverhost::kMessageTypeField, driverhost::kCommandSetFrameDeliveryMode);
                 request.insert(driverhost::kDeviceIdField, cameraId);
                 request.insert(QStringLiteral("mode"), frameDeliveryModeName(deliveryMode));
+                request.insert(QStringLiteral("previewIntervalMs"), previewFrameIntervalMs());
                 QJsonObject response;
                 return sendRequest(request, response, kControlRequestTimeoutMs, nullptr)
                     && responseSucceeded(response, nullptr);
@@ -954,10 +955,6 @@ namespace scopeone::core::internal
                 return;
             }
             const bool allFrames = m_deliveryModes.value(cameraId) == FrameDeliveryMode::AllFrames;
-            if (!allFrames && !delivery->wantsLatestFrame(cameraId))
-            {
-                return;
-            }
             Reader& reader = *it.value();
             const quint64 previousFrameIndex = reader.lastFrameIndex;
             QList<ImageFrame> frames;

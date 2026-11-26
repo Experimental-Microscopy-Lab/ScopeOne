@@ -64,6 +64,7 @@ namespace scopeone::ui
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        void showEvent(QShowEvent* event) override;
         bool eventFilter(QObject* watched, QEvent* event) override;
 
     private:
@@ -208,6 +209,8 @@ namespace scopeone::ui
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        bool m_followingRefreshRate{false};
+        QMetaObject::Connection m_refreshRateConnection;
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;

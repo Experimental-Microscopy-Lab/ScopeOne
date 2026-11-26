@@ -626,6 +626,20 @@ namespace scopeone::core::internal
         return applyFrameDeliveryModes(modes);
     }
 
+    bool HardwareRuntime::setPreviewFrameInterval(int intervalMs)
+    {
+        setPreviewFrameIntervalMs(intervalMs);
+        QHash<QString, FrameDeliveryMode> modes;
+        for (const HardwareDeviceDescriptor& device : devices())
+        {
+            if (device.kind == HardwareDeviceKind::Camera)
+            {
+                modes.insert(device.logicalId, m_frameDelivery.mode(device.logicalId));
+            }
+        }
+        return applyFrameDeliveryModes(modes);
+    }
+
     bool HardwareRuntime::setHighRateFrameDeliveryEnabled(const QStringList& cameraIds, bool enabled)
     {
         QHash<QString, FrameDeliveryMode> modes;

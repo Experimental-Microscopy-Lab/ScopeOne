@@ -37,6 +37,9 @@
 #include <QGuiApplication>
 #include <QToolBar>
 #include <QCloseEvent>
+#include <QScreen>
+#include <QShowEvent>
+#include <QWindow>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDesktopServices>
@@ -263,6 +266,31 @@ namespace scopeone::ui
     }
 
     // Confirm what to do with unsaved gallery sessions
+    // The live view draws as often as the screen of the window shows a frame, and follows the
+    // window to another screen
+    void MainWindow::showEvent(QShowEvent* event)
+    {
+        QMainWindow::showEvent(event);
+        if (m_followingRefreshRate || !windowHandle())
+        {
+            return;
+        }
+        m_followingRefreshRate = true;
+        const auto follow = [this](QScreen* screen)
+        {
+            disconnect(m_refreshRateConnection);
+            if (!screen)
+            {
+                return;
+            }
+            m_scopeonecore->setDisplayRefreshRate(screen->refreshRate());
+            m_refreshRateConnection = connect(screen, &QScreen::refreshRateChanged, this,
+                                              [this](qreal rate) { m_scopeonecore->setDisplayRefreshRate(rate); });
+        };
+        connect(windowHandle(), &QWindow::screenChanged, this, follow);
+        follow(windowHandle()->screen());
+    }
+
     void MainWindow::closeEvent(QCloseEvent* event)
     {
         if (m_closeSaveInProgress)

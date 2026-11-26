@@ -133,6 +133,7 @@ namespace scopeone::core::internal
             if (enabled) m_highRateCameras.insert(cameraId);
             else m_highRateCameras.remove(cameraId);
             m_processingTokens.remove(cameraId);
+            m_pendingProcessingFrames.remove(cameraId);
         }
     }
 
@@ -174,30 +175,24 @@ namespace scopeone::core::internal
         const auto it = m_previewTimers.constFind(cameraId);
         return it == m_previewTimers.cend()
             || !it->isValid()
-            || it->elapsed() >= kPreviewFrameIntervalMs;
+            || it->elapsed() >= previewFrameIntervalMs();
     }
 
-    bool CameraFrameDelivery::wantsLatestFrame(const QString& cameraId)
-    {
-        {
-            QMutexLocker lock(&m_processingMutex);
-            if (!m_highRateCameras.contains(cameraId) || !m_processingTokens.contains(cameraId))
-            {
-                return true;
-            }
-        }
-        QMutexLocker lock(&m_mutex);
-        return m_recordingCameras.contains(cameraId) || previewDue(cameraId);
-    }
-
-    quint64 CameraFrameDelivery::tryAcquireProcessingFrame(const QString& cameraId)
+    // Processing that is busy keeps the newest frame for when it finishes. It took the first frame
+    // that arrived after it finished before, which left it idle for up to a frame interval.
+    quint64 CameraFrameDelivery::tryAcquireProcessingFrame(const ImageFrame& frame)
     {
         QMutexLocker lock(&m_processingMutex);
-        if (!m_highRateCameras.contains(cameraId) || m_processingTokens.contains(cameraId))
+        if (!m_highRateCameras.contains(frame.cameraId))
         {
             return 0;
         }
-        m_processingTokens.insert(cameraId, ++m_nextProcessingToken);
+        if (m_processingTokens.contains(frame.cameraId))
+        {
+            m_pendingProcessingFrames.insert(frame.cameraId, frame);
+            return 0;
+        }
+        m_processingTokens.insert(frame.cameraId, ++m_nextProcessingToken);
         return m_nextProcessingToken;
     }
 
@@ -209,11 +204,26 @@ namespace scopeone::core::internal
 
     void CameraFrameDelivery::finishProcessingFrame(const QString& cameraId, quint64 token)
     {
-        QMutexLocker lock(&m_processingMutex);
-        const auto it = m_processingTokens.constFind(cameraId);
-        if (it != m_processingTokens.cend() && it.value() == token)
+        ImageFrame next;
+        quint64 nextToken = 0;
         {
+            QMutexLocker lock(&m_processingMutex);
+            const auto it = m_processingTokens.constFind(cameraId);
+            if (it == m_processingTokens.cend() || it.value() != token)
+            {
+                return;
+            }
             m_processingTokens.remove(cameraId);
+            next = m_pendingProcessingFrames.take(cameraId);
+            if (next.isValid())
+            {
+                nextToken = ++m_nextProcessingToken;
+                m_processingTokens.insert(cameraId, nextToken);
+            }
+        }
+        if (nextToken != 0)
+        {
+            emit processingFrameReady(next, nextToken);
         }
     }
 
@@ -226,7 +236,7 @@ namespace scopeone::core::internal
         const ImageFrame& latestFrame = frames.constLast();
         const QString cameraId = latestFrame.cameraId;
         const bool highRate = highRateEnabled(cameraId);
-        if (const quint64 token = tryAcquireProcessingFrame(cameraId))
+        if (const quint64 token = tryAcquireProcessingFrame(latestFrame))
         {
             emit processingFrameReady(latestFrame, token);
         }

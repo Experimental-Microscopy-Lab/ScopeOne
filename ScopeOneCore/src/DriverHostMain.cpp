@@ -921,7 +921,7 @@ namespace scopeone::core::internal
             if (transport->deliveryMode.load(std::memory_order_relaxed) == FrameDeliveryMode::PreviewLatest
                 && transport->deliveryTimer.isValid())
             {
-                noticeDelayMs = kPreviewFrameIntervalMs - static_cast<int>(transport->deliveryTimer.elapsed());
+                noticeDelayMs = previewFrameIntervalMs() - static_cast<int>(transport->deliveryTimer.elapsed());
             }
             if (noticeDelayMs > 0)
             {
@@ -1163,6 +1163,7 @@ namespace scopeone::core::internal
                                         QStringLiteral("Unknown frame delivery mode")));
                 return;
             }
+            setPreviewFrameIntervalMs(message.value(QStringLiteral("previewIntervalMs")).toInt(previewFrameIntervalMs()));
             transport->deliveryMode.store(deliveryMode, std::memory_order_relaxed);
             if (m_microManagerCamera)
             {

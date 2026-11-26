@@ -4,6 +4,7 @@
 
 #include "internal/AcquisitionEngine.h"
 #include "internal/FrameBufferUtils.h"
+#include "internal/FrameDeliveryMode.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
 #include "internal/PythonProcessingModule.h"
@@ -351,8 +352,6 @@ namespace
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
     // Live line profiles update fast enough for interaction without following camera rate
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
-    // Display delivery is bounded independently from acquisition and processing throughput
-    constexpr qint64 kPreviewRefreshIntervalMs = 16;
     struct OfflineProcessingResult
     {
         QList<scopeone::core::ImageFrame> frames;
@@ -2768,7 +2767,7 @@ namespace scopeone::core
         schedulePreviewFlush();
     }
 
-    // Schedule one latest frame display update without following camera rate
+    // Schedule one display update of the newest frames, at most once per refresh of the display
     void ScopeOneCore::schedulePreviewFlush()
     {
         if (m_previewFlushTimer->isActive())
@@ -2780,7 +2779,7 @@ namespace scopeone::core
         if (m_previewPublishTimer.isValid())
         {
             delayMs = qMax(qint64{0},
-                           kPreviewRefreshIntervalMs - m_previewPublishTimer.elapsed());
+                           internal::previewFrameIntervalMs() - m_previewPublishTimer.elapsed());
         }
         m_previewFlushTimer->start(static_cast<int>(delayMs));
     }
@@ -4374,6 +4373,20 @@ namespace scopeone::core
     bool ScopeOneCore::isRealTimeProcessingEnabled() const
     {
         return m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
+    }
+
+    // A 144 Hz display gets a frame every 6 ms instead of the 16 ms of a 60 Hz one
+    void ScopeOneCore::setDisplayRefreshRate(double hertz)
+    {
+        if (hertz <= 0.0)
+        {
+            return;
+        }
+        const int intervalMs = qMax(1, static_cast<int>(1000.0 / hertz));
+        if (intervalMs != internal::previewFrameIntervalMs())
+        {
+            m_managers->hardwareRuntime->setPreviewFrameInterval(intervalMs);
+        }
     }
 
     // Toggle live processing without changing the module list
