@@ -70,6 +70,8 @@ namespace scopeone::core::internal
         struct PreTriggerBuffer;
         void keepPreTriggerFrame(PreTriggerBuffer& buffer, const ImageFrame& frame,
                                  std::deque<ImageFrame>& discardedFrames);
+        static void trimPreTriggerBuffer(PreTriggerBuffer& buffer, const QString& cameraId,
+                                         std::deque<ImageFrame>& discardedFrames);
         quint64 tryAcquireProcessingFrame(const ImageFrame& frame);
         bool previewDue(const QString& cameraId) const;
         void flushPendingFrames();

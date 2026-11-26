@@ -155,7 +155,7 @@ namespace scopeone::core::internal
             connect(m_process.get(), &QProcess::finished,
                     this, [this](int, QProcess::ExitStatus)
                     {
-                        // A last line without its newline was still waiting for one
+                        // The last line may lack its newline
                         logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                         m_lastError = QStringLiteral("DriverHost process exited");
                         for (const QString& cameraId : m_cameraIds)
@@ -180,8 +180,7 @@ namespace scopeone::core::internal
             // Windows GUI is, to the debugger, so the host's reasons never reached the log there
             QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
             environment.insert(QStringLiteral("QT_FORCE_STDERR_LOGGING"), QStringLiteral("1"));
-            // Each message starts with its level, which the merged output had lost: a warning of a
-            // driver reached the log as INFO
+            // Each message starts with its level, so the log keeps it
             environment.insert(QStringLiteral("QT_MESSAGE_PATTERN"), QStringLiteral("%{type}|%{message}"));
             // Where a Micro-Manager camera writes its CoreLog
             if (!Log::directory().isEmpty())
@@ -214,8 +213,7 @@ namespace scopeone::core::internal
                 if (m_process->waitForFinished(0))
                 {
                     exited = true;
-                    // The last output was read here and not logged, so a host that exited at
-                    // start left nothing of its reason in the log
+                    // What the host printed is its reason for exiting
                     logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                     break;
                 }

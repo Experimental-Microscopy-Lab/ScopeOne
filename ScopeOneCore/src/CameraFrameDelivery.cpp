@@ -100,13 +100,7 @@ namespace scopeone::core::internal
                 buffer.frameCount = it.value();
                 buffer.byteLimit = byteLimits.value(it.key());
                 buffer.warned = false;
-                while (!buffer.frames.empty()
-                       && (static_cast<int>(buffer.frames.size()) > buffer.frameCount || buffer.bytes > buffer.byteLimit))
-                {
-                    buffer.bytes -= buffer.frames.front().payloadByteCount();
-                    discardedFrames.push_back(std::move(buffer.frames.front()));
-                    buffer.frames.pop_front();
-                }
+                trimPreTriggerBuffer(buffer, it.key(), discardedFrames);
             }
         }
         releaseFramesAsync(std::move(discardedFrames));
@@ -178,8 +172,7 @@ namespace scopeone::core::internal
             || it->elapsed() >= previewFrameIntervalMs();
     }
 
-    // Processing that is busy keeps the newest frame for when it finishes. It took the first frame
-    // that arrived after it finished before, which left it idle for up to a frame interval.
+    // Processing that is busy keeps the newest frame, which it takes as soon as it finishes
     quint64 CameraFrameDelivery::tryAcquireProcessingFrame(const ImageFrame& frame)
     {
         QMutexLocker lock(&m_processingMutex);
@@ -361,6 +354,14 @@ namespace scopeone::core::internal
             buffer.frames.back().timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
         }
         buffer.bytes += frame.payloadByteCount();
+        trimPreTriggerBuffer(buffer, frame.cameraId, discardedFrames);
+    }
+
+    // Drops the oldest frames beyond the frame count or the bytes of the buffer, but keeps the
+    // newest frame even when it alone is larger than the bytes
+    void CameraFrameDelivery::trimPreTriggerBuffer(PreTriggerBuffer& buffer, const QString& cameraId,
+                                                   std::deque<ImageFrame>& discardedFrames)
+    {
         while (static_cast<int>(buffer.frames.size()) > buffer.frameCount
                || (buffer.bytes > buffer.byteLimit && buffer.frames.size() > 1))
         {
@@ -370,7 +371,7 @@ namespace scopeone::core::internal
                 buffer.warned = true;
                 qWarning().noquote() << QStringLiteral("The pre-trigger buffer of %1 holds fewer than %2 frames at "
                                                        "the current frame size")
-                                            .arg(frame.cameraId).arg(buffer.frameCount);
+                                            .arg(cameraId).arg(buffer.frameCount);
             }
             buffer.bytes -= buffer.frames.front().payloadByteCount();
             discardedFrames.push_back(std::move(buffer.frames.front()));

@@ -265,7 +265,6 @@ namespace scopeone::ui
         restoreWindowLayout();
     }
 
-    // Confirm what to do with unsaved gallery sessions
     // The live view draws as often as the screen of the window shows a frame, and follows the
     // window to another screen
     void MainWindow::showEvent(QShowEvent* event)
@@ -291,6 +290,7 @@ namespace scopeone::ui
         follow(windowHandle()->screen());
     }
 
+    // Confirm what to do with unsaved gallery sessions
     void MainWindow::closeEvent(QCloseEvent* event)
     {
         if (m_closeSaveInProgress)

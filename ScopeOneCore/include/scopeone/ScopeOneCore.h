@@ -948,8 +948,9 @@ namespace scopeone::core
         // Counts setTriggers calls, so a trigger loop sees when an action replaced the triggers
         quint64 m_triggerGeneration{0};
         // Set while a trigger action runs
-        QString m_lastProcessingError;
         bool m_runningTrigger{false};
+        // The processing error logged last, so a module that fails on every frame logs it once
+        QString m_lastProcessingError;
         static constexpr qsizetype kActionLogSize = 10000;
         QList<ActionLogEntry> m_actionLog;
         // Entries ever appended, and their count when the last configuration finished loading,

@@ -165,8 +165,8 @@ class _UnixSocketTransport:
         return bool(readable)
 
     def open_frame(self, mapping_name: str, mapping_size: int, write: bool = False):
-        # The server publishes the frame as a POSIX shm object. It was opened as /dev/shm/<name>,
-        # which exists only on Linux, so macOS could not read any frame.
+        # The server publishes the frame as a POSIX shm object, which shm_open finds on Linux and
+        # macOS alike
         import _posixshmem
 
         name = mapping_name if mapping_name.startswith("/") else f"/{mapping_name}"
@@ -273,7 +273,7 @@ class ScopeOne:
         # The events this connection is subscribed to, as the last subscribe or unsubscribe returned
         self._subscribed = []
         # The shared frame mapping, opened on first use and kept for the connection, as mapping it
-        # again for every frame cost more in page faults than copying the frame
+        # for every frame costs more than copying the frame
         self._mmap = None
         self._mapping = None
         app_version = str(self._request({"type": "ping"}).get("version", ""))

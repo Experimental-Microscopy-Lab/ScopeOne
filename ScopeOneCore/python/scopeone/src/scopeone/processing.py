@@ -170,7 +170,7 @@ def _serve() -> None:
             result = np.asarray(result)
             if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
                 raise TypeError("a module must return a 2D uint8 or uint16 array")
-            # The memory only grows, so it is not the limit itself, which then depended on earlier frames
+            # The limit is twice this frame, not the memory, which only grows
             if result.nbytes > 2 * request["height"] * request["stride"]:
                 raise ValueError("a module must return at most twice the bytes of the frame")
             np.ndarray(result.shape, result.dtype, frames)[...] = result

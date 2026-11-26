@@ -245,8 +245,7 @@ namespace scopeone::core::internal
             }
 
             // Sends one frame and reads the frame that comes back, on the module's own thread. The
-            // pipe carries only the JSON lines and the pixels go through shared memory, as sending
-            // them through the pipe took most of the time of a frame.
+            // pipe carries only the JSON lines, and the pixels go through shared memory.
             ProcessingResult exchange(const ImageFrame& frame)
             {
                 if (!m_process)

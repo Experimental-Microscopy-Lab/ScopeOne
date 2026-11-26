@@ -12,7 +12,6 @@ MONO8 = 0
 MONO16 = 1
 
 SHARED_FRAME_HEADER_SIZE = 64
-SHARED_FRAME_MAX_BYTES = 16 * 2048 * 2048
 
 _HEADER_STRUCT = struct.Struct("<IIIIIHHQQiiiiI4x")
 
@@ -90,7 +89,8 @@ def write_ndarray_to_frame(
 
     stride = width * np.dtype(dtype).itemsize
     payload_nbytes = stride * height
-    if payload_nbytes > SHARED_FRAME_MAX_BYTES:
+    # The mapping the app created is the limit, so the client never has its own copy of it
+    if payload_nbytes > len(mapping) - SHARED_FRAME_HEADER_SIZE:
         raise ValueError("ScopeOne frame payload exceeds the shared mapping capacity")
 
     source_roi_x, source_roi_y, source_roi_width, source_roi_height = source_roi or (0, 0, 0, 0)

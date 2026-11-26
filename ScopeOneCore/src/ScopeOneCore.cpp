@@ -1599,8 +1599,8 @@ namespace scopeone::core
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
                 this, [this](const QString& errorMessage)
                 {
-                    // A module that fails on every frame wrote one line per frame, so an error is
-                    // logged once until another one comes or the processing starts again
+                    // Logged once until another error comes or the processing starts again, as a
+                    // module may fail on every frame
                     if (errorMessage != m_lastProcessingError)
                     {
                         m_lastProcessingError = errorMessage;
@@ -2214,8 +2214,7 @@ namespace scopeone::core
         {
             return false;
         }
-        // Stopping a camera whose live frames a recording takes left the recording waiting for
-        // frames that never came, running forever and blocking the unload
+        // A recording waits for the live frames of its cameras, so they keep running until it stops
         const QStringList recording = m_managers->recordingManager->liveRecordingCameraIds();
         if (!recording.isEmpty()
             && (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0 || recording.contains(target)))
@@ -4375,7 +4374,6 @@ namespace scopeone::core
         return m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
     }
 
-    // A 144 Hz display gets a frame every 6 ms instead of the 16 ms of a 60 Hz one
     void ScopeOneCore::setDisplayRefreshRate(double hertz)
     {
         if (hertz <= 0.0)
@@ -4645,13 +4643,25 @@ namespace scopeone::core
     QStringList ScopeOneCore::addPythonScript(const QString& path, QString* errorMessage)
     {
         const QString script = QFileInfo(path).absoluteFilePath();
-        for (const QString& id : m_managers->pythonScripts.take(script))
+        auto& registry = *m_managers->processingModuleRegistry;
+        // The modules read before make way for those read now, and come back when the script no
+        // longer reads, so a script with an error does not take the steps of a pipeline with it
+        QList<std::pair<ProcessingModuleDescriptor, internal::ProcessingModuleRegistry::Factory>> previous;
+        for (const QString& id : m_managers->pythonScripts.value(script))
         {
-            m_managers->processingModuleRegistry->unregisterModule(id);
+            const ProcessingModuleDescriptor descriptor = registry.descriptor(id);
+            previous.append({descriptor, registry.unregisterModule(id)});
         }
         QString error;
-        const QStringList ids = internal::registerPythonScript(*m_managers->processingModuleRegistry, script, error);
-        if (!ids.isEmpty())
+        const QStringList ids = internal::registerPythonScript(registry, script, error);
+        if (ids.isEmpty())
+        {
+            for (const auto& [descriptor, factory] : previous)
+            {
+                registry.registerModule(descriptor, factory);
+            }
+        }
+        else
         {
             m_managers->pythonScripts.insert(script, ids);
             QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));

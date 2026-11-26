@@ -193,8 +193,7 @@ namespace scopeone::core::internal
                                cv::BORDER_CONSTANT,
                                0);
             // The filtered image needs only the real DFT, packed half the size of the complex one,
-            // and the real, even mask multiplies the packed parts in place. The complex DFT with its
-            // split planes took twice as long and made the module slower than numpy.
+            // and the real, even mask multiplies the packed parts in place
             if (m_outputMode == OutputMode::FilteredImage)
             {
                 cv::dft(m_padded, m_packed);
@@ -262,9 +261,8 @@ namespace scopeone::core::internal
                 }
             }
         });
-        // The inverse runs as two passes over the spectrum, as the 2D c2r of pocketfft allocated a
-        // copy of the whole spectrum on every frame, and the page faults of its threads on that
-        // memory made a frame up to ten times slower
+        // The inverse runs as two passes over the spectrum, as the 2D c2r of pocketfft allocates a
+        // copy of the whole spectrum on every frame
         const pocketfft::shape_t spectrumShape{static_cast<size_t>(rows), static_cast<size_t>(half)};
         pocketfft::c2c(spectrumShape, spectrumStride, spectrumStride, {0}, pocketfft::BACKWARD,
                        spectrum, spectrum, 1.0f, 0);
