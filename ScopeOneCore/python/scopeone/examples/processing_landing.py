@@ -1,5 +1,5 @@
-# Finds a particle landing in the DRA image of the iSCAT Processing module. Copy it into
-# processing/python/ and put "Landing" after iSCAT Processing in DRA mode with 32 frames. Each
+# Finds a particle landing in the DRA image of the iSCAT Processing module. Add this file with
+# Python > Add Script... and put "Landing (Python)" after iSCAT Processing in DRA mode with 32 frames. Each
 # frame reports the deepest dark spot as the measurement "landing", its contrast as a positive
 # number, so a trigger can act on it. example_landing.py builds that pipeline and trigger and saves
 # the recordings.

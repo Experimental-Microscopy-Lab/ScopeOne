@@ -1,8 +1,8 @@
 """Record every particle landing and save it, with the detection in the pipeline.
 
-Copy processing_landing.py into processing/python/ beside ScopeOne, start ScopeOne and load a
-configuration with the example camera first. The script shows the camera its iSCAT Landing scene
-and builds the pipeline: iSCAT Processing in DRA mode, then the Landing module, which measures
+Start ScopeOne and load a configuration with the example camera first. The script shows the
+camera its iSCAT Landing scene, adds processing_landing.py beside it and builds the pipeline:
+iSCAT Processing in DRA mode, then the Landing module of that script, which measures
 every frame. A Core trigger records 200 frames when a landing crosses the threshold, starting with
 the frames from before it. The script only waits for the recordings and saves each one.
 """
@@ -30,6 +30,7 @@ def finish(data):
 scope = ScopeOne()
 camera = scope.camera_ids()[0]
 scope.set_property(camera, "Pattern", "iSCAT Landing")
+scope.add_python_script(str(Path(__file__).with_name("processing_landing.py")))
 iscat = scope.add_processing_module("iscat.processing", {"mode": 2, "frames": 32, "contrast_gain": GAIN})
 landing = scope.add_processing_module("example.python.landing", {"gain": GAIN})
 scope.set_triggers([{"measurement": "landing", "camera": camera, "compare": "above",

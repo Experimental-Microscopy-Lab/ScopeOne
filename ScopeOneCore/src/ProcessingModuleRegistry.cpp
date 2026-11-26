@@ -95,6 +95,11 @@ namespace scopeone::core::internal
         return result;
     }
 
+    void ProcessingModuleRegistry::unregisterModule(const QString& moduleId)
+    {
+        m_entries.remove(moduleId.trimmed());
+    }
+
     ProcessingModuleDescriptor ProcessingModuleRegistry::descriptor(const QString& moduleId) const
     {
         return m_entries.value(moduleId.trimmed()).descriptor;

@@ -526,6 +526,16 @@ namespace scopeone::core
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleDescriptor> availableProcessingModules() const;
+        // Python processing modules come from the scripts the user adds. Core reads a script with
+        // python -m scopeone.processing describe, lists its modules and remembers the script, so its
+        // modules are there again after a restart. Adding a script again reads it again. Returns the
+        // module ids of the script.
+        QStringList addPythonScript(const QString& path, QString* errorMessage = nullptr);
+        // Fails while a pipeline has a step of the script
+        bool removePythonScript(const QString& path, QString* errorMessage = nullptr);
+        QStringList pythonScripts() const;
+        // The script of a Python module, empty for a module of Core
+        QString pythonScriptOf(const QString& moduleId) const;
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
         // A pipeline made of copies of the steps that the camera runs, which are those of the shared
         // pipeline when no camera is named or the camera has none of its own
@@ -683,6 +693,8 @@ namespace scopeone::core
         // thread. data holds the event, and after the event also its frames.
         void hookRequested(quint64 hookId, const QString& point, const QVariantMap& data);
         void processingModulesChanged();
+        // A Python script was added or removed, which changed availableProcessingModules
+        void availableProcessingModulesChanged();
         void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
         void imageProcessingFinished(quint64 requestId,

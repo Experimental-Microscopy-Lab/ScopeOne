@@ -785,7 +785,8 @@ namespace scopeone::ui
             }));
             groups.insert(QStringLiteral("processing"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("processing_modules"), QStringLiteral("set_processing_bit_depth"),
-                QStringLiteral("set_realtime_processing"), QStringLiteral("add_processing_module"),
+                QStringLiteral("set_realtime_processing"), QStringLiteral("add_python_script"),
+                QStringLiteral("remove_python_script"), QStringLiteral("add_processing_module"),
                 QStringLiteral("remove_processing_module"),
                 QStringLiteral("set_processing_module_parameters"),
                 QStringLiteral("reset_processing_module_state"), QStringLiteral("triggers"),
@@ -4179,7 +4180,13 @@ namespace scopeone::ui
             QJsonArray availableModules;
             for (const auto& descriptor : m_scopeonecore->availableProcessingModules())
             {
-                availableModules.append(processingModuleDescriptorToJson(descriptor));
+                QJsonObject module = processingModuleDescriptorToJson(descriptor);
+                const QString script = m_scopeonecore->pythonScriptOf(descriptor.id);
+                if (!script.isEmpty())
+                {
+                    module.insert(QStringLiteral("script"), script);
+                }
+                availableModules.append(module);
             }
             response.insert(QStringLiteral("availableModules"), availableModules);
             return response;
@@ -4232,6 +4239,30 @@ namespace scopeone::ui
             response.insert(QStringLiteral("realTimeSource"),
                             m_scopeonecore->realTimeProcessingSource());
             return response;
+        }
+
+        if (type == QStringLiteral("add_python_script"))
+        {
+            QString error;
+            const QStringList ids = m_scopeonecore->addPythonScript(
+                request.value(QStringLiteral("path")).toString(), &error);
+            if (ids.isEmpty())
+            {
+                return errorResponse(type, error);
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("moduleIds"), QJsonArray::fromStringList(ids));
+            return response;
+        }
+
+        if (type == QStringLiteral("remove_python_script"))
+        {
+            QString error;
+            if (!m_scopeonecore->removePythonScript(request.value(QStringLiteral("path")).toString(), &error))
+            {
+                return errorResponse(type, error);
+            }
+            return makeResponse(type, true);
         }
 
         if (type == QStringLiteral("add_processing_module"))

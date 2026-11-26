@@ -2,14 +2,14 @@
 
 A module is a function that takes a 2D numpy array (uint8 or uint16) and its parameters and
 returns a 2D uint8 or uint16 array. A function with a ``bits`` argument also gets the bits per
-sample of the frame, 12 for a 12-bit camera in a uint16 array. Put the script in
-``processing/python`` beside ScopeOne or in the application data folder and it shows up in the pipeline beside the C++
-modules::
+sample of the frame, 12 for a 12-bit camera in a uint16 array. Add the script with Python > Add
+Script... in the pipeline panel, or with ``ScopeOne.add_python_script``, and its modules show up in
+the pipeline beside the C++ modules, as "Offset (Python)" for the one below::
 
     import numpy as np
     from scopeone.processing import module, Integer
 
-    @module("example.py.offset", "Python Offset", Integer("offset", "Offset", 10, 0, 1000))
+    @module("example.py.offset", "Offset", Integer("offset", "Offset", 10, 0, 1000))
     def offset(image, offset, bits):
         return np.clip(image.astype(np.int32) + offset, 0, (1 << bits) - 1).astype(image.dtype)
 

@@ -47,10 +47,13 @@ def threshold(image, level, bits):
 
 The function gets a 2D `uint8` or `uint16` array and the parameters by name, and returns a 2D
 `uint8` or `uint16` array. A function with a `bits` argument also gets the bits per sample of
-the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Put
-the script in `processing/python/` beside ScopeOne or in the same folder under the
-user's application data directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
-there; `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to copy.
+the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Keep
+the script wherever you like and add it with **Python > Add Script...** in the pipeline panel, or
+with `ScopeOne.add_python_script(path)`. Its modules join the list with `(Python)` after their
+name, and ScopeOne remembers the script, so they are there after a restart. Add a script again
+after changing its modules or parameters, and remove it with **Python > Remove Script**. A saved
+pipeline or experiment names the script of each Python step and adds it when it is opened.
+`ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to start from.
 
 A module can also report what it measured by returning `(array, measurements)`, where
 `measurements` is a list of dicts with `name`, a number `value`, and optional `x` and `y` in image
@@ -249,6 +252,8 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
 - `ScopeOne.start_processing(camera_id=None)`
 - `ScopeOne.stop_processing()`
+- `ScopeOne.add_python_script(path)`
+- `ScopeOne.remove_python_script(path)`
 - `ScopeOne.add_processing_module(kind, parameters=None)`
 - `ScopeOne.remove_processing_module(index)`
 - `ScopeOne.set_processing_module_parameters(index, parameters)`
@@ -530,9 +535,11 @@ and the [action log](#action-log) instead, which say the same in fields.
 - `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
-- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`.
+- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`, where a Python module also has the `script` it comes from.
 - `set_processing_bit_depth`: fields `bitDepth`, accepts `8` or `16`.
 - `set_realtime_processing`: fields `enabled` and optional `cameraId`; an empty camera ID selects all cameras.
+- `add_python_script`: field `path` of a `.py` file; reads its processing modules, lists them and remembers the script. Response `moduleIds`.
+- `remove_python_script`: field `path`; forgets the script and its modules, and fails while a pipeline has a step of it.
 - `add_processing_module`: fields `kind`, optional `parameters`; response `index`.
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.

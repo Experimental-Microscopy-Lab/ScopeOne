@@ -5,7 +5,6 @@
 #include "internal/ProcessingModuleRegistry.h"
 
 #include <QDebug>
-#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -124,7 +123,10 @@ namespace scopeone::core::internal
                 PythonScriptModule module;
                 module.scriptPath = scriptPath;
                 module.descriptor.id = object.value(QStringLiteral("id")).toString();
-                module.descriptor.name = object.value(QStringLiteral("name")).toString();
+                // Every Python module is marked in the list, as it needs the interpreter and runs in
+                // a process of its own
+                module.descriptor.name = object.value(QStringLiteral("name")).toString()
+                                         + QStringLiteral(" (Python)");
                 for (const QJsonValue& parameter : object.value(QStringLiteral("parameters")).toArray())
                 {
                     module.descriptor.parameters.append(parameterFrom(parameter.toObject()));
@@ -318,33 +320,38 @@ namespace scopeone::core::internal
         };
     }
 
-    QStringList registerPythonProcessingModules(ProcessingModuleRegistry& registry,
-                                                const QString& processingDirectory)
+    QStringList registerPythonScript(ProcessingModuleRegistry& registry,
+                                     const QString& scriptPath,
+                                     QString& error)
     {
-        QStringList errors;
-        const QDir scripts(QDir(processingDirectory).filePath(QStringLiteral("python")));
-        for (const QString& name : scripts.entryList({QStringLiteral("*.py")}, QDir::Files, QDir::Name))
+        const QList<PythonScriptModule> modules = describeScript(scriptPath, error);
+        if (!error.isEmpty())
         {
-            QString error;
-            const QList<PythonScriptModule> modules = describeScript(scripts.filePath(name), error);
-            if (!error.isEmpty())
-            {
-                errors.append(QStringLiteral("%1: %2").arg(name, error));
-                continue;
-            }
-            for (const PythonScriptModule& module : modules)
-            {
-                const auto script = std::make_shared<const PythonScriptModule>(module);
-                if (!registry.registerModule(script->descriptor, [script]()
-                    {
-                        return std::make_unique<PythonProcessingModule>(script);
-                    }))
-                {
-                    errors.append(QStringLiteral("%1: invalid or duplicate processing module id %2")
-                                      .arg(name, script->descriptor.id));
-                }
-            }
+            return {};
         }
-        return errors;
+        if (modules.isEmpty())
+        {
+            error = QStringLiteral("the script declares no processing module");
+            return {};
+        }
+        QStringList ids;
+        for (const PythonScriptModule& module : modules)
+        {
+            const auto script = std::make_shared<const PythonScriptModule>(module);
+            if (!registry.registerModule(script->descriptor, [script]()
+                {
+                    return std::make_unique<PythonProcessingModule>(script);
+                }))
+            {
+                for (const QString& id : std::as_const(ids))
+                {
+                    registry.unregisterModule(id);
+                }
+                error = QStringLiteral("invalid or taken processing module id %1").arg(script->descriptor.id);
+                return {};
+            }
+            ids.append(script->descriptor.id);
+        }
+        return ids;
     }
 }

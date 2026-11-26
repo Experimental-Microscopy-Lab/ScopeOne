@@ -968,6 +968,25 @@ namespace
                 {QStringLiteral("enabled")},
                 ToolAccess::StateChanging),
             makeTool(
+                QStringLiteral("add_python_script"),
+                QStringLiteral("Read a Python script of processing modules, list its modules and remember it; "
+                               "the script runs in ScopeOne's Python interpreter"),
+                inputProperties({
+                    {QStringLiteral("path"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Path of the .py file"))}
+                }),
+                {QStringLiteral("path")},
+                ToolAccess::Confirmed),
+            makeTool(
+                QStringLiteral("remove_python_script"),
+                QStringLiteral("Forget a Python script and its processing modules; fails while a pipeline uses one"),
+                inputProperties({
+                    {QStringLiteral("path"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Path of the .py file"))}
+                }),
+                {QStringLiteral("path")},
+                ToolAccess::StateChanging),
+            makeTool(
                 QStringLiteral("add_processing_module"),
                 QStringLiteral("Append a module to the image-processing pipeline"),
                 inputProperties({

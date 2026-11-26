@@ -1120,6 +1120,15 @@ class ScopeOne:
     def stop_processing(self) -> None:
         self._request({"type": "set_realtime_processing", "enabled": False})
 
+    def add_python_script(self, path: str) -> list[str]:
+        """Read a script of Python processing modules, list its modules and remember the script.
+        Returns the module ids, which add_processing_module then takes."""
+        response = self._request({"type": "add_python_script", "path": str(path)})
+        return list(response["moduleIds"])
+
+    def remove_python_script(self, path: str) -> None:
+        self._request({"type": "remove_python_script", "path": str(path)})
+
     def add_processing_module(
         self,
         kind: str,

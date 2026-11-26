@@ -3,9 +3,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/actions/workflows/compile-check.yml"><img src="https://github.com/Experimental-Microscopy-Lab/ScopeOne/actions/workflows/compile-check.yml/badge.svg?branch=main" alt="Compile Check"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue.svg" alt="BSD 3-Clause License"></a>
-  <!-- <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg" alt="Preprint DOI"></a> -->
+  <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/actions/workflows/compile-check.yml"><img src="https://img.shields.io/github/actions/workflow/status/Experimental-Microscopy-Lab/ScopeOne/compile-check.yml?branch=main&style=flat-square&label=build" alt="Compile Check"></a>
+  <a href="https://github.com/Experimental-Microscopy-Lab/ScopeOne/releases/latest"><img src="https://img.shields.io/github/v/release/Experimental-Microscopy-Lab/ScopeOne?style=flat-square" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue.svg?style=flat-square" alt="BSD 3-Clause License"></a>
+  <!-- <a href="https://doi.org/10.48550/arXiv.2606.19384"><img src="https://img.shields.io/badge/arXiv-2606.19384-b31b1b.svg?style=flat-square" alt="Preprint DOI"></a> -->
 </p>
 
 ScopeOne is a high-performance open-source microscopy control platform built with C++ and Qt. It is designed to be an extensible platform for advanced microscopy applications, including multiple camera live imaging, on-the-fly image processing, and automated experiments.
@@ -212,7 +213,7 @@ macOS support is experimental.
 
 ### Drivers and processing modules
 
-ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from `processing/python`. The CUDA and ONNX processing modules are part of Core. Core builds the CUDA modules when it finds nvcc, and ONNX inference always, with the GPU package of ONNX Runtime when CUDA is built and the CPU package otherwise. `-DSCOPEONE_ENABLE_CUDA=OFF` builds the standard Core. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module. Python 3.12 or later is needed only for the Python package and Python processing modules.
+ScopeOne has two public extension points, drivers and Python processing modules, and both run outside the ScopeOne process. Drivers are loaded from `drivers` by `ScopeOne_DriverHost`, one process per device, and Python modules from the scripts the user adds in the pipeline panel. The CUDA and ONNX processing modules are part of Core. Core builds the CUDA modules when it finds nvcc, and ONNX inference always, with the GPU package of ONNX Runtime when CUDA is built and the CPU package otherwise. `-DSCOPEONE_ENABLE_CUDA=OFF` builds the standard Core. Micro-Manager remains the built-in camera provider and loads its device adapters from `.cfg` files. [drivers/README.md](drivers/README.md) explains how to write a driver and [ScopeOneCore/python/scopeone/README.md](ScopeOneCore/python/scopeone/README.md#python-processing-modules) how to write a Python processing module. Python 3.12 or later is needed only for the Python package and Python processing modules.
 
 ### Build times
 

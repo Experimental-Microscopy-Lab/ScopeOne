@@ -33,7 +33,7 @@
 #include <QMutex>
 #include <QStringList>
 #include <QSysInfo>
-#include <QStandardPaths>
+#include <QSettings>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
@@ -57,6 +57,9 @@
 namespace
 {
     std::atomic<quint64> s_imageOpenCounter{1};
+
+    // The Python scripts the user added, in the settings beside the interpreter of the Settings dialog
+    const QString kPythonScriptsKey = QStringLiteral("Python/Scripts");
 
     struct ImageOpenTask
     {
@@ -1127,6 +1130,8 @@ namespace scopeone::core
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
+        // The module ids of each Python script that was read, by the absolute path of the script
+        QHash<QString, QStringList> pythonScripts;
         StageMosaicManager* stageMosaicManager{nullptr};
         internal::DaqDeviceManager* daqDeviceManager{nullptr};
         internal::SignalSourceManager* signalSourceManager{nullptr};
@@ -1351,19 +1356,19 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        // Python processing modules are scripts in processing/python beside the application and in
-        // the user data directory
-        const QStringList processingDirectories{
-            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("processing")),
-            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("processing"))};
-        for (const QString& directory : processingDirectories)
+        // The Python scripts the user added before. One that cannot be read now stays in the
+        // settings, so a missing interpreter does not lose it.
+        for (const QString& path : QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"))
+                                       .value(kPythonScriptsKey).toStringList())
         {
-            for (const QString& error : internal::registerPythonProcessingModules(
-                     *m_managers->processingModuleRegistry, directory))
+            QString error;
+            const QStringList ids = internal::registerPythonScript(*m_managers->processingModuleRegistry, path, error);
+            if (ids.isEmpty())
             {
-                qWarning().noquote() << QStringLiteral("Failed to load Python processing module %1").arg(error);
+                qWarning().noquote() << QStringLiteral("Failed to load Python script %1: %2").arg(path, error);
+                continue;
             }
+            m_managers->pythonScripts.insert(path, ids);
         }
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
@@ -4479,6 +4484,7 @@ namespace scopeone::core
         {
             ProcessingModuleRecipe entry;
             entry.moduleId = module.id();
+            entry.script = pythonScriptOf(module.id());
             entry.schemaVersion = module.descriptor().schemaVersion;
             entry.parameters = module.parameters();
             recipe.modules.append(std::move(entry));
@@ -4500,6 +4506,17 @@ namespace scopeone::core
         {
             if (errorMessage) *errorMessage = QStringLiteral("Unsupported processing bit depth");
             return false;
+        }
+
+        // A recipe from another session names the scripts of its Python modules
+        for (const ProcessingModuleRecipe& entry : recipe.modules)
+        {
+            if (!entry.script.isEmpty()
+                && m_managers->processingModuleRegistry->descriptor(entry.moduleId).id.isEmpty()
+                && addPythonScript(entry.script, errorMessage).isEmpty())
+            {
+                return false;
+            }
         }
 
         std::vector<std::unique_ptr<ProcessingModule>> modules;
@@ -4610,6 +4627,83 @@ namespace scopeone::core
     QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
     {
         return m_managers->processingModuleRegistry->descriptors();
+    }
+
+    QStringList ScopeOneCore::addPythonScript(const QString& path, QString* errorMessage)
+    {
+        const QString script = QFileInfo(path).absoluteFilePath();
+        for (const QString& id : m_managers->pythonScripts.take(script))
+        {
+            m_managers->processingModuleRegistry->unregisterModule(id);
+        }
+        QString error;
+        const QStringList ids = internal::registerPythonScript(*m_managers->processingModuleRegistry, script, error);
+        if (!ids.isEmpty())
+        {
+            m_managers->pythonScripts.insert(script, ids);
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            QStringList stored = settings.value(kPythonScriptsKey).toStringList();
+            if (!stored.contains(script))
+            {
+                stored.append(script);
+                settings.setValue(kPythonScriptsKey, stored);
+            }
+        }
+        if (errorMessage) *errorMessage = ids.isEmpty() ? QStringLiteral("%1: %2").arg(script, error) : QString();
+        emit availableProcessingModulesChanged();
+        return ids;
+    }
+
+    bool ScopeOneCore::removePythonScript(const QString& path, QString* errorMessage)
+    {
+        const QString script = QFileInfo(path).absoluteFilePath();
+        const QStringList ids = m_managers->pythonScripts.value(script);
+        QStringList pipelines = camerasWithOwnProcessingPipeline();
+        pipelines.prepend(QString());
+        for (const QString& cameraId : std::as_const(pipelines))
+        {
+            for (const ProcessingModuleInfo& module : processingModules(cameraId))
+            {
+                if (ids.contains(module.id()))
+                {
+                    if (errorMessage) *errorMessage = QStringLiteral("Remove the steps of %1 from the pipeline first").arg(script);
+                    return false;
+                }
+            }
+        }
+        for (const QString& id : ids)
+        {
+            m_managers->processingModuleRegistry->unregisterModule(id);
+        }
+        m_managers->pythonScripts.remove(script);
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QStringList stored = settings.value(kPythonScriptsKey).toStringList();
+        stored.removeAll(script);
+        // QSettings writes an empty list as @Invalid(), so the key goes with the last script
+        if (stored.isEmpty())
+            settings.remove(kPythonScriptsKey);
+        else
+            settings.setValue(kPythonScriptsKey, stored);
+        if (errorMessage) errorMessage->clear();
+        emit availableProcessingModulesChanged();
+        return true;
+    }
+
+    QStringList ScopeOneCore::pythonScripts() const
+    {
+        return QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne")).value(kPythonScriptsKey).toStringList();
+    }
+
+    QString ScopeOneCore::pythonScriptOf(const QString& moduleId) const
+    {
+        for (auto it = m_managers->pythonScripts.constBegin(); it != m_managers->pythonScripts.constEnd(); ++it)
+        {
+            if (it.value().contains(moduleId))
+            {
+                return it.key();
+            }
+        }
+        return {};
     }
 
     std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(

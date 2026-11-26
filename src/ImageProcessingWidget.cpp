@@ -530,6 +530,8 @@ namespace scopeone::ui
         narrowCombos(this);
         refreshTargets();
 
+        connect(core, &scopeone::core::ScopeOneCore::availableProcessingModulesChanged,
+                this, &ImageProcessingWidget::fillModuleTypes);
         connect(core, &scopeone::core::ScopeOneCore::processingModulesChanged,
                 this, [this]()
                 {
@@ -813,11 +815,7 @@ namespace scopeone::ui
         listRow->addWidget(m_moduleList, 1);
         auto* controls = new QVBoxLayout;
         m_moduleTypeCombo = new QComboBox(group);
-        // The steps are listed by name as Core sorts them, and the box finds them by any part of the name
-        for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
-        {
-            m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
-        }
+        fillModuleTypes();
         m_moduleTypeCombo->setEditable(true);
         m_moduleTypeCombo->setInsertPolicy(QComboBox::NoInsert);
         m_moduleTypeCombo->completer()->setFilterMode(Qt::MatchContains);
@@ -863,6 +861,14 @@ namespace scopeone::ui
         connect(m_presetMenu, &QMenu::aboutToShow, this, &ImageProcessingWidget::fillPresetMenu);
         m_presetButton->setFixedWidth(buttonWidth);
         controls->addWidget(m_presetButton);
+        m_pythonButton = new QToolButton(group);
+        m_pythonButton->setText(tr("Python"));
+        m_pythonButton->setPopupMode(QToolButton::InstantPopup);
+        m_pythonMenu = new QMenu(m_pythonButton);
+        m_pythonButton->setMenu(m_pythonMenu);
+        connect(m_pythonMenu, &QMenu::aboutToShow, this, &ImageProcessingWidget::fillPythonMenu);
+        m_pythonButton->setFixedWidth(buttonWidth);
+        controls->addWidget(m_pythonButton);
         controls->addStretch();
         listRow->addLayout(controls);
         layout->addLayout(listRow);
@@ -1362,6 +1368,11 @@ namespace scopeone::ui
         {
             QJsonObject step;
             step.insert(QStringLiteral("id"), module.id());
+            const QString script = m_scopeonecore->pythonScriptOf(module.id());
+            if (!script.isEmpty())
+            {
+                step.insert(QStringLiteral("script"), script);
+            }
             step.insert(QStringLiteral("enabled"), module.enabled());
             step.insert(QStringLiteral("parameters"), QJsonObject::fromVariantMap(module.parameters()));
             steps.append(step);
@@ -1379,6 +1390,16 @@ namespace scopeone::ui
         for (const QJsonValue& value : steps)
         {
             const QJsonObject step = value.toObject();
+            // A preset from before a restart, or a file from another computer, names the script of a
+            // Python step, which is read when its modules are not listed
+            const QString script = step.value(QStringLiteral("script")).toString();
+            const bool listed = m_scopeonecore->pythonScriptOf(step.value(QStringLiteral("id")).toString()) == script;
+            QString error;
+            if (!script.isEmpty() && !listed && m_scopeonecore->addPythonScript(script, &error).isEmpty())
+            {
+                emit problem(tr("Warning"), error);
+                continue;
+            }
             addModule(step.value(QStringLiteral("id")).toString(),
                       step.value(QStringLiteral("parameters")).toObject().toVariantMap());
             m_scopeonecore->setProcessingModuleEnabled(
@@ -1401,6 +1422,63 @@ namespace scopeone::ui
         QJsonObject presets = loadPresets(settings);
         presets.insert(name, currentPipeline());
         storePresets(settings, presets);
+    }
+
+    // The steps are listed by name as Core sorts them, and the box finds them by any part of the name
+    void ImageProcessingWidget::fillModuleTypes()
+    {
+        const QString current = m_moduleTypeCombo->currentData().toString();
+        const QSignalBlocker blocker(m_moduleTypeCombo);
+        m_moduleTypeCombo->clear();
+        for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
+        {
+            m_moduleTypeCombo->addItem(descriptor.name, descriptor.id);
+        }
+        m_moduleTypeCombo->setCurrentIndex((std::max)(0, m_moduleTypeCombo->findData(current)));
+    }
+
+    // Python modules come from scripts the user picks, wherever the scripts are kept
+    void ImageProcessingWidget::fillPythonMenu()
+    {
+        m_pythonMenu->clear();
+        connect(m_pythonMenu->addAction(tr("Add Script...")), &QAction::triggered, this, [this]()
+        {
+            const QString path = QFileDialog::getOpenFileName(this, tr("Add Python Script"), QString(),
+                                                              tr("Python (*.py)"));
+            if (path.isEmpty())
+            {
+                return;
+            }
+            QString error;
+            const QStringList ids = m_scopeonecore->addPythonScript(path, &error);
+            if (ids.isEmpty())
+            {
+                emit problem(tr("Warning"), error);
+                return;
+            }
+            m_moduleTypeCombo->setCurrentIndex(m_moduleTypeCombo->findData(ids.first()));
+            addModule(ids.first(), {});
+        });
+        const QStringList scripts = m_scopeonecore->pythonScripts();
+        if (scripts.isEmpty())
+        {
+            return;
+        }
+        QMenu* removeMenu = m_pythonMenu->addMenu(tr("Remove Script"));
+        for (const QString& script : scripts)
+        {
+            QAction* action = removeMenu->addAction(QFileInfo(script).fileName());
+            action->setToolTip(script);
+            connect(action, &QAction::triggered, this, [this, script]()
+            {
+                QString error;
+                if (!m_scopeonecore->removePythonScript(script, &error))
+                {
+                    emit problem(tr("Warning"), error);
+                }
+            });
+        }
+        removeMenu->setToolTipsVisible(true);
     }
 
     void ImageProcessingWidget::fillPresetMenu()

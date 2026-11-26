@@ -53,6 +53,8 @@ namespace scopeone::ui
         bool pipelineEditable() const;
         bool anyPipelineHasSteps() const;
         void fillPresetMenu();
+        void fillPythonMenu();
+        void fillModuleTypes();
         void savePreset();
         void applyPipeline(const QJsonArray& steps);
         QJsonArray currentPipeline() const;
@@ -105,6 +107,8 @@ namespace scopeone::ui
         QLabel* m_targetInfo{nullptr};
         QPushButton* m_targetButton{nullptr};
         QMenu* m_presetMenu{nullptr};
+        QToolButton* m_pythonButton{nullptr};
+        QMenu* m_pythonMenu{nullptr};
         QPushButton* m_moveModuleUpButton{nullptr};
         QPushButton* m_moveModuleDownButton{nullptr};
         QComboBox* m_moduleTypeCombo{nullptr};
