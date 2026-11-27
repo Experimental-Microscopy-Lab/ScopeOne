@@ -553,7 +553,6 @@ namespace scopeone::core::internal
                 request.insert(driverhost::kMessageTypeField, driverhost::kCommandSetFrameDeliveryMode);
                 request.insert(driverhost::kDeviceIdField, cameraId);
                 request.insert(QStringLiteral("mode"), frameDeliveryModeName(deliveryMode));
-                request.insert(QStringLiteral("previewIntervalMs"), previewFrameIntervalMs());
                 QJsonObject response;
                 return sendRequest(request, response, kControlRequestTimeoutMs, nullptr)
                     && responseSucceeded(response, nullptr);

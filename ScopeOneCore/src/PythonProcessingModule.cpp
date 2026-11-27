@@ -2,6 +2,7 @@
 #include "scopeone/Log.h"
 
 #include "internal/DriverHostProtocol.h"
+#include "internal/FrameBufferPool.h"
 #include "internal/ProcessingModuleRegistry.h"
 
 #include <QDebug>
@@ -304,7 +305,7 @@ namespace scopeone::core::internal
                 output.width = reply.value(QStringLiteral("width")).toInt();
                 output.height = reply.value(QStringLiteral("height")).toInt();
                 output.stride = output.width * (mono16 ? 2 : 1);
-                output.bytes = QByteArray(static_cast<const char*>(m_frames->constData()), byteCount);
+                output.bytes = m_outputBuffers.copy(m_frames->constData(), byteCount);
                 ProcessingResult result(std::move(output));
                 result.measurements = reply.value(QStringLiteral("measurements")).toArray().toVariantList();
                 return result;
@@ -316,6 +317,8 @@ namespace scopeone::core::internal
             std::unique_ptr<QObject> m_threadContext;
             std::unique_ptr<QProcess> m_process;
             std::unique_ptr<QSharedMemory> m_frames;
+            // The results, copied out of m_frames on the module's thread
+            FrameBufferPool m_outputBuffers;
         };
     }
 

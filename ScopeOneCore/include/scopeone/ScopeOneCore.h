@@ -515,8 +515,6 @@ namespace scopeone::core
 
         bool isRealTimeProcessingEnabled() const;
         bool setRealTimeProcessingEnabled(bool enabled);
-        // The live view draws at most once per refresh of the display, at this rate in hertz
-        void setDisplayRefreshRate(double hertz);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         QString realTimeProcessingSource() const;
@@ -910,8 +908,7 @@ namespace scopeone::core
         QString m_activeHistogramLayerKey;
         quint64 m_nextHistogramSequence{0};
         QElapsedTimer m_lineProfileUpdateTimer;
-        QElapsedTimer m_previewPublishTimer;
-        QTimer* m_previewFlushTimer{nullptr};
+        bool m_previewFlushQueued{false};
         QTimer* m_layerFrameRateTimer{nullptr};
         mutable QMutex m_layerFrameRateMutex;
         QElapsedTimer m_layerFrameRateElapsed;

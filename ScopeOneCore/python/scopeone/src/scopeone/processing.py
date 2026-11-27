@@ -138,6 +138,22 @@ def _send(stream, header: dict) -> None:
     stream.flush()
 
 
+# A copy of the frame for the module, as a module may keep the frame and the next frame overwrites
+# the memory. The copy goes into an array of an earlier frame that nothing holds any more: a new
+# large array is mapped page by page on first touch, which made the copy take five times as long.
+# An array that a module kept, or a view of it, has more references and is left alone.
+def _copy_frame(pool: list, view: np.ndarray) -> np.ndarray:
+    for array in pool:
+        # The pool, the loop and getrefcount hold the only references of a free array
+        if array.shape == view.shape and array.dtype == view.dtype and sys.getrefcount(array) <= 3:
+            np.copyto(array, view)
+            return array
+    array = view.copy()
+    pool.append(array)
+    del pool[:-4]
+    return array
+
+
 # One frame per request: a JSON line with the frame in the shared memory it names, and a JSON line
 # back with the result in the same memory
 def _serve() -> None:
@@ -146,7 +162,10 @@ def _serve() -> None:
     # Anything the module prints goes to stderr, so it cannot break the frame stream
     sys.stdout = sys.stderr
     name = None
+    pool = []
     while True:
+        # Released, so the array of the last frame is free for the next one
+        image = result = None
         line = requests.readline()
         if not line:
             return
@@ -157,8 +176,7 @@ def _serve() -> None:
         try:
             dtype = np.uint16 if request["format"] == "mono16" else np.uint8
             rows = np.ndarray((request["height"], request["stride"] // dtype().itemsize), dtype, frames)
-            # A copy, as a module may keep the frame and the next frame overwrites the memory
-            image = rows[:, : request["width"]].copy()
+            image = _copy_frame(pool, rows[:, : request["width"]])
             selected = _modules[request["module"]]
             arguments = dict(request["parameters"])
             if selected.takes_bits:

@@ -257,6 +257,25 @@ namespace scopeone::ui
                     update();
                 });
 
+        m_drawnFpsTimer.setInterval(1000);
+        connect(&m_drawnFpsTimer, &QTimer::timeout, this, [this]()
+        {
+            const double seconds = static_cast<double>(m_drawnFpsClock.restart()) / 1000.0;
+            QMap<QString, double> rates;
+            for (auto it = m_drawnCounts.cbegin(); it != m_drawnCounts.cend(); ++it)
+            {
+                rates.insert(it.key(), seconds > 0.0 ? it.value() / seconds : 0.0);
+            }
+            m_drawnCounts.clear();
+            if (rates != m_layerDrawnFps)
+            {
+                m_layerDrawnFps = rates;
+                updateLayerInfoDisplay();
+            }
+        });
+        m_drawnFpsClock.start();
+        m_drawnFpsTimer.start();
+
         setMinimumSize(256, 256);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
@@ -939,10 +958,11 @@ namespace scopeone::ui
                 .arg(layer.height);
         }
 
-        return QStringLiteral("%1x%2 @ %3 FPS")
+        return QStringLiteral("%1x%2 @ %3 FPS, %4 shown")
             .arg(layer.width)
             .arg(layer.height)
-            .arg(m_layerFps.value(layerKey), 0, 'f', 1);
+            .arg(m_layerFps.value(layerKey), 0, 'f', 1)
+            .arg(m_layerDrawnFps.value(layerKey), 0, 'f', 1);
     }
 
     // Clears preview state for one source
@@ -2638,11 +2658,12 @@ namespace scopeone::ui
                 return;
             }
 
-            lines.append(QString("%1: %2×%3 @ %4 FPS")
+            lines.append(QString("%1: %2×%3 @ %4 FPS, %5 shown")
                          .arg(layerName(key))
                          .arg(layer.width)
                          .arg(layer.height)
-                         .arg(m_layerFps.value(key), 0, 'f', 1));
+                         .arg(m_layerFps.value(key), 0, 'f', 1)
+                         .arg(m_layerDrawnFps.value(key), 0, 'f', 1));
         };
 
         for (const QString& cameraId : m_availableCameraIds)
@@ -3110,6 +3131,18 @@ namespace scopeone::ui
         std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
         std::vector<RenderItem> renderItems;
         buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        for (const RenderItem& item : renderItems)
+        {
+            const quint64 revision = item.processed ? item.info->frameState->processedRevision
+                                                    : item.info->frameState->rawRevision;
+            quint64& drawn = m_drawnRevisions[item.layerKey];
+            if (revision != drawn)
+            {
+                drawn = revision;
+                ++m_drawnCounts[item.layerKey];
+            }
+        }
 
         if (frameSourceRenderInfos.empty())
         {

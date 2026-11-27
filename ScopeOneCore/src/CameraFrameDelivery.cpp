@@ -164,14 +164,6 @@ namespace scopeone::core::internal
         setPreTriggerFrames(frameCounts, byteLimits);
     }
 
-    bool CameraFrameDelivery::previewDue(const QString& cameraId) const
-    {
-        const auto it = m_previewTimers.constFind(cameraId);
-        return it == m_previewTimers.cend()
-            || !it->isValid()
-            || it->elapsed() >= previewFrameIntervalMs();
-    }
-
     // Processing that is busy keeps the newest frame, which it takes as soon as it finishes
     quint64 CameraFrameDelivery::tryAcquireProcessingFrame(const ImageFrame& frame)
     {
@@ -228,7 +220,6 @@ namespace scopeone::core::internal
         }
         const ImageFrame& latestFrame = frames.constLast();
         const QString cameraId = latestFrame.cameraId;
-        const bool highRate = highRateEnabled(cameraId);
         if (const quint64 token = tryAcquireProcessingFrame(latestFrame))
         {
             emit processingFrameReady(latestFrame, token);
@@ -276,14 +267,7 @@ namespace scopeone::core::internal
                 ++queuedFrameCount;
             }
 
-            // Live processing reads frames faster than the view shows them, and a camera kept in
-            // AllFrames mode for its pre-trigger buffer delivers them faster too
-            const bool throttled = highRate || buffer != m_preTriggerBuffers.end();
-            if (recordingWasEnabled || !throttled || previewDue(cameraId))
-            {
-                m_pendingLatestFrames.insert(cameraId, latestFrame);
-                m_previewTimers[cameraId].start();
-            }
+            m_pendingLatestFrames.insert(cameraId, latestFrame);
             if (acquiredFrameCount > 0)
             {
                 m_pendingAcquiredFrameCounts[cameraId] += acquiredFrameCount;

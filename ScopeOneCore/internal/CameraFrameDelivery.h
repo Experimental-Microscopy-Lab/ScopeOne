@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QElapsedTimer>
 #include <QHash>
 #include <QList>
 #include <QMutex>
@@ -73,13 +72,11 @@ namespace scopeone::core::internal
         static void trimPreTriggerBuffer(PreTriggerBuffer& buffer, const QString& cameraId,
                                          std::deque<ImageFrame>& discardedFrames);
         quint64 tryAcquireProcessingFrame(const ImageFrame& frame);
-        bool previewDue(const QString& cameraId) const;
         void flushPendingFrames();
 
         mutable QMutex m_mutex;
         QHash<QString, ImageFrame> m_pendingLatestFrames;
         QHash<QString, quint64> m_pendingAcquiredFrameCounts;
-        QHash<QString, QElapsedTimer> m_previewTimers;
         std::deque<ImageFrame> m_pendingRecordingFrames;
         qint64 m_pendingRecordingBytes{0};
         quint64 m_pendingDroppedRecordingFrames{0};

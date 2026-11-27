@@ -1,4 +1,5 @@
 #include "internal/MicroManagerCamera.h"
+#include "internal/FrameBufferPool.h"
 
 #include "internal/MicroManagerCalls.h"
 
@@ -11,6 +12,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -135,7 +137,10 @@ namespace scopeone::core::internal
             frame.bitsPerSample = layout.bitsPerSample;
             frame.pixelFormat = layout.pixelFormat;
             frame.frameIndex = frameIndex;
-            frame.timestampNs = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ull;
+            // The system clock in nanoseconds, finer than the milliseconds of QDateTime
+            frame.timestampNs = static_cast<quint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                         std::chrono::system_clock::now().time_since_epoch())
+                                                         .count());
             frame.sourceRoiX = layout.sourceRoiX;
             frame.sourceRoiY = layout.sourceRoiY;
             frame.sourceRoiWidth = layout.sourceRoiWidth;
@@ -180,7 +185,6 @@ namespace scopeone::core::internal
         {
             m_layout = layout;
             m_observedIntervalMs = layout.expectedIntervalMs;
-            m_deliveryTimer.invalidate();
             m_frameIntervalTimer.start();
             if (!m_timer)
             {
@@ -204,7 +208,6 @@ namespace scopeone::core::internal
                 m_timer->stop();
             }
             m_frameIntervalTimer.invalidate();
-            m_deliveryTimer.invalidate();
         }
 
         void setPaused(bool paused)
@@ -226,7 +229,6 @@ namespace scopeone::core::internal
         void setMode(FrameDeliveryMode mode)
         {
             m_mode = mode;
-            m_deliveryTimer.invalidate();
         }
 
     private:
@@ -247,13 +249,8 @@ namespace scopeone::core::internal
                     sink = m_owner->m_frameSink;
                 }
                 const bool allFrames = m_mode == FrameDeliveryMode::AllFrames;
-                const bool deliverNewest =
-                    m_mode == FrameDeliveryMode::LatestOnly
-                    || !m_deliveryTimer.isValid()
-                    || m_deliveryTimer.elapsed() >= previewFrameIntervalMs();
                 const qsizetype byteCount = m_layout.byteCount();
                 int frameCount = 0;
-                bool delivered = false;
                 while (remaining-- > 0)
                 {
                     const void* pixels = core.popNextImage();
@@ -263,20 +260,15 @@ namespace scopeone::core::internal
                     }
                     const quint64 frameIndex = ++m_owner->m_frameIndex;
                     ++frameCount;
-                    if (!sink || (!allFrames && (remaining > 0 || !deliverNewest)))
+                    if (!sink || (!allFrames && remaining > 0))
                     {
                         continue;
                     }
                     ImageFrame frame = frameWithLayout(m_layout, frameIndex);
                     frame.bytes = m_owner->m_lendFrames
                                       ? QByteArray::fromRawData(static_cast<const char*>(pixels), byteCount)
-                                      : QByteArray(static_cast<const char*>(pixels), byteCount);
+                                      : m_buffers.copy(pixels, byteCount);
                     sink(frame);
-                    delivered = true;
-                }
-                if (delivered && m_mode == FrameDeliveryMode::PreviewLatest)
-                {
-                    m_deliveryTimer.restart();
                 }
                 updatePollingInterval(frameCount);
             }
@@ -316,8 +308,9 @@ namespace scopeone::core::internal
         FrameLayout m_layout;
         FrameDeliveryMode m_mode{FrameDeliveryMode::PreviewLatest};
         QElapsedTimer m_frameIntervalTimer;
-        QElapsedTimer m_deliveryTimer;
         double m_observedIntervalMs{0.0};
+        // The poll thread alone copies frames into it
+        FrameBufferPool m_buffers;
         bool m_active{false};
         bool m_paused{false};
     };

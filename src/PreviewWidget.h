@@ -290,6 +290,13 @@ signals:
         bool m_viewLinked{true};
         ViewportState m_linkedViewportState;
         QMap<QString, double> m_layerFps;
+        // Frames each layer drew for the first time, counted over a second, beside the frames
+        // that reached it in m_layerFps
+        QHash<QString, quint64> m_drawnRevisions;
+        QHash<QString, int> m_drawnCounts;
+        QMap<QString, double> m_layerDrawnFps;
+        QTimer m_drawnFpsTimer;
+        QElapsedTimer m_drawnFpsClock;
         QTimer m_sliceTimer;
         ImageSceneModel* m_sceneModel{nullptr};
         QLabel* m_placeholderLabel{nullptr};

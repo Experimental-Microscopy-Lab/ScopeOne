@@ -272,11 +272,6 @@ namespace scopeone::core::internal
             std::atomic<FrameDeliveryMode> deliveryMode{FrameDeliveryMode::PreviewLatest};
             std::atomic_bool paused{false};
             QMutex writeMutex;
-            QElapsedTimer deliveryTimer;
-            // The newest frame the live view has not been told about, and the timer that tells it
-            quint64 pendingNotice{0};
-            QTimer* noticeTimer{nullptr};
-            std::atomic_bool noticeQueued{false};
             quint64 frameIndex{0};
             int nextWriteSlot{0};
             bool previewRunning{false};
@@ -292,7 +287,6 @@ namespace scopeone::core::internal
         bool createSharedMemory(CameraTransport& transport);
         void writeCameraFrame(const ImageFrame& frame);
         void releaseSharedMemoryName(const QString& key);
-        void sendPendingNotice(const QString& deviceId);
         bool writeFrame(CameraTransport& transport,
                         const ImageFrame& frame,
                         quint64* frameIndexOut = nullptr);
@@ -462,11 +456,6 @@ namespace scopeone::core::internal
             auto transport = std::make_shared<CameraTransport>();
             transport->deviceId = deviceId;
             transport->shmKey = driverhost::sharedMemoryKey(m_hostKey, cameraIndex++);
-            transport->noticeTimer = new QTimer(this);
-            transport->noticeTimer->setSingleShot(true);
-            transport->noticeTimer->setTimerType(Qt::PreciseTimer);
-            connect(transport->noticeTimer, &QTimer::timeout, this,
-                    [this, deviceId]() { sendPendingNotice(deviceId); });
             if (!createSharedMemory(*transport))
             {
                 return false;
@@ -896,8 +885,7 @@ namespace scopeone::core::internal
     }
 
     // A frame may point into a buffer of the driver, so it is written to shared memory before the
-    // call returns. The live view is told about new frames at most every 16 ms, and the notice it
-    // would miss comes from a timer, so the last frame of a burst is shown too.
+    // call returns.
     void DriverRuntime::writeCameraFrame(const ImageFrame& frame)
     {
         if (!m_acceptFrames.load(std::memory_order_acquire))
@@ -911,38 +899,14 @@ namespace scopeone::core::internal
             return;
         }
         quint64 frameIndex = 0;
-        int noticeDelayMs = 0;
         {
             QMutexLocker locker(&transport->writeMutex);
             if (!writeFrame(*transport, frame, &frameIndex))
             {
                 return;
             }
-            if (transport->deliveryMode.load(std::memory_order_relaxed) == FrameDeliveryMode::PreviewLatest
-                && transport->deliveryTimer.isValid())
-            {
-                noticeDelayMs = previewFrameIntervalMs() - static_cast<int>(transport->deliveryTimer.elapsed());
-            }
-            if (noticeDelayMs > 0)
-            {
-                transport->pendingNotice = frameIndex;
-            }
-            else
-            {
-                transport->pendingNotice = 0;
-                transport->deliveryTimer.restart();
-            }
         }
-        if (noticeDelayMs <= 0)
-        {
-            emitFrameAvailableEvent(deviceId, frameIndex);
-        }
-        else if (!transport->noticeQueued.exchange(true))
-        {
-            QTimer* const timer = transport->noticeTimer;
-            QMetaObject::invokeMethod(timer, [timer, noticeDelayMs]() { timer->start(noticeDelayMs); },
-                                      Qt::QueuedConnection);
-        }
+        emitFrameAvailableEvent(deviceId, frameIndex);
     }
 
     // Removes the name of a ring of this host. Qt never removes the name of POSIX shared memory,
@@ -976,29 +940,6 @@ namespace scopeone::core::internal
 #else
         (void)key;
 #endif
-    }
-
-    void DriverRuntime::sendPendingNotice(const QString& deviceId)
-    {
-        const auto transport = cameraTransport(deviceId);
-        if (!transport)
-        {
-            return;
-        }
-        transport->noticeQueued = false;
-        quint64 frameIndex = 0;
-        {
-            QMutexLocker locker(&transport->writeMutex);
-            frameIndex = std::exchange(transport->pendingNotice, 0);
-            if (frameIndex != 0)
-            {
-                transport->deliveryTimer.restart();
-            }
-        }
-        if (frameIndex != 0)
-        {
-            emitFrameAvailableEvent(deviceId, frameIndex);
-        }
     }
 
     // The caller holds the write mutex of the transport
@@ -1163,7 +1104,6 @@ namespace scopeone::core::internal
                                         QStringLiteral("Unknown frame delivery mode")));
                 return;
             }
-            setPreviewFrameIntervalMs(message.value(QStringLiteral("previewIntervalMs")).toInt(previewFrameIntervalMs()));
             transport->deliveryMode.store(deliveryMode, std::memory_order_relaxed);
             if (m_microManagerCamera)
             {

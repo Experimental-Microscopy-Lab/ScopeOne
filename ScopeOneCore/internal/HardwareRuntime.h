@@ -140,9 +140,6 @@ namespace scopeone::core::internal
         bool setPreTriggerFrames(const QHash<QString, int>& frameCounts, const QHash<QString, qint64>& byteLimits);
         bool setHighRateFrameDeliveryEnabled(const QStringList& cameraIds,
                                              bool enabled);
-        // Sets the preview interval of this process and sends the delivery modes again, which
-        // carry it to DriverHost
-        bool setPreviewFrameInterval(int intervalMs);
         bool isProcessingFrameTokenCurrent(const QString& cameraId, quint64 token);
         void finishProcessingFrame(const QString& cameraId, quint64 token);
         QString defaultXYStage() const;

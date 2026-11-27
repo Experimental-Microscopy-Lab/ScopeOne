@@ -4,7 +4,6 @@
 
 #include "internal/AcquisitionEngine.h"
 #include "internal/FrameBufferUtils.h"
-#include "internal/FrameDeliveryMode.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
 #include "internal/PythonProcessingModule.h"
@@ -1379,11 +1378,6 @@ namespace scopeone::core
         m_sessionFrameThreadPool->setMaxThreadCount(1);
         m_offlineProcessingThreadPool = std::make_unique<QThreadPool>();
         m_offlineProcessingThreadPool->setMaxThreadCount(1);
-        m_previewFlushTimer = new QTimer(this);
-        m_previewFlushTimer->setSingleShot(true);
-        m_previewFlushTimer->setTimerType(Qt::PreciseTimer);
-        connect(m_previewFlushTimer, &QTimer::timeout,
-                this, &ScopeOneCore::flushPreviewFrames);
         m_layerFrameRateTimer = new QTimer(this);
         m_layerFrameRateTimer->setInterval(3000);
         connect(m_layerFrameRateTimer, &QTimer::timeout,
@@ -1918,8 +1912,6 @@ namespace scopeone::core
         m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
         m_frameGraph.clear();
-        m_previewFlushTimer->stop();
-        m_previewPublishTimer.invalidate();
         m_histogramJobStates.clear();
         m_latestHistogramStats.clear();
         m_activeHistogramLayerKey.clear();
@@ -2766,27 +2758,22 @@ namespace scopeone::core
         schedulePreviewFlush();
     }
 
-    // Schedule one display update of the newest frames, at most once per refresh of the display
+    // Every frame goes to the view as it comes, which keeps the newest of each layer and draws as
+    // often as the display shows a frame
     void ScopeOneCore::schedulePreviewFlush()
     {
-        if (m_previewFlushTimer->isActive())
+        if (m_previewFlushQueued)
         {
             return;
         }
-
-        qint64 delayMs = 0;
-        if (m_previewPublishTimer.isValid())
-        {
-            delayMs = qMax(qint64{0},
-                           internal::previewFrameIntervalMs() - m_previewPublishTimer.elapsed());
-        }
-        m_previewFlushTimer->start(static_cast<int>(delayMs));
+        m_previewFlushQueued = true;
+        QMetaObject::invokeMethod(this, [this]() { flushPreviewFrames(); }, Qt::QueuedConnection);
     }
 
     // Flush the newest raw processed and tool frames in one display update
     void ScopeOneCore::flushPreviewFrames()
     {
-        m_previewPublishTimer.restart();
+        m_previewFlushQueued = false;
         flushProcessedFrames();
         QHash<QString, ImageFrame> rawFrames;
         QHash<QString, ImageFrame> processedFrames;
@@ -2794,6 +2781,10 @@ namespace scopeone::core
         rawFrames.swap(m_pendingPreviewRawFrames);
         processedFrames.swap(m_pendingPreviewProcessedFrames);
         toolFrames.swap(m_pendingPreviewToolFrames);
+        if (rawFrames.isEmpty() && processedFrames.isEmpty() && toolFrames.isEmpty())
+        {
+            return;
+        }
         for (auto it = rawFrames.constBegin(); it != rawFrames.constEnd(); ++it)
         {
             emit previewRawFrameReady(it.value());
@@ -4372,19 +4363,6 @@ namespace scopeone::core
     bool ScopeOneCore::isRealTimeProcessingEnabled() const
     {
         return m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
-    }
-
-    void ScopeOneCore::setDisplayRefreshRate(double hertz)
-    {
-        if (hertz <= 0.0)
-        {
-            return;
-        }
-        const int intervalMs = qMax(1, static_cast<int>(1000.0 / hertz));
-        if (intervalMs != internal::previewFrameIntervalMs())
-        {
-            m_managers->hardwareRuntime->setPreviewFrameInterval(intervalMs);
-        }
     }
 
     // Toggle live processing without changing the module list
