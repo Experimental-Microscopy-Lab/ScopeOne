@@ -1,0 +1,113 @@
+name: CodeQL
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp:
+    name: CodeQL (C++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            build-essential \
+            cmake \
+            autoconf \
+            automake \
+            libtool \
+            autoconf-archive \
+            pkg-config \
+            libboost-all-dev \
+            ninja-build curl zip unzip \
+            libegl-dev libopengl-dev libx11-xcb-dev libxrender-dev \
+            libxcb-cursor-dev libxcb-icccm4-dev libxcb-util-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-sync-dev libxcb-xinput-dev libxcb-glx0-dev \
+            libxkbcommon-x11-dev
+
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/scopeone-vcpkg"
+          git -C "$RUNNER_TEMP/scopeone-vcpkg" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+          "$RUNNER_TEMP/scopeone-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/scopeone-vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-scopeone-ubuntu-24.04-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-scopeone-ubuntu-24.04-
+
+      # Micro-Manager and the vcpkg ports are built before CodeQL starts, so only ScopeOne's own
+      # code is analyzed
+      - name: Build dependencies and ScopeOne
+        shell: bash
+        run: ./scripts/build.sh
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+
+      - name: Rebuild ScopeOne for CodeQL
+        shell: bash
+        run: |
+          cmake --build ScopeOneCore/build --clean-first --parallel
+          cmake --build drivers/build --clean-first --parallel
+          cmake --build build --clean-first --parallel
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp
+
+  python:
+    name: CodeQL (Python)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Check out ScopeOne
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:python
