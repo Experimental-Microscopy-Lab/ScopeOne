@@ -11,7 +11,7 @@
 ScopeOne is a high-performance open-source microscopy control platform built with C++ and Qt. It is designed to be an extensible platform for advanced microscopy applications, including multiple camera live imaging, on-the-fly image processing, and automated experiments.
  It retains compatibility with the [Micro-Manager](https://micro-manager.org/) broad device ecosystem while allowing featuers like online image processing with GPU acceleration, deep learning inference and more.
 <p align="center">
-  <img src="resources/Screenshot 2026-09-01 140040.png" width="720"><br>
+  <img src="resources/MainWindow.png" width="720"><br>
   <sub> Graphical User Interface of ScopeOne</sub>
 </p>
 
