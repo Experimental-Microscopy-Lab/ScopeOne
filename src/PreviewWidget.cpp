@@ -8,6 +8,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QElapsedTimer>
+#include <chrono>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
@@ -41,6 +43,32 @@ namespace scopeone::ui
 
     namespace
     {
+        // Latency probe: the file named by SCOPEONE_LATENCY_FILE, flushed once a second
+        QFile* latencyProbeFile()
+        {
+            static QFile file(qEnvironmentVariable("SCOPEONE_LATENCY_FILE"));
+            static QElapsedTimer sinceFlush;
+            if (file.fileName().isEmpty())
+                return nullptr;
+            if (!file.isOpen())
+            {
+                file.open(QIODevice::Append | QIODevice::Text);
+                sinceFlush.start();
+            }
+            if (sinceFlush.elapsed() >= 1000)
+            {
+                file.flush();
+                sinceFlush.restart();
+            }
+            return &file;
+        }
+
+        qint64 latencyProbeNowNs()
+        {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       std::chrono::system_clock::now().time_since_epoch()).count();
+        }
+
         constexpr int kColormapSize = 256;
 
         QByteArray loadImageJLut(const QString& name)
@@ -482,6 +510,15 @@ namespace scopeone::ui
 
     void PreviewWidget::setLayerFrameRates(const QMap<QString, double>& frameRates)
     {
+        // Latency probe: the frames that reached each layer, per second
+        if (QFile* const file = latencyProbeFile())
+        {
+            const qint64 nowMs = latencyProbeNowNs() / 1000000;
+            for (auto it = frameRates.cbegin(); it != frameRates.cend(); ++it)
+            {
+                file->write(QStringLiteral("rate %1 %2 %3\n").arg(nowMs).arg(it.key()).arg(it.value(), 0, 'f', 2).toUtf8());
+            }
+        }
         m_layerFps = frameRates;
         updateLayerInfoDisplay();
     }
@@ -3131,6 +3168,40 @@ namespace scopeone::ui
         std::vector<FrameSourceRenderInfo> frameSourceRenderInfos;
         std::vector<RenderItem> renderItems;
         buildRenderSnapshot(frameSources, frameSourceRenderInfos, renderItems);
+
+        // Latency probe: at the end of this draw, write each frame drawn for the first time:
+        // kind, time in ms, latency in ms from its nanosecond timestamp
+        struct LatencyProbe
+        {
+            QOpenGLFunctions* gl;
+            const QMap<QString, FrameSourceState>& sources;
+            ~LatencyProbe()
+            {
+                static QMap<QString, quint64> lastRevision;
+                QFile* const file = latencyProbeFile();
+                if (!file)
+                    return;
+                gl->glFinish();
+                const qint64 nowNs = latencyProbeNowNs();
+                for (auto it = sources.cbegin(); it != sources.cend(); ++it)
+                {
+                    const bool processed = it->processedFrame.isValid();
+                    const auto& frame = processed ? it->processedFrame : it->rawFrame;
+                    const quint64 revision = processed ? it->processedRevision : it->rawRevision;
+                    if (!frame.isValid() || frame.timestampNs == 0)
+                        continue;
+                    const QString key = it.key() + (processed ? QStringLiteral("/p") : QStringLiteral("/r"));
+                    if (lastRevision.value(key) == revision)
+                        continue;
+                    lastRevision.insert(key, revision);
+                    file->write(QStringLiteral("%1 %2 %3\n")
+                                    .arg(processed ? QStringLiteral("processed") : QStringLiteral("raw"))
+                                    .arg(nowNs / 1000000)
+                                    .arg(static_cast<double>(nowNs - static_cast<qint64>(frame.timestampNs)) / 1e6, 0, 'f', 3)
+                                    .toUtf8());
+                }
+            }
+        } latencyProbe{context()->functions(), frameSources};
 
         for (const RenderItem& item : renderItems)
         {
