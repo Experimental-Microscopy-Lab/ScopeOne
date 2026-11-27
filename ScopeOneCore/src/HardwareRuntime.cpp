@@ -618,9 +618,12 @@ namespace scopeone::core::internal
         QHash<QString, FrameDeliveryMode> modes;
         for (const HardwareDeviceDescriptor& device : devices())
         {
-            if (device.kind == HardwareDeviceKind::Camera)
+            // Only cameras whose buffer turns on or off switch, as pushing every camera refused triggers
+            // without pre-trigger frames whenever one camera could not take a mode
+            const QString& cameraId = device.logicalId;
+            if (device.kind == HardwareDeviceKind::Camera
+                && m_frameDelivery.preTriggerEnabled(cameraId) != (frameCounts.value(cameraId) > 0))
             {
-                const QString& cameraId = device.logicalId;
                 modes.insert(cameraId, m_frameDelivery.recordingEnabled(cameraId) || frameCounts.value(cameraId) > 0
                                            ? FrameDeliveryMode::AllFrames
                                            : m_frameDelivery.highRateEnabled(cameraId)
@@ -1334,7 +1337,11 @@ namespace scopeone::core::internal
         {
             for (const HardwareConfiguration::Limit& entry : limits)
             {
-                if (entry.device == device && entry.property == property)
+                // A limit on Z holds Position of the same device as well, as at load; matching the name
+                // alone let a Shutdown Position move a Z stage past its limit
+                if (entry.device == device
+                    && (entry.property == property
+                        || (entry.property == QLatin1String("Z") && property == QLatin1String("Position"))))
                 {
                     bool number = false;
                     const double x = value.toDouble(&number);

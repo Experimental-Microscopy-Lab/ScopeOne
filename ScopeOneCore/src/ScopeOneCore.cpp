@@ -719,6 +719,25 @@ namespace
         }
     }
 
+    // The modules among ids that a step of the shared pipeline or of a camera's own one uses
+    QStringList usedProcessingModules(const scopeone::core::ScopeOneCore& core, const QStringList& ids)
+    {
+        QStringList pipelines = core.camerasWithOwnProcessingPipeline();
+        pipelines.prepend(QString());
+        QStringList used;
+        for (const QString& cameraId : std::as_const(pipelines))
+        {
+            for (const auto& module : core.processingModules(cameraId))
+            {
+                if (ids.contains(module.id()) && !used.contains(module.id()))
+                {
+                    used.append(module.id());
+                }
+            }
+        }
+        return used;
+    }
+
 }
 
 namespace scopeone::core
@@ -4659,7 +4678,28 @@ namespace scopeone::core
             previous.append({descriptor, registry.unregisterModule(id)});
         }
         QString error;
-        const QStringList ids = internal::registerPythonScript(registry, script, error);
+        QStringList ids = internal::registerPythonScript(registry, script, error);
+        // A script read again without a module that a pipeline step still uses is refused, as it left
+        // the step with no script, so recipes lost it and the script could be removed under it
+        if (!ids.isEmpty())
+        {
+            QStringList removed;
+            for (const auto& [descriptor, factory] : previous)
+            {
+                if (!ids.contains(descriptor.id)) removed.append(descriptor.id);
+            }
+            const QStringList dropped = usedProcessingModules(*this, removed);
+            if (!dropped.isEmpty())
+            {
+                for (const QString& id : std::as_const(ids))
+                {
+                    registry.unregisterModule(id);
+                }
+                ids.clear();
+                error = QStringLiteral("The script no longer has %1; remove its steps from the pipeline first")
+                            .arg(dropped.join(QStringLiteral(", ")));
+            }
+        }
         if (ids.isEmpty())
         {
             for (const auto& [descriptor, factory] : previous)
@@ -4687,18 +4727,10 @@ namespace scopeone::core
     {
         const QString script = QFileInfo(path).absoluteFilePath();
         const QStringList ids = m_managers->pythonScripts.value(script);
-        QStringList pipelines = camerasWithOwnProcessingPipeline();
-        pipelines.prepend(QString());
-        for (const QString& cameraId : std::as_const(pipelines))
+        if (!usedProcessingModules(*this, ids).isEmpty())
         {
-            for (const ProcessingModuleInfo& module : processingModules(cameraId))
-            {
-                if (ids.contains(module.id()))
-                {
-                    if (errorMessage) *errorMessage = QStringLiteral("Remove the steps of %1 from the pipeline first").arg(script);
-                    return false;
-                }
-            }
+            if (errorMessage) *errorMessage = QStringLiteral("Remove the steps of %1 from the pipeline first").arg(script);
+            return false;
         }
         for (const QString& id : ids)
         {
@@ -5564,15 +5596,17 @@ namespace scopeone::core
                     parameters.insert(QStringLiteral("preset"), trigger.preset);
                 }
                 logAction(QStringLiteral("trigger"), triggerActionName(trigger.action), parameters, success, error);
+                // One multi-argument arg, as chained calls filled a %N inside the measurement name or
+                // the camera id with the arguments after it
                 const QString line = QStringLiteral("Trigger %1 fired: %2 %3 %4 %5 (%6, frame %7), %8")
-                                         .arg(index)
-                                         .arg(trigger.measurement)
-                                         .arg(measurement.value(QStringLiteral("value")).toDouble())
-                                         .arg(parameters.value(QStringLiteral("compare")).toString())
-                                         .arg(trigger.threshold)
-                                         .arg(cameraId)
-                                         .arg(frameIndex)
-                                         .arg(triggerActionName(trigger.action));
+                                         .arg(QString::number(index),
+                                              trigger.measurement,
+                                              QString::number(measurement.value(QStringLiteral("value")).toDouble()),
+                                              parameters.value(QStringLiteral("compare")).toString(),
+                                              QString::number(trigger.threshold),
+                                              cameraId,
+                                              QString::number(frameIndex),
+                                              triggerActionName(trigger.action));
                 if (success)
                 {
                     qInfo().noquote() << line;

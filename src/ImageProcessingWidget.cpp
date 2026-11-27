@@ -1390,8 +1390,8 @@ namespace scopeone::ui
         for (const QJsonValue& value : steps)
         {
             const QJsonObject step = value.toObject();
-            // A preset from before a restart, or a file from another computer, names the script of a
-            // Python step, which is read when no module of that id is listed, from whatever path
+            // A preset names the script of a Python step but does not add it, as reading a script runs
+            // it and the preset may come from a file from another computer; Core treats recipes the same
             const QString script = step.value(QStringLiteral("script")).toString();
             const QString id = step.value(QStringLiteral("id")).toString();
             bool listed = false;
@@ -1399,10 +1399,11 @@ namespace scopeone::ui
             {
                 listed = listed || descriptor.id == id;
             }
-            QString error;
-            if (!script.isEmpty() && !listed && m_scopeonecore->addPythonScript(script, &error).isEmpty())
+            if (!script.isEmpty() && !listed)
             {
-                emit problem(tr("Warning"), error);
+                emit problem(tr("Warning"),
+                             tr("%1 comes from the Python script %2, which is not added. "
+                                "Add it with Python > Add Script and load the preset again.").arg(id, script));
                 continue;
             }
             addModule(step.value(QStringLiteral("id")).toString(),

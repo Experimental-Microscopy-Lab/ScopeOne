@@ -1340,7 +1340,11 @@ namespace scopeone::core::internal
             if (!isCamera(cameraId)) return false;
             if (isPreviewRunning(cameraId)) return true;
             QJsonObject response;
-            if (!request(driverhost::kCommandStartPreview, cameraId, {}, response, nullptr))
+            // The interval goes with every start, as a host started after the display rate was set
+            // kept the default 16 ms until a delivery mode was sent to it
+            QJsonObject fields;
+            fields.insert(QStringLiteral("previewIntervalMs"), previewFrameIntervalMs());
+            if (!request(driverhost::kCommandStartPreview, cameraId, fields, response, nullptr))
             {
                 return false;
             }

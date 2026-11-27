@@ -1202,6 +1202,10 @@ namespace scopeone::core::internal
                 return;
             }
             const bool start = type == driverhost::kCommandStartPreview;
+            if (start)
+            {
+                setPreviewFrameIntervalMs(message.value(QStringLiteral("previewIntervalMs")).toInt(previewFrameIntervalMs()));
+            }
             // Images of a sequence the client gave up on would otherwise stay in memory
             m_sequences.remove(deviceId);
             const bool ok = start

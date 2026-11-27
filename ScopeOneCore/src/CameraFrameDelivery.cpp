@@ -65,7 +65,11 @@ namespace scopeone::core::internal
             }
             if (wasRecording == m_recordingCameras.isEmpty())
             {
-                discardedFrames.swap(m_pendingRecordingFrames);
+                // Appended rather than swapped, as a swap put the pre-trigger frames just moved into
+                // discardedFrames into the recording queue
+                std::move(m_pendingRecordingFrames.begin(), m_pendingRecordingFrames.end(),
+                          std::back_inserter(discardedFrames));
+                m_pendingRecordingFrames.clear();
                 m_pendingRecordingBytes = 0;
                 m_pendingDroppedRecordingFrames = 0;
                 m_pendingDeliveryError.clear();
@@ -306,7 +310,11 @@ namespace scopeone::core::internal
                 const quint64 submittedFrameCount = (std::max)(acquiredFrameCount, validFrameCount);
                 m_pendingDroppedRecordingFrames += submittedFrameCount - queuedFrameCount;
                 m_pendingDroppedRecordingFrames += static_cast<quint64>(m_pendingRecordingFrames.size());
-                discardedFrames.swap(m_pendingRecordingFrames);
+                // Appended rather than swapped, as a swap put the evicted pre-trigger frames already in
+                // discardedFrames into the recording queue
+                std::move(m_pendingRecordingFrames.begin(), m_pendingRecordingFrames.end(),
+                          std::back_inserter(discardedFrames));
+                m_pendingRecordingFrames.clear();
                 m_pendingRecordingBytes = 0;
             }
             if (!m_frameFlushQueued
