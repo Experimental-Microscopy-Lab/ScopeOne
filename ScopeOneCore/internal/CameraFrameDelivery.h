@@ -37,7 +37,8 @@ namespace scopeone::core::internal
         void setHighRateEnabled(const QStringList& cameraIds, bool enabled);
         bool highRateEnabled(const QString& cameraId) const;
         // Keeps the last frames of each camera for record triggers that start with frames from before
-        // the threshold: frameCounts frames, and no more than byteLimits bytes, of each camera.
+        // the threshold: frameCounts frames, and no more than byteLimits bytes, of each camera. A
+        // camera without a byte limit, or one of 0, is bounded by its frame count only.
         // Cameras without a count keep nothing, and such a camera runs in AllFrames mode only
         // while it is recorded.
         void setPreTriggerFrames(const QHash<QString, int>& frameCounts, const QHash<QString, qint64>& byteLimits);

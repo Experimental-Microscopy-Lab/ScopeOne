@@ -4519,13 +4519,19 @@ namespace scopeone::core
             return false;
         }
 
-        // A recipe from another session names the scripts of its Python modules
+        // A recipe names the scripts of its Python modules, but reading a script runs it, so a
+        // recipe from a file does not add one; the user adds it with addPythonScript
         for (const ProcessingModuleRecipe& entry : recipe.modules)
         {
             if (!entry.script.isEmpty()
-                && m_managers->processingModuleRegistry->descriptor(entry.moduleId).id.isEmpty()
-                && addPythonScript(entry.script, errorMessage).isEmpty())
+                && m_managers->processingModuleRegistry->descriptor(entry.moduleId).id.isEmpty())
             {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Processing module %1 comes from the Python script %2, "
+                                                   "which is not added; add the script first")
+                                        .arg(entry.moduleId, entry.script);
+                }
                 return false;
             }
         }
@@ -5284,12 +5290,13 @@ namespace scopeone::core
                 QVariantMap data{{QStringLiteral("event"), eventData}};
                 if (point == HookPoint::AfterEvent)
                 {
+                    // The recording numbers the frames itself, after this hook, so a frame is found
+                    // in the session by the sequenceIndex of its event, not by a frame index
                     QVariantList frames;
                     for (auto it = output.frames.cbegin(); it != output.frames.cend(); ++it)
                     {
                         frames.append(QVariantMap{
                             {QStringLiteral("cameraId"), it.key()},
-                            {QStringLiteral("frameIndex"), it.value().frameIndex},
                             {QStringLiteral("timestampNs"), it.value().timestampNs},
                             {QStringLiteral("width"), it.value().width},
                             {QStringLiteral("height"), it.value().height}
@@ -5423,6 +5430,16 @@ namespace scopeone::core
             {
                 // Before the camera has shown a frame, its ROI at two bytes a pixel
                 frameBytes = static_cast<qint64>(width) * height * 2;
+            }
+            if (frameBytes <= 0)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("The frame size of %1 is not known for its pre-trigger frames; "
+                                                   "start its preview first")
+                                        .arg(it.key());
+                }
+                return false;
             }
             byteLimits.insert(it.key(), frameBytes * it.value());
             totalBytes += frameBytes * it.value();

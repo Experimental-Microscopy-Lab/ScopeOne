@@ -1,6 +1,7 @@
 #include "ConsoleWidget.h"
 #include "TerminalWidget.h"
 #include "scopeone/Log.h"
+#include <memory>
 #include <QScrollBar>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -58,17 +59,24 @@ namespace scopeone::ui
         clearShortcut->setContext(Qt::WidgetWithChildrenShortcut);
         connect(clearShortcut, &QShortcut::activated, this, &ConsoleWidget::clearMessages);
 
-        // The console shows the log of Core, the entries written before it existed among them
+        // The console shows the log of Core, the entries written before it existed among them.
+        // It connects before it reads them, so no entry is lost in between, and the queued
+        // entries that the read already had are left out by their sequence.
         auto* log = scopeone::core::Log::instance();
+        auto shownUpTo = std::make_shared<quint64>(0);
+        connect(log, &scopeone::core::Log::entryAdded, this,
+                [this, shownUpTo](const scopeone::core::LogEntry& entry)
+                {
+                    if (entry.sequence > *shownUpTo)
+                    {
+                        addMessage(entry.message, entry.level, entry.time.toLocalTime(), entry.source);
+                    }
+                }, Qt::QueuedConnection);
         for (const scopeone::core::LogEntry& entry : log->entries())
         {
             addMessage(entry.message, entry.level, entry.time.toLocalTime(), entry.source);
+            *shownUpTo = entry.sequence;
         }
-        connect(log, &scopeone::core::Log::entryAdded, this,
-                [this](const scopeone::core::LogEntry& entry)
-                {
-                    addMessage(entry.message, entry.level, entry.time.toLocalTime(), entry.source);
-                }, Qt::QueuedConnection);
         updateDisplay();
     }
 

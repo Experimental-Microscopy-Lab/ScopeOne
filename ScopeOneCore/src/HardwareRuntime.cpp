@@ -611,19 +611,29 @@ namespace scopeone::core::internal
         return true;
     }
 
+    // The cameras switch first, so a refused switch leaves the buffers and the modes as they were
     bool HardwareRuntime::setPreTriggerFrames(const QHash<QString, int>& frameCounts,
                                               const QHash<QString, qint64>& byteLimits)
     {
-        m_frameDelivery.setPreTriggerFrames(frameCounts, byteLimits);
         QHash<QString, FrameDeliveryMode> modes;
         for (const HardwareDeviceDescriptor& device : devices())
         {
             if (device.kind == HardwareDeviceKind::Camera)
             {
-                modes.insert(device.logicalId, m_frameDelivery.mode(device.logicalId));
+                const QString& cameraId = device.logicalId;
+                modes.insert(cameraId, m_frameDelivery.recordingEnabled(cameraId) || frameCounts.value(cameraId) > 0
+                                           ? FrameDeliveryMode::AllFrames
+                                           : m_frameDelivery.highRateEnabled(cameraId)
+                                                 ? FrameDeliveryMode::LatestOnly
+                                                 : FrameDeliveryMode::PreviewLatest);
             }
         }
-        return applyFrameDeliveryModes(modes);
+        if (!applyFrameDeliveryModes(modes))
+        {
+            return false;
+        }
+        m_frameDelivery.setPreTriggerFrames(frameCounts, byteLimits);
+        return true;
     }
 
     bool HardwareRuntime::setPreviewFrameInterval(int intervalMs)
@@ -1310,12 +1320,60 @@ namespace scopeone::core::internal
 
     // Runs off the GUI thread, as the ScopeOne devices are set over their DriverHosts. The previews
     // are stopped on the GUI thread before, as stopping them here raced with the registry and the
-    // frame delivery of the GUI thread.
+    // frame delivery of the GUI thread. The configuration path is cleared by then, so the values
+    // are checked against the limits of the cfg they come from: the Micro-Manager preset is
+    // skipped as a whole when one of its values leaves a limit, and a ScopeOne line on its own.
     void HardwareRuntime::applyShutdownSettings()
     {
-        m_microManager->applyShutdownPreset();
+        QList<HardwareConfiguration::Limit> limits;
+        {
+            QReadLocker locker(&m_limitsLock);
+            limits = m_shutdownLimits;
+        }
+        const auto outOfRange = [&limits](const QString& device, const QString& property, const QString& value)
+        {
+            for (const HardwareConfiguration::Limit& entry : limits)
+            {
+                if (entry.device == device && entry.property == property)
+                {
+                    bool number = false;
+                    const double x = value.toDouble(&number);
+                    return !number || x < entry.min || x > entry.max || !std::isfinite(x);
+                }
+            }
+            return false;
+        };
+
+        bool presetInRange = true;
+        for (const ConfigSetting& setting : m_microManager->configSettings(QStringLiteral("System"),
+                                                                           QStringLiteral("Shutdown")))
+        {
+            if (outOfRange(setting.device, setting.property, setting.value))
+            {
+                qWarning().noquote() << QStringLiteral("System/Shutdown is not applied: %1 %2 = %3 leaves its limit")
+                                            .arg(setting.device, setting.property, setting.value);
+                presetInRange = false;
+                break;
+            }
+        }
+        if (presetInRange)
+        {
+            m_microManager->applyShutdownPreset();
+        }
+
+        QList<ScopeOneConfigGroupLine> lines;
+        for (const ScopeOneConfigGroupLine& line : m_scopeOne.shutdownSettings())
+        {
+            if (outOfRange(line.label, line.property, line.value))
+            {
+                qWarning().noquote() << QStringLiteral("Shutdown setting %1 %2 = %3 is not applied, as it leaves its limit")
+                                            .arg(line.label, line.property, line.value);
+                continue;
+            }
+            lines.append(line);
+        }
         QString error;
-        if (!applyScopeOneLines(m_scopeOne.shutdownSettings(), &error))
+        if (!applyScopeOneLines(lines, &error))
         {
             qWarning().noquote() << QStringLiteral("Shutdown settings failed: %1").arg(error);
         }
@@ -1387,6 +1445,10 @@ namespace scopeone::core::internal
         m_autoShutter = document.role(QStringLiteral("AutoShutter")) != QStringLiteral("0");
         QWriteLocker locker(&m_limitsLock);
         m_limits = document.limits();
+        if (!m_configurationPath.isEmpty())
+        {
+            m_shutdownLimits = m_limits;
+        }
     }
 
     QList<HardwareConfiguration::Limit> HardwareRuntime::limits() const
@@ -1869,9 +1931,15 @@ namespace scopeone::core::internal
                 {
                     const bool running = anyCameraRunning();
                     // The shutter follows the cameras both ways, as MMCore opens it when a sequence
-                    // starts and closes it when one stops. Only closing it left it closed after a
-                    // camera restarted its live view around a change of the exposure.
-                    if (m_autoShutter) setDefaultShutterOpen(running);
+                    // starts and closes it when one stops, so a camera that restarts its live view
+                    // around a change of the exposure opens it again. It moves only when the
+                    // cameras start or all stop, so another camera starting while one runs does
+                    // not reopen a shutter that an acquisition has closed.
+                    if (running != m_camerasRunning)
+                    {
+                        m_camerasRunning = running;
+                        if (m_autoShutter && !m_shutterHeldByAcquisition) setDefaultShutterOpen(running);
+                    }
                     emit previewStateChanged(running);
                 };
                 if (QThread::currentThread() == thread()) publishState();

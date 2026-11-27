@@ -216,6 +216,7 @@ namespace scopeone::core::internal
                 const QByteArray name = m_frames->nativeIpcKey().nativeKey().toLocal8Bit();
 #endif
                 m_frames.reset();
+                m_frameCapacity = 0;
 #ifndef Q_OS_WIN
                 ::shm_unlink(name.constData());
                 ::sem_unlink(name.constData());
@@ -223,10 +224,11 @@ namespace scopeone::core::internal
             }
 
             // The memory the frame goes to Python in and the result comes back in. It holds twice
-            // the frame, so that a module may return a 16-bit result of an 8-bit frame.
+            // the frame, so that a module may return a 16-bit result of an 8-bit frame. Python maps
+            // the size asked for here, as size() on Windows is rounded up to whole pages.
             bool reserveFrames(qsizetype frameBytes)
             {
-                if (m_frames && m_frames->size() >= 2 * frameBytes)
+                if (m_frames && m_frameCapacity >= 2 * frameBytes)
                 {
                     return true;
                 }
@@ -241,6 +243,7 @@ namespace scopeone::core::internal
                     m_frames.reset();
                     return false;
                 }
+                m_frameCapacity = 2 * frameBytes;
                 return true;
             }
 
@@ -274,7 +277,7 @@ namespace scopeone::core::internal
                     {QStringLiteral("bits"), frame.isMono16() ? frame.bitsPerSample : 8},
                     {QStringLiteral("parameters"), QJsonObject::fromVariantMap(m_parameters)},
                     {QStringLiteral("mapping"), m_frames->nativeIpcKey().nativeKey()},
-                    {QStringLiteral("capacity"), static_cast<qint64>(m_frames->size())}};
+                    {QStringLiteral("capacity"), static_cast<qint64>(m_frameCapacity)}};
                 m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
 
                 while (!m_process->canReadLine())
@@ -284,25 +287,42 @@ namespace scopeone::core::internal
                         return failure(QStringLiteral("Python module %1 stopped answering").arg(id()));
                     }
                 }
-                const QJsonObject reply = QJsonDocument::fromJson(m_process->readLine()).object();
+                QJsonParseError parseError;
+                const QJsonDocument document = QJsonDocument::fromJson(m_process->readLine(), &parseError);
                 const QByteArray printed = m_process->readAllStandardError();
                 if (!printed.isEmpty())
                 {
                     Log::write(QStringLiteral("INFO"), QStringLiteral("python:%1").arg(id()),
                                QString::fromUtf8(printed).trimmed());
                 }
+                // A line that is not a reply means the stream is out of step, and failure stops the
+                // process so that the next frame starts a new one
+                if (parseError.error != QJsonParseError::NoError || !document.isObject())
+                {
+                    return failure(QStringLiteral("Python module %1 sent an invalid reply").arg(id()));
+                }
+                const QJsonObject reply = document.object();
                 if (reply.contains(QStringLiteral("error")))
                 {
                     return ProcessingResult(ImageFrame{}, reply.value(QStringLiteral("error")).toString());
                 }
 
+                const QString format = reply.value(QStringLiteral("format")).toString();
+                const bool mono16 = format == QStringLiteral("mono16");
+                const qint64 width = reply.value(QStringLiteral("width")).toInteger();
+                const qint64 height = reply.value(QStringLiteral("height")).toInteger();
                 const qint64 byteCount = reply.value(QStringLiteral("bytes")).toInteger();
+                if ((!mono16 && format != QStringLiteral("mono8")) || width <= 0 || height <= 0
+                    || width > m_frameCapacity || height > m_frameCapacity
+                    || byteCount != width * height * (mono16 ? 2 : 1) || byteCount > m_frameCapacity)
+                {
+                    return failure(QStringLiteral("Python module %1 sent an invalid reply").arg(id()));
+                }
                 ImageFrame output = frame;
-                const bool mono16 = reply.value(QStringLiteral("format")).toString() == QStringLiteral("mono16");
                 output.pixelFormat = mono16 ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
                 output.bitsPerSample = mono16 ? (frame.isMono16() ? frame.bitsPerSample : 16) : 8;
-                output.width = reply.value(QStringLiteral("width")).toInt();
-                output.height = reply.value(QStringLiteral("height")).toInt();
+                output.width = static_cast<int>(width);
+                output.height = static_cast<int>(height);
                 output.stride = output.width * (mono16 ? 2 : 1);
                 output.bytes = QByteArray(static_cast<const char*>(m_frames->constData()), byteCount);
                 ProcessingResult result(std::move(output));
@@ -316,6 +336,7 @@ namespace scopeone::core::internal
             std::unique_ptr<QObject> m_threadContext;
             std::unique_ptr<QProcess> m_process;
             std::unique_ptr<QSharedMemory> m_frames;
+            qsizetype m_frameCapacity = 0;
         };
     }
 

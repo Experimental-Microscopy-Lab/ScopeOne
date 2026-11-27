@@ -358,12 +358,13 @@ namespace scopeone::core::internal
     }
 
     // Drops the oldest frames beyond the frame count or the bytes of the buffer, but keeps the
-    // newest frame even when it alone is larger than the bytes
+    // newest frame even when it alone is larger than the bytes. A byte limit of 0 or less bounds
+    // the frame count only.
     void CameraFrameDelivery::trimPreTriggerBuffer(PreTriggerBuffer& buffer, const QString& cameraId,
                                                    std::deque<ImageFrame>& discardedFrames)
     {
         while (static_cast<int>(buffer.frames.size()) > buffer.frameCount
-               || (buffer.bytes > buffer.byteLimit && buffer.frames.size() > 1))
+               || (buffer.byteLimit > 0 && buffer.bytes > buffer.byteLimit && buffer.frames.size() > 1))
         {
             if (static_cast<int>(buffer.frames.size()) <= buffer.frameCount && !buffer.warned)
             {

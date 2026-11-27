@@ -132,7 +132,10 @@ namespace scopeone::core::internal
         void closeShutter(const AcquisitionEvent& event, SequenceState& state);
 
         void captureInitialState(const QList<AcquisitionEvent>& events, bool hooked, SequenceState& state);
-        void applyHookChanges(AcquisitionEvent& event, const HookReply& reply) const;
+        bool applyHookChanges(AcquisitionEvent& event,
+                              const HookReply& reply,
+                              const SequenceState& state,
+                              QString* errorMessage) const;
         void restoreInitialState(const SequenceState& state);
         bool setupEvent(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);
         bool applyChannel(const AcquisitionEvent& event, SequenceState& state, QString* errorMessage);

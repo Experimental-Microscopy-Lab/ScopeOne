@@ -4,6 +4,7 @@
 #include "internal/MDAManager.h"
 #include <QElapsedTimer>
 #include <QHash>
+#include <QSet>
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
@@ -128,8 +129,8 @@ namespace scopeone::core::internal
         {
             QStringList activeCameraIds;
             QHash<QString, quint64> lastFrameIndex;
-            // Frames queued before the recording began are not part of it
-            bool awaitingFrameBarrier{false};
+            // The cameras whose frames queued before the recording began are not part of it
+            QSet<QString> awaitingFrameBarrier;
             QHash<QString, qint64> framesCapturedThisBurst;
             QHash<QString, qint64> framesCapturedTotal;
             bool isRecording{false};

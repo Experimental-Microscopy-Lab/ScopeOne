@@ -1391,9 +1391,14 @@ namespace scopeone::ui
         {
             const QJsonObject step = value.toObject();
             // A preset from before a restart, or a file from another computer, names the script of a
-            // Python step, which is read when its modules are not listed
+            // Python step, which is read when no module of that id is listed, from whatever path
             const QString script = step.value(QStringLiteral("script")).toString();
-            const bool listed = m_scopeonecore->pythonScriptOf(step.value(QStringLiteral("id")).toString()) == script;
+            const QString id = step.value(QStringLiteral("id")).toString();
+            bool listed = false;
+            for (const ProcessingModuleDescriptor& descriptor : m_scopeonecore->availableProcessingModules())
+            {
+                listed = listed || descriptor.id == id;
+            }
             QString error;
             if (!script.isEmpty() && !listed && m_scopeonecore->addPythonScript(script, &error).isEmpty())
             {

@@ -22,6 +22,8 @@ namespace scopeone::core
         QString level;
         QString source;
         QString message;
+        // Counts the entries of the process from 1, in the order they were written
+        quint64 sequence{0};
     };
 
     // The one log of the application. It takes the Qt messages of the process and the lines that

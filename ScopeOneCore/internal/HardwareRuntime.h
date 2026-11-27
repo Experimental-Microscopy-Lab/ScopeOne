@@ -212,6 +212,9 @@ namespace scopeone::core::internal
 
         bool autoShutter() const { return m_autoShutter; }
         void setAutoShutter(bool enabled) { m_autoShutter = enabled; }
+        // An MDA sequence drives the shutter from its start to its end, also between its blocks,
+        // and the preview does not open or close it meanwhile
+        void setShutterHeldByAcquisition(bool held) { m_shutterHeldByAcquisition = held; }
         QString defaultShutter() const;
         // Opens or closes the shutter that lights the sample for the cameras
         bool setDefaultShutterOpen(bool open, QString* errorMessage = nullptr);
@@ -314,9 +317,15 @@ namespace scopeone::core::internal
         QString m_shutterRole;
         QString m_autofocusRole;
         std::atomic<bool> m_autoShutter{true};
+        std::atomic<bool> m_shutterHeldByAcquisition{false};
+        // Whether a camera ran when the preview state was last published, on the thread of the runtime
+        bool m_camerasRunning{false};
         // Read on the hardware and MDA threads, set when a cfg is loaded or edited
         mutable QReadWriteLock m_limitsLock;
         QList<HardwareConfiguration::Limit> m_limits;
+        // The limits of the last cfg loaded, kept when the path is cleared, as its shutdown
+        // settings are applied after that
+        QList<HardwareConfiguration::Limit> m_shutdownLimits;
         SignalSourceManager* m_signalSourceManager{nullptr};
         DaqDeviceManager* m_daqDeviceManager{nullptr};
 

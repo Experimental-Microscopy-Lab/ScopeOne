@@ -45,8 +45,10 @@ namespace scopeone::core::internal
         void fftShift(const cv::Mat& input, cv::Mat& output)
         {
             output.create(input.size(), input.type());
-            const int xOffset = input.cols / 2;
-            const int yOffset = input.rows / 2;
+            // Output index i takes input index (i + (n + 1) / 2) % n, which puts DC at n / 2 for odd
+            // sizes too
+            const int xOffset = (input.cols + 1) / 2;
+            const int yOffset = (input.rows + 1) / 2;
             const size_t tailBytes = static_cast<size_t>(input.cols - xOffset) * sizeof(float);
             const size_t headBytes = static_cast<size_t>(xOffset) * sizeof(float);
             parallelForImageRows(input.cols, input.rows, [&](int firstRow, int lastRow)

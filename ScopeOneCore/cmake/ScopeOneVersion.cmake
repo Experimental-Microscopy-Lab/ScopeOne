@@ -1,8 +1,8 @@
-# Resolves the ScopeOne version as MAJOR.MINOR.MMDD.
+# Resolves the ScopeOne version as MAJOR.MINOR.YYMMDD.
 #
-# The VERSION file holds MAJOR.MINOR. The patch is the month and day of the last commit,
-# so every build of one commit has the same version and a new day gives a new version
-# without editing any file. Outside a git checkout the patch is 0.
+# The VERSION file holds MAJOR.MINOR. The patch is the year, month and day of the last commit,
+# so every build of one commit has the same version and a new day gives a higher version,
+# also across a new year, without editing any file. Outside a git checkout the patch is 0.
 #
 # Run it as a script to print the version: cmake -DSCOPEONE_ROOT=<repository> -P ScopeOneVersion.cmake
 
@@ -17,13 +17,13 @@ function(scopeone_resolve_version out_var repo_root)
     find_package(Git QUIET)
     if (GIT_FOUND)
         execute_process(
-                COMMAND "${GIT_EXECUTABLE}" -C "${repo_root}" log -1 "--format=%cd" "--date=format:%m%d"
+                COMMAND "${GIT_EXECUTABLE}" -C "${repo_root}" log -1 "--format=%cd" "--date=format:%y%m%d"
                 RESULT_VARIABLE git_result
                 OUTPUT_VARIABLE commit_day
                 OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET
         )
-        if (git_result EQUAL 0 AND commit_day MATCHES "^[0-9][0-9][0-9][0-9]$")
+        if (git_result EQUAL 0 AND commit_day MATCHES "^[0-9][0-9][0-9][0-9][0-9][0-9]$")
             # A leading zero would read as octal
             string(REGEX REPLACE "^0+" "" patch "${commit_day}")
         endif ()

@@ -37,6 +37,8 @@ LOCAL_SERVER_NAME = WIN_LOCAL_SERVER_NAME if _IS_WINDOWS else UNIX_LOCAL_SERVER_
 
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 _CONNECT_TIMEOUT_S = 5.0
+# The hook requests of an experiment, which wait in ScopeOne until they are answered
+_HOOK_EVENTS = ("before_event", "after_event")
 
 
 class _WindowsPipeTransport:
@@ -270,6 +272,10 @@ class ScopeOne:
         # waits on, such as measurement during live processing, grew it without limit; the oldest
         # events go first.
         self._events = deque(maxlen=10000)
+        # Hook requests read while a response or other events were awaited. Unbounded and apart from
+        # the events, so that no other event pushes one out, as each holds an experiment until it is
+        # answered or times out.
+        self._hooks = deque()
         # The events this connection is subscribed to, as the last subscribe or unsubscribe returned
         self._subscribed = []
         # The shared frame mapping, opened on first use and kept for the connection, as mapping it
@@ -337,6 +343,8 @@ class ScopeOne:
         return dict(response.get("capabilities", {}))
 
     def subscribe(self, events: list[str] | None = None) -> list[str]:
+        """Start sending the given events on this connection, or every event but "log" when events
+        is empty. "log" comes only when it is named. Returns the subscribed events."""
         response = self._request({"type": "subscribe", "events": list(events or [])})
         self._subscribed = list(response.get("events", []))
         return list(self._subscribed)
@@ -352,23 +360,25 @@ class ScopeOne:
         Events of other names are dropped, except hook requests, which stay for a later wait.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        # Dropping hook requests left their events waiting for the hook timeout
-        hooks = []
-        try:
-            while True:
-                if self._events:
-                    event = self._events.popleft()
-                else:
-                    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-                    if not self._transport.wait_readable(remaining):
-                        return None
-                    event = self._read_message()
-                if not names or event.get("event") in names:
-                    return event
-                if event.get("event") in ("before_event", "after_event"):
-                    hooks.append(event)
-        finally:
-            self._events.extendleft(reversed(hooks))
+        for hook in self._hooks:
+            if not names or hook.get("event") in names:
+                self._hooks.remove(hook)
+                return hook
+        while True:
+            if self._events:
+                event = self._events.popleft()
+            else:
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                if not self._transport.wait_readable(remaining):
+                    return None
+                event = self._read_message()
+                # Hook requests are kept apart, as dropping one left its event waiting for the
+                # hook timeout
+                if event.get("event") in _HOOK_EVENTS and names and event["event"] not in names:
+                    self._hooks.append(event)
+                    continue
+            if not names or event.get("event") in names:
+                return event
 
     def state_snapshot(self) -> dict:
         response = self._request({"type": "state_snapshot"})
@@ -1323,6 +1333,9 @@ class ScopeOne:
         positions: list[tuple[float, float]] | None = None,
         order: list[str] | None = None,
     ):
+        """Record frames and return the RecordingSession once the recording ends. ScopeOne refuses
+        it on the connection that set hooks, as nothing would answer them while it waits; record
+        on another connection, or use start_experiment and run_hooks."""
         request = {
             "type": "record",
             "frames": frames,
@@ -1569,7 +1582,7 @@ class ScopeOne:
 
         response = self._read_message()
         while "event" in response and "requestId" not in response:
-            self._events.append(response)
+            (self._hooks if response["event"] in _HOOK_EVENTS else self._events).append(response)
             response = self._read_message()
 
         if response.get("requestId") != request_id:

@@ -31,8 +31,16 @@ namespace scopeone::core::internal
         if (!directory.isEmpty())
         {
             const QString path = QDir(directory).filePath(QStringLiteral("CoreLog.txt"));
-            m_core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
-            qInfo().noquote() << QStringLiteral("Micro-Manager log: %1").arg(QDir::toNativeSeparators(path));
+            try
+            {
+                m_core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
+                qInfo().noquote() << QStringLiteral("Micro-Manager log: %1").arg(QDir::toNativeSeparators(path));
+            }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote() << QStringLiteral("Micro-Manager log %1 failed: %2")
+                                            .arg(QDir::toNativeSeparators(path), QString::fromStdString(error.getMsg()));
+            }
         }
     }
 
@@ -907,12 +915,14 @@ namespace scopeone::core::internal
         {
             (isScopeOneRole(groupName.trimmed(), configName, setting) ? scopeOneRoles : mmSettings).push_back(setting);
         }
-        if (!scopeOneRoles.empty())
+        if (groupName.trimmed() == QLatin1String(MM::g_CFGGroup_System)
+            && configName == QLatin1String(MM::g_CFGGroup_System_Startup))
         {
             QWriteLocker locker(&m_camerasLock);
             m_scopeOneStartupRoles = scopeOneRoles;
         }
-        return mmSettings.empty() || succeeds(errorMessage, [&]
+        // The preset is defined in MMCore even when it holds ScopeOne roles only, so it stays listed
+        return succeeds(errorMessage, [&]
         {
             const std::string group = name8(groupName), config = name8(configName);
             if (!m_core->isGroupDefined(group.c_str())) m_core->defineConfigGroup(group.c_str());

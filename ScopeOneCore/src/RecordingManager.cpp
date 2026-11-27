@@ -924,7 +924,7 @@ namespace scopeone::core::internal
         m_captureState.burstMode = plan.burstMode;
         m_captureState.burstIntervalMs = plan.burstIntervalMs;
         m_captureState.streamToDisk = plan.streamToDisk;
-        m_captureState.awaitingFrameBarrier = false;
+        m_captureState.awaitingFrameBarrier.clear();
         m_captureState.lastFrameIndex.clear();
         m_captureState.framesCapturedThisBurst.clear();
         m_captureState.framesCapturedTotal.clear();
@@ -1421,7 +1421,8 @@ namespace scopeone::core::internal
 
             // The buffered frames come first. Their camera ran in AllFrames mode for
             // its buffer, so no sparse preview frames are queued and the barrier below would only
-            // reject frames that follow the buffered ones; the frame indices keep out the overlap.
+            // reject frames that follow the buffered ones; the frame indices keep out the overlap,
+            // and the barrier holds only the other cameras.
             QSet<QString> seeded;
             for (const ImageFrame& frame : preTriggerFrames)
             {
@@ -1436,13 +1437,15 @@ namespace scopeone::core::internal
             // Preview frames sent before delivery was switched are still queued behind this
             // call and arrive with the sparse indices of preview delivery. A queued marker
             // sits behind all of them, so frames are accepted only once it has run.
-            m_captureState.awaitingFrameBarrier = preTriggerFrames.isEmpty();
+            m_captureState.awaitingFrameBarrier =
+                QSet<QString>(m_captureState.activeCameraIds.cbegin(), m_captureState.activeCameraIds.cend())
+                    .subtract(seeded);
             const quint64 generation = m_captureState.generation;
             QMetaObject::invokeMethod(this, [this, generation]()
             {
                 if (generation == m_captureState.generation)
                 {
-                    m_captureState.awaitingFrameBarrier = false;
+                    m_captureState.awaitingFrameBarrier.clear();
                 }
             }, Qt::QueuedConnection);
         }
@@ -1846,9 +1849,9 @@ namespace scopeone::core::internal
     {
         if (!m_captureState.isRecording) return false;
         if (!packet.frame.isValid()) return false;
-        if (m_captureState.awaitingFrameBarrier) return false;
         const QString cameraId = packet.frame.cameraId.trimmed();
         if (cameraId.isEmpty()) return false;
+        if (m_captureState.awaitingFrameBarrier.contains(cameraId)) return false;
         if (!m_captureState.activeCameraIds.contains(cameraId)) return false;
         if (m_mdaState.usingMda && packet.source != FramePacket::Source::Mda) return false;
         const auto last = m_captureState.lastFrameIndex.constFind(cameraId);

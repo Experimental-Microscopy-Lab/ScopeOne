@@ -18,6 +18,7 @@ namespace scopeone::core
 
         QMutex g_mutex;
         std::deque<LogEntry> g_entries;
+        quint64 g_sequence = 0;
         QFile g_file;
         QString g_directory;
         QtMessageHandler g_previousHandler = nullptr;
@@ -86,9 +87,10 @@ namespace scopeone::core
 
     void Log::write(const QString& level, const QString& source, const QString& message)
     {
-        const LogEntry entry{QDateTime::currentDateTimeUtc(), level, source, message};
+        LogEntry entry{QDateTime::currentDateTimeUtc(), level, source, message};
         {
             QMutexLocker locker(&g_mutex);
+            entry.sequence = ++g_sequence;
             if (g_entries.size() >= kMaxEntries)
             {
                 g_entries.pop_front();

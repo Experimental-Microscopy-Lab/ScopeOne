@@ -150,7 +150,7 @@ namespace scopeone::ui
             return response;
         }
 
-        // Creates a failed response carrying the reason
+        // The hook points that are on and their timeout
         QJsonObject hooksToJson(const scopeone::core::ScopeOneCore* core)
         {
             QStringList points;
@@ -164,6 +164,7 @@ namespace scopeone::ui
             return hooks;
         }
 
+        // Creates a failed response carrying the reason
         QJsonObject errorResponse(const QString& type, const QString& message)
         {
             QJsonObject response = makeResponse(type, false);
@@ -1575,6 +1576,14 @@ namespace scopeone::ui
             {
                 response = setHooks(socket, request);
             }
+            // record answers only when the recording ends, and a client waiting for that answer
+            // does not answer the hooks of its events, so each event would wait for the timeout
+            else if (requestType == QStringLiteral("record") && socket == m_hookOwner)
+            {
+                response = errorResponse(requestType,
+                                         QStringLiteral("This connection holds the hooks; record from another "
+                                                        "connection, or start_experiment and answer the hooks"));
+            }
             else if (m_scopeonecore->configurationOperationRunning()
                      && requestType != QStringLiteral("ping")
                      && requestType != QStringLiteral("version")
@@ -1675,15 +1684,33 @@ namespace scopeone::ui
         {
             return errorResponse(type, QStringLiteral("Unknown action: %1").arg(action));
         }
-        const auto number = [&request](const QString& name)
+        QString invalid;
+        const auto number = [&request, &invalid](const QString& name)
         {
             const QJsonValue value = request.value(name);
-            return value.isDouble() ? std::optional<double>(value.toDouble()) : std::nullopt;
+            if (value.isUndefined() || value.isNull())
+            {
+                return std::optional<double>();
+            }
+            if (!value.isDouble() || !std::isfinite(value.toDouble()))
+            {
+                invalid = name;
+                return std::optional<double>();
+            }
+            return std::optional<double>(value.toDouble());
         };
         reply.x = number(QStringLiteral("x"));
         reply.y = number(QStringLiteral("y"));
         reply.z = number(QStringLiteral("z"));
         reply.exposureMs = number(QStringLiteral("exposureMs"));
+        if (!invalid.isEmpty())
+        {
+            return errorResponse(type, QStringLiteral("%1 must be a finite number").arg(invalid));
+        }
+        if (reply.exposureMs && *reply.exposureMs <= 0.0)
+        {
+            return errorResponse(type, QStringLiteral("exposureMs must be positive"));
+        }
         const quint64 hookId = static_cast<quint64>(request.value(QStringLiteral("hookId")).toDouble());
         if (!m_scopeonecore->replyHook(hookId, reply))
         {
@@ -1692,7 +1719,8 @@ namespace scopeone::ui
         return makeResponse(type, true);
     }
 
-    // Adds or removes events of one socket's subscription; no names means all events
+    // Adds or removes events of one socket's subscription. No names subscribes to all events but
+    // the log, and unsubscribes from all of them.
     QJsonObject ScopeOneLocalApiServer::updateSubscription(QLocalSocket* socket,
                                                            const QJsonObject& request)
     {
@@ -1710,6 +1738,11 @@ namespace scopeone::ui
         if (names.isEmpty())
         {
             names = QSet<QString>(kEventNames.cbegin(), kEventNames.cend());
+            // The log sends every message of the application, so it is only sent when named
+            if (type == QStringLiteral("subscribe"))
+            {
+                names.remove(QStringLiteral("log"));
+            }
         }
 
         if (type == QStringLiteral("subscribe"))

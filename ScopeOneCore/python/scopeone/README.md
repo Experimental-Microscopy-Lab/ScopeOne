@@ -317,7 +317,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 ### Events
 
-`subscribe` with optional field `events` (a list of names; empty or missing means all) starts sending those events on the same connection, and `unsubscribe` with the same field stops them. Both return the subscribed `events`. A subscription ends when the connection closes. `capabilities` lists the names in `events`.
+`subscribe` with optional field `events` (a list of names; empty or missing means every event but `log`, which comes only when named) starts sending those events on the same connection, and `unsubscribe` with the same field stops them. Both return the subscribed `events`. A subscription ends when the connection closes. `capabilities` lists the names in `events`.
 
 - `config_loaded`: `path`, `success`, `error`.
 - `config_unloaded`: `path`, `success`, `error`.
@@ -377,16 +377,25 @@ At `before_event`, before the hardware moves, the event waits for a reply. The c
 with `hook_reply` and `hookId`, and `action` `continue`, `skip` (the event takes no frames and
 leaves no record; in an experiment that runs to its end, OME-TIFF and OME-Zarr files keep the
 shape of the plan with empty planes in place of the skipped ones) or `stop` (the experiment ends as `Completed` with the data taken so far).
-`continue` may change `x`, `y`, `z` and `exposureMs` of that event; the moves go through the
+`continue` may change `x`, `y`, `z` and `exposureMs` of that event; `z` is the absolute focus
+position, without the autofocus shift of the position added to it. `x`, `y` and `z` must be
+finite and `exposureMs` above 0, or the reply is refused. The moves go through the
 same limits as any other, and the session records the changed event with `changedByHook`. Only
 the connection that set the hooks can answer them. At `after_event` the
 frames are taken and in the session, so `latest_raw_frame` or `session_frame` read them; the
 answer is `continue` or `stop`. An event without a reply within `timeoutMs` goes on unchanged.
+While hooks are on, the shutter closes after every event, so it is closed while the client
+answers.
+
+The connection that holds the hooks cannot send `record`, which would wait for its recording
+while nothing answers the hooks; it is refused. Record from another connection, or start the
+experiment with `start_experiment` and answer the hooks with `run_hooks`.
 
 The hook event data holds `hookId`, `experimentId`, `event` (`sequenceIndex`, `timeIndex`,
 `positionIndex`, `zIndex`, `channelIndex`, `channelPreset`, `x`, `y`, `z`, `hasXY`, `hasZ`,
-`exposureMs`, `cameraIds`) and, after the event, `frames` with `cameraId`, `frameIndex`,
-`timestampNs`, `width` and `height`. Hooks apply to experiments that run as events, that is
+`exposureMs`, `cameraIds`) and, after the event, `frames` with `cameraId`, `timestampNs`,
+`width` and `height`. They carry no `frameIndex`, as the recording numbers its frames after the
+hook; the frames of the event are found in the session by the event's `sequenceIndex`. Hooks apply to experiments that run as events, that is
 with positions, Z positions, channels or time intervals. While hooks are on, the Z slices and
 channels are taken one by one, not as hardware sequences. Events cannot be added.
 
@@ -562,7 +571,7 @@ and the [action log](#action-log) instead, which say the same in fields.
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
 - `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, live `progress` and `writer` state while active, and completed recording session details when available.
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
-- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
+- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`. Refused from the connection that holds the hooks, see [Hooks](#hooks).
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app together with its experiment document, which then no longer appears among the retained experiments of `state_snapshot`.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.

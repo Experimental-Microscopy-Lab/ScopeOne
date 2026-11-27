@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QMetaObject>
 #include <QMutexLocker>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include <algorithm>
@@ -353,8 +354,19 @@ namespace scopeone::core::internal
         const QString logDirectory = qEnvironmentVariable("SCOPEONE_LOG_DIRECTORY");
         if (!logDirectory.isEmpty())
         {
-            const QString path = QDir(logDirectory).filePath(QStringLiteral("CoreLog-%1.txt").arg(setup.cameraId));
-            core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
+            // A camera label can hold characters that a file name cannot
+            QString fileId = setup.cameraId;
+            fileId.replace(QRegularExpression(QStringLiteral(R"([/\\:*?"<>|])")), QStringLiteral("_"));
+            const QString path = QDir(logDirectory).filePath(QStringLiteral("CoreLog-%1.txt").arg(fileId));
+            try
+            {
+                core->setPrimaryLogFile(QDir::toNativeSeparators(path).toLocal8Bit().constData(), true);
+            }
+            catch (const CMMError& error)
+            {
+                qWarning().noquote() << QStringLiteral("Micro-Manager log %1 failed: %2")
+                                            .arg(QDir::toNativeSeparators(path), QString::fromStdString(error.getMsg()));
+            }
         }
         const std::string label = setup.cameraId.toStdString();
         try

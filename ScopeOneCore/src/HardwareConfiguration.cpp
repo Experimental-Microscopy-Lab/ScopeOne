@@ -7,6 +7,7 @@
 #include <QStringDecoder>
 
 #include <algorithm>
+#include <cmath>
 
 namespace scopeone::core
 {
@@ -475,7 +476,7 @@ namespace scopeone::core
             bool maxOk = false;
             const Limit limit{line.fields[1], line.fields[2], line.fields[3].toDouble(&minOk),
                               line.fields[4].toDouble(&maxOk)};
-            if (!minOk || !maxOk || limit.min > limit.max)
+            if (!minOk || !maxOk || !std::isfinite(limit.min) || !std::isfinite(limit.max) || limit.min > limit.max)
             {
                 continue;
             }
@@ -522,7 +523,7 @@ namespace scopeone::core
                 bool maxOk = false;
                 const double min = line.fields[3].toDouble(&minOk);
                 const double max = line.fields[4].toDouble(&maxOk);
-                if (!minOk || !maxOk || min > max)
+                if (!minOk || !maxOk || !std::isfinite(min) || !std::isfinite(max) || min > max)
                 {
                     rejected.append(QStringLiteral("%1 %2 (limit is not a range)").arg(line.fields[1], line.fields[2]));
                 }

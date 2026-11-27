@@ -38,6 +38,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -1380,10 +1381,15 @@ namespace scopeone::core::internal
         }
 
         // Kept until a property is set, as the pixel size is asked for on every repaint of the
-        // scale bar and the binning changes only through a property
+        // scale bar and the binning changes only through a property. A camera that cannot tell its
+        // binning counts as 1 until then, so the scale bar does not ask the host again.
         bool getBinning(const QString& cameraId, int& binning) const override
         {
             const QString camera = cameraId.trimmed();
+            if (!isCamera(camera))
+            {
+                return false;
+            }
             quint64 generation = 0;
             {
                 QMutexLocker locker(&m_stateMutex);
@@ -1396,11 +1402,9 @@ namespace scopeone::core::internal
                 generation = m_binningGeneration;
             }
             QJsonObject response;
-            if (!isCamera(cameraId) || !request(driverhost::kCommandGetBinning, cameraId, {}, response, nullptr))
-            {
-                return false;
-            }
-            binning = response.value(QStringLiteral("binning")).toInt();
+            binning = request(driverhost::kCommandGetBinning, camera, {}, response, nullptr)
+                          ? response.value(QStringLiteral("binning")).toInt()
+                          : 1;
             QMutexLocker locker(&m_stateMutex);
             // A property set on another thread while the host answered cleared the cache after this
             // answer was read, so the old binning was cached again; it is kept only if nothing was set.
@@ -1411,16 +1415,40 @@ namespace scopeone::core::internal
             return true;
         }
 
+        // Kept until a property is set like the binning, as every recording start asks for it,
+        // also when the camera has no gain
         bool getGain(const QString& cameraId, double& gain) const override
         {
-            QJsonObject response;
-            if (!isCamera(cameraId) || !request(driverhost::kCommandGetGain, cameraId, {}, response, nullptr)
-                || !response.contains(QStringLiteral("gain")))
+            const QString camera = cameraId.trimmed();
+            if (!isCamera(camera))
             {
                 return false;
             }
-            gain = response.value(QStringLiteral("gain")).toDouble();
-            return true;
+            quint64 generation = 0;
+            {
+                QMutexLocker locker(&m_stateMutex);
+                const auto cached = m_gains.constFind(camera);
+                if (cached != m_gains.cend())
+                {
+                    if (cached.value()) gain = *cached.value();
+                    return cached.value().has_value();
+                }
+                generation = m_binningGeneration;
+            }
+            QJsonObject response;
+            std::optional<double> value;
+            if (request(driverhost::kCommandGetGain, camera, {}, response, nullptr)
+                && response.contains(QStringLiteral("gain")))
+            {
+                value = response.value(QStringLiteral("gain")).toDouble();
+            }
+            QMutexLocker locker(&m_stateMutex);
+            if (generation == m_binningGeneration)
+            {
+                m_gains.insert(camera, value);
+            }
+            if (value) gain = *value;
+            return value.has_value();
         }
 
         bool setExposure(const QString& cameraId, double exposureMs) override
@@ -1501,6 +1529,7 @@ namespace scopeone::core::internal
             const bool ok = request(driverhost::kCommandSetProperty, deviceId, fields, response, errorMessage);
             QMutexLocker locker(&m_stateMutex);
             m_binnings.clear();
+            m_gains.clear();
             ++m_binningGeneration;
             if (ok && m_arguments.contains(QStringLiteral("--driver")))
             {
@@ -2045,6 +2074,9 @@ namespace scopeone::core::internal
         QHash<QString, QJsonObject> m_propertyDetails;
         QHash<QString, QString> m_propertyValues;
         mutable QHash<QString, int> m_binnings;
+        // The gain of each camera, empty for one that has none
+        mutable QHash<QString, std::optional<double>> m_gains;
+        // Counts the property changes that clear the binnings and gains
         quint64 m_binningGeneration{0};
     };
 

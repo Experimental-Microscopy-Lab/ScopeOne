@@ -138,6 +138,37 @@ def _send(stream, header: dict) -> None:
     stream.flush()
 
 
+# Runs the module on the frame in frames and writes the result back to it. The arrays over the
+# memory end with this call, so that the memory can be closed when Core replaces it.
+def _process(request: dict, frames: mmap.mmap) -> dict:
+    dtype = np.uint16 if request["format"] == "mono16" else np.uint8
+    rows = np.ndarray((request["height"], request["stride"] // dtype().itemsize), dtype, frames)
+    # A copy, as a module may keep the frame and the next frame overwrites the memory
+    image = rows[:, : request["width"]].copy()
+    del rows
+    selected = _modules[request["module"]]
+    arguments = dict(request["parameters"])
+    if selected.takes_bits:
+        arguments["bits"] = request["bits"]
+    result = selected.function(image, **arguments)
+    measurements = []
+    if isinstance(result, tuple):
+        result, measurements = result
+    result = np.asarray(result)
+    if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
+        raise TypeError("a module must return a 2D uint8 or uint16 array")
+    # The limit is twice this frame, not the memory, which only grows
+    if result.nbytes > 2 * request["height"] * request["stride"]:
+        raise ValueError("a module must return at most twice the bytes of the frame")
+    np.ndarray(result.shape, result.dtype, frames)[...] = result
+    header = {"width": result.shape[1], "height": result.shape[0],
+              "format": "mono16" if result.dtype == np.uint16 else "mono8",
+              "bytes": result.nbytes}
+    if measurements:
+        header["measurements"] = list(measurements)
+    return header
+
+
 # One frame per request: a JSON line with the frame in the shared memory it names, and a JSON line
 # back with the result in the same memory
 def _serve() -> None:
@@ -146,40 +177,21 @@ def _serve() -> None:
     # Anything the module prints goes to stderr, so it cannot break the frame stream
     sys.stdout = sys.stderr
     name = None
+    frames = None
     while True:
         line = requests.readline()
         if not line:
             return
-        request = json.loads(line)
-        if request["mapping"] != name:
-            name = request["mapping"]
-            frames = _open_frames(name, request["capacity"])
         try:
-            dtype = np.uint16 if request["format"] == "mono16" else np.uint8
-            rows = np.ndarray((request["height"], request["stride"] // dtype().itemsize), dtype, frames)
-            # A copy, as a module may keep the frame and the next frame overwrites the memory
-            image = rows[:, : request["width"]].copy()
-            selected = _modules[request["module"]]
-            arguments = dict(request["parameters"])
-            if selected.takes_bits:
-                arguments["bits"] = request["bits"]
-            result = selected.function(image, **arguments)
-            measurements = []
-            if isinstance(result, tuple):
-                result, measurements = result
-            result = np.asarray(result)
-            if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
-                raise TypeError("a module must return a 2D uint8 or uint16 array")
-            # The limit is twice this frame, not the memory, which only grows
-            if result.nbytes > 2 * request["height"] * request["stride"]:
-                raise ValueError("a module must return at most twice the bytes of the frame")
-            np.ndarray(result.shape, result.dtype, frames)[...] = result
-            header = {"width": result.shape[1], "height": result.shape[0],
-                      "format": "mono16" if result.dtype == np.uint16 else "mono8",
-                      "bytes": result.nbytes}
-            if measurements:
-                header["measurements"] = list(measurements)
-            _send(replies, header)
+            request = json.loads(line)
+            if request["mapping"] != name:
+                # Core replaced the memory with a larger one, so the old one is closed
+                if frames is not None:
+                    frames.close()
+                name, frames = None, None
+                frames = _open_frames(request["mapping"], request["capacity"])
+                name = request["mapping"]
+            _send(replies, _process(request, frames))
         except Exception as error:
             _send(replies, {"error": f"{type(error).__name__}: {error}"})
 

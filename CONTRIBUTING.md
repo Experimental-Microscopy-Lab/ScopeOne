@@ -239,7 +239,7 @@ A newer API that is worth it is a reason to raise the minimum; open an issue to 
 
 ## Versions
 
-**Core.** The version is `MAJOR.MINOR.MMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
+**Core.** The version is `MAJOR.MINOR.YYMMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
 the date of the last commit. Raise `MINOR` whenever a public SDK header changes. ScopeOne loads
 a driver only when its Core `MAJOR.MINOR` matches, and drivers have their own `scopeOneApi`
 contract version.
