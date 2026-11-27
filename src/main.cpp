@@ -18,6 +18,7 @@ int main(int argc, char *argv[])
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     format.setDepthBufferSize(24);
+    format.setSwapInterval(0);
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
