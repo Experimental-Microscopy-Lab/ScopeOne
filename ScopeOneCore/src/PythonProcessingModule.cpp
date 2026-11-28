@@ -19,10 +19,11 @@
 #include <memory>
 
 #ifndef Q_OS_WIN
-#include <semaphore.h>
 // The macOS SDK declares shm_unlink only outside strict POSIX mode, so it is declared here as the
-// SDK does
+// SDK does. sem_unlink is declared here too: on the case-insensitive macOS file system,
+// <semaphore.h> found MMCore's Semaphore.h on the include path instead of the system header
 extern "C" int shm_unlink(const char* name);
+extern "C" int sem_unlink(const char* name);
 #endif
 
 namespace scopeone::core::internal
