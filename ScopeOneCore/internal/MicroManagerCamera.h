@@ -61,6 +61,8 @@ namespace scopeone::core::internal
         void setPreviewStateSink(PreviewStateSink sink) override;
         // Called with the error when the running acquisition fails
         void setErrorSink(std::function<void(const QString&)> sink);
+        // Asked in LatestOnly mode before the newest frame of a poll is copied
+        void setFrameFilter(std::function<bool()> filter);
         void setFrameDeliveryMode(FrameDeliveryMode mode);
         // A pause stops reading the circular buffer, and its end restarts a live acquisition that
         // an event capture stopped
@@ -124,6 +126,7 @@ namespace scopeone::core::internal
         FrameSink m_frameSink;
         PreviewStateSink m_previewStateSink;
         std::function<void(const QString&)> m_errorSink;
+        std::function<bool()> m_frameFilter;
         QThread m_pollThread;
         MicroManagerCameraPoller* m_poller{nullptr};
     };

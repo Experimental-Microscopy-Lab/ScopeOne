@@ -1956,6 +1956,21 @@ namespace scopeone::core::internal
         return true;
     }
 
+    void HardwareRuntime::setShutterHeldByAcquisition(bool held)
+    {
+        m_shutterHeldByAcquisition = held;
+        if (held)
+        {
+            return;
+        }
+        // The shutter moves only when the cameras start or all stop, so a camera whose live view
+        // ran through the sequence stayed dark after it; the shutter is set to the cameras again
+        QMetaObject::invokeMethod(this, [this]()
+        {
+            if (m_autoShutter && !m_shutterHeldByAcquisition) setDefaultShutterOpen(m_camerasRunning);
+        }, Qt::QueuedConnection);
+    }
+
     void HardwareRuntime::unregisterProvider(const QString& providerId)
     {
         detachCamera(m_registry, providerId);

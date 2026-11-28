@@ -214,7 +214,7 @@ namespace scopeone::core::internal
         void setAutoShutter(bool enabled) { m_autoShutter = enabled; }
         // An MDA sequence drives the shutter from its start to its end, also between its blocks,
         // and the preview does not open or close it meanwhile
-        void setShutterHeldByAcquisition(bool held) { m_shutterHeldByAcquisition = held; }
+        void setShutterHeldByAcquisition(bool held);
         QString defaultShutter() const;
         // Opens or closes the shutter that lights the sample for the cameras
         bool setDefaultShutterOpen(bool open, QString* errorMessage = nullptr);

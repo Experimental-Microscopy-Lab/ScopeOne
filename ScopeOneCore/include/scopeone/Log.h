@@ -48,7 +48,8 @@ namespace scopeone::core
         static void write(const QString& level, const QString& source, const QString& message);
         static QJsonObject toJson(const LogEntry& entry);
 
-        QList<LogEntry> entries(const QDateTime& since = QDateTime()) const;
+        // The entries at or after since and with a sequence above after
+        QList<LogEntry> entries(const QDateTime& since = QDateTime(), quint64 after = 0) const;
 
     signals:
         // Emitted on the thread that wrote the entry

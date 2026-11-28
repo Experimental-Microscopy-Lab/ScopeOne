@@ -116,15 +116,21 @@ namespace scopeone::core
         object.insert(QStringLiteral("level"), entry.level);
         object.insert(QStringLiteral("source"), entry.source);
         object.insert(QStringLiteral("message"), entry.message);
+        // A client that polled with the time of the last entry got it again, with every entry of
+        // the same millisecond, so it continues after the sequence instead
+        object.insert(QStringLiteral("sequence"), static_cast<qint64>(entry.sequence));
         return object;
     }
 
-    QList<LogEntry> Log::entries(const QDateTime& since) const
+    QList<LogEntry> Log::entries(const QDateTime& since, quint64 after) const
     {
         QMutexLocker locker(&g_mutex);
         QList<LogEntry> result;
         std::copy_if(g_entries.cbegin(), g_entries.cend(), std::back_inserter(result),
-                     [&](const LogEntry& entry) { return !since.isValid() || entry.time >= since; });
+                     [&](const LogEntry& entry)
+                     {
+                         return (!since.isValid() || entry.time >= since) && entry.sequence > after;
+                     });
         return result;
     }
 }

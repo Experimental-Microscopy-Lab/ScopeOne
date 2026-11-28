@@ -1455,6 +1455,9 @@ namespace scopeone::ui
             {
                 return;
             }
+            // A script picked again to read its changes added another step of its first module each
+            // time, so a step is added only for a script that was not added yet
+            const bool readAgain = m_scopeonecore->pythonScripts().contains(QFileInfo(path).absoluteFilePath());
             QString error;
             const QStringList ids = m_scopeonecore->addPythonScript(path, &error);
             if (ids.isEmpty())
@@ -1463,7 +1466,10 @@ namespace scopeone::ui
                 return;
             }
             m_moduleTypeCombo->setCurrentIndex(m_moduleTypeCombo->findData(ids.first()));
-            addModule(ids.first(), {});
+            if (!readAgain)
+            {
+                addModule(ids.first(), {});
+            }
         });
         const QStringList scripts = m_scopeonecore->pythonScripts();
         if (scripts.isEmpty())

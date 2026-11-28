@@ -48,6 +48,9 @@ namespace scopeone::core::internal
         // Forgets the cameras, as the ids of a new configuration may name other cameras
         void removeCameras(const QStringList& cameraIds);
 
+        // Whether the newest frame of a camera is worth reading now. While live processing is busy
+        // and already keeps a frame for when it finishes, only a frame the live view is due for is.
+        bool wantsLatestFrame(const QString& cameraId);
         // Frames of one camera in order. acquiredFrameCount counts every frame the camera took
         // since the last call, including those that were not read.
         void deliverFrames(const QList<ImageFrame>& frames, quint64 acquiredFrameCount);

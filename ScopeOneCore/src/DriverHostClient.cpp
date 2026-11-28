@@ -954,6 +954,10 @@ namespace scopeone::core::internal
                 return;
             }
             const bool allFrames = m_deliveryModes.value(cameraId) == FrameDeliveryMode::AllFrames;
+            if (!allFrames && !delivery->wantsLatestFrame(cameraId))
+            {
+                return;
+            }
             Reader& reader = *it.value();
             const quint64 previousFrameIndex = reader.lastFrameIndex;
             QList<ImageFrame> frames;
@@ -1406,9 +1410,14 @@ namespace scopeone::core::internal
                 generation = m_binningGeneration;
             }
             QJsonObject response;
-            binning = request(driverhost::kCommandGetBinning, camera, {}, response, nullptr)
-                          ? response.value(QStringLiteral("binning")).toInt()
-                          : 1;
+            // A failed request, such as a timeout while the host is busy, cached binning 1 for good,
+            // so only an answer is cached
+            if (!request(driverhost::kCommandGetBinning, camera, {}, response, nullptr))
+            {
+                binning = 1;
+                return true;
+            }
+            binning = response.value(QStringLiteral("binning")).toInt();
             QMutexLocker locker(&m_stateMutex);
             // A property set on another thread while the host answered cleared the cache after this
             // answer was read, so the old binning was cached again; it is kept only if nothing was set.
@@ -1440,9 +1449,13 @@ namespace scopeone::core::internal
                 generation = m_binningGeneration;
             }
             QJsonObject response;
+            // A failed request cached "no gain" for good, so only an answer is cached
+            if (!request(driverhost::kCommandGetGain, camera, {}, response, nullptr))
+            {
+                return false;
+            }
             std::optional<double> value;
-            if (request(driverhost::kCommandGetGain, camera, {}, response, nullptr)
-                && response.contains(QStringLiteral("gain")))
+            if (response.contains(QStringLiteral("gain")))
             {
                 value = response.value(QStringLiteral("gain")).toDouble();
             }

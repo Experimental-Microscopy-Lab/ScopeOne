@@ -265,6 +265,11 @@ namespace scopeone::core::internal
             const quint64 acquired = previous == 0 || frame.frameIndex <= previous ? 1 : frame.frameIndex - previous;
             delivery->deliverFrames({frame}, acquired);
         });
+        camera->setFrameFilter([this, cameraId]()
+        {
+            CameraFrameDelivery* const delivery = m_delivery;
+            return !delivery || delivery->wantsLatestFrame(cameraId);
+        });
         camera->setErrorSink([this](const QString& error)
         {
             if (CameraFrameDelivery* const delivery = m_delivery)

@@ -269,7 +269,7 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.hook_reply(hook_id, action="continue", **changes)`
 - `ScopeOne.run_hooks(before=None, after=None, experiment_id=None)`
 - `ScopeOne.action_log(since=None)`
-- `ScopeOne.log(since=None)`
+- `ScopeOne.log(since=None, after=None)`
 - `ScopeOne.experiment_document()`
 - `ScopeOne.validate_experiment(document)`
 - `ScopeOne.save_experiment(file_path, document)`
@@ -451,14 +451,15 @@ errors, and what the drivers and the Python processing modules print. An entry i
 
 ```json
 {"time": "2026-11-23T13:20:04.518Z", "level": "WARNING", "source": "driverhost:example.camera",
- "message": "Exposure out of range"}
+ "message": "Exposure out of range", "sequence": 1532}
 ```
 
 `level` is `DEBUG`, `INFO`, `WARNING` or `ERROR`. `source` is `scopeone` for the app itself,
 `driverhost:<driver>` for a driver process, `driverhost:micro-manager/<camera>` for the process
 of a Micro-Manager camera, which each camera has when a configuration has several, and
-`python:<module>` for a processing module. `log` returns the last 10000 entries, the `log` event
-sends each new one, and the app writes all of them to `ScopeOne.log` in the `logs` folder of its
+`python:<module>` for a processing module. `sequence` counts the entries from 1 in the order
+they were written. `log` returns the last 10000 entries, only those at or after the time `since`
+and after the sequence `after` when given, the `log` event sends each new one, and the app writes all of them to `ScopeOne.log` in the `logs` folder of its
 application data directory, keeping the session before as `ScopeOne.previous.log`.
 
 Micro-Manager and its device adapters keep their own log, as in Micro-Manager: `CoreLog.txt` in

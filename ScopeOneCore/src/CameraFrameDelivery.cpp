@@ -176,6 +176,22 @@ namespace scopeone::core::internal
             || it->elapsed() >= previewFrameIntervalMs();
     }
 
+    // Reading every newest frame while processing was busy copied each one only to replace the
+    // kept frame, so the camera reads a frame then only when the live view is due for one
+    bool CameraFrameDelivery::wantsLatestFrame(const QString& cameraId)
+    {
+        {
+            QMutexLocker lock(&m_processingMutex);
+            if (!m_highRateCameras.contains(cameraId) || !m_processingTokens.contains(cameraId)
+                || !m_pendingProcessingFrames.contains(cameraId))
+            {
+                return true;
+            }
+        }
+        QMutexLocker lock(&m_mutex);
+        return m_recordingCameras.contains(cameraId) || previewDue(cameraId);
+    }
+
     // Processing that is busy keeps the newest frame, which it takes as soon as it finishes
     quint64 CameraFrameDelivery::tryAcquireProcessingFrame(const ImageFrame& frame)
     {

@@ -1450,6 +1450,15 @@ namespace scopeone::core::internal
             }, Qt::QueuedConnection);
         }
         resetSessionState(plan, deviceProperties, cameraPixelSizesUm, cameraSettings);
+        // The buffered frames were taken before the recording started, and the writer gives no
+        // DeltaT to frames before the start, so the recording starts at the first buffered frame
+        for (const ImageFrame& frame : preTriggerFrames)
+        {
+            if (frame.timestampNs != 0 && frame.timestampNs < m_activeSession->experimentDocument().startedTimestampNs)
+            {
+                m_activeSession->setStartedTimestampNs(frame.timestampNs);
+            }
+        }
 
         if (plan.streamToDisk)
         {

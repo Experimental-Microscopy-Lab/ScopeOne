@@ -190,11 +190,14 @@ namespace
                 QStringLiteral(
                     "Read the log of ScopeOne, the messages its console shows, oldest first: warnings, errors "
                     "and what the drivers and Python modules printed. Each entry has time, level (DEBUG, "
-                    "INFO, WARNING or ERROR), source and message"),
+                    "INFO, WARNING or ERROR), source, message and sequence"),
                 inputProperties({
                     {QStringLiteral("since"),
                      inputProperty(QStringLiteral("string"),
-                                   QStringLiteral("ISO 8601 time; only entries at or after it"))}
+                                   QStringLiteral("ISO 8601 time; only entries at or after it"))},
+                    {QStringLiteral("after"),
+                     inputProperty(QStringLiteral("integer"),
+                                   QStringLiteral("Sequence of the last entry read; only entries after it"))}
                 })),
             makeTool(
                 QStringLiteral("wait_event"),

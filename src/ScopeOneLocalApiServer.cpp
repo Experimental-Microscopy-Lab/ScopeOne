@@ -1795,7 +1795,9 @@ namespace scopeone::ui
         QList<QLocalSocket*> sockets;
         for (auto it = m_subscriptions.cbegin(); it != m_subscriptions.cend(); ++it)
         {
-            if (it.value().contains(event))
+            // A write to a closing socket warns, and the warning came back as a log event to the
+            // same socket, so only connected sockets get events
+            if (it.value().contains(event) && it.key()->state() == QLocalSocket::ConnectedState)
             {
                 sockets.append(it.key());
             }
@@ -2782,8 +2784,9 @@ namespace scopeone::ui
             {
                 return errorResponse(type, QStringLiteral("since must be an ISO 8601 time"));
             }
+            const qint64 after = request.value(QStringLiteral("after")).toInteger();
             QJsonArray entries;
-            for (const auto& entry : scopeone::core::Log::instance()->entries(since))
+            for (const auto& entry : scopeone::core::Log::instance()->entries(since, static_cast<quint64>(std::max<qint64>(after, 0))))
             {
                 entries.append(scopeone::core::Log::toJson(entry));
             }

@@ -243,15 +243,18 @@ namespace scopeone::core::internal
                 }
 
                 MicroManagerCamera::FrameSink sink;
+                std::function<bool()> filter;
                 {
                     QMutexLocker locker(&m_owner->m_sinkMutex);
                     sink = m_owner->m_frameSink;
+                    filter = m_owner->m_frameFilter;
                 }
                 const bool allFrames = m_mode == FrameDeliveryMode::AllFrames;
                 const bool deliverNewest =
                     m_mode == FrameDeliveryMode::LatestOnly
-                    || !m_deliveryTimer.isValid()
-                    || m_deliveryTimer.elapsed() >= previewFrameIntervalMs();
+                    ? !filter || filter()
+                    : !m_deliveryTimer.isValid()
+                          || m_deliveryTimer.elapsed() >= previewFrameIntervalMs();
                 const qsizetype byteCount = m_layout.byteCount();
                 int frameCount = 0;
                 bool delivered = false;
@@ -439,6 +442,12 @@ namespace scopeone::core::internal
     {
         QMutexLocker locker(&m_sinkMutex);
         m_errorSink = std::move(sink);
+    }
+
+    void MicroManagerCamera::setFrameFilter(std::function<bool()> filter)
+    {
+        QMutexLocker locker(&m_sinkMutex);
+        m_frameFilter = std::move(filter);
     }
 
     // Runs on the poll thread, so a lent frame of the old mode is no longer in use when it returns
