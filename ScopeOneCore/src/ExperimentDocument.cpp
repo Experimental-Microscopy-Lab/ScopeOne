@@ -1818,6 +1818,10 @@ namespace scopeone::core
             {
                 QJsonObject moduleObject;
                 moduleObject.insert(QStringLiteral("kind"), module.moduleId);
+                if (!module.script.isEmpty())
+                {
+                    moduleObject.insert(QStringLiteral("script"), module.script);
+                }
                 moduleObject.insert(QStringLiteral("schemaVersion"), module.schemaVersion);
                 moduleObject.insert(QStringLiteral("parameters"), variantMapToJson(module.parameters));
                 modules.append(canonicalJsonObject(moduleObject));
@@ -2497,17 +2501,31 @@ namespace scopeone::core
                     return fail(errorMessage, QStringLiteral("%1 must be an object").arg(modulePath));
                 }
                 const QJsonObject moduleObject = modules.at(index).toObject();
-                if (!checkObjectFields(moduleObject,
-                                       {QStringLiteral("kind"),
-                                        QStringLiteral("schemaVersion"),
-                                        QStringLiteral("parameters")},
-                                       modulePath,
-                                       errorMessage))
+                // A Python module also names its script
+                const bool hasScript = moduleObject.contains(QStringLiteral("script"));
+                if (!(hasScript ? checkObjectFields(moduleObject,
+                                                    {QStringLiteral("kind"),
+                                                     QStringLiteral("script"),
+                                                     QStringLiteral("schemaVersion"),
+                                                     QStringLiteral("parameters")},
+                                                    modulePath,
+                                                    errorMessage)
+                                : checkObjectFields(moduleObject,
+                                                    {QStringLiteral("kind"),
+                                                     QStringLiteral("schemaVersion"),
+                                                     QStringLiteral("parameters")},
+                                                    modulePath,
+                                                    errorMessage)))
                 {
                     return false;
                 }
 
                 ProcessingModuleRecipe module;
+                if (hasScript
+                    && !readString(moduleObject, QStringLiteral("script"), module.script, modulePath, errorMessage))
+                {
+                    return false;
+                }
                 QString kindName;
                 QJsonObject parameters;
                 if (!readString(moduleObject,

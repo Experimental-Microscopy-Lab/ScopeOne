@@ -1,10 +1,12 @@
 #include <QApplication>
+#include <QDir>
 #include <QIcon>
+#include <QStandardPaths>
 #include <QSurfaceFormat>
 #include <memory>
 #include "AppVersion.h"
+#include "scopeone/Log.h"
 #include "scopeone/ScopeOneCore.h"
-#include "ConsoleWidget.h"
 #include "Appearance.h"
 #include "MainWindow.h"
 
@@ -24,7 +26,8 @@ int main(int argc, char *argv[])
     app.setStyle(QStringLiteral("Fusion"));
     scopeone::ui::applyStoredAppearance();
     app.setWindowIcon(QIcon(":/Scopeone_Icon.svg"));
-    scopeone::ui::ConsoleWidget::installQtMessageHandler();
+    scopeone::core::Log::install(
+        QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("logs")));
 
     auto scopeOneCore = std::make_unique<scopeone::core::ScopeOneCore>();
     scopeone::ui::MainWindow window(scopeOneCore.get());

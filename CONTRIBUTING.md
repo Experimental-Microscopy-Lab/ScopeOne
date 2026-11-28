@@ -239,13 +239,14 @@ A newer API that is worth it is a reason to raise the minimum; open an issue to 
 
 ## Versions
 
-**Core.** The version is `MAJOR.MINOR.MMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
+**Core.** The version is `MAJOR.MINOR.YYMMDD`: `MAJOR.MINOR` comes from `VERSION`, the last part is
 the date of the last commit. Raise `MINOR` whenever a public SDK header changes. ScopeOne loads
 a driver only when its Core `MAJOR.MINOR` matches, and drivers have their own `scopeOneApi`
 contract version.
 
-**Dependencies are pinned.** vcpkg packages, Python (`==3.14.*`) and Python packages
-(`numpy==2.5.3`) use exact versions. Upgrade them together, on purpose.
+**Dependencies are pinned.** vcpkg packages use exact versions. Upgrade them together, on purpose.
+The Python package only sets lower bounds (Python 3.10, numpy 1.24) so it installs into existing
+environments.
 
 **Data formats.** Documents and files carry a `schemaVersion`. A format change raises it, and a
 file with another version is rejected with a clear message rather than read through a

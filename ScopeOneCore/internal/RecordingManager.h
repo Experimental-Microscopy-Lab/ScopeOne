@@ -4,6 +4,7 @@
 #include "internal/MDAManager.h"
 #include <QElapsedTimer>
 #include <QHash>
+#include <QSet>
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
@@ -55,7 +56,15 @@ namespace scopeone::core::internal
         void setRecordedMaxBytes(qint64 bytes);
         qint64 recordedMaxBytes() const;
 
+        // The next recording of live frames starts with up to this many frames from before it, out
+        // of the pre-trigger buffer. It applies to that one recording only.
+        void setNextPreTriggerFrames(int count) { m_nextPreTriggerFrames = count; }
         bool isRecording() const { return m_captureState.isRecording; }
+        // The cameras whose live frames the running recording takes; an MDA recording takes its own
+        QStringList liveRecordingCameraIds() const
+        {
+            return m_captureState.isRecording && !m_mdaState.usingMda ? m_captureState.activeCameraIds : QStringList{};
+        }
         bool isFinalizing() const { return m_completionPending; }
 
         void onRawFramesReady(const QList<ImageFrame>& frames);
@@ -120,8 +129,8 @@ namespace scopeone::core::internal
         {
             QStringList activeCameraIds;
             QHash<QString, quint64> lastFrameIndex;
-            // Frames queued before the recording began are not part of it
-            bool awaitingFrameBarrier{false};
+            // The cameras whose frames queued before the recording began are not part of it
+            QSet<QString> awaitingFrameBarrier;
             QHash<QString, qint64> framesCapturedThisBurst;
             QHash<QString, qint64> framesCapturedTotal;
             bool isRecording{false};
@@ -212,6 +221,7 @@ namespace scopeone::core::internal
 
         HardwareRuntime* m_hardwareRuntime{nullptr};
         std::function<bool(const QString&, ImageFrame&)> m_latestFrameFetcher;
+        int m_nextPreTriggerFrames{0};
         std::function<void(RecordingSessionData&)> m_sessionPreparationCallback;
         MDAHook m_mdaHook;
 

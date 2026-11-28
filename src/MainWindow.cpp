@@ -37,6 +37,9 @@
 #include <QGuiApplication>
 #include <QToolBar>
 #include <QCloseEvent>
+#include <QScreen>
+#include <QShowEvent>
+#include <QWindow>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDesktopServices>
@@ -260,6 +263,31 @@ namespace scopeone::ui
         setMinimumSize(1366, 768);
         resize(1600, 900);
         restoreWindowLayout();
+    }
+
+    // The live view draws as often as the screen of the window shows a frame, and follows the
+    // window to another screen
+    void MainWindow::showEvent(QShowEvent* event)
+    {
+        QMainWindow::showEvent(event);
+        if (m_followingRefreshRate || !windowHandle())
+        {
+            return;
+        }
+        m_followingRefreshRate = true;
+        const auto follow = [this](QScreen* screen)
+        {
+            disconnect(m_refreshRateConnection);
+            if (!screen)
+            {
+                return;
+            }
+            m_scopeonecore->setDisplayRefreshRate(screen->refreshRate());
+            m_refreshRateConnection = connect(screen, &QScreen::refreshRateChanged, this,
+                                              [this](qreal rate) { m_scopeonecore->setDisplayRefreshRate(rate); });
+        };
+        connect(windowHandle(), &QWindow::screenChanged, this, follow);
+        follow(windowHandle()->screen());
     }
 
     // Confirm what to do with unsaved gallery sessions
@@ -548,11 +576,13 @@ namespace scopeone::ui
         connect(m_deviceControlWidget, &DeviceControlWidget::stopPreviewRequested,
                 this, [this]()
                 {
-                    if (!m_scopeonecore->stopPreview(m_currentControlTarget))
+                    QString error;
+                    if (!m_scopeonecore->stopPreview(m_currentControlTarget, &error))
                     {
-                        showStatusMessage(tr("Failed to stop preview"), 5000);
-                        qWarning().noquote() << QStringLiteral("Failed to stop preview for %1")
-                                                  .arg(m_currentControlTarget);
+                        const QString message = error.isEmpty() ? tr("Failed to stop preview") : error;
+                        showStatusMessage(message, 5000);
+                        qWarning().noquote() << QStringLiteral("Failed to stop preview for %1: %2")
+                                                  .arg(m_currentControlTarget, message);
                     }
                 });
 
@@ -858,7 +888,6 @@ namespace scopeone::ui
         setupDeviceControl();
         setupInspect();
         setupImageProcessing();
-        setupConsole();
         setupMenuBar();
         setupPropertyBrowser();
         setupRecording();
@@ -1061,9 +1090,16 @@ namespace scopeone::ui
         showStatusMessage(tr("Images added to Gallery"), 5000);
     }
 
+    // An error of ScopeOne's own work: shown and logged. An error that Core reports has been
+    // logged by Core already and is only shown, with showError.
     void MainWindow::notifyError(const QString& title, const QString& message)
     {
         qWarning().noquote() << QStringLiteral("%1: %2").arg(title, message);
+        showError(title, message);
+    }
+
+    void MainWindow::showError(const QString& title, const QString& message)
+    {
         // One line in the status bar. The tooltip has everything, and so does the console.
         const QString firstLine = message.section(QLatin1Char('\n'), 0, 0).trimmed();
         m_statusIsError = true;
@@ -1368,7 +1404,12 @@ namespace scopeone::ui
             }
             if (m_previewRunning)
             {
-                m_scopeonecore->stopPreview(m_currentControlTarget);
+                QString error;
+                if (!m_scopeonecore->stopPreview(m_currentControlTarget, &error) && !error.isEmpty())
+                {
+                    showStatusMessage(error, 5000);
+                    qWarning().noquote() << error;
+                }
             }
             else
             {
@@ -1598,12 +1639,6 @@ namespace scopeone::ui
         m_consoleWidget = new ConsoleWidget(this);
         m_consoleDockWidget = addRightDock(tr("Console"), QStringLiteral("ConsoleDock"), m_consoleWidget);
         m_controlDockWidget->raise();
-    }
-
-    // Install the Qt message sink for the embedded console
-    void MainWindow::setupConsole()
-    {
-        ConsoleWidget::installAsQtMessageSink(m_consoleWidget);
     }
 
     // Create the device property and config preset dock
@@ -2240,8 +2275,7 @@ namespace scopeone::ui
 
         if (!success)
         {
-            notifyError(tr("Load Failed"), tr("Failed to load configuration: %1").arg(errorMessage));
-            qCritical().noquote() << QString("Configuration failed: %1").arg(errorMessage);
+            showError(tr("Load Failed"), tr("Failed to load configuration: %1").arg(errorMessage));
             return;
         }
 
@@ -2258,10 +2292,6 @@ namespace scopeone::ui
         settings.setValue(QStringLiteral("RecentConfigurations"), recentPaths);
         refreshRecentConfigurationsMenu();
 
-        if (result.successCount > 0)
-        {
-            qInfo().noquote() << QString("%1 device(s) initialized successfully").arg(result.successCount);
-        }
         if (failCount > 0)
         {
             const QString failedDevices = result.failedDevices.join(QStringLiteral(", "));
@@ -2271,12 +2301,6 @@ namespace scopeone::ui
                                                .arg(failCount)
                                                .arg(failedDevices);
             showStatusMessage(warning, 5000);
-            qWarning().noquote() << warning;
-        }
-        if (result.skippedCameraCount > 0)
-        {
-            qInfo().noquote() << QString("%1 camera device(s) skipped for UI initialization")
-                .arg(result.skippedCameraCount);
         }
 
         if (!cameraIds.isEmpty())
@@ -2291,21 +2315,15 @@ namespace scopeone::ui
             {
                 showStatusMessage(tr("%1 camera(s) ready").arg(cameraIds.size()), 5000);
             }
-            qInfo().noquote() << QString("%1 camera(s) ready").arg(cameraIds.size());
         }
         else if (result.foundCamera)
         {
             showStatusMessage(tr("No cameras were successfully initialized"), 5000);
-            qInfo().noquote() << "No cameras were successfully initialized";
         }
         else
         {
             showStatusMessage(tr("No camera devices in configuration"), 5000);
-            qWarning().noquote() << "No camera devices in configuration";
         }
-
-        qInfo().noquote() << QString("Configuration loaded (%1): %2")
-                                 .arg(m_scopeonecore->configurationState(), configPath);
     }
 
     // Apply UI state after a configuration unload attempt
@@ -2316,12 +2334,8 @@ namespace scopeone::ui
         m_unloadConfigurationAction->setEnabled(true);
         if (!success)
         {
-            notifyError(tr("Unload Failed"), tr("Failed to unload configuration: %1").arg(errorMessage));
-            qCritical().noquote() << QString("Configuration unload failed: %1").arg(errorMessage);
-            return;
+            showError(tr("Unload Failed"), tr("Failed to unload configuration: %1").arg(errorMessage));
         }
-
-        qInfo().noquote() << "Configuration unload completed successfully";
     }
 
     // Completes the deferred close after every gallery save finishes
@@ -2433,7 +2447,6 @@ namespace scopeone::ui
         m_loadConfigProgress->show();
 
         showStatusMessage(tr("Loading configuration..."));
-        qInfo().noquote() << QString("Loading configuration: %1").arg(configPath);
         m_loadConfigurationAction->setEnabled(false);
         m_unloadConfigurationAction->setEnabled(false);
         m_recentConfigurationsMenu->setEnabled(false);

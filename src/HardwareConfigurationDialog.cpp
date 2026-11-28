@@ -24,6 +24,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 namespace scopeone::ui
@@ -590,7 +591,8 @@ namespace scopeone::ui
             bool maxOk = false;
             const HardwareConfiguration::Limit limit{text(0), text(1), text(2).toDouble(&minOk), text(3).toDouble(&maxOk)};
             if (limit.device.isEmpty() || limit.property.isEmpty() || !HardwareConfiguration::isValidField(limit.device)
-                || !HardwareConfiguration::isValidField(limit.property) || !minOk || !maxOk || limit.min > limit.max)
+                || !HardwareConfiguration::isValidField(limit.property) || !minOk || !maxOk
+                || !std::isfinite(limit.min) || !std::isfinite(limit.max) || limit.min > limit.max)
             {
                 m_steps->setCurrentRow(2);
                 QMessageBox::warning(this, windowTitle(),

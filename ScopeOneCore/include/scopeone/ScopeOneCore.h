@@ -293,6 +293,11 @@ namespace scopeone::core
             double threshold{0.0};
             Action action{Action::Record};
             int frames{100};
+            // For record: frames the camera took up to the moment the trigger fires, which the
+            // recording starts with. Core keeps that many of the newest frames of the camera while
+            // the trigger is set. The frame that crossed the threshold is among them, as far back as
+            // the live processing lags behind the camera.
+            int preTriggerFrames{0};
             QString group;
             QString preset;
             double cooldownMs{5000.0};
@@ -357,7 +362,7 @@ namespace scopeone::core
         bool setCameraPixelSizeUm(const QString& cameraId, double pixelSizeUm);
 
         bool startPreview(const QString& cameraIdOrAll);
-        bool stopPreview(const QString& cameraIdOrAll);
+        bool stopPreview(const QString& cameraIdOrAll, QString* errorMessage = nullptr);
         bool setExposure(const QString& cameraIdOrAll, double exposureMs, QString* errorMessage = nullptr);
         bool setROI(const QString& cameraId, int x, int y, int width, int height);
         bool setHalfROI(const QString& cameraId);
@@ -510,6 +515,8 @@ namespace scopeone::core
 
         bool isRealTimeProcessingEnabled() const;
         bool setRealTimeProcessingEnabled(bool enabled);
+        // The live view draws at most once per refresh of the display, at this rate in hertz
+        void setDisplayRefreshRate(double hertz);
         ProcessingBitDepth processingBitDepth() const;
         bool setProcessingBitDepth(ProcessingBitDepth bitDepth);
         QString realTimeProcessingSource() const;
@@ -521,6 +528,16 @@ namespace scopeone::core
         ImageFrame processFrameFrom(int startModuleIndex, const ImageFrame& frame) const;
         ImageFrame processFrameThrough(int endModuleIndex, const ImageFrame& frame) const;
         QList<ProcessingModuleDescriptor> availableProcessingModules() const;
+        // Python processing modules come from the scripts the user adds. Core reads a script with
+        // python -m scopeone.processing describe, lists its modules and remembers the script, so its
+        // modules are there again after a restart. Adding a script again reads it again. Returns the
+        // module ids of the script.
+        QStringList addPythonScript(const QString& path, QString* errorMessage = nullptr);
+        // Fails while a pipeline has a step of the script
+        bool removePythonScript(const QString& path, QString* errorMessage = nullptr);
+        QStringList pythonScripts() const;
+        // The script of a Python module, empty for a module of Core
+        QString pythonScriptOf(const QString& moduleId) const;
         std::unique_ptr<ProcessingModule> createProcessingModule(const QString& moduleId) const;
         // A pipeline made of copies of the steps that the camera runs, which are those of the shared
         // pipeline when no camera is named or the camera has none of its own
@@ -678,6 +695,8 @@ namespace scopeone::core
         // thread. data holds the event, and after the event also its frames.
         void hookRequested(quint64 hookId, const QString& point, const QVariantMap& data);
         void processingModulesChanged();
+        // A Python script was added or removed, which changed availableProcessingModules
+        void availableProcessingModulesChanged();
         void processingModuleParametersChanged(int index);
         void processingSettingsChanged();
         void imageProcessingFinished(quint64 requestId,
@@ -787,6 +806,7 @@ namespace scopeone::core
         void applyLoadedConfiguration(const QString& configPath,
                                       const LoadConfigResult& result);
         void synchronizeCameraIdsFromRegistry();
+        void logConfigurationLoaded(const LoadConfigResult& result) const;
         void finishConfigurationLoadFailure(const LoadConfigResult& result,
                                             const QString& errorMessage);
         void clearConfigurationRuntime(bool notify, bool stopCameras);
@@ -919,6 +939,9 @@ namespace scopeone::core
         quint64 m_nextProcessingRequestId{0};
         QHash<QString, std::vector<ImageFrame>> m_layerStacks;
         QList<Trigger> m_triggers;
+        // The pre-trigger buffers of the triggers, kept to restore them when new ones fail
+        QHash<QString, int> m_preTriggerFrameCounts;
+        QHash<QString, qint64> m_preTriggerByteLimits;
         // When each trigger last fired on m_triggerClock, or -1
         QList<qint64> m_triggerFiredMs;
         QElapsedTimer m_triggerClock;
@@ -926,6 +949,8 @@ namespace scopeone::core
         quint64 m_triggerGeneration{0};
         // Set while a trigger action runs
         bool m_runningTrigger{false};
+        // The processing error logged last, so a module that fails on every frame logs it once
+        QString m_lastProcessingError;
         static constexpr qsizetype kActionLogSize = 10000;
         QList<ActionLogEntry> m_actionLog;
         // Entries ever appended, and their count when the last configuration finished loading,

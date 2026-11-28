@@ -4,39 +4,33 @@ Python client for ScopeOne's language-neutral Local API. It controls a running S
 
 ## Installation
 
-Requires Python 3.10 or later and a running ScopeOne desktop application.
-
-Create and activate an isolated Conda environment:
+Python 3.12 or later.
 
 ```powershell
-conda create -n ScopeOne python=3.14.7
-conda activate ScopeOne
+pip install scopeone
 ```
 
-Install from this source checkout:
-
-```powershell
-cd ScopeOneCore\python\scopeone
-python -m pip install -e .
-```
-
-For a regular, non-editable installation, use:
-
-```powershell
-python -m pip install .
-```
-
-`pip` installs the required `numpy` and `pywin32` dependencies automatically on Windows. Verify the connection after ScopeOne is running:
+Start ScopeOne, then check the connection:
 
 ```powershell
 python -c "from scopeone import ScopeOne; print(ScopeOne().version())"
+```
+
+### From source
+
+For changing the client. `requirements.txt` fixes the versions of numpy and pywin32.
+
+```powershell
+cd ScopeOneCore\python\scopeone
+pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Project layout
 
 - Python package project root: `ScopeOneCore/python/scopeone`
 - Package source: `ScopeOneCore/python/scopeone/src/scopeone`
-- `scopeone.ScopeOne`, `FrameResult`, `RecordingSession` and `ExperimentSession` (in `scopeone.client`) control a running ScopeOne and move frames in and out of it as numpy arrays
+- `scopeone.ScopeOne`, `Frame` and `RecordingSession` (in `scopeone.client`) control a running ScopeOne and move frames in and out of it as numpy arrays
 - `scopeone.processing` goes the other way: ScopeOne runs Python functions as pipeline modules, see [Python processing modules](#python-processing-modules)
 - `scopeone._shm` reads and writes the shared frame layout and is internal
 
@@ -53,10 +47,18 @@ def threshold(image, level, bits):
 
 The function gets a 2D `uint8` or `uint16` array and the parameters by name, and returns a 2D
 `uint8` or `uint16` array. A function with a `bits` argument also gets the bits per sample of
-the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Put
-the script in `processing/python/` beside ScopeOne or in the same folder under the
-user's application data directory. The modules appear in the pipeline after a restart. ScopeOne ships no script
-there; `ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to copy.
+the frame, 12 for a 12-bit camera in a `uint16` array, so `bits` is not a parameter key. Keep
+the script wherever you like and add it with **Python > Add Script...** in the pipeline panel, or
+with `ScopeOne.add_python_script(path)`. Its modules join the list with `(Python)` after their
+name, and ScopeOne remembers the script, so they are there after a restart. Add a script again
+after changing its modules or parameters, and remove it with **Python > Remove Script**. A saved
+pipeline or experiment names the script of each Python step and adds it when it is opened.
+`ScopeOneCore/python/scopeone/examples/processing_offset.py` is one to start from.
+
+A module runs at the speed of the library it calls, so the work of each frame belongs in compiled
+code such as numpy, scipy or torch, and the Python only decides what to compute.
+`processing_frequency_filter.py` is a bandpass filter in this form: the script builds the mask,
+and `scipy.fft` runs the FFT in C++ on every core.
 
 A module can also report what it measured by returning `(array, measurements)`, where
 `measurements` is a list of dicts with `name`, a number `value`, and optional `x` and `y` in image
@@ -79,10 +81,12 @@ in it shows as the error of that pipeline step.
 
 ScopeOne first runs `python -m scopeone.processing describe script.py`, which prints one JSON
 line with the modules of the script and their parameters. While the pipeline runs, each frame is
-one request on stdin: a JSON line with `module`, `parameters`, `width`, `height`, `stride`,
-`format` (`mono8` or `mono16`), `bits` and `bytes`, followed by that many pixel bytes. The reply
-on stdout has the same form with `width`, `height`, `format`, `bytes` and, when the module
-measured something, `measurements`, or a JSON line with `error`.
+one JSON line on stdin with `module`, `parameters`, `width`, `height`, `stride`, `format`
+(`mono8` or `mono16`), `bits`, and `mapping` and `capacity`, the name and size of the shared
+memory that holds the pixels. The reply is one JSON line on stdout with `width`, `height`,
+`format`, `bytes` and, when the module measured something, `measurements`, with the result
+written to the start of the same memory, or a JSON line with `error`. A result holds at most
+twice the bytes of the frame.
 
 ## Current API
 
@@ -211,6 +215,10 @@ A control connection is synchronous and processes one request at a time. Agent a
 - `ScopeOne.configs(group)`
 - `ScopeOne.current_config(group)`
 - `ScopeOne.set_config(group, config)`
+- `ScopeOne.set_config_preset(group, preset, settings)`
+- `ScopeOne.remove_config_preset(group, preset)`
+- `ScopeOne.light_sources()`
+- `ScopeOne.set_light_source(name, power_device, power_property, enable_device="", enable_property="", on_value="", off_value="", reading_device="", reading_property="")`
 - `ScopeOne.remove_static_layer(layer_key)`
 - `ScopeOne.clear_static_layers()`
 - `ScopeOne.create_line_markup(layer_key, x1, y1, x2, y2, label="", role="generic")`
@@ -247,9 +255,10 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.processing_state()`
 - `ScopeOne.processing_modules()`
 - `ScopeOne.set_processing_bit_depth(bit_depth)`
-- `ScopeOne.set_realtime_processing(enabled, camera_id=None)`
 - `ScopeOne.start_processing(camera_id=None)`
 - `ScopeOne.stop_processing()`
+- `ScopeOne.add_python_script(path)`
+- `ScopeOne.remove_python_script(path)`
 - `ScopeOne.add_processing_module(kind, parameters=None)`
 - `ScopeOne.remove_processing_module(index)`
 - `ScopeOne.set_processing_module_parameters(index, parameters)`
@@ -260,6 +269,7 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.hook_reply(hook_id, action="continue", **changes)`
 - `ScopeOne.run_hooks(before=None, after=None, experiment_id=None)`
 - `ScopeOne.action_log(since=None)`
+- `ScopeOne.log(since=None, after=None)`
 - `ScopeOne.experiment_document()`
 - `ScopeOne.validate_experiment(document)`
 - `ScopeOne.save_experiment(file_path, document)`
@@ -267,25 +277,19 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `ScopeOne.start_experiment(document)`
 - `ScopeOne.experiment_status(experiment_id)`
 - `ScopeOne.cancel_experiment(experiment_id)`
-- `ExperimentSession.experiment_id()`
-- `ExperimentSession.status()`
-- `ExperimentSession.document()`
-- `ExperimentSession.cancel()`
-- `ExperimentSession.close()`
-- `ScopeOne.frame_mapping_info()`
-- `ScopeOne.write_frame_mapping(image, camera="python", bits_per_sample=None, frame_index=0, source_roi=None)`
-- `ScopeOne.process_frame_mapping(camera=None, start_module_index=None, end_module_index=None)`
 - `ScopeOne.process_image(image, camera="python", bits_per_sample=None, start_module_index=None, end_module_index=None)`
 - `ScopeOne.latest_raw_frame(camera)`
 - `ScopeOne.layer_frame(layer_key)`
-- `ScopeOne.show_frame_mapping_as_layer(layer_id="python_result", name="Python Result", camera=None)`
-- `ScopeOne.save_frame_mapping(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera=None)`
 - `ScopeOne.continue_pipeline(frame, image=None)`
 - `ScopeOne.show_frame(frame, image=None, layer_id="python_result", name="Python Result")`
 - `ScopeOne.show_image(image, layer_id="python_result", name="Python Result", camera="python", bits_per_sample=None)`
 - `ScopeOne.save_frame(frame, save_dir, base_name, image=None, format="ome-tiff", compression=False, compression_level=6)`
 - `ScopeOne.save_image(image, save_dir, base_name, format="ome-tiff", compression=False, compression_level=6, camera="python", bits_per_sample=None)`
 - `ScopeOne.record(frames, camera="All", timeout_ms=120000, mda_interval_ms=0.0, z_positions=None, positions=None, order=None)`
+- `RecordingSession.experiment_id()`
+- `RecordingSession.status()`
+- `RecordingSession.document()`
+- `RecordingSession.cancel()`
 - `RecordingSession.camera_ids()`
 - `RecordingSession.frame_count(camera=None)`
 - `RecordingSession.frame(camera, index)`
@@ -293,11 +297,10 @@ Shapes drawn in the Analyze panel can also be ellipses, polygons and points. `li
 - `RecordingSession.frames(camera)`
 - `RecordingSession.save(save_dir, base_name, format="ome-tiff", compression=False, compression_level=6)`
 - `RecordingSession.close()`
-- `FrameResult.write(image=None)`
 
-`FrameResult` exposes common metadata as typed attributes: `camera`, `width`, `height`, `pixel_format`, `bits_per_sample`, `frame_index`, `timestamp_ns`, `source_roi`, `module_index`, `next_module_index`, and `start_module_index`.
+`record` and `start_experiment` both return a `RecordingSession`, since Core keeps an experiment and the frames it recorded in memory under one id. Wrap the `experimentId` of an `experiment_state` event in `RecordingSession(scope, experiment_id)` to save a recording a trigger started.
 
-`FrameResult.write(image)` clips and casts the edited pixels to the frame format, writes them into the shared mapping, and updates `frame.image` to the written array.
+`Frame` exposes common metadata as typed attributes: `camera`, `width`, `height`, `pixel_format`, `bits_per_sample`, `frame_index`, `timestamp_ns`, `source_roi`, `module_index`, `next_module_index`, and `start_module_index`.
 
 ## Local API Protocol
 
@@ -314,7 +317,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 
 ### Events
 
-`subscribe` with optional field `events` (a list of names; empty or missing means all) starts sending those events on the same connection, and `unsubscribe` with the same field stops them. Both return the subscribed `events`. A subscription ends when the connection closes. `capabilities` lists the names in `events`.
+`subscribe` with optional field `events` (a list of names; empty or missing means every event but `log`, which comes only when named) starts sending those events on the same connection, and `unsubscribe` with the same field stops them. Both return the subscribed `events`. A subscription ends when the connection closes. `capabilities` lists the names in `events`.
 
 - `config_loaded`: `path`, `success`, `error`.
 - `config_unloaded`: `path`, `success`, `error`.
@@ -324,6 +327,7 @@ ScopeOne uses one local control pipe for JSON commands and one shared-memory blo
 - `recording_saved`: `sessionId`, `success`, `message`, and `paths`, or `cameraId` when one camera of the session was saved.
 - `measurement`: `cameraId`, `moduleId`, `frameIndex` and `measurements` of one frame from a processing module.
 - `trigger_fired`: `index` of the trigger, the `measurement` that crossed its threshold (with `cameraId`, `moduleId` and `frameIndex`), `action`, `success` and `error`.
+- `log`: one entry of the [log](#log), with `time`, `level`, `source` and `message`.
 - `before_event` and `after_event`: hook requests, see [Hooks](#hooks). They go to the connection that set the hooks, without a subscription.
 
 In Python, `subscribe(events=None)` and `unsubscribe(events=None)` change the subscription, and `wait_event(names=None, timeout=None)` returns the next event of those names as a dict, or `None` after `timeout` seconds. Events that arrive while the client waits for a response are kept for `wait_event`.
@@ -345,7 +349,7 @@ trigger alone for `cooldownMs` milliseconds.
 - `measurement`: the `name` a processing module reports.
 - `cameraId`: the camera it applies to, empty or missing for any camera.
 - `compare`: `above` or `below` `threshold`.
-- `action`: `record` takes `frames` (default 100) from the camera that measured, as the `record` request does, and keeps the session in memory; `apply_preset` sets `preset` of `group` as `set_config` does, within the limits of the configuration; `stop_preview` stops the preview of the camera that measured.
+- `action`: `record` takes `frames` (default 100) from the camera that measured, as the `record` request does, and keeps the session in memory, and with `preTriggerFrames` (default 0) starts with that many frames the camera took up to the moment the trigger fired, so the session holds `preTriggerFrames + frames` frames in one run of frame indices with their original timestamps. The frame that crossed the threshold is among them, as many frames before the moment of firing as the live processing lags behind the camera, its `frameIndex` in `trigger_fired` and the action log. While such a trigger is set Core keeps the newest frames of its camera in memory and receives every frame of it, and `set_triggers` refuses triggers whose frames would need more memory than recordings may hold for writing. Right after `set_triggers` the buffer holds fewer frames, none at all for a trigger that fires on the first measurement, whose threshold frame then lies before the session, and the recording takes more after the threshold; `apply_preset` sets `preset` of `group` as `set_config` does, within the limits of the configuration; `stop_preview` stops the preview of the camera that measured.
 - `cooldownMs`: default 5000.
 
 ```python
@@ -373,16 +377,25 @@ At `before_event`, before the hardware moves, the event waits for a reply. The c
 with `hook_reply` and `hookId`, and `action` `continue`, `skip` (the event takes no frames and
 leaves no record; in an experiment that runs to its end, OME-TIFF and OME-Zarr files keep the
 shape of the plan with empty planes in place of the skipped ones) or `stop` (the experiment ends as `Completed` with the data taken so far).
-`continue` may change `x`, `y`, `z` and `exposureMs` of that event; the moves go through the
+`continue` may change `x`, `y`, `z` and `exposureMs` of that event; `z` is the absolute focus
+position, without the autofocus shift of the position added to it. `x`, `y` and `z` must be
+finite and `exposureMs` above 0, or the reply is refused. The moves go through the
 same limits as any other, and the session records the changed event with `changedByHook`. Only
 the connection that set the hooks can answer them. At `after_event` the
 frames are taken and in the session, so `latest_raw_frame` or `session_frame` read them; the
 answer is `continue` or `stop`. An event without a reply within `timeoutMs` goes on unchanged.
+While hooks are on, the shutter closes after every event, so it is closed while the client
+answers.
+
+The connection that holds the hooks cannot send `record`, which would wait for its recording
+while nothing answers the hooks; it is refused. Record from another connection, or start the
+experiment with `start_experiment` and answer the hooks with `run_hooks`.
 
 The hook event data holds `hookId`, `experimentId`, `event` (`sequenceIndex`, `timeIndex`,
 `positionIndex`, `zIndex`, `channelIndex`, `channelPreset`, `x`, `y`, `z`, `hasXY`, `hasZ`,
-`exposureMs`, `cameraIds`) and, after the event, `frames` with `cameraId`, `frameIndex`,
-`timestampNs`, `width` and `height`. Hooks apply to experiments that run as events, that is
+`exposureMs`, `cameraIds`) and, after the event, `frames` with `cameraId`, `timestampNs`,
+`width` and `height`. They carry no `frameIndex`, as the recording numbers its frames after the
+hook; the frames of the event are found in the session by the event's `sequenceIndex`. Hooks apply to experiments that run as events, that is
 with positions, Z positions, channels or time intervals. While hooks are on, the Z slices and
 channels are taken one by one, not as hardware sequences. Events cannot be added.
 
@@ -431,6 +444,37 @@ written beside the data) gets the entries from the last configuration load befor
 to its end as `actionLog`. A `record` request is answered when its recording ends, so its own
 entry comes after that file; the plan in the same file holds its settings.
 
+### Log
+
+The log holds the messages the console of the app shows: what ScopeOne reports, its warnings and
+errors, and what the drivers and the Python processing modules print. An entry is
+
+```json
+{"time": "2026-11-23T13:20:04.518Z", "level": "WARNING", "source": "driverhost:example.camera",
+ "message": "Exposure out of range", "sequence": 1532}
+```
+
+`level` is `DEBUG`, `INFO`, `WARNING` or `ERROR`. `source` is `scopeone` for the app itself,
+`driverhost:<driver>` for a driver process, `driverhost:micro-manager/<camera>` for the process
+of a Micro-Manager camera, which each camera has when a configuration has several, and
+`python:<module>` for a processing module. `sequence` counts the entries from 1 in the order
+they were written. `log` returns the last 10000 entries, only those at or after the time `since`
+and after the sequence `after` when given, the `log` event sends each new one, and the app writes all of them to `ScopeOne.log` in the `logs` folder of its
+application data directory, keeping the session before as `ScopeOne.previous.log`.
+
+Micro-Manager and its device adapters keep their own log, as in Micro-Manager: `CoreLog.txt` in
+the same folder, and `CoreLog-<camera>.txt` for a camera in its own process. Their errors reach a
+client through the response of the request that failed.
+
+Whoever does a piece of work logs it. Core logs what it does itself, such as loading a
+configuration, a recording, a trigger or a processing error. The one who sent a request learns how
+it ended from the response: a Local API client from its response, the GUI in its status bar and
+the log. The commands typed in the console and their responses show only in the console; the
+action log records the commands with the origin `console`.
+
+The log is for people reading what happened. A program follows the request responses, the events
+and the [action log](#action-log) instead, which say the same in fields.
+
 ### Control requests
 
 - `ping`: health check.
@@ -471,6 +515,10 @@ entry comes after that file; the plan in the same file holds its settings.
 - `configs`: fields `group`; response `configs`.
 - `current_config`: fields `group`; response `config`.
 - `set_config`: fields `group`, `config`; response `config`.
+- `set_config_preset`: fields `group`, `preset`, `settings` as a list of `device`, `property` and `value`; creates or replaces the preset in the loaded configuration.
+- `remove_config_preset`: fields `group`, `preset`.
+- `light_sources`: response `sources`, each with `name`, `enableDevice`, `enableProperty`, `onValue`, `offValue`, `powerDevice`, `powerProperty`, `readingDevice`, `readingProperty`.
+- `set_light_source`: the fields of one source in `light_sources`; `name`, `powerDevice` and `powerProperty` are required, the enable and reading properties are optional and the enable property needs different `onValue` and `offValue`. Adds or replaces the source of that name.
 - `remove_static_layer`: fields `layerKey`.
 - `clear_static_layers`: remove all static preview layers.
 - `create_line_markup`: fields `layerKey`, `x1`, `y1`, `x2`, `y2`, optional `label` and `role`; response `markupId`.
@@ -502,14 +550,17 @@ entry comes after that file; the plan in the same file holds its settings.
 - `start_stage_mosaic`: fields `cameraId`, `xyStageId`, and optional `rows`, `columns`, `stepXUm`, `stepYUm`, `settleMs`, `returnToStart`, and `gallerySaveDir`; starts asynchronous mosaic acquisition and returns `status`. `gallerySaveDir` becomes the default directory if the resulting Gallery session is saved later.
 - `stage_mosaic_status`: response `status` with `state`, tile progress, message, and completed session ID.
 - `cancel_stage_mosaic`: cancels the running mosaic and returns its final `status`.
-- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`.
+- `processing_modules`: response `bitDepth`, `realTime`, `realTimeSource`, `modules`, and descriptor list `availableModules`, where a Python module also has the `script` it comes from.
 - `set_processing_bit_depth`: fields `bitDepth`, accepts `8` or `16`.
 - `set_realtime_processing`: fields `enabled` and optional `cameraId`; an empty camera ID selects all cameras.
+- `add_python_script`: field `path` of a `.py` file; reads its processing modules, lists them and remembers the script. Response `moduleIds`.
+- `remove_python_script`: field `path`; forgets the script and its modules, and fails while a pipeline has a step of it.
 - `add_processing_module`: fields `kind`, optional `parameters`; response `index`.
 - `remove_processing_module`: fields `index`.
 - `set_processing_module_parameters`: fields `index`, `parameters`.
 - `reset_processing_module_state`: fields `index`.
 - `action_log`: optional field `since`, an ISO 8601 time; response `entries` at or after it, oldest first. See [Action log](#action-log).
+- `log`: optional field `since`, an ISO 8601 time; response `entries` at or after it, oldest first. See [Log](#log).
 - `triggers`: response `triggers`, see [Triggers](#triggers).
 - `set_triggers`: field `triggers`, which replaces all triggers; an empty list removes them. Response `triggers`.
 - `set_hooks`: fields `hooks` and optional `timeoutMs`; response `hooks` and `timeoutMs`. See [Hooks](#hooks).
@@ -521,7 +572,7 @@ entry comes after that file; the plan in the same file holds its settings.
 - `start_experiment`: field `document`; starts a validated Draft asynchronously and responds with `experimentId`, `state`, and `document`.
 - `experiment_status`: field `experimentId`; response `state`, `cancelRequested`, `document`, live `progress` and `writer` state while active, and completed recording session details when available.
 - `cancel_experiment`: field `experimentId`; requests cancellation and returns the current experiment status.
-- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`.
+- `record`: fields `frames`, `camera`, `timeoutMs`, `mdaIntervalMs`, `zPositions`, `positions`, `order`; response `sessionId`, `cameraIds`. Refused from the connection that holds the hooks, see [Hooks](#hooks).
 - `session_info`: fields `sessionId`; response `cameraIds`, `frameCount`, `frameCounts`.
 - `session_close`: fields `sessionId`; releases the recorded session held by the app together with its experiment document, which then no longer appears among the retained experiments of `state_snapshot`.
 - `session_frame`: fields `sessionId`, `camera`, `index`; response `mappingName`, `mappingSize`, and frame metadata.
@@ -551,7 +602,7 @@ entry comes after that file; the plan in the same file holds its settings.
 `record` returns `sessionId` and `cameraIds`. If `zPositions` or `positions` is non-empty, recording uses the MDA snap path. If both are empty, recording uses the preview/raw-frame path.
 For timed MDA with more than one time point, `order` must begin with `time` so event start times remain monotonic.
 
-The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `ExperimentSession` or the direct status and cancel methods to control the run. Call `ExperimentSession.close()` after completion to release retained recording frames while keeping document status available.
+The initially created document is a complete editable Draft with in-memory recording enabled by default. Set `plan.streamToDisk`, `plan.saveDir`, and `plan.baseName` together for streamed output. Experiment documents are parsed strictly: every schema field is required, unknown fields and unsupported schema versions are rejected, and `start_experiment` accepts only Draft documents whose camera IDs are currently available. `start_experiment` is non-blocking; use the returned `RecordingSession` or the direct status and cancel methods to control the run. Call `RecordingSession.close()` after completion to release retained recording frames while keeping document status available.
 
 #### Multi-channel acquisition
 
@@ -601,14 +652,14 @@ Processing module editing follows the desktop UI rules: stop real-time processin
 - Mapping name: `ScopeOne.Api.frame`
 - Header layout: `scopeone::core::SharedFrameHeader`
 - Pixel data starts at `scopeone::core::kSharedFrameHeaderSize`
-- Python reads it into `FrameResult.image`
+- Python reads it into `Frame.image`
 - Responses include `camera`, `width`, `height`, `stride`, string `payloadBytes`, `pixelFormat`, `bitsPerSample`, string `frameIndex`, string `timestampNs`, `sourceRoiX`, `sourceRoiY`, `sourceRoiWidth`, `sourceRoiHeight`, and `sourceRoiValid`.
 - Session frames can come from memory, saved OME-TIFF or OME-Zarr outputs, TIFF stacks, or saved binary streams.
-- `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_frame_mapping(...)` return `FrameResult` objects.
+- `ScopeOne.latest_raw_frame(...)`, `ScopeOne.layer_frame(...)`, `RecordingSession.frame(...)`, `RecordingSession.frames(...)`, `RecordingSession.process_frame(...)`, and `ScopeOne.process_image(...)` return `Frame` objects.
 
-`latest_raw_frame` exports the current live raw frame for Python processing, while `layer_frame` accepts any key returned by `list_layers`. Particle detection can return its mask as a `FrameResult` with `export_mask=True` or publish the mask directly with `publish_mask=True`. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly. `FrameResult.write()` requires the shared mapping to still contain the same frame metadata, so request the frame again after another frame export overwrites the mapping. `process_frame_mapping`, `show_frame_mapping_as_layer`, and `save_frame_mapping` reuse the last exported or explicitly imported camera id when `camera` is omitted. Provide `camera` the first time a mapping was written by an external client.
+`latest_raw_frame` exports the current live raw frame for Python processing, while `layer_frame` accepts any key returned by `list_layers`. Particle detection can return its mask as a `Frame` with `export_mask=True` or publish the mask directly with `publish_mask=True`. `session_process_frame` reads a stored session frame, processes it through the current pipeline, and writes the result into the same shared memory block. Use `endModuleIndex` to stop after one stage. The response then includes `moduleIndex` and `nextModuleIndex`. Pass the edited numpy array to `ScopeOne.continue_pipeline(frame, image=edited_image)` to write it back and continue with the next pipeline stage. Pass a frame and optional edited image to `ScopeOne.show_frame(frame, image=edited_image)` to display it in the ScopeOne preview as a static layer. Use `ScopeOne.save_frame(frame, save_dir, base_name, image=edited_image)` to save the current Python/C++ result directly.
 
-Python can also publish a new numpy image without first requesting a ScopeOne frame. `ScopeOne.write_frame_mapping(...)` writes a 2D mono array into the shared frame mapping and returns a `FrameResult`; `ScopeOne.show_image(...)`, `ScopeOne.process_image(...)`, and `ScopeOne.save_image(...)` are convenience wrappers around that path.
+Python can also send a new numpy image without first requesting a ScopeOne frame: `ScopeOne.process_image(...)` runs it through the pipeline, `ScopeOne.show_image(...)` shows it as a layer and `ScopeOne.save_image(...)` saves it. The shared frame mapping these methods use is internal to the client; other clients use it through the Local API requests listed above.
 
 ### Error policy
 
@@ -617,12 +668,11 @@ The server returns `ok: false` and a short actionable `error` string. Recording 
 ## Notes
 
 - `ScopeOne()` connects to a running ScopeOne control server over the local platform endpoint.
-- `ScopeOne.connect("local")` is an alias for the default local connection.
 - Start the ScopeOne app before using the Python API.
-- Python 3.14 is required.
+- Python 3.12 or later is required.
 - Frame reads use a shared-memory export block.
 - The package itself depends on `numpy` and `pywin32`. `Pillow` is only needed if you want notebook/image display helpers in your own code.
-- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_raw_stream_process.py` for live frames, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, and for the iSCAT Landing scene of the example camera `example_landing.py`, which records when a particle lands, and `processing_landing.py`, the same detection as a module whose measurement a trigger acts on.
+- Runnable examples are in `examples/`: `example_minimal.ipynb` for a first session, `demo_mmconfig_api_walkthrough.ipynb` for most of the API on the demo configuration, `example_config_stage_record.py` for configuration, stage and recording, `example_hooks.py` for acquisition hooks, `example_image_scene_sync.py` for markups, `processing_offset.py` for a processing module, `processing_frequency_filter.py` for one that leaves the heavy work to scipy, and for the iSCAT Landing scene of the example camera `processing_landing.py`, a module that measures each particle landing, and `example_landing.py`, which builds the pipeline and the trigger around it and saves every recording.
 
 ## Build
 

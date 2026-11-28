@@ -18,6 +18,9 @@ namespace scopeone::core::internal
         ~ProcessingModuleRegistry();
 
         bool registerModule(const ProcessingModuleDescriptor& descriptor, Factory factory);
+        // For the modules of a Python script that is read again or removed. Returns the factory
+        // of the module, so a script that fails to read again can register its modules back.
+        Factory unregisterModule(const QString& moduleId);
         // For the modules built into Core, whose id and descriptor the program guarantees.
         // Stops with the module's id when one is registered twice or its descriptor is invalid.
         void registerBuiltIn(const ProcessingModuleDescriptor& descriptor, Factory factory);

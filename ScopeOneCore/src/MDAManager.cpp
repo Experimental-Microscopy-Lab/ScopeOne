@@ -56,6 +56,14 @@ namespace scopeone::core::internal
         m_cancelRequested.store(false);
         m_threadPool.start([this, events, hook = std::move(hook)]()
         {
+            // Given back in restoreInitialState, before the sequence reports its end. The preview
+            // that ran before may have left the shutter open, and its stop no longer closes it
+            // once the sequence holds the shutter, so the sequence starts with it closed.
+            m_hardwareRuntime->setShutterHeldByAcquisition(true);
+            if (m_hardwareRuntime->autoShutter())
+            {
+                m_hardwareRuntime->setDefaultShutterOpen(false);
+            }
             runSequence(events, hook);
         });
         return true;
@@ -111,9 +119,11 @@ namespace scopeone::core::internal
                 }
             }
         }
-        // What skipped events would have done for the events after them: open the shutter of
-        // their block and run the autofocus of their position
-        bool carryShutter = false;
+        // With hooks the shutter closes after every event, so it is closed while a client answers,
+        // and each event of a shutter block opens it again. This is whether the block goes on.
+        bool shutterBlock = false;
+        // What a skipped event would have done for the events after it: run the autofocus of its
+        // position
         bool carryAutofocus = false;
         int carryPosition = -1;
 
@@ -140,7 +150,9 @@ namespace scopeone::core::internal
 
             if (hooked)
             {
-                event.openShutterBefore = event.openShutterBefore || carryShutter;
+                event.openShutterBefore = event.openShutterBefore || shutterBlock;
+                shutterBlock = event.openShutterBefore && !event.closeShutterAfter;
+                event.closeShutterAfter = true;
                 event.autofocusBefore = event.autofocusBefore
                     || (carryAutofocus && event.positionIndex == carryPosition);
                 MDAOutput request;
@@ -160,16 +172,20 @@ namespace scopeone::core::internal
                 {
                     // A skipped event takes no frames and leaves no record, as the events a
                     // canceled run did not reach
-                    closeShutter(event, state);
-                    carryShutter = event.openShutterBefore && !event.closeShutterAfter;
                     carryAutofocus = event.autofocusBefore;
                     carryPosition = event.positionIndex;
                     ++index;
                     continue;
                 }
-                carryShutter = false;
                 carryAutofocus = false;
-                applyHookChanges(event, reply);
+                QString hookError;
+                if (!applyHookChanges(event, reply, state, &hookError))
+                {
+                    restoreInitialState(state);
+                    m_running.store(false);
+                    emit sequenceError(hookError);
+                    return;
+                }
             }
 
             // Z slices that the hardware can time are taken in one sequence
@@ -251,23 +267,35 @@ namespace scopeone::core::internal
     }
 
     // Takes the changes of a hook reply into the event. A position the event did not have starts
-    // from where the stage is.
-    void MDAManager::applyHookChanges(AcquisitionEvent& event, const HookReply& reply) const
+    // from where the stage is. The z of a reply is where the focus goes, so the autofocus shift of
+    // the position, which setupEvent adds to the Z of an event, is taken off it here.
+    bool MDAManager::applyHookChanges(AcquisitionEvent& event,
+                                      const HookReply& reply,
+                                      const SequenceState& state,
+                                      QString* errorMessage) const
     {
         if ((reply.x || reply.y) && !event.hasXY)
         {
-            m_hardwareRuntime->getXYPosition(m_hardwareRuntime->defaultXYStage(), event.x, event.y);
+            if (!m_hardwareRuntime->getXYPosition(m_hardwareRuntime->defaultXYStage(), event.x, event.y))
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Failed to read the stage position for the hook reply");
+                }
+                return false;
+            }
             event.hasXY = true;
         }
         event.x = reply.x.value_or(event.x);
         event.y = reply.y.value_or(event.y);
         if (reply.z)
         {
-            event.z = *reply.z;
+            event.z = *reply.z - state.focusShift.value(event.positionIndex, 0.0);
             event.hasZ = true;
         }
         event.exposureMs = reply.exposureMs.value_or(event.exposureMs);
         event.changedByHook = reply.x || reply.y || reply.z || reply.exposureMs;
+        return true;
     }
 
     // Remembers what the hardware is set to before the sequence, so it can be put back
@@ -389,6 +417,7 @@ namespace scopeone::core::internal
         {
             qWarning().noquote() << "Failed to restore the channel:" << error;
         }
+        m_hardwareRuntime->setShutterHeldByAcquisition(false);
     }
 
     // Moves hardware into place before capture. Settings that did not change since the
@@ -509,9 +538,9 @@ namespace scopeone::core::internal
         return true;
     }
 
-    // Focuses with the autofocus device at the position of the event. The focus is first moved
-    // to where the event would image, so the autofocus starts from there, and the distance it
-    // moved is kept to shift the Z positions that follow.
+    // Focuses with the autofocus device at the position of the event. An event with Z first moves
+    // the focus to where it would image, and the distance the autofocus moved shifts the Z
+    // positions of that position. An event without Z focuses from where the focus is.
     bool MDAManager::runAutofocus(const AcquisitionEvent& event,
                                   SequenceState& state,
                                   QString* errorMessage)
@@ -537,10 +566,6 @@ namespace scopeone::core::internal
                 return false;
             }
         }
-        else if (!m_hardwareRuntime->getZPosition(focus, before, errorMessage))
-        {
-            return false;
-        }
 
         QString error;
         if (!m_hardwareRuntime->runAutofocus(&error))
@@ -554,14 +579,16 @@ namespace scopeone::core::internal
             return false;
         }
 
-        const double moved = after - before;
         if (event.hasZ)
         {
-            state.focusShift[event.positionIndex] += moved;
+            state.focusShift[event.positionIndex] += after - before;
         }
         else
         {
-            state.zReference += moved;
+            // The event images where the autofocus ended, wherever the focus started from, and
+            // the channel offsets of the later events are measured from there
+            state.zReference = after - event.zOffsetUm;
+            state.zOffset = event.zOffsetUm;
         }
         state.zKnown = true;
         state.z = after;

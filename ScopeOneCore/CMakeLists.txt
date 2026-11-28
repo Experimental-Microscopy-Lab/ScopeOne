@@ -20,6 +20,8 @@ set(MMDEVICE_INCLUDE_DIR "${MMCORE_DIR}/MMDevice")
 find_package(Qt6 ${SCOPEONE_QT_MINIMUM_VERSION} COMPONENTS Core Gui Network Concurrent REQUIRED)
 message(STATUS "Using Qt ${Qt6_VERSION} from ${Qt6_DIR}")
 find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
+# pocketfft is one header, which vcpkg installs without a CMake package
+find_path(POCKETFFT_INCLUDE_DIR pocketfft_hdronly.h REQUIRED)
 
 set(SCOPEWRITER_BUILD_TESTS OFF)
 add_subdirectory(external/ScopeWriter)
@@ -374,6 +376,7 @@ target_include_directories(ScopeOneCore
         ${MMCORE_INCLUDE_DIR}
         ${MMDEVICE_INCLUDE_DIR}
         ${OpenCV_INCLUDE_DIRS}
+        ${POCKETFFT_INCLUDE_DIR}
 )
 target_precompile_headers(ScopeOneCore PRIVATE
         <QtGlobal>

@@ -8,9 +8,10 @@ namespace scopeone::core::internal
 {
     class ProcessingModuleRegistry;
 
-    // Registers the modules of every script in the python folder of a processing
-    // directory. Each module of a pipeline then talks to its own Python process, one frame at a
-    // time, over stdin and stdout. Returns the scripts and modules that could not be registered.
-    QStringList registerPythonProcessingModules(ProcessingModuleRegistry& registry,
-                                                const QString& processingDirectory);
+    // Registers the modules of one script and returns their ids, or nothing and the error when the
+    // script cannot be read or a module id is taken. Each module of a pipeline then talks to its
+    // own Python process, one frame at a time.
+    QStringList registerPythonScript(ProcessingModuleRegistry& registry,
+                                     const QString& scriptPath,
+                                     QString& error);
 }

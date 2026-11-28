@@ -12,7 +12,6 @@ MONO8 = 0
 MONO16 = 1
 
 SHARED_FRAME_HEADER_SIZE = 64
-SHARED_FRAME_MAX_BYTES = 16 * 2048 * 2048
 
 _HEADER_STRUCT = struct.Struct("<IIIIIHHQQiiiiI4x")
 
@@ -43,16 +42,26 @@ def parse_frame_header(mapping: memoryview) -> SharedFrameHeader:
     return SharedFrameHeader(*_HEADER_STRUCT.unpack_from(mapping, 0))
 
 
-# A copy of the frame in the mapping, so the mapping can be closed
+# The pixels of the shared frame as an array over the mapping itself, not a copy
+def frame_array(mapping: memoryview, height: int, width: int, stride: int, dtype) -> np.ndarray:
+    return np.ndarray(shape=(height, width), dtype=dtype, buffer=mapping,
+                      offset=SHARED_FRAME_HEADER_SIZE, strides=(stride, np.dtype(dtype).itemsize))
+
+
+# A copy of the frame in the mapping, as the next request overwrites the one shared frame
 def frame_to_ndarray(header: SharedFrameHeader, mapping: memoryview) -> np.ndarray:
     dtype = np.uint16 if header.pixel_format == MONO16 else np.uint8
-    payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + header.payload_nbytes]
-    try:
-        array = np.ndarray(shape=(header.height, header.width), dtype=dtype, buffer=payload,
-                           strides=(header.stride, np.dtype(dtype).itemsize))
-        return np.array(array, copy=True)
-    finally:
-        payload.release()
+    return frame_array(mapping, header.height, header.width, header.stride, dtype).copy()
+
+
+# Writes image into dest, clipped to bits_per_sample, in one pass without a temporary copy.
+# Returns whether the values had to be clipped or converted.
+def store_frame(dest: np.ndarray, image: np.ndarray, bits_per_sample: int) -> bool:
+    if image.dtype == dest.dtype and bits_per_sample == dest.dtype.itemsize * 8:
+        dest[...] = image
+        return False
+    np.clip(image, 0, (1 << bits_per_sample) - 1, out=dest, casting="unsafe")
+    return True
 
 
 def write_ndarray_to_frame(
@@ -78,10 +87,10 @@ def write_ndarray_to_frame(
     else:
         pixel_format, dtype = MONO16, np.uint16
 
-    contiguous = np.ascontiguousarray(np.clip(array, 0, (1 << bits_per_sample) - 1).astype(dtype, copy=False))
     stride = width * np.dtype(dtype).itemsize
     payload_nbytes = stride * height
-    if payload_nbytes > SHARED_FRAME_MAX_BYTES:
+    # The mapping the app created is the limit, so the client never has its own copy of it
+    if payload_nbytes > len(mapping) - SHARED_FRAME_HEADER_SIZE:
         raise ValueError("ScopeOne frame payload exceeds the shared mapping capacity")
 
     source_roi_x, source_roi_y, source_roi_width, source_roi_height = source_roi or (0, 0, 0, 0)
@@ -94,11 +103,8 @@ def write_ndarray_to_frame(
                      int(timestamp_ns), source_roi_x, source_roi_y, source_roi_width,
                      source_roi_height, source_roi_valid)
     _HEADER_STRUCT.pack_into(mapping, 0, 1, *header_values)
-    payload = mapping[SHARED_FRAME_HEADER_SIZE:SHARED_FRAME_HEADER_SIZE + payload_nbytes]
-    try:
-        payload[:] = contiguous.tobytes(order="C")
-    finally:
-        payload.release()
+    dest = frame_array(mapping, height, width, stride, dtype)
+    converted = store_frame(dest, array, bits_per_sample)
     _HEADER_STRUCT.pack_into(mapping, 0, 2, *header_values)
 
     metadata = {
@@ -116,4 +122,4 @@ def write_ndarray_to_frame(
         "sourceRoiHeight": source_roi_height,
         "sourceRoiValid": bool(source_roi_valid),
     }
-    return np.array(contiguous, copy=True), metadata
+    return (dest.copy() if converted else array), metadata

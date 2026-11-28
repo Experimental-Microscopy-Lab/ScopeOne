@@ -10,6 +10,7 @@
 #include "scopeone/SignalSource.h"
 #include "scopeone/HardwareCapabilities.h"
 #include "scopeone/SharedFrame.h"
+#include "scopeone/Log.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -24,6 +25,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSharedMemory>
 #include <QThread>
@@ -36,6 +38,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -143,18 +146,18 @@ namespace scopeone::core::internal
             connect(m_process.get(), &QProcess::readyReadStandardOutput,
                     this, [this]()
                     {
-                        const QString output = QString::fromUtf8(
-                            m_process->readAllStandardOutput()).trimmed();
-                        if (!output.isEmpty())
+                        QStringList lines;
+                        while (m_process->canReadLine())
                         {
-                            m_lastHostLine = output.split(QLatin1Char('\n')).last();
-                            qInfo().noquote()
-                                << QString("[DriverHost %1] %2").arg(m_providerId, output);
+                            lines.append(QString::fromUtf8(m_process->readLine()));
                         }
+                        logHostOutput(lines);
                     });
             connect(m_process.get(), &QProcess::finished,
                     this, [this](int, QProcess::ExitStatus)
                     {
+                        // The last line may lack its newline
+                        logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                         m_lastError = QStringLiteral("DriverHost process exited");
                         for (const QString& cameraId : m_cameraIds)
                         {
@@ -178,6 +181,13 @@ namespace scopeone::core::internal
             // Windows GUI is, to the debugger, so the host's reasons never reached the log there
             QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
             environment.insert(QStringLiteral("QT_FORCE_STDERR_LOGGING"), QStringLiteral("1"));
+            // Each message starts with its level, so the log keeps it
+            environment.insert(QStringLiteral("QT_MESSAGE_PATTERN"), QStringLiteral("%{type}|%{message}"));
+            // Where a Micro-Manager camera writes its CoreLog
+            if (!Log::directory().isEmpty())
+            {
+                environment.insert(QStringLiteral("SCOPEONE_LOG_DIRECTORY"), Log::directory());
+            }
             m_process->setProcessEnvironment(environment);
             m_process->setProgram(driverHostPath);
             m_process->setArguments(arguments);
@@ -204,14 +214,8 @@ namespace scopeone::core::internal
                 if (m_process->waitForFinished(0))
                 {
                     exited = true;
-                    const QString rest = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
-                    if (!rest.isEmpty())
-                    {
-                        // The last output was read here and not logged, so a host that exited
-                        // at start left nothing of its reason in the log
-                        m_lastHostLine = rest.split(QLatin1Char('\n')).last().trimmed();
-                        qInfo().noquote() << QString("[DriverHost %1] %2").arg(m_providerId, rest);
-                    }
+                    // What the host printed is its reason for exiting
+                    logHostOutput(QString::fromUtf8(m_process->readAllStandardOutput()).split(QLatin1Char('\n')));
                     break;
                 }
             }
@@ -550,6 +554,7 @@ namespace scopeone::core::internal
                 request.insert(driverhost::kMessageTypeField, driverhost::kCommandSetFrameDeliveryMode);
                 request.insert(driverhost::kDeviceIdField, cameraId);
                 request.insert(QStringLiteral("mode"), frameDeliveryModeName(deliveryMode));
+                request.insert(QStringLiteral("previewIntervalMs"), previewFrameIntervalMs());
                 QJsonObject response;
                 return sendRequest(request, response, kControlRequestTimeoutMs, nullptr)
                     && responseSucceeded(response, nullptr);
@@ -1090,6 +1095,62 @@ namespace scopeone::core::internal
         QString m_lastError;
         // The last line the DriverHost printed, which is its reason when it exits at start
         QString m_lastHostLine;
+
+        // Writes what the DriverHost printed to the log with the level of each message: Qt messages
+        // start with their type, and lines without it, which a vendor library prints, are INFO or
+        // continue the message before them
+        void logHostOutput(const QStringList& lines)
+        {
+            static const QRegularExpression qtMessage(
+                QStringLiteral("^(debug|info|warning|critical|fatal)\\|(.*)$"));
+            QString source = QStringLiteral("driverhost:%1").arg(m_providerId);
+            // The Micro-Manager cameras share one provider, so the host of each is named by its camera
+            const qsizetype camera = m_arguments.indexOf(QStringLiteral("--micromanagerCamera"));
+            if (camera >= 0)
+            {
+                source += QLatin1Char('/') + QJsonDocument::fromJson(m_arguments.value(camera + 1).toUtf8())
+                                                  .object().value(QStringLiteral("cameraId")).toString();
+            }
+            QString level;
+            QString message;
+            const auto flush = [&]()
+            {
+                if (!message.isEmpty())
+                {
+                    Log::write(level, source, message);
+                }
+                message.clear();
+            };
+            for (QString line : lines)
+            {
+                line = line.trimmed();
+                if (line.isEmpty())
+                {
+                    continue;
+                }
+                if (const QRegularExpressionMatch match = qtMessage.match(line); match.hasMatch())
+                {
+                    flush();
+                    const QString type = match.captured(1);
+                    level = type == QStringLiteral("debug") ? QStringLiteral("DEBUG")
+                          : type == QStringLiteral("info") ? QStringLiteral("INFO")
+                          : type == QStringLiteral("warning") ? QStringLiteral("WARNING")
+                                                             : QStringLiteral("ERROR");
+                    message = match.captured(2);
+                }
+                else if (!message.isEmpty())
+                {
+                    message += QLatin1Char('\n') + line;
+                }
+                else
+                {
+                    level = QStringLiteral("INFO");
+                    message = line;
+                }
+                m_lastHostLine = message.section(QLatin1Char('\n'), -1);
+            }
+            flush();
+        }
         quint64 m_nextRequestId{1};
         quint64 m_waitingRequestId{0};
         bool m_cleanedUp{false};
@@ -1283,7 +1344,11 @@ namespace scopeone::core::internal
             if (!isCamera(cameraId)) return false;
             if (isPreviewRunning(cameraId)) return true;
             QJsonObject response;
-            if (!request(driverhost::kCommandStartPreview, cameraId, {}, response, nullptr))
+            // The interval goes with every start, as a host started after the display rate was set
+            // kept the default 16 ms until a delivery mode was sent to it
+            QJsonObject fields;
+            fields.insert(QStringLiteral("previewIntervalMs"), previewFrameIntervalMs());
+            if (!request(driverhost::kCommandStartPreview, cameraId, fields, response, nullptr))
             {
                 return false;
             }
@@ -1324,10 +1389,15 @@ namespace scopeone::core::internal
         }
 
         // Kept until a property is set, as the pixel size is asked for on every repaint of the
-        // scale bar and the binning changes only through a property
+        // scale bar and the binning changes only through a property. A camera that cannot tell its
+        // binning counts as 1 until then, so the scale bar does not ask the host again.
         bool getBinning(const QString& cameraId, int& binning) const override
         {
             const QString camera = cameraId.trimmed();
+            if (!isCamera(camera))
+            {
+                return false;
+            }
             quint64 generation = 0;
             {
                 QMutexLocker locker(&m_stateMutex);
@@ -1340,9 +1410,12 @@ namespace scopeone::core::internal
                 generation = m_binningGeneration;
             }
             QJsonObject response;
-            if (!isCamera(cameraId) || !request(driverhost::kCommandGetBinning, cameraId, {}, response, nullptr))
+            // A failed request, such as a timeout while the host is busy, cached binning 1 for good,
+            // so only an answer is cached
+            if (!request(driverhost::kCommandGetBinning, camera, {}, response, nullptr))
             {
-                return false;
+                binning = 1;
+                return true;
             }
             binning = response.value(QStringLiteral("binning")).toInt();
             QMutexLocker locker(&m_stateMutex);
@@ -1355,16 +1428,44 @@ namespace scopeone::core::internal
             return true;
         }
 
+        // Kept until a property is set like the binning, as every recording start asks for it,
+        // also when the camera has no gain
         bool getGain(const QString& cameraId, double& gain) const override
         {
-            QJsonObject response;
-            if (!isCamera(cameraId) || !request(driverhost::kCommandGetGain, cameraId, {}, response, nullptr)
-                || !response.contains(QStringLiteral("gain")))
+            const QString camera = cameraId.trimmed();
+            if (!isCamera(camera))
             {
                 return false;
             }
-            gain = response.value(QStringLiteral("gain")).toDouble();
-            return true;
+            quint64 generation = 0;
+            {
+                QMutexLocker locker(&m_stateMutex);
+                const auto cached = m_gains.constFind(camera);
+                if (cached != m_gains.cend())
+                {
+                    if (cached.value()) gain = *cached.value();
+                    return cached.value().has_value();
+                }
+                generation = m_binningGeneration;
+            }
+            QJsonObject response;
+            // A failed request cached "no gain" for good, so only an answer is cached
+            if (!request(driverhost::kCommandGetGain, camera, {}, response, nullptr))
+            {
+                return false;
+            }
+            std::optional<double> value;
+            if (response.contains(QStringLiteral("gain")))
+            {
+                value = response.value(QStringLiteral("gain")).toDouble();
+            }
+            QMutexLocker locker(&m_stateMutex);
+            if (generation == m_binningGeneration)
+            {
+                m_gains.insert(camera, value);
+            }
+            if (value) gain = *value;
+            return value.has_value();
         }
 
         bool setExposure(const QString& cameraId, double exposureMs) override
@@ -1445,6 +1546,7 @@ namespace scopeone::core::internal
             const bool ok = request(driverhost::kCommandSetProperty, deviceId, fields, response, errorMessage);
             QMutexLocker locker(&m_stateMutex);
             m_binnings.clear();
+            m_gains.clear();
             ++m_binningGeneration;
             if (ok && m_arguments.contains(QStringLiteral("--driver")))
             {
@@ -1989,6 +2091,9 @@ namespace scopeone::core::internal
         QHash<QString, QJsonObject> m_propertyDetails;
         QHash<QString, QString> m_propertyValues;
         mutable QHash<QString, int> m_binnings;
+        // The gain of each camera, empty for one that has none
+        mutable QHash<QString, std::optional<double>> m_gains;
+        // Counts the property changes that clear the binnings and gains
         quint64 m_binningGeneration{0};
     };
 

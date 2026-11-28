@@ -186,6 +186,20 @@ namespace
                                    QStringLiteral("ISO 8601 time; only entries at or after it"))}
                 })),
             makeTool(
+                QStringLiteral("log"),
+                QStringLiteral(
+                    "Read the log of ScopeOne, the messages its console shows, oldest first: warnings, errors "
+                    "and what the drivers and Python modules printed. Each entry has time, level (DEBUG, "
+                    "INFO, WARNING or ERROR), source, message and sequence"),
+                inputProperties({
+                    {QStringLiteral("since"),
+                     inputProperty(QStringLiteral("string"),
+                                   QStringLiteral("ISO 8601 time; only entries at or after it"))},
+                    {QStringLiteral("after"),
+                     inputProperty(QStringLiteral("integer"),
+                                   QStringLiteral("Sequence of the last entry read; only entries after it"))}
+                })),
+            makeTool(
                 QStringLiteral("wait_event"),
                 QStringLiteral(
                     "Wait for the next ScopeOne event, such as experiment_state when an experiment ends, "
@@ -193,7 +207,8 @@ namespace
                     "state first"),
                 inputProperties({
                     {QStringLiteral("events"),
-                     arrayProperty(QStringLiteral("Event names from capabilities; empty waits for any event"),
+                     arrayProperty(QStringLiteral("Event names from capabilities; empty waits for any event but log, "
+                                                  "which is only seen when named"),
                                    QStringLiteral("string"))},
                     {QStringLiteral("timeout_s"),
                      withMaximum(withMinimum(inputProperty(QStringLiteral("number"),
@@ -957,6 +972,25 @@ namespace
                 {QStringLiteral("enabled")},
                 ToolAccess::StateChanging),
             makeTool(
+                QStringLiteral("add_python_script"),
+                QStringLiteral("Read a Python script of processing modules, list its modules and remember it; "
+                               "the script runs in ScopeOne's Python interpreter"),
+                inputProperties({
+                    {QStringLiteral("path"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Path of the .py file"))}
+                }),
+                {QStringLiteral("path")},
+                ToolAccess::Confirmed),
+            makeTool(
+                QStringLiteral("remove_python_script"),
+                QStringLiteral("Forget a Python script and its processing modules; fails while a pipeline uses one"),
+                inputProperties({
+                    {QStringLiteral("path"),
+                     inputProperty(QStringLiteral("string"), QStringLiteral("Path of the .py file"))}
+                }),
+                {QStringLiteral("path")},
+                ToolAccess::StateChanging),
+            makeTool(
                 QStringLiteral("add_processing_module"),
                 QStringLiteral("Append a module to the image-processing pipeline"),
                 inputProperties({
@@ -1006,7 +1040,9 @@ namespace
                     "Replace the triggers. Each is an object with measurement (name a processing module "
                     "reports), optional cameraId (empty for any camera), compare (above or below), "
                     "threshold, action (record with frames, apply_preset with group and preset, or "
-                    "stop_preview) and cooldownMs (default 5000). Core performs the action on the frame that "
+                    "stop_preview) and cooldownMs (default 5000). record also takes preTriggerFrames, the "
+                    "frames up to the moment the trigger fires that the recording starts with, which Core keeps "
+                    "in memory while the trigger is set. Core performs the action on the frame that "
                     "crosses the threshold and sends a trigger_fired event. An empty list removes them"),
                 inputProperties({
                     {QStringLiteral("triggers"),
@@ -1472,17 +1508,14 @@ namespace
             }
 
             // Event messages of a subscription can arrive before the response, and are skipped.
-            // Hook events wait for an answer, so they are kept for wait_event.
+            // Hook events wait for an answer, so the newest is kept for wait_event.
             do
             {
                 if (!readMessage(response, error))
                 {
                     return false;
                 }
-                if (isHookEvent(response))
-                {
-                    m_hookEvents.append(response);
-                }
+                keepHookEvent(response);
             }
             while (response.contains(QStringLiteral("event")) && !response.contains(QStringLiteral("requestId")));
 
@@ -1492,6 +1525,11 @@ namespace
                 error = QStringLiteral("Local API response requestId mismatch");
                 m_socket.abort();
                 return false;
+            }
+            if (request.value(QStringLiteral("type")).toString() == QStringLiteral("set_hooks")
+                && response.value(QStringLiteral("ok")).toBool())
+            {
+                m_holdsHooks = !response.value(QStringLiteral("hooks")).toArray().isEmpty();
             }
             return true;
         }
@@ -1506,14 +1544,8 @@ namespace
             };
             const auto takeHookEvent = [this, &wanted]()
             {
-                for (qsizetype index = 0; index < m_hookEvents.size(); ++index)
-                {
-                    if (wanted(m_hookEvents.at(index)))
-                    {
-                        return m_hookEvents.takeAt(index);
-                    }
-                }
-                return QJsonObject{};
+                return !m_hookEvent.isEmpty() && wanted(m_hookEvent) ? std::exchange(m_hookEvent, QJsonObject{})
+                                                                     : QJsonObject{};
             };
             if (const QJsonObject hookEvent = takeHookEvent(); !hookEvent.isEmpty())
             {
@@ -1535,7 +1567,7 @@ namespace
                 return true;
             }
 
-            const int timeoutMs = static_cast<int>(arguments.value(QStringLiteral("timeout_s")).toDouble() * 1000.0);
+            const int timeoutMs = static_cast<int>(arguments.value(QStringLiteral("timeout_s")).toDouble(30.0) * 1000.0);
             QElapsedTimer timer;
             timer.start();
             // A hook event that came before the subscribe response was kept by request, and the
@@ -1561,10 +1593,7 @@ namespace
                 // Hook events come without a subscription
                 if (!wanted(event))
                 {
-                    if (isHookEvent(event))
-                    {
-                        m_hookEvents.append(event);
-                    }
+                    keepHookEvent(event);
                     event = QJsonObject{};
                 }
             }
@@ -1589,10 +1618,15 @@ namespace
         }
 
     private:
-        static bool isHookEvent(const QJsonObject& message)
+        // ScopeOne waits on one hook at a time, so a newer hook event replaces the one kept, whose
+        // event has gone on already
+        void keepHookEvent(const QJsonObject& message)
         {
             const QJsonValue name = message.value(QStringLiteral("event"));
-            return name == QStringLiteral("before_event") || name == QStringLiteral("after_event");
+            if (name == QStringLiteral("before_event") || name == QStringLiteral("after_event"))
+            {
+                m_hookEvent = message;
+            }
         }
 
         bool ensureConnected(QString& error)
@@ -1600,6 +1634,16 @@ namespace
             if (m_socket.state() == QLocalSocket::ConnectedState)
             {
                 return true;
+            }
+            m_hookEvent = QJsonObject{};
+            // ScopeOne turns the hooks off when the connection that set them closes
+            if (m_holdsHooks)
+            {
+                m_holdsHooks = false;
+                m_socket.abort();
+                error = QStringLiteral("The connection to ScopeOne was lost, which turned the hooks off; "
+                                       "call set_hooks again");
+                return false;
             }
             m_socket.abort();
             m_socket.connectToServer(kServerName, QIODevice::ReadWrite);
@@ -1679,7 +1723,10 @@ namespace
 
         QLocalSocket m_socket;
         qint64 m_nextRequestId{1};
-        QList<QJsonObject> m_hookEvents;
+        // The newest hook event that no wait_event has returned yet
+        QJsonObject m_hookEvent;
+        // Whether this connection set hooks, which its loss turns off
+        bool m_holdsHooks{false};
     };
 
     QJsonObject jsonRpcEnvelope(const QJsonValue& id)

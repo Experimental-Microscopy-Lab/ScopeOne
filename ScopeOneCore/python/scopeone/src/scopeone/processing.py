@@ -2,14 +2,14 @@
 
 A module is a function that takes a 2D numpy array (uint8 or uint16) and its parameters and
 returns a 2D uint8 or uint16 array. A function with a ``bits`` argument also gets the bits per
-sample of the frame, 12 for a 12-bit camera in a uint16 array. Put the script in
-``processing/python`` beside ScopeOne or in the application data folder and it shows up in the pipeline beside the C++
-modules::
+sample of the frame, 12 for a 12-bit camera in a uint16 array. Add the script with Python > Add
+Script... in the pipeline panel, or with ``ScopeOne.add_python_script``, and its modules show up in
+the pipeline beside the C++ modules, as "Offset (Python)" for the one below::
 
     import numpy as np
     from scopeone.processing import module, Integer
 
-    @module("example.py.offset", "Python Offset", Integer("offset", "Offset", 10, 0, 1000))
+    @module("example.py.offset", "Offset", Integer("offset", "Offset", 10, 0, 1000))
     def offset(image, offset, bits):
         return np.clip(image.astype(np.int32) + offset, 0, (1 << bits) - 1).astype(image.dtype)
 
@@ -32,6 +32,8 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import mmap
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -116,57 +118,80 @@ def _describe() -> None:
     sys.stdout.flush()
 
 
-def _read_exactly(stream, count: int) -> bytes:
-    data = bytearray()
-    while len(data) < count:
-        chunk = stream.read(count - len(data))
-        if not chunk:
-            raise EOFError
-        data.extend(chunk)
-    return bytes(data)
+# The shared memory Core creates for the frames of a module
+def _open_frames(name: str, size: int) -> mmap.mmap:
+    if sys.platform == "win32":
+        return mmap.mmap(-1, size, tagname=name)
+    import _posixshmem
+
+    fd = _posixshmem.shm_open(name, os.O_RDWR, mode=0o600)
+    try:
+        return mmap.mmap(fd, size)
+    finally:
+        os.close(fd)
 
 
-def _send(stream, header: dict, payload: bytes = b"") -> None:
-    # NaN in a measurement would write a header Core cannot parse and leave the pixel bytes unread,
-    # so it is refused here and the module reports an error instead
+def _send(stream, header: dict) -> None:
+    # NaN in a measurement would write a header Core cannot parse, so it is refused here and the
+    # module reports an error instead
     stream.write(json.dumps(header, allow_nan=False).encode() + b"\n")
-    stream.write(payload)
     stream.flush()
 
 
-# One frame per request: a JSON header line, then the pixel bytes, and the same back
+# Runs the module on the frame in frames and writes the result back to it. The arrays over the
+# memory end with this call, so that the memory can be closed when Core replaces it.
+def _process(request: dict, frames: mmap.mmap) -> dict:
+    dtype = np.uint16 if request["format"] == "mono16" else np.uint8
+    rows = np.ndarray((request["height"], request["stride"] // dtype().itemsize), dtype, frames)
+    # A copy, as a module may keep the frame and the next frame overwrites the memory
+    image = rows[:, : request["width"]].copy()
+    del rows
+    selected = _modules[request["module"]]
+    arguments = dict(request["parameters"])
+    if selected.takes_bits:
+        arguments["bits"] = request["bits"]
+    result = selected.function(image, **arguments)
+    measurements = []
+    if isinstance(result, tuple):
+        result, measurements = result
+    result = np.asarray(result)
+    if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
+        raise TypeError("a module must return a 2D uint8 or uint16 array")
+    # The limit is twice this frame, not the memory, which only grows
+    if result.nbytes > 2 * request["height"] * request["stride"]:
+        raise ValueError("a module must return at most twice the bytes of the frame")
+    np.ndarray(result.shape, result.dtype, frames)[...] = result
+    header = {"width": result.shape[1], "height": result.shape[0],
+              "format": "mono16" if result.dtype == np.uint16 else "mono8",
+              "bytes": result.nbytes}
+    if measurements:
+        header["measurements"] = list(measurements)
+    return header
+
+
+# One frame per request: a JSON line with the frame in the shared memory it names, and a JSON line
+# back with the result in the same memory
 def _serve() -> None:
     requests = sys.stdin.buffer
     replies = sys.stdout.buffer
     # Anything the module prints goes to stderr, so it cannot break the frame stream
     sys.stdout = sys.stderr
+    name = None
+    frames = None
     while True:
         line = requests.readline()
         if not line:
             return
-        request = json.loads(line)
-        payload = _read_exactly(requests, request["bytes"])
         try:
-            dtype = np.uint16 if request["format"] == "mono16" else np.uint8
-            rows = np.frombuffer(payload, dtype=dtype).reshape(request["height"], request["stride"] // dtype().itemsize)
-            image = rows[:, : request["width"]]
-            selected = _modules[request["module"]]
-            arguments = dict(request["parameters"])
-            if selected.takes_bits:
-                arguments["bits"] = request["bits"]
-            result = selected.function(image, **arguments)
-            measurements = []
-            if isinstance(result, tuple):
-                result, measurements = result
-            result = np.ascontiguousarray(result)
-            if result.ndim != 2 or result.dtype not in (np.uint8, np.uint16):
-                raise TypeError("a module must return a 2D uint8 or uint16 array")
-            header = {"width": result.shape[1], "height": result.shape[0],
-                      "format": "mono16" if result.dtype == np.uint16 else "mono8",
-                      "bytes": result.nbytes}
-            if measurements:
-                header["measurements"] = list(measurements)
-            _send(replies, header, result.tobytes())
+            request = json.loads(line)
+            if request["mapping"] != name:
+                # Core replaced the memory with a larger one, so the old one is closed
+                if frames is not None:
+                    frames.close()
+                name, frames = None, None
+                frames = _open_frames(request["mapping"], request["capacity"])
+                name = request["mapping"]
+            _send(replies, _process(request, frames))
         except Exception as error:
             _send(replies, {"error": f"{type(error).__name__}: {error}"})
 

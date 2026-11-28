@@ -1,6 +1,7 @@
 #include "ConsoleWidget.h"
 #include "TerminalWidget.h"
-#include <QMetaObject>
+#include "scopeone/Log.h"
+#include <memory>
 #include <QScrollBar>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -21,91 +22,15 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QTabWidget>
 #include <QTextEdit>
 #include <QTextStream>
-#include <QtCore/qlogging.h>
-#include <atomic>
 #include <utility>
 
 namespace scopeone::ui
 {
-    namespace
-    {
-        static std::atomic<ConsoleWidget*> g_consoleSink{nullptr};
-        static QtMessageHandler g_previousMessageHandler = nullptr;
-        static bool g_messageHandlerInstalled = false;
-        static QMutex g_pendingMessagesMutex;
-
-        struct PendingConsoleMessage
-        {
-            QString message;
-            QString type;
-            QDateTime timestamp;
-        };
-
-        static QList<PendingConsoleMessage> g_pendingMessages;
-
-        // Forward Qt messages into the active console widget
-        static void qtMessageHandler(QtMsgType type, const QMessageLogContext& context, const QString& msg)
-        {
-            QString t = "INFO";
-            switch (type)
-            {
-            case QtDebugMsg: t = "DEBUG";
-                break;
-            case QtInfoMsg: t = "INFO";
-                break;
-            case QtWarningMsg: t = "WARNING";
-                break;
-            case QtCriticalMsg: t = "ERROR";
-                break;
-            case QtFatalMsg: t = "ERROR";
-                break;
-            }
-
-            QObject* app = QCoreApplication::instance();
-            if (g_consoleSink.load() && app)
-            {
-                QMetaObject::invokeMethod(app, [m=msg, T=t, ts=QDateTime::currentDateTime()]()
-                {
-                    if (ConsoleWidget* sink = g_consoleSink.load())
-                    {
-                        sink->addMessage(m, T, ts);
-                    }
-                }, Qt::QueuedConnection);
-            }
-            else
-            {
-                QMutexLocker locker(&g_pendingMessagesMutex);
-                constexpr int kMaxPendingMessages = 1000;
-                if (g_pendingMessages.size() >= kMaxPendingMessages)
-                {
-                    g_pendingMessages.removeFirst();
-                }
-                g_pendingMessages.append({msg, t, QDateTime::currentDateTime()});
-            }
-            if (g_previousMessageHandler && g_previousMessageHandler != qtMessageHandler)
-            {
-                g_previousMessageHandler(type, context, msg);
-            }
-        }
-
-        void installQtMessageHandlerOnce()
-        {
-            if (g_messageHandlerInstalled)
-            {
-                return;
-            }
-            g_previousMessageHandler = qInstallMessageHandler(qtMessageHandler);
-            g_messageHandlerInstalled = true;
-        }
-    }
-
     // Create the live log console and its filters
     ConsoleWidget::ConsoleWidget(QWidget* parent)
         : QWidget(parent)
@@ -117,6 +42,8 @@ namespace scopeone::ui
         connect(m_autoScrollCheckBox, &QCheckBox::toggled, this, &ConsoleWidget::setAutoScroll);
         connect(m_filterComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &ConsoleWidget::onFilterChanged);
+        connect(m_sourceComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &ConsoleWidget::updateDisplay);
         connect(m_searchInput, &QLineEdit::textChanged, this,
                 [this](const QString& text)
                 {
@@ -132,17 +59,28 @@ namespace scopeone::ui
         clearShortcut->setContext(Qt::WidgetWithChildrenShortcut);
         connect(clearShortcut, &QShortcut::activated, this, &ConsoleWidget::clearMessages);
 
+        // The console shows the log of Core, the entries written before it existed among them.
+        // It connects before it reads them, so no entry is lost in between, and the queued
+        // entries that the read already had are left out by their sequence.
+        auto* log = scopeone::core::Log::instance();
+        auto shownUpTo = std::make_shared<quint64>(0);
+        connect(log, &scopeone::core::Log::entryAdded, this,
+                [this, shownUpTo](const scopeone::core::LogEntry& entry)
+                {
+                    if (entry.sequence > *shownUpTo)
+                    {
+                        addMessage(entry.message, entry.level, entry.time.toLocalTime(), entry.source);
+                    }
+                }, Qt::QueuedConnection);
+        for (const scopeone::core::LogEntry& entry : log->entries())
+        {
+            addMessage(entry.message, entry.level, entry.time.toLocalTime(), entry.source);
+            *shownUpTo = entry.sequence;
+        }
         updateDisplay();
     }
 
-    // Remove this widget as the Qt message sink when destroyed
-    ConsoleWidget::~ConsoleWidget()
-    {
-        if (g_consoleSink.load() == this)
-        {
-            g_consoleSink.store(nullptr);
-        }
-    }
+    ConsoleWidget::~ConsoleWidget() = default;
 
     // Build the log tab with its command line, and the terminal tab beside it
     void ConsoleWidget::setupUI()
@@ -194,11 +132,15 @@ namespace scopeone::ui
                                     QStringLiteral("WARNING"),
                                     QStringLiteral("ERROR")});
 
+        m_sourceComboBox = new QComboBox(this);
+        m_sourceComboBox->addItem(tr("All sources"));
+
         auto* clearButton = new QPushButton(tr("Clear"), this);
         connect(clearButton, &QPushButton::clicked, this, &ConsoleWidget::clearMessages);
 
         row1Layout->addWidget(m_searchInput, 1);
         row1Layout->addWidget(m_filterComboBox);
+        row1Layout->addWidget(m_sourceComboBox);
         row1Layout->addWidget(clearButton);
 
         auto* row2Layout = new QHBoxLayout();
@@ -251,12 +193,18 @@ namespace scopeone::ui
     }
 
     // Append one message and trim old history
-    void ConsoleWidget::addMessage(const QString& message, const QString& type, const QDateTime& timestamp)
+    void ConsoleWidget::addMessage(const QString& message, const QString& type, const QDateTime& timestamp,
+                                   const QString& source)
     {
         ConsoleMessage msg;
         msg.message = message;
         msg.type = type.toUpper();
         msg.timestamp = timestamp;
+        msg.source = source;
+        if (!source.isEmpty() && m_sourceComboBox->findText(source) < 0)
+        {
+            m_sourceComboBox->addItem(source);
+        }
 
         constexpr int kMaxMessages = 10000;
         if (m_messages.size() >= kMaxMessages)
@@ -363,6 +311,10 @@ namespace scopeone::ui
         }
 
         QString typePrefix = QString("[%1] ").arg(msg.type);
+        if (!msg.source.isEmpty() && msg.source != QStringLiteral("scopeone"))
+        {
+            typePrefix += QString("[%1] ").arg(msg.source);
+        }
         QString color = getTypeColor(msg.type);
         QString escapedMessage = msg.message.toHtmlEscaped();
         escapedMessage.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
@@ -388,6 +340,10 @@ namespace scopeone::ui
     bool ConsoleWidget::messageMatchesCurrentFilter(const ConsoleMessage& msg) const
     {
         if (!m_messageFilter.isEmpty() && !m_messageFilter.contains(msg.type))
+        {
+            return false;
+        }
+        if (m_sourceComboBox->currentIndex() > 0 && msg.source != m_sourceComboBox->currentText())
         {
             return false;
         }
@@ -787,29 +743,5 @@ namespace scopeone::ui
             }
         }
         return QWidget::eventFilter(object, event);
-    }
-
-    // Forward Qt log output into this widget
-    void ConsoleWidget::installAsQtMessageSink(ConsoleWidget* sink)
-    {
-        installQtMessageHandlerOnce();
-        g_consoleSink.store(sink);
-
-        QList<PendingConsoleMessage> pendingMessages;
-        {
-            QMutexLocker locker(&g_pendingMessagesMutex);
-            pendingMessages.swap(g_pendingMessages);
-        }
-
-        for (const PendingConsoleMessage& message : pendingMessages)
-        {
-            sink->addMessage(message.message, message.type, message.timestamp);
-        }
-    }
-
-    // Install the Qt log handler before the console widget exists
-    void ConsoleWidget::installQtMessageHandler()
-    {
-        installQtMessageHandlerOnce();
     }
 } // namespace scopeone::ui

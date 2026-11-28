@@ -1,17 +1,30 @@
 #include "internal/PythonProcessingModule.h"
+#include "scopeone/Log.h"
 
+#include "internal/DriverHostProtocol.h"
 #include "internal/ProcessingModuleRegistry.h"
 
 #include <QDebug>
-#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QCoreApplication>
 #include <QProcess>
 #include <QSettings>
+#include <QSharedMemory>
 #include <QThread>
 
+#include <atomic>
+#include <cstring>
 #include <memory>
+
+#ifndef Q_OS_WIN
+// The macOS SDK declares shm_unlink only outside strict POSIX mode, so it is declared here as the
+// SDK does. sem_unlink is declared here too: on the case-insensitive macOS file system,
+// <semaphore.h> found MMCore's Semaphore.h on the include path instead of the system header
+extern "C" int shm_unlink(const char* name);
+extern "C" int sem_unlink(const char* name);
+#endif
 
 namespace scopeone::core::internal
 {
@@ -111,7 +124,10 @@ namespace scopeone::core::internal
                 PythonScriptModule module;
                 module.scriptPath = scriptPath;
                 module.descriptor.id = object.value(QStringLiteral("id")).toString();
-                module.descriptor.name = object.value(QStringLiteral("name")).toString();
+                // Every Python module is marked in the list, as it needs the interpreter and runs in
+                // a process of its own
+                module.descriptor.name = object.value(QStringLiteral("name")).toString()
+                                         + QStringLiteral(" (Python)");
                 for (const QJsonValue& parameter : object.value(QStringLiteral("parameters")).toArray())
                 {
                     module.descriptor.parameters.append(parameterFrom(parameter.toObject()));
@@ -144,6 +160,7 @@ namespace scopeone::core::internal
                     m_thread->quit();
                     m_thread->wait();
                 }
+                releaseFrames();
             }
 
             QString id() const override { return m_script->descriptor.id; }
@@ -188,7 +205,51 @@ namespace scopeone::core::internal
                 return ProcessingResult(ImageFrame{}, log.isEmpty() ? message : message + QLatin1Char('\n') + log);
             }
 
-            // Sends one frame and reads the frame that comes back, on the module's own thread
+            // Qt leaves a POSIX memory and the semaphore of its name in place when the creator
+            // detaches, so both are removed here
+            void releaseFrames()
+            {
+                if (!m_frames)
+                {
+                    return;
+                }
+#ifndef Q_OS_WIN
+                const QByteArray name = m_frames->nativeIpcKey().nativeKey().toLocal8Bit();
+#endif
+                m_frames.reset();
+                m_frameCapacity = 0;
+#ifndef Q_OS_WIN
+                ::shm_unlink(name.constData());
+                ::sem_unlink(name.constData());
+#endif
+            }
+
+            // The memory the frame goes to Python in and the result comes back in. It holds twice
+            // the frame, so that a module may return a 16-bit result of an 8-bit frame. Python maps
+            // the size asked for here, as size() on Windows is rounded up to whole pages.
+            bool reserveFrames(qsizetype frameBytes)
+            {
+                if (m_frames && m_frameCapacity >= 2 * frameBytes)
+                {
+                    return true;
+                }
+                releaseFrames();
+                static std::atomic<quint64> counter{0};
+                const QString key = QStringLiteral("so.py.%1.%2")
+                                        .arg(QCoreApplication::applicationPid())
+                                        .arg(counter++);
+                m_frames = std::make_unique<QSharedMemory>(driverhost::sharedMemoryNativeKey(key));
+                if (!m_frames->create(2 * frameBytes))
+                {
+                    m_frames.reset();
+                    return false;
+                }
+                m_frameCapacity = 2 * frameBytes;
+                return true;
+            }
+
+            // Sends one frame and reads the frame that comes back, on the module's own thread. The
+            // pipe carries only the JSON lines, and the pixels go through shared memory.
             ProcessingResult exchange(const ImageFrame& frame)
             {
                 if (!m_process)
@@ -202,6 +263,12 @@ namespace scopeone::core::internal
                     }
                 }
 
+                if (!reserveFrames(frame.bytes.size()))
+                {
+                    return failure(QStringLiteral("Could not create the shared memory of Python module %1").arg(id()));
+                }
+                std::memcpy(m_frames->data(), frame.bytes.constData(), frame.bytes.size());
+
                 const QJsonObject request{
                     {QStringLiteral("module"), m_script->descriptor.id},
                     {QStringLiteral("width"), frame.width},
@@ -210,9 +277,9 @@ namespace scopeone::core::internal
                     {QStringLiteral("format"), frame.isMono16() ? QStringLiteral("mono16") : QStringLiteral("mono8")},
                     {QStringLiteral("bits"), frame.isMono16() ? frame.bitsPerSample : 8},
                     {QStringLiteral("parameters"), QJsonObject::fromVariantMap(m_parameters)},
-                    {QStringLiteral("bytes"), static_cast<qint64>(frame.bytes.size())}};
+                    {QStringLiteral("mapping"), m_frames->nativeIpcKey().nativeKey()},
+                    {QStringLiteral("capacity"), static_cast<qint64>(m_frameCapacity)}};
                 m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
-                m_process->write(frame.bytes);
 
                 while (!m_process->canReadLine())
                 {
@@ -221,34 +288,44 @@ namespace scopeone::core::internal
                         return failure(QStringLiteral("Python module %1 stopped answering").arg(id()));
                     }
                 }
-                const QJsonObject reply = QJsonDocument::fromJson(m_process->readLine()).object();
+                QJsonParseError parseError;
+                const QJsonDocument document = QJsonDocument::fromJson(m_process->readLine(), &parseError);
                 const QByteArray printed = m_process->readAllStandardError();
                 if (!printed.isEmpty())
                 {
-                    qInfo().noquote() << QStringLiteral("[%1] %2").arg(id(), QString::fromUtf8(printed).trimmed());
+                    Log::write(QStringLiteral("INFO"), QStringLiteral("python:%1").arg(id()),
+                               QString::fromUtf8(printed).trimmed());
                 }
+                // A line that is not a reply means the stream is out of step, and failure stops the
+                // process so that the next frame starts a new one
+                if (parseError.error != QJsonParseError::NoError || !document.isObject())
+                {
+                    return failure(QStringLiteral("Python module %1 sent an invalid reply").arg(id()));
+                }
+                const QJsonObject reply = document.object();
                 if (reply.contains(QStringLiteral("error")))
                 {
                     return ProcessingResult(ImageFrame{}, reply.value(QStringLiteral("error")).toString());
                 }
 
+                const QString format = reply.value(QStringLiteral("format")).toString();
+                const bool mono16 = format == QStringLiteral("mono16");
+                const qint64 width = reply.value(QStringLiteral("width")).toInteger();
+                const qint64 height = reply.value(QStringLiteral("height")).toInteger();
                 const qint64 byteCount = reply.value(QStringLiteral("bytes")).toInteger();
-                while (m_process->bytesAvailable() < byteCount)
+                if ((!mono16 && format != QStringLiteral("mono8")) || width <= 0 || height <= 0
+                    || width > m_frameCapacity || height > m_frameCapacity
+                    || byteCount != width * height * (mono16 ? 2 : 1) || byteCount > m_frameCapacity)
                 {
-                    if (!m_process->waitForReadyRead(30000))
-                    {
-                        return failure(QStringLiteral("Python module %1 stopped answering").arg(id()));
-                    }
+                    return failure(QStringLiteral("Python module %1 sent an invalid reply").arg(id()));
                 }
-
                 ImageFrame output = frame;
-                const bool mono16 = reply.value(QStringLiteral("format")).toString() == QStringLiteral("mono16");
                 output.pixelFormat = mono16 ? ImagePixelFormat::Mono16 : ImagePixelFormat::Mono8;
                 output.bitsPerSample = mono16 ? (frame.isMono16() ? frame.bitsPerSample : 16) : 8;
-                output.width = reply.value(QStringLiteral("width")).toInt();
-                output.height = reply.value(QStringLiteral("height")).toInt();
+                output.width = static_cast<int>(width);
+                output.height = static_cast<int>(height);
                 output.stride = output.width * (mono16 ? 2 : 1);
-                output.bytes = m_process->read(byteCount);
+                output.bytes = QByteArray(static_cast<const char*>(m_frames->constData()), byteCount);
                 ProcessingResult result(std::move(output));
                 result.measurements = reply.value(QStringLiteral("measurements")).toArray().toVariantList();
                 return result;
@@ -259,36 +336,43 @@ namespace scopeone::core::internal
             std::unique_ptr<QThread> m_thread;
             std::unique_ptr<QObject> m_threadContext;
             std::unique_ptr<QProcess> m_process;
+            std::unique_ptr<QSharedMemory> m_frames;
+            qsizetype m_frameCapacity = 0;
         };
     }
 
-    QStringList registerPythonProcessingModules(ProcessingModuleRegistry& registry,
-                                                const QString& processingDirectory)
+    QStringList registerPythonScript(ProcessingModuleRegistry& registry,
+                                     const QString& scriptPath,
+                                     QString& error)
     {
-        QStringList errors;
-        const QDir scripts(QDir(processingDirectory).filePath(QStringLiteral("python")));
-        for (const QString& name : scripts.entryList({QStringLiteral("*.py")}, QDir::Files, QDir::Name))
+        const QList<PythonScriptModule> modules = describeScript(scriptPath, error);
+        if (!error.isEmpty())
         {
-            QString error;
-            const QList<PythonScriptModule> modules = describeScript(scripts.filePath(name), error);
-            if (!error.isEmpty())
-            {
-                errors.append(QStringLiteral("%1: %2").arg(name, error));
-                continue;
-            }
-            for (const PythonScriptModule& module : modules)
-            {
-                const auto script = std::make_shared<const PythonScriptModule>(module);
-                if (!registry.registerModule(script->descriptor, [script]()
-                    {
-                        return std::make_unique<PythonProcessingModule>(script);
-                    }))
-                {
-                    errors.append(QStringLiteral("%1: invalid or duplicate processing module id %2")
-                                      .arg(name, script->descriptor.id));
-                }
-            }
+            return {};
         }
-        return errors;
+        if (modules.isEmpty())
+        {
+            error = QStringLiteral("the script declares no processing module");
+            return {};
+        }
+        QStringList ids;
+        for (const PythonScriptModule& module : modules)
+        {
+            const auto script = std::make_shared<const PythonScriptModule>(module);
+            if (!registry.registerModule(script->descriptor, [script]()
+                {
+                    return std::make_unique<PythonProcessingModule>(script);
+                }))
+            {
+                for (const QString& id : std::as_const(ids))
+                {
+                    registry.unregisterModule(id);
+                }
+                error = QStringLiteral("invalid or taken processing module id %1").arg(script->descriptor.id);
+                return {};
+            }
+            ids.append(script->descriptor.id);
+        }
+        return ids;
     }
 }

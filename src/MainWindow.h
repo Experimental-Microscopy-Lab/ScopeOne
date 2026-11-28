@@ -64,6 +64,7 @@ namespace scopeone::ui
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        void showEvent(QShowEvent* event) override;
         bool eventFilter(QObject* watched, QEvent* event) override;
 
     private:
@@ -77,7 +78,6 @@ namespace scopeone::ui
         void setupInspect();
         void setupImageProcessing();
         void setupImageGallery();
-        void setupConsole();
         void setupPropertyBrowser();
         void setupRecording();
 
@@ -103,6 +103,7 @@ namespace scopeone::ui
         // Tells about a failure where the user is looking: the status bar shows it in red until
         // something else replaces it, and a click on it opens the console, which has the full text
         void notifyError(const QString& title, const QString& message);
+        void showError(const QString& title, const QString& message);
         // Asks GitHub for a newer release. A check that the user asked for always says what it
         // found, and one at startup only speaks up when there is a newer version.
         void checkForUpdates(bool userInitiated);
@@ -208,6 +209,8 @@ namespace scopeone::ui
         QTimer* m_statusMessageTimer{nullptr};
         QTimer* m_cursorRefreshTimer{nullptr};
         scopeone::core::ScopeOneCore* m_scopeonecore{nullptr};
+        bool m_followingRefreshRate{false};
+        QMetaObject::Connection m_refreshRateConnection;
         QString m_currentControlTarget{QStringLiteral("All")};
         QPoint m_lastPreviewMousePos{-1, -1};
         QList<std::shared_ptr<scopeone::core::ScopeOneCore::RecordingSessionData>> m_closePendingSessions;

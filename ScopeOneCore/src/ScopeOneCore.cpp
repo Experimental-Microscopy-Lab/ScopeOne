@@ -4,6 +4,7 @@
 
 #include "internal/AcquisitionEngine.h"
 #include "internal/FrameBufferUtils.h"
+#include "internal/FrameDeliveryMode.h"
 #include "internal/ImageProcessingFramework.h"
 #include "internal/ProcessingModuleRegistry.h"
 #include "internal/PythonProcessingModule.h"
@@ -33,7 +34,7 @@
 #include <QMutex>
 #include <QStringList>
 #include <QSysInfo>
-#include <QStandardPaths>
+#include <QSettings>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
@@ -57,6 +58,9 @@
 namespace
 {
     std::atomic<quint64> s_imageOpenCounter{1};
+
+    // The Python scripts the user added, in the settings beside the interpreter of the Settings dialog
+    const QString kPythonScriptsKey = QStringLiteral("Python/Scripts");
 
     struct ImageOpenTask
     {
@@ -348,8 +352,6 @@ namespace
     constexpr qint64 kHistogramRefreshIntervalMs = 250;
     // Live line profiles update fast enough for interaction without following camera rate
     constexpr qint64 kLineProfileRefreshIntervalMs = 16;
-    // Display delivery is bounded independently from acquisition and processing throughput
-    constexpr qint64 kPreviewRefreshIntervalMs = 16;
     struct OfflineProcessingResult
     {
         QList<scopeone::core::ImageFrame> frames;
@@ -715,6 +717,25 @@ namespace
                 markups.append(markup);
             }
         }
+    }
+
+    // The modules among ids that a step of the shared pipeline or of a camera's own one uses
+    QStringList usedProcessingModules(const scopeone::core::ScopeOneCore& core, const QStringList& ids)
+    {
+        QStringList pipelines = core.camerasWithOwnProcessingPipeline();
+        pipelines.prepend(QString());
+        QStringList used;
+        for (const QString& cameraId : std::as_const(pipelines))
+        {
+            for (const auto& module : core.processingModules(cameraId))
+            {
+                if (ids.contains(module.id()) && !used.contains(module.id()))
+                {
+                    used.append(module.id());
+                }
+            }
+        }
+        return used;
     }
 
 }
@@ -1127,6 +1148,8 @@ namespace scopeone::core
         RecordingManager* recordingManager{nullptr};
         ImageProcessingManager* imageProcessingManager{nullptr};
         std::unique_ptr<internal::ProcessingModuleRegistry> processingModuleRegistry;
+        // The module ids of each Python script that was read, by the absolute path of the script
+        QHash<QString, QStringList> pythonScripts;
         StageMosaicManager* stageMosaicManager{nullptr};
         internal::DaqDeviceManager* daqDeviceManager{nullptr};
         internal::SignalSourceManager* signalSourceManager{nullptr};
@@ -1351,19 +1374,19 @@ namespace scopeone::core
             "scopeone::core::ScanImageConfig");
         m_managers->processingModuleRegistry =
             std::make_unique<internal::ProcessingModuleRegistry>();
-        // Python processing modules are scripts in processing/python beside the application and in
-        // the user data directory
-        const QStringList processingDirectories{
-            QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("processing")),
-            QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-                .filePath(QStringLiteral("processing"))};
-        for (const QString& directory : processingDirectories)
+        // The Python scripts the user added before. One that cannot be read now stays in the
+        // settings, so a missing interpreter does not lose it.
+        for (const QString& path : QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"))
+                                       .value(kPythonScriptsKey).toStringList())
         {
-            for (const QString& error : internal::registerPythonProcessingModules(
-                     *m_managers->processingModuleRegistry, directory))
+            QString error;
+            const QStringList ids = internal::registerPythonScript(*m_managers->processingModuleRegistry, path, error);
+            if (ids.isEmpty())
             {
-                qWarning().noquote() << QStringLiteral("Failed to load Python processing module %1").arg(error);
+                qWarning().noquote() << QStringLiteral("Failed to load Python script %1: %2").arg(path, error);
+                continue;
             }
+            m_managers->pythonScripts.insert(path, ids);
         }
         m_histogramThreadPool = std::make_unique<QThreadPool>();
         m_histogramThreadPool->setMaxThreadCount(1);
@@ -1593,7 +1616,17 @@ namespace scopeone::core
                 m_managers->hardwareRuntime, &HardwareRuntime::finishProcessingFrame,
                 Qt::DirectConnection);
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::processingError,
-                this, &ScopeOneCore::processingError);
+                this, [this](const QString& errorMessage)
+                {
+                    // Logged once until another error comes or the processing starts again, as a
+                    // module may fail on every frame
+                    if (errorMessage != m_lastProcessingError)
+                    {
+                        m_lastProcessingError = errorMessage;
+                        qWarning().noquote() << QStringLiteral("Processing error: %1").arg(errorMessage);
+                    }
+                    emit processingError(errorMessage);
+                });
         connect(m_managers->imageProcessingManager, &ImageProcessingManager::measurementsReady,
                 this, &ScopeOneCore::handleMeasurements, Qt::QueuedConnection);
 
@@ -1812,6 +1845,39 @@ namespace scopeone::core
         }
     }
 
+    // What a finished load brought up, in the log
+    void ScopeOneCore::logConfigurationLoaded(const LoadConfigResult& result) const
+    {
+        if (result.successCount > 0)
+        {
+            qInfo().noquote() << QStringLiteral("%1 device(s) initialized").arg(result.successCount);
+        }
+        if (result.failCount > 0)
+        {
+            qWarning().noquote() << QStringLiteral("%1 device(s) failed to initialize: %2")
+                                        .arg(result.failCount)
+                                        .arg(result.failedDevices.join(QStringLiteral(", ")));
+        }
+        if (result.skippedCameraCount > 0)
+        {
+            qInfo().noquote() << QStringLiteral("%1 camera(s) run in their own process").arg(result.skippedCameraCount);
+        }
+        if (!result.cameraIds.isEmpty())
+        {
+            qInfo().noquote() << QStringLiteral("%1 camera(s) ready").arg(result.cameraIds.size());
+        }
+        else if (result.foundCamera)
+        {
+            qWarning().noquote() << QStringLiteral("No cameras were initialized");
+        }
+        else
+        {
+            qWarning().noquote() << QStringLiteral("No camera devices in configuration");
+        }
+        qInfo().noquote() << QStringLiteral("Configuration loaded (%1): %2")
+                                 .arg(configurationState(), loadedConfigurationPath());
+    }
+
     // Complete a failed configuration load and publish one consistent result
     void ScopeOneCore::finishConfigurationLoadFailure(const LoadConfigResult& result,
                                                       const QString& errorMessage)
@@ -1823,6 +1889,7 @@ namespace scopeone::core
                                    : errorMessage;
         m_configurationFailedDevices = result.failedDevices;
         m_configurationOperationRunning = false;
+        qCritical().noquote() << QStringLiteral("Configuration failed: %1").arg(m_configurationError);
         emit hardwareConfigurationChanged();
         emit configurationLoadFinished(false, result, m_configurationError);
     }
@@ -1863,6 +1930,9 @@ namespace scopeone::core
         m_triggers.clear();
         ++m_triggerGeneration;
         m_triggerFiredMs.clear();
+        m_managers->hardwareRuntime->setPreTriggerFrames({}, {});
+        m_preTriggerFrameCounts.clear();
+        m_preTriggerByteLimits.clear();
         m_loadedConfigPath.clear();
         m_managers->hardwareRuntime->setConfigurationPath({});
         m_loadedConfigSha256.clear();
@@ -1923,6 +1993,7 @@ namespace scopeone::core
         {
             return false;
         }
+        qInfo().noquote() << QStringLiteral("Loading configuration: %1").arg(path);
 
         m_configurationError.clear();
         m_configurationFailedDevices.clear();
@@ -1978,6 +2049,7 @@ namespace scopeone::core
                 {
                     startup->deleteLater();
                     m_configurationOperationRunning = false;
+                    logConfigurationLoaded(result);
                     emit hardwareConfigurationChanged();
                     emit configurationLoadFinished(true, result, {});
                 });
@@ -2114,6 +2186,14 @@ namespace scopeone::core
                 m_configurationFailedDevices.clear();
             }
             m_configurationOperationRunning = false;
+            if (task.success)
+            {
+                qInfo().noquote() << QStringLiteral("Configuration unloaded");
+            }
+            else
+            {
+                qCritical().noquote() << QStringLiteral("Configuration unload failed: %1").arg(m_configurationError);
+            }
             emit hardwareConfigurationChanged();
             emit configurationUnloadFinished(task.success, m_configurationError);
             watcher->deleteLater();
@@ -2146,11 +2226,23 @@ namespace scopeone::core
     }
 
     // Stop preview for one camera or the full camera set
-    bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll)
+    bool ScopeOneCore::stopPreview(const QString& cameraIdOrAll, QString* errorMessage)
     {
         const QString target = cameraIdOrAll.trimmed();
         if (m_configurationOperationRunning || target.isEmpty())
         {
+            return false;
+        }
+        // A recording waits for the live frames of its cameras, so they keep running until it stops
+        const QStringList recording = m_managers->recordingManager->liveRecordingCameraIds();
+        if (!recording.isEmpty()
+            && (target.compare(QStringLiteral("All"), Qt::CaseInsensitive) == 0 || recording.contains(target)))
+        {
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("A recording is taking the frames of %1; stop the recording first")
+                                    .arg(recording.join(QStringLiteral(", ")));
+            }
             return false;
         }
         const bool stopped = m_managers->hardwareRuntime->stopPreview(target);
@@ -2693,7 +2785,7 @@ namespace scopeone::core
         schedulePreviewFlush();
     }
 
-    // Schedule one latest frame display update without following camera rate
+    // Schedule one display update of the newest frames, at most once per refresh of the display
     void ScopeOneCore::schedulePreviewFlush()
     {
         if (m_previewFlushTimer->isActive())
@@ -2705,7 +2797,7 @@ namespace scopeone::core
         if (m_previewPublishTimer.isValid())
         {
             delayMs = qMax(qint64{0},
-                           kPreviewRefreshIntervalMs - m_previewPublishTimer.elapsed());
+                           internal::previewFrameIntervalMs() - m_previewPublishTimer.elapsed());
         }
         m_previewFlushTimer->start(static_cast<int>(delayMs));
     }
@@ -4301,6 +4393,19 @@ namespace scopeone::core
         return m_managers->imageProcessingManager->isRealTimeProcessingEnabled();
     }
 
+    void ScopeOneCore::setDisplayRefreshRate(double hertz)
+    {
+        if (hertz <= 0.0)
+        {
+            return;
+        }
+        const int intervalMs = qMax(1, static_cast<int>(1000.0 / hertz));
+        if (intervalMs != internal::previewFrameIntervalMs())
+        {
+            m_managers->hardwareRuntime->setPreviewFrameInterval(intervalMs);
+        }
+    }
+
     // Toggle live processing without changing the module list
     bool ScopeOneCore::setRealTimeProcessingEnabled(bool enabled)
     {
@@ -4308,6 +4413,7 @@ namespace scopeone::core
         {
             return false;
         }
+        m_lastProcessingError.clear();
         if (enabled && !m_managers->imageProcessingManager->anyModules())
         {
             return false;
@@ -4408,6 +4514,7 @@ namespace scopeone::core
         {
             ProcessingModuleRecipe entry;
             entry.moduleId = module.id();
+            entry.script = pythonScriptOf(module.id());
             entry.schemaVersion = module.descriptor().schemaVersion;
             entry.parameters = module.parameters();
             recipe.modules.append(std::move(entry));
@@ -4429,6 +4536,23 @@ namespace scopeone::core
         {
             if (errorMessage) *errorMessage = QStringLiteral("Unsupported processing bit depth");
             return false;
+        }
+
+        // A recipe names the scripts of its Python modules, but reading a script runs it, so a
+        // recipe from a file does not add one; the user adds it with addPythonScript
+        for (const ProcessingModuleRecipe& entry : recipe.modules)
+        {
+            if (!entry.script.isEmpty()
+                && m_managers->processingModuleRegistry->descriptor(entry.moduleId).id.isEmpty())
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("Processing module %1 comes from the Python script %2, "
+                                                   "which is not added; add the script first")
+                                        .arg(entry.moduleId, entry.script);
+                }
+                return false;
+            }
         }
 
         std::vector<std::unique_ptr<ProcessingModule>> modules;
@@ -4539,6 +4663,108 @@ namespace scopeone::core
     QList<ProcessingModuleDescriptor> ScopeOneCore::availableProcessingModules() const
     {
         return m_managers->processingModuleRegistry->descriptors();
+    }
+
+    QStringList ScopeOneCore::addPythonScript(const QString& path, QString* errorMessage)
+    {
+        const QString script = QFileInfo(path).absoluteFilePath();
+        auto& registry = *m_managers->processingModuleRegistry;
+        // The modules read before make way for those read now, and come back when the script no
+        // longer reads, so a script with an error does not take the steps of a pipeline with it
+        QList<std::pair<ProcessingModuleDescriptor, internal::ProcessingModuleRegistry::Factory>> previous;
+        for (const QString& id : m_managers->pythonScripts.value(script))
+        {
+            const ProcessingModuleDescriptor descriptor = registry.descriptor(id);
+            previous.append({descriptor, registry.unregisterModule(id)});
+        }
+        QString error;
+        QStringList ids = internal::registerPythonScript(registry, script, error);
+        // A script read again without a module that a pipeline step still uses is refused, as it left
+        // the step with no script, so recipes lost it and the script could be removed under it
+        if (!ids.isEmpty())
+        {
+            QStringList removed;
+            for (const auto& [descriptor, factory] : previous)
+            {
+                if (!ids.contains(descriptor.id)) removed.append(descriptor.id);
+            }
+            const QStringList dropped = usedProcessingModules(*this, removed);
+            if (!dropped.isEmpty())
+            {
+                for (const QString& id : std::as_const(ids))
+                {
+                    registry.unregisterModule(id);
+                }
+                ids.clear();
+                error = QStringLiteral("The script no longer has %1; remove its steps from the pipeline first")
+                            .arg(dropped.join(QStringLiteral(", ")));
+            }
+        }
+        if (ids.isEmpty())
+        {
+            for (const auto& [descriptor, factory] : previous)
+            {
+                registry.registerModule(descriptor, factory);
+            }
+        }
+        else
+        {
+            m_managers->pythonScripts.insert(script, ids);
+            QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+            QStringList stored = settings.value(kPythonScriptsKey).toStringList();
+            if (!stored.contains(script))
+            {
+                stored.append(script);
+                settings.setValue(kPythonScriptsKey, stored);
+            }
+        }
+        if (errorMessage) *errorMessage = ids.isEmpty() ? QStringLiteral("%1: %2").arg(script, error) : QString();
+        emit availableProcessingModulesChanged();
+        return ids;
+    }
+
+    bool ScopeOneCore::removePythonScript(const QString& path, QString* errorMessage)
+    {
+        const QString script = QFileInfo(path).absoluteFilePath();
+        const QStringList ids = m_managers->pythonScripts.value(script);
+        if (!usedProcessingModules(*this, ids).isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Remove the steps of %1 from the pipeline first").arg(script);
+            return false;
+        }
+        for (const QString& id : ids)
+        {
+            m_managers->processingModuleRegistry->unregisterModule(id);
+        }
+        m_managers->pythonScripts.remove(script);
+        QSettings settings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne"));
+        QStringList stored = settings.value(kPythonScriptsKey).toStringList();
+        stored.removeAll(script);
+        // QSettings writes an empty list as @Invalid(), so the key goes with the last script
+        if (stored.isEmpty())
+            settings.remove(kPythonScriptsKey);
+        else
+            settings.setValue(kPythonScriptsKey, stored);
+        if (errorMessage) errorMessage->clear();
+        emit availableProcessingModulesChanged();
+        return true;
+    }
+
+    QStringList ScopeOneCore::pythonScripts() const
+    {
+        return QSettings(QStringLiteral("ScopeOne"), QStringLiteral("ScopeOne")).value(kPythonScriptsKey).toStringList();
+    }
+
+    QString ScopeOneCore::pythonScriptOf(const QString& moduleId) const
+    {
+        for (auto it = m_managers->pythonScripts.constBegin(); it != m_managers->pythonScripts.constEnd(); ++it)
+        {
+            if (it.value().contains(moduleId))
+            {
+                return it.key();
+            }
+        }
+        return {};
     }
 
     std::unique_ptr<ProcessingModule> ScopeOneCore::createProcessingModule(
@@ -5096,12 +5322,13 @@ namespace scopeone::core
                 QVariantMap data{{QStringLiteral("event"), eventData}};
                 if (point == HookPoint::AfterEvent)
                 {
+                    // The recording numbers the frames itself, after this hook, so a frame is found
+                    // in the session by the sequenceIndex of its event, not by a frame index
                     QVariantList frames;
                     for (auto it = output.frames.cbegin(); it != output.frames.cend(); ++it)
                     {
                         frames.append(QVariantMap{
                             {QStringLiteral("cameraId"), it.key()},
-                            {QStringLiteral("frameIndex"), it.value().frameIndex},
                             {QStringLiteral("timestampNs"), it.value().timestampNs},
                             {QStringLiteral("width"), it.value().width},
                             {QStringLiteral("height"), it.value().height}
@@ -5187,6 +5414,11 @@ namespace scopeone::core
             {
                 error = QStringLiteral("records no frames");
             }
+            else if (trigger.preTriggerFrames < 0
+                     || (trigger.preTriggerFrames > 0 && trigger.action != Trigger::Action::Record))
+            {
+                error = QStringLiteral("takes preTriggerFrames only with record, and not below 0");
+            }
             else if (trigger.action == Trigger::Action::ApplyPreset
                      && !availableConfigs(trigger.group).contains(trigger.preset))
             {
@@ -5198,6 +5430,85 @@ namespace scopeone::core
                 return false;
             }
         }
+        // Each camera keeps as many frames as its largest pre-trigger count asks for. The memory
+        // they take is checked here against the memory recordings may hold for writing, at the
+        // current frame size, and too much refuses the triggers instead of keeping fewer frames.
+        QHash<QString, int> frameCounts;
+        QHash<QString, int> countingTrigger;
+        for (qsizetype index = 0; index < triggers.size(); ++index)
+        {
+            const Trigger& trigger = triggers.at(index);
+            if (trigger.preTriggerFrames <= 0)
+            {
+                continue;
+            }
+            for (const QString& cameraId : trigger.cameraId.isEmpty() ? m_cameraIds : QStringList{trigger.cameraId})
+            {
+                if (trigger.preTriggerFrames > frameCounts.value(cameraId))
+                {
+                    frameCounts.insert(cameraId, trigger.preTriggerFrames);
+                    countingTrigger.insert(cameraId, static_cast<int>(index));
+                }
+            }
+        }
+        QHash<QString, qint64> byteLimits;
+        qint64 totalBytes = 0;
+        for (auto it = frameCounts.cbegin(); it != frameCounts.cend(); ++it)
+        {
+            const ImageFrame latest = graphFrame(rawLayerKey(it.key()));
+            qint64 frameBytes = latest.isValid() ? latest.payloadByteCount() : 0;
+            int x = 0, y = 0, width = 0, height = 0;
+            if (frameBytes <= 0 && m_managers->hardwareRuntime->getROI(it.key(), x, y, width, height))
+            {
+                // Before the camera has shown a frame, its ROI at two bytes a pixel
+                frameBytes = static_cast<qint64>(width) * height * 2;
+            }
+            if (frameBytes <= 0)
+            {
+                if (errorMessage)
+                {
+                    *errorMessage = QStringLiteral("The frame size of %1 is not known for its pre-trigger frames; "
+                                                   "start its preview first")
+                                        .arg(it.key());
+                }
+                return false;
+            }
+            byteLimits.insert(it.key(), frameBytes * it.value());
+            totalBytes += frameBytes * it.value();
+        }
+        if (totalBytes > recordingMaxPendingWriteBytes())
+        {
+            QStringList needs;
+            for (auto it = byteLimits.cbegin(); it != byteLimits.cend(); ++it)
+            {
+                needs.append(QStringLiteral("trigger %1 needs %2 MiB for %3")
+                                 .arg(countingTrigger.value(it.key()))
+                                 .arg(it.value() / (1024 * 1024))
+                                 .arg(it.key()));
+            }
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("The pre-trigger frames need %1 MiB, more than the %2 MiB recordings "
+                                               "may hold: %3")
+                                    .arg(totalBytes / (1024 * 1024))
+                                    .arg(recordingMaxPendingWriteBytes() / (1024 * 1024))
+                                    .arg(needs.join(QStringLiteral(", ")));
+            }
+            return false;
+        }
+        // A camera that cannot deliver every frame would fill its buffer with the sparse
+        // preview frames, and the recording would fail on the first gap after them
+        if (!m_managers->hardwareRuntime->setPreTriggerFrames(frameCounts, byteLimits))
+        {
+            m_managers->hardwareRuntime->setPreTriggerFrames(m_preTriggerFrameCounts, m_preTriggerByteLimits);
+            if (errorMessage)
+            {
+                *errorMessage = QStringLiteral("The cameras cannot deliver every frame for the pre-trigger frames");
+            }
+            return false;
+        }
+        m_preTriggerFrameCounts = frameCounts;
+        m_preTriggerByteLimits = byteLimits;
         m_triggers = triggers;
         ++m_triggerGeneration;
         m_triggerFiredMs = QList<qint64>(triggers.size(), -1);
@@ -5277,6 +5588,7 @@ namespace scopeone::core
                 if (trigger.action == Trigger::Action::Record)
                 {
                     parameters.insert(QStringLiteral("frames"), trigger.frames);
+                    parameters.insert(QStringLiteral("preTriggerFrames"), trigger.preTriggerFrames);
                 }
                 else if (trigger.action == Trigger::Action::ApplyPreset)
                 {
@@ -5284,6 +5596,25 @@ namespace scopeone::core
                     parameters.insert(QStringLiteral("preset"), trigger.preset);
                 }
                 logAction(QStringLiteral("trigger"), triggerActionName(trigger.action), parameters, success, error);
+                // One multi-argument arg, as chained calls filled a %N inside the measurement name or
+                // the camera id with the arguments after it
+                const QString line = QStringLiteral("Trigger %1 fired: %2 %3 %4 %5 (%6, frame %7), %8")
+                                         .arg(QString::number(index),
+                                              trigger.measurement,
+                                              QString::number(measurement.value(QStringLiteral("value")).toDouble()),
+                                              parameters.value(QStringLiteral("compare")).toString(),
+                                              QString::number(trigger.threshold),
+                                              cameraId,
+                                              QString::number(frameIndex),
+                                              triggerActionName(trigger.action));
+                if (success)
+                {
+                    qInfo().noquote() << line;
+                }
+                else
+                {
+                    qWarning().noquote() << line + QStringLiteral(" failed: ") + error;
+                }
                 emit triggerFired(static_cast<int>(index), measurement, triggerActionName(trigger.action),
                                   success, error);
                 // A device call of the action spins an event loop that can run set_triggers, after
@@ -5310,19 +5641,24 @@ namespace scopeone::core
             plan.cameraIds = {cameraId};
             plan.format = RecordingFormat::OmeTiff;
             plan.streamToDisk = false;
-            plan.framesPerBurst = trigger.frames;
+            // The buffered frames count toward the recording. A buffer that holds fewer
+            // of them yet, just after the triggers were set, leaves more frames after it.
+            plan.framesPerBurst = trigger.frames + trigger.preTriggerFrames;
             plan.burstMode = false;
             plan.targetBursts = 1;
             plan.enableCompression = false;
             plan.processing = processingRecipe();
-            return startExperiment(document, errorMessage);
+            m_managers->recordingManager->setNextPreTriggerFrames(trigger.preTriggerFrames);
+            const bool started = startExperiment(document, errorMessage);
+            m_managers->recordingManager->setNextPreTriggerFrames(0);
+            return started;
         }
         case Trigger::Action::ApplyPreset:
             return setConfig(trigger.group, trigger.preset, errorMessage);
         case Trigger::Action::StopPreview:
-            if (!stopPreview(cameraId))
+            if (!stopPreview(cameraId, errorMessage))
             {
-                if (errorMessage) *errorMessage = QStringLiteral("Failed to stop preview");
+                if (errorMessage && errorMessage->isEmpty()) *errorMessage = QStringLiteral("Failed to stop preview");
                 return false;
             }
             return true;

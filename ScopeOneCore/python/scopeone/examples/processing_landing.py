@@ -1,10 +1,8 @@
-# Finds a particle landing in the DRA image of the iSCAT Processing module. Copy it into
-# processing/python/ and put "Landing" after iSCAT Processing in DRA mode with 32 frames. Each
+# Finds a particle landing in the DRA image of the iSCAT Processing module. Add this file with
+# Python > Add Script... and put "Landing (Python)" after iSCAT Processing in DRA mode with 32 frames. Each
 # frame reports the deepest dark spot as the measurement "landing", its contrast as a positive
-# number, so a trigger can act on it:
-#
-#     scope.set_triggers([{"measurement": "landing", "compare": "above", "threshold": 0.008,
-#                          "action": "record", "frames": 200, "cooldownMs": 2000}])
+# number, so a trigger can act on it. example_landing.py builds that pipeline and trigger and saves
+# the recordings.
 import numpy as np
 
 from scopeone.processing import Real, module

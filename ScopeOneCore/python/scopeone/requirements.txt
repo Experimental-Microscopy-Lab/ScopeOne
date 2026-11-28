@@ -1,0 +1,4 @@
+# Fixed versions for a setup that is the same on every machine. pyproject.toml only sets lower
+# bounds, so that pip can install the client into any environment.
+numpy==2.5.3
+pywin32==311; platform_system == "Windows"

@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QSet>
 #include <QFileInfo>
 #include <QFile>
 #include <QFutureWatcher>
@@ -923,7 +924,7 @@ namespace scopeone::core::internal
         m_captureState.burstMode = plan.burstMode;
         m_captureState.burstIntervalMs = plan.burstIntervalMs;
         m_captureState.streamToDisk = plan.streamToDisk;
-        m_captureState.awaitingFrameBarrier = false;
+        m_captureState.awaitingFrameBarrier.clear();
         m_captureState.lastFrameIndex.clear();
         m_captureState.framesCapturedThisBurst.clear();
         m_captureState.framesCapturedTotal.clear();
@@ -1401,12 +1402,14 @@ namespace scopeone::core::internal
         }
         ++m_captureState.generation;
         resetCaptureState(plan);
+        QList<ImageFrame> preTriggerFrames;
+        const int preTriggerCount = std::exchange(m_nextPreTriggerFrames, 0);
         if (!usesMda)
         {
             primeLastFrameIndices();
             if (m_hardwareRuntime
                 && !m_hardwareRuntime->setRecordingFrameDeliveryEnabled(
-                    m_captureState.activeCameraIds, true))
+                    m_captureState.activeCameraIds, true, &preTriggerFrames, preTriggerCount))
             {
                 if (plan.streamToDisk)
                 {
@@ -1416,20 +1419,46 @@ namespace scopeone::core::internal
                 return false;
             }
 
+            // The buffered frames come first. Their camera ran in AllFrames mode for
+            // its buffer, so no sparse preview frames are queued and the barrier below would only
+            // reject frames that follow the buffered ones; the frame indices keep out the overlap,
+            // and the barrier holds only the other cameras.
+            QSet<QString> seeded;
+            for (const ImageFrame& frame : preTriggerFrames)
+            {
+                if (!seeded.contains(frame.cameraId))
+                {
+                    seeded.insert(frame.cameraId);
+                    // No last index for a first frame of index 0, as 0 itself would reject it
+                    if (frame.frameIndex > 0) m_captureState.lastFrameIndex[frame.cameraId] = frame.frameIndex - 1;
+                    else m_captureState.lastFrameIndex.remove(frame.cameraId);
+                }
+            }
             // Preview frames sent before delivery was switched are still queued behind this
             // call and arrive with the sparse indices of preview delivery. A queued marker
             // sits behind all of them, so frames are accepted only once it has run.
-            m_captureState.awaitingFrameBarrier = true;
+            m_captureState.awaitingFrameBarrier =
+                QSet<QString>(m_captureState.activeCameraIds.cbegin(), m_captureState.activeCameraIds.cend())
+                    .subtract(seeded);
             const quint64 generation = m_captureState.generation;
             QMetaObject::invokeMethod(this, [this, generation]()
             {
                 if (generation == m_captureState.generation)
                 {
-                    m_captureState.awaitingFrameBarrier = false;
+                    m_captureState.awaitingFrameBarrier.clear();
                 }
             }, Qt::QueuedConnection);
         }
         resetSessionState(plan, deviceProperties, cameraPixelSizesUm, cameraSettings);
+        // The buffered frames were taken before the recording started, and the writer gives no
+        // DeltaT to frames before the start, so the recording starts at the first buffered frame
+        for (const ImageFrame& frame : preTriggerFrames)
+        {
+            if (frame.timestampNs != 0 && frame.timestampNs < m_activeSession->experimentDocument().startedTimestampNs)
+            {
+                m_activeSession->setStartedTimestampNs(frame.timestampNs);
+            }
+        }
 
         if (plan.streamToDisk)
         {
@@ -1467,6 +1496,10 @@ namespace scopeone::core::internal
         emitProgress(true);
 
         qInfo().noquote() << QString("Recording started (%1 camera(s))").arg(m_captureState.activeCameraIds.size());
+        for (const ImageFrame& frame : preTriggerFrames)
+        {
+            ingestFrame(FramePacket{frame, FramePacket::Source::PreviewStream});
+        }
 
         if (usesMda)
         {
@@ -1639,8 +1672,10 @@ namespace scopeone::core::internal
         for (const QString& cameraId : m_captureState.activeCameraIds)
         {
             ImageFrame frame;
-            m_captureState.lastFrameIndex[cameraId] =
-                m_latestFrameFetcher(cameraId, frame) ? frame.frameIndex : 0;
+            if (m_latestFrameFetcher(cameraId, frame))
+            {
+                m_captureState.lastFrameIndex[cameraId] = frame.frameIndex;
+            }
         }
     }
 
@@ -1823,12 +1858,13 @@ namespace scopeone::core::internal
     {
         if (!m_captureState.isRecording) return false;
         if (!packet.frame.isValid()) return false;
-        if (m_captureState.awaitingFrameBarrier) return false;
         const QString cameraId = packet.frame.cameraId.trimmed();
         if (cameraId.isEmpty()) return false;
+        if (m_captureState.awaitingFrameBarrier.contains(cameraId)) return false;
         if (!m_captureState.activeCameraIds.contains(cameraId)) return false;
         if (m_mdaState.usingMda && packet.source != FramePacket::Source::Mda) return false;
-        return packet.frame.frameIndex > m_captureState.lastFrameIndex.value(cameraId, 0);
+        const auto last = m_captureState.lastFrameIndex.constFind(cameraId);
+        return last == m_captureState.lastFrameIndex.cend() || packet.frame.frameIndex > *last;
     }
 
     // Applies burst timing and records one accepted frame

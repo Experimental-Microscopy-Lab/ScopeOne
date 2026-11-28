@@ -4,6 +4,7 @@
 #include "scopeone/ImageSceneModel.h"
 #include "PreviewWidget.h"
 #include "ImageWorkspace.h"
+#include "scopeone/Log.h"
 #include "scopeone/ScopeOneCore.h"
 
 #include <QCoreApplication>
@@ -56,7 +57,7 @@ namespace scopeone::ui
             QStringLiteral("config_loaded"), QStringLiteral("config_unloaded"),
             QStringLiteral("preview_state"), QStringLiteral("stage_moved"),
             QStringLiteral("experiment_state"), QStringLiteral("recording_saved"),
-            QStringLiteral("measurement"), QStringLiteral("trigger_fired"),
+            QStringLiteral("measurement"), QStringLiteral("trigger_fired"), QStringLiteral("log"),
             // Sent to the socket that set the hooks, whether or not it subscribed
             QStringLiteral("before_event"), QStringLiteral("after_event")
         };
@@ -149,7 +150,7 @@ namespace scopeone::ui
             return response;
         }
 
-        // Creates a failed response carrying the reason
+        // The hook points that are on and their timeout
         QJsonObject hooksToJson(const scopeone::core::ScopeOneCore* core)
         {
             QStringList points;
@@ -163,6 +164,7 @@ namespace scopeone::ui
             return hooks;
         }
 
+        // Creates a failed response carrying the reason
         QJsonObject errorResponse(const QString& type, const QString& message)
         {
             QJsonObject response = makeResponse(type, false);
@@ -736,7 +738,7 @@ namespace scopeone::ui
                 QStringLiteral("ping"), QStringLiteral("version"), QStringLiteral("status"),
                 QStringLiteral("capabilities"), QStringLiteral("state_snapshot"),
                 QStringLiteral("frame_mapping_info"), QStringLiteral("subscribe"),
-                QStringLiteral("unsubscribe"), QStringLiteral("action_log")
+                QStringLiteral("unsubscribe"), QStringLiteral("action_log"), QStringLiteral("log")
             }));
             groups.insert(QStringLiteral("configuration"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("camera_ids"), QStringLiteral("loaded_devices"),
@@ -784,7 +786,8 @@ namespace scopeone::ui
             }));
             groups.insert(QStringLiteral("processing"), QJsonArray::fromStringList(QStringList{
                 QStringLiteral("processing_modules"), QStringLiteral("set_processing_bit_depth"),
-                QStringLiteral("set_realtime_processing"), QStringLiteral("add_processing_module"),
+                QStringLiteral("set_realtime_processing"), QStringLiteral("add_python_script"),
+                QStringLiteral("remove_python_script"), QStringLiteral("add_processing_module"),
                 QStringLiteral("remove_processing_module"),
                 QStringLiteral("set_processing_module_parameters"),
                 QStringLiteral("reset_processing_module_state"), QStringLiteral("triggers"),
@@ -985,6 +988,7 @@ namespace scopeone::ui
                 if (trigger.action == Trigger::Action::Record)
                 {
                     item.insert(QStringLiteral("frames"), trigger.frames);
+                    item.insert(QStringLiteral("preTriggerFrames"), trigger.preTriggerFrames);
                 }
                 else if (trigger.action == Trigger::Action::ApplyPreset)
                 {
@@ -1027,6 +1031,7 @@ namespace scopeone::ui
                                                                      : Trigger::Compare::Below;
                 trigger.threshold = item.value(QStringLiteral("threshold")).toDouble();
                 trigger.frames = item.value(QStringLiteral("frames")).toInt(trigger.frames);
+                trigger.preTriggerFrames = item.value(QStringLiteral("preTriggerFrames")).toInt(trigger.preTriggerFrames);
                 trigger.group = item.value(QStringLiteral("group")).toString();
                 trigger.preset = item.value(QStringLiteral("preset")).toString();
                 trigger.cooldownMs = item.value(QStringLiteral("cooldownMs")).toDouble(trigger.cooldownMs);
@@ -1359,6 +1364,13 @@ namespace scopeone::ui
                 });
         connect(core, &scopeone::core::ScopeOneCore::measurementsReady,
                 this, &ScopeOneLocalApiServer::publishMeasurement);
+        // Queued, as an entry can be written on any thread, and a write that fails on a socket
+        // logs again
+        connect(scopeone::core::Log::instance(), &scopeone::core::Log::entryAdded,
+                this, [this](const scopeone::core::LogEntry& entry)
+                {
+                    publishEvent(QStringLiteral("log"), scopeone::core::Log::toJson(entry));
+                }, Qt::QueuedConnection);
         connect(core, &scopeone::core::ScopeOneCore::triggerFired,
                 this, [this](int index, const QVariantMap& measurement, const QString& action,
                              bool success, const QString& errorMessage)
@@ -1564,6 +1576,14 @@ namespace scopeone::ui
             {
                 response = setHooks(socket, request);
             }
+            // record answers only when the recording ends, and a client waiting for that answer
+            // does not answer the hooks of its events, so each event would wait for the timeout
+            else if (requestType == QStringLiteral("record") && socket == m_hookOwner)
+            {
+                response = errorResponse(requestType,
+                                         QStringLiteral("This connection holds the hooks; record from another "
+                                                        "connection, or start_experiment and answer the hooks"));
+            }
             else if (m_scopeonecore->configurationOperationRunning()
                      && requestType != QStringLiteral("ping")
                      && requestType != QStringLiteral("version")
@@ -1571,7 +1591,8 @@ namespace scopeone::ui
                      && requestType != QStringLiteral("status")
                      && requestType != QStringLiteral("state_snapshot")
                      && requestType != QStringLiteral("frame_mapping_info")
-                     && requestType != QStringLiteral("action_log"))
+                     && requestType != QStringLiteral("action_log")
+                     && requestType != QStringLiteral("log"))
             {
                 response = makeResponse(requestType, false);
                 response.insert(QStringLiteral("error"),
@@ -1663,15 +1684,33 @@ namespace scopeone::ui
         {
             return errorResponse(type, QStringLiteral("Unknown action: %1").arg(action));
         }
-        const auto number = [&request](const QString& name)
+        QString invalid;
+        const auto number = [&request, &invalid](const QString& name)
         {
             const QJsonValue value = request.value(name);
-            return value.isDouble() ? std::optional<double>(value.toDouble()) : std::nullopt;
+            if (value.isUndefined() || value.isNull())
+            {
+                return std::optional<double>();
+            }
+            if (!value.isDouble() || !std::isfinite(value.toDouble()))
+            {
+                invalid = name;
+                return std::optional<double>();
+            }
+            return std::optional<double>(value.toDouble());
         };
         reply.x = number(QStringLiteral("x"));
         reply.y = number(QStringLiteral("y"));
         reply.z = number(QStringLiteral("z"));
         reply.exposureMs = number(QStringLiteral("exposureMs"));
+        if (!invalid.isEmpty())
+        {
+            return errorResponse(type, QStringLiteral("%1 must be a finite number").arg(invalid));
+        }
+        if (reply.exposureMs && *reply.exposureMs <= 0.0)
+        {
+            return errorResponse(type, QStringLiteral("exposureMs must be positive"));
+        }
         const quint64 hookId = static_cast<quint64>(request.value(QStringLiteral("hookId")).toDouble());
         if (!m_scopeonecore->replyHook(hookId, reply))
         {
@@ -1680,7 +1719,8 @@ namespace scopeone::ui
         return makeResponse(type, true);
     }
 
-    // Adds or removes events of one socket's subscription; no names means all events
+    // Adds or removes events of one socket's subscription. No names subscribes to all events but
+    // the log, and unsubscribes from all of them.
     QJsonObject ScopeOneLocalApiServer::updateSubscription(QLocalSocket* socket,
                                                            const QJsonObject& request)
     {
@@ -1698,6 +1738,11 @@ namespace scopeone::ui
         if (names.isEmpty())
         {
             names = QSet<QString>(kEventNames.cbegin(), kEventNames.cend());
+            // The log sends every message of the application, so it is only sent when named
+            if (type == QStringLiteral("subscribe"))
+            {
+                names.remove(QStringLiteral("log"));
+            }
         }
 
         if (type == QStringLiteral("subscribe"))
@@ -1750,7 +1795,9 @@ namespace scopeone::ui
         QList<QLocalSocket*> sockets;
         for (auto it = m_subscriptions.cbegin(); it != m_subscriptions.cend(); ++it)
         {
-            if (it.value().contains(event))
+            // A write to a closing socket warns, and the warning came back as a log event to the
+            // same socket, so only connected sockets get events
+            if (it.value().contains(event) && it.key()->state() == QLocalSocket::ConnectedState)
             {
                 sockets.append(it.key());
             }
@@ -2729,6 +2776,25 @@ namespace scopeone::ui
             return response;
         }
 
+        if (type == QStringLiteral("log"))
+        {
+            const QString sinceText = request.value(QStringLiteral("since")).toString();
+            const QDateTime since = QDateTime::fromString(sinceText, Qt::ISODateWithMs);
+            if (!sinceText.isEmpty() && !since.isValid())
+            {
+                return errorResponse(type, QStringLiteral("since must be an ISO 8601 time"));
+            }
+            const qint64 after = request.value(QStringLiteral("after")).toInteger();
+            QJsonArray entries;
+            for (const auto& entry : scopeone::core::Log::instance()->entries(since, static_cast<quint64>(std::max<qint64>(after, 0))))
+            {
+                entries.append(scopeone::core::Log::toJson(entry));
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("entries"), entries);
+            return response;
+        }
+
         if (type == QStringLiteral("image_windows"))
         {
             QJsonObject response = makeResponse(type, true);
@@ -2996,8 +3062,10 @@ namespace scopeone::ui
         if (type == QStringLiteral("stop_preview"))
         {
             const QString camera = request.value(QStringLiteral("camera")).toString(QStringLiteral("All"));
-            const bool ok = m_scopeonecore->stopPreview(camera);
-            return ok ? makeResponse(type, true) : errorResponse(type, QStringLiteral("Failed to stop preview"));
+            QString error;
+            const bool ok = m_scopeonecore->stopPreview(camera, &error);
+            return ok ? makeResponse(type, true)
+                      : errorResponse(type, error.isEmpty() ? QStringLiteral("Failed to stop preview") : error);
         }
 
         if (type == QStringLiteral("list_layers"))
@@ -4148,7 +4216,13 @@ namespace scopeone::ui
             QJsonArray availableModules;
             for (const auto& descriptor : m_scopeonecore->availableProcessingModules())
             {
-                availableModules.append(processingModuleDescriptorToJson(descriptor));
+                QJsonObject module = processingModuleDescriptorToJson(descriptor);
+                const QString script = m_scopeonecore->pythonScriptOf(descriptor.id);
+                if (!script.isEmpty())
+                {
+                    module.insert(QStringLiteral("script"), script);
+                }
+                availableModules.append(module);
             }
             response.insert(QStringLiteral("availableModules"), availableModules);
             return response;
@@ -4201,6 +4275,30 @@ namespace scopeone::ui
             response.insert(QStringLiteral("realTimeSource"),
                             m_scopeonecore->realTimeProcessingSource());
             return response;
+        }
+
+        if (type == QStringLiteral("add_python_script"))
+        {
+            QString error;
+            const QStringList ids = m_scopeonecore->addPythonScript(
+                request.value(QStringLiteral("path")).toString(), &error);
+            if (ids.isEmpty())
+            {
+                return errorResponse(type, error);
+            }
+            QJsonObject response = makeResponse(type, true);
+            response.insert(QStringLiteral("moduleIds"), QJsonArray::fromStringList(ids));
+            return response;
+        }
+
+        if (type == QStringLiteral("remove_python_script"))
+        {
+            QString error;
+            if (!m_scopeonecore->removePythonScript(request.value(QStringLiteral("path")).toString(), &error))
+            {
+                return errorResponse(type, error);
+            }
+            return makeResponse(type, true);
         }
 
         if (type == QStringLiteral("add_processing_module"))

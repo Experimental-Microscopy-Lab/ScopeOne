@@ -107,6 +107,9 @@ namespace scopeone::core
     struct ProcessingModuleRecipe
     {
         QString moduleId;
+        // The Python script of the module, which is added when its modules are not there yet.
+        // Empty for a module of Core.
+        QString script;
         int schemaVersion{kProcessingModuleSchemaVersion};
         QVariantMap parameters;
     };

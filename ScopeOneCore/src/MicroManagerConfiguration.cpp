@@ -183,6 +183,63 @@ namespace scopeone::core::internal
             return {};
         }
 
+        // MMCore sets the Property lines and the System/Startup preset itself while it loads, so their
+        // values are checked against the ScopeOneLimit lines before. The limit of a Z stage is on Z,
+        // which MMCore names Position, and the type of a device is not known before it loads, so
+        // a limit on Z holds Position of the same device as well.
+        bool checkLoadLimits(const HardwareConfiguration& document,
+                             const QList<ConfigSetting>& properties,
+                             const QList<ConfigSetting>& startup,
+                             QString* errorMessage)
+        {
+            const QList<HardwareConfiguration::Limit> limits = document.limits();
+            const auto check = [&](const ConfigSetting& setting, const QString& line)
+            {
+                for (const HardwareConfiguration::Limit& limit : limits)
+                {
+                    if (limit.device != setting.device
+                        || (limit.property != setting.property
+                            && !(limit.property == QLatin1String("Z")
+                                 && setting.property == QLatin1String(MM::g_Keyword_Position))))
+                    {
+                        continue;
+                    }
+                    bool number = false;
+                    const double value = setting.value.toDouble(&number);
+                    if (number && value >= limit.min && value <= limit.max)
+                    {
+                        continue;
+                    }
+                    if (errorMessage)
+                    {
+                        *errorMessage = QStringLiteral("The line %1 leaves the limit %2 to %3 of %4 %5")
+                                            .arg(line, QString::number(limit.min), QString::number(limit.max),
+                                                 limit.device, limit.property);
+                    }
+                    return false;
+                }
+                return true;
+            };
+            for (const ConfigSetting& setting : properties)
+            {
+                if (!check(setting, QStringLiteral("Property,%1,%2,%3").arg(setting.device, setting.property, setting.value)))
+                {
+                    return false;
+                }
+            }
+            for (const ConfigSetting& setting : startup)
+            {
+                if (!check(setting, QStringLiteral("ConfigGroup,%1,%2,%3,%4,%5")
+                                        .arg(QLatin1String(MM::g_CFGGroup_System),
+                                             QLatin1String(MM::g_CFGGroup_System_Startup),
+                                             setting.device, setting.property, setting.value)))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         // Read camera property entries that must be replayed by DriverHost processes. The settings
         // are by device label, so only those of the cameras are taken.
         ConfigPropertyReplay configPropertyReplay(const QList<ConfigSetting>& properties,
@@ -430,6 +487,10 @@ namespace scopeone::core::internal
         HardwareConfiguration document = HardwareConfiguration::read(configPath, nullptr);
         const QList<ConfigSetting> properties = document.propertyLines();
         const QList<ConfigSetting> startup = startupSettings(document);
+        if (!checkLoadLimits(document, properties, startup, &errorMessage))
+        {
+            return false;
+        }
         std::vector<ConfigSetting> scopeOneRoles;
         for (const ConfigSetting& setting : startup)
         {

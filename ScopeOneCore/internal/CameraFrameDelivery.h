@@ -28,18 +28,28 @@ namespace scopeone::core::internal
     public:
         explicit CameraFrameDelivery(QObject* parent = nullptr);
 
-        // Each camera is recorded or processed on its own, as others may keep their live view
-        void setRecordingEnabled(const QStringList& cameraIds, bool enabled);
+        // Each camera is recorded or processed on its own, as others may keep their live view.
+        // Enabling hands over the last preTriggerCount frames of each camera's pre-trigger buffer in
+        // preTriggerFrames, taken under the same lock, so no frame falls between the two.
+        void setRecordingEnabled(const QStringList& cameraIds, bool enabled,
+                                 QList<ImageFrame>* preTriggerFrames = nullptr, int preTriggerCount = 0);
         bool recordingEnabled(const QString& cameraId) const;
         void setHighRateEnabled(const QStringList& cameraIds, bool enabled);
         bool highRateEnabled(const QString& cameraId) const;
+        // Keeps the last frames of each camera for record triggers that start with frames from before
+        // the threshold: frameCounts frames, and no more than byteLimits bytes, of each camera. A
+        // camera without a byte limit, or one of 0, is bounded by its frame count only.
+        // Cameras without a count keep nothing, and such a camera runs in AllFrames mode only
+        // while it is recorded.
+        void setPreTriggerFrames(const QHash<QString, int>& frameCounts, const QHash<QString, qint64>& byteLimits);
+        bool preTriggerEnabled(const QString& cameraId) const;
         // The mode the cameras run in for what is enabled for them
         FrameDeliveryMode mode(const QString& cameraId) const;
         // Forgets the cameras, as the ids of a new configuration may name other cameras
         void removeCameras(const QStringList& cameraIds);
 
-        // Whether the newest frame of a camera is worth reading now. Without recording or live
-        // processing every newest frame is, as the live view takes it.
+        // Whether the newest frame of a camera is worth reading now. While live processing is busy
+        // and already keeps a frame for when it finishes, only a frame the live view is due for is.
         bool wantsLatestFrame(const QString& cameraId);
         // Frames of one camera in order. acquiredFrameCount counts every frame the camera took
         // since the last call, including those that were not read.
@@ -61,7 +71,12 @@ namespace scopeone::core::internal
         void deliveryFailed(const QString& errorMessage, quint64 droppedFrames);
 
     private:
-        quint64 tryAcquireProcessingFrame(const QString& cameraId);
+        struct PreTriggerBuffer;
+        void keepPreTriggerFrame(PreTriggerBuffer& buffer, const ImageFrame& frame,
+                                 std::deque<ImageFrame>& discardedFrames);
+        static void trimPreTriggerBuffer(PreTriggerBuffer& buffer, const QString& cameraId,
+                                         std::deque<ImageFrame>& discardedFrames);
+        quint64 tryAcquireProcessingFrame(const ImageFrame& frame);
         bool previewDue(const QString& cameraId) const;
         void flushPendingFrames();
 
@@ -75,10 +90,25 @@ namespace scopeone::core::internal
         QString m_pendingDeliveryError;
         QSet<QString> m_recordingCameras;
         bool m_frameFlushQueued{false};
+        struct PreTriggerBuffer
+        {
+            int frameCount{0};
+            qint64 byteLimit{0};
+            std::deque<ImageFrame> frames;
+            qint64 bytes{0};
+            bool warned{false};
+        };
+        QHash<QString, PreTriggerBuffer> m_preTriggerBuffers;
+        // Frames pushed out of the pre-trigger buffers, released together on the next flush
+        // instead of one task for each delivered batch
+        std::deque<ImageFrame> m_evictedPreTriggerFrames;
 
         mutable QMutex m_processingMutex;
         QSet<QString> m_highRateCameras;
         QHash<QString, quint64> m_processingTokens;
+        // The newest frame of each camera that arrived while its processing was busy, which the
+        // processing takes as soon as it finishes
+        QHash<QString, ImageFrame> m_pendingProcessingFrames;
         quint64 m_nextProcessingToken{0};
     };
 

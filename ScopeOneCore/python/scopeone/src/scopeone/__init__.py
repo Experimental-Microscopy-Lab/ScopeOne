@@ -4,13 +4,14 @@
 ``scopeone.processing`` goes the other way: ScopeOne runs Python functions as pipeline modules.
 """
 
-from .client import ExperimentSession, FrameResult, RecordingSession, ScopeOne
+# MAJOR.MINOR of the ScopeOne this client speaks to. The release workflow writes the full
+# version of the app here, and the client refuses an app of another MAJOR.MINOR.
+__version__ = "1.5"
 
-__version__ = "0.1.0"
+from .client import Frame, RecordingSession, ScopeOne
 
 __all__ = [
-    "ExperimentSession",
-    "FrameResult",
+    "Frame",
     "RecordingSession",
     "ScopeOne",
     "__version__",

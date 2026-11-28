@@ -8,6 +8,7 @@
       "default-features": false,
       "features": ["fs", "intrinsics", "jpeg", "png", "thread", "tiff", "webp"]
     },
+    "pocketfft",
     {
       "name": "tiff",
       "default-features": false,

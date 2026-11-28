@@ -135,7 +135,7 @@ frames are delivered and paused is ScopeOne's own policy and stays out of the dr
 ## Driver and Processing Boundaries
 
 - `drivers` contains the drivers, among them NI-DAQmx, the serial driver and the example camera and PMT. Each ScopeOne device runs in an isolated DriverHost process, so a vendor library such as NI-DAQmx is never loaded into ScopeOne. The serial driver runs the JSON description files in `drivers/Serial/profiles`, and each description is a driver of its own. Micro-Manager Device Adapters remain under Micro-Manager and are not wrapped as ScopeOne drivers.
-- Python processing modules are scripts in `processing/python`, beside the executable or in the application data directory. Core runs each module of a pipeline in its own Python process.
+- Python processing modules come from the scripts the user adds with `addPythonScript`, which Core remembers in the settings. Core runs each module of a pipeline in its own Python process.
 - The CUDA and ONNX processing modules are part of Core. CUDA is built when nvcc is found and `SCOPEONE_ENABLE_CUDA` is on. ONNX inference is always built, with the official ONNX Runtime package from NuGet that the configure downloads into `external`, the GPU package when CUDA is built and the CPU package otherwise. `ONNXRUNTIME_ROOT` points Core at another SDK. Every processing method and the DHM reconstruction are part of Core.
 - The tool windows (Scale, Stage Mosaic, Particle Detection, DHM Reconstruction, Scanning and DAQ Control, Signal Monitor) are part of the application. They use the `ScopeOneCore` facade, and `ToolContext` in `src/tools/ToolContext.h` gives them the desktop operations such as showing layers.
 
